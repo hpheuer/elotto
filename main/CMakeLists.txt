@@ -1,0 +1,12 @@
+idf_component_register(
+    SRCS
+        "elotto.c"
+        "sensor.c"
+    INCLUDE_DIRS
+        "."
+    REQUIRES
+        freertos
+        esp_hw_support
+        nvs_flash
+        esp_timer
+)
