@@ -9,4 +9,9 @@ idf_component_register(
         esp_hw_support
         nvs_flash
         esp_timer
+        esp_eth
+        esp_netif
+        esp_event
+        esp_http_server
+        esp_hw_support
 )

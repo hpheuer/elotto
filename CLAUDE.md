@@ -2,7 +2,7 @@
 
 ## Umgebung
 - Windows, Laufwerk D:\E-Lotto\elotto
-- ESP-IDF unter C:\esp\esp-idf
+- ESP-IDF unter C:\esp\v6.0.1\esp-idf  (Tools: C:\Espressif)
 - VS Code mit Espressif ESP-IDF Extension
 - Target: **esp32p4**
 - Build-System: idf.py via ESP-IDF Extension
