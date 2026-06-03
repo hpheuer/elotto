@@ -71,7 +71,7 @@ static const char HTML[] =
 ".euro{background:#7b6e00}"
 "</style></head><body>"
 "<div class='wrap'>"
-"<h1>&#9752; E-Lotto <a href='https://de.wikipedia.org/wiki/Global_Consciousness_Project'"
+"<h1>&#9752; E-Lotto <a href='https://grokipedia.com/page/Global_Consciousness_Project'"
 " target='_blank' style='color:inherit;text-decoration:none;border-bottom:1px dashed #90ee90'>GCP</a></h1>"
 "<div id='subtitle'>ESP32-P4 &bull; Hardware TRNG &bull; GCP-Analyse</div>"
 "<div class='card'>"

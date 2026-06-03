@@ -1,7 +1,7 @@
 # E-Lotto — GCP-Analyse auf ESP32-P4
 
 ESP32-P4 Projekt das Eurojackpot- und 6-aus-49-Lottozahlen mittels Hardware-TRNG und
-[GCP-Methodik (Global Consciousness Project)](https://de.wikipedia.org/wiki/Global_Consciousness_Project)
+[GCP-Methodik (Global Consciousness Project)](https://grokipedia.com/page/Global_Consciousness_Project)
 generiert.
 
 ## Hardware
