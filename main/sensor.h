@@ -28,6 +28,9 @@ typedef struct {
     int              baseline_total;
     double           baseline_mean;
     int64_t          elapsed_ms;
+    int              freq_z2_count;
+    uint8_t          freq_nums[6];
+    uint8_t          freq_euro[2];
     volatile bool    abort_requested;
     RunResult        results[NUM_RUNS];
 } ElottoStatus;

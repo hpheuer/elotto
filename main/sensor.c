@@ -135,6 +135,58 @@ done:
         int done = g_status.runs_completed;
         qsort(g_status.results, done, sizeof(RunResult), cmp_desc);
         extract_numbers(done);
+
+        // Frequenz-Analyse: alle Läufe mit Z > 2
+        {
+            int fm[51] = {0}, fe[13] = {0}, z2 = 0;
+            bool euro = (g_status.mode == MODE_EUROJACKPOT);
+            int nm = euro ? 5 : 6, mx = euro ? 50 : 49;
+            for (int i = 0; i < done; i++) {
+                if (g_status.results[i].z_score <= 2.0) break;
+                z2++;
+                uint8_t t[6] = {0};
+                draw_unique_sorted(t, nm, mx, 63);
+                for (int j = 0; j < nm; j++) fm[t[j]]++;
+                if (euro) {
+                    uint8_t et[2] = {0};
+                    draw_unique_sorted(et, 2, 12, 15);
+                    fe[et[0]]++; fe[et[1]]++;
+                }
+            }
+            g_status.freq_z2_count = z2;
+            if (z2 > 0) {
+                bool used[51] = {false};
+                for (int k = 0; k < nm; k++) {
+                    int b = 0, bf = -1;
+                    for (int j = 1; j <= mx; j++)
+                        if (!used[j] && fm[j] > bf) { b = j; bf = fm[j]; }
+                    g_status.freq_nums[k] = (uint8_t)b;
+                    if (b) used[b] = true;
+                }
+                // Aufsteigend sortieren für Anzeige
+                for (int i = 1; i < nm; i++) {
+                    uint8_t key = g_status.freq_nums[i]; int j = i - 1;
+                    while (j >= 0 && g_status.freq_nums[j] > key) { g_status.freq_nums[j+1] = g_status.freq_nums[j]; j--; }
+                    g_status.freq_nums[j+1] = key;
+                }
+                if (euro) {
+                    bool eu[13] = {false};
+                    for (int k = 0; k < 2; k++) {
+                        int b = 0, bf = -1;
+                        for (int j = 1; j <= 12; j++)
+                            if (!eu[j] && fe[j] > bf) { b = j; bf = fe[j]; }
+                        g_status.freq_euro[k] = (uint8_t)b;
+                        if (b) eu[b] = true;
+                    }
+                    if (g_status.freq_euro[0] > g_status.freq_euro[1]) {
+                        uint8_t tmp = g_status.freq_euro[0];
+                        g_status.freq_euro[0] = g_status.freq_euro[1];
+                        g_status.freq_euro[1] = tmp;
+                    }
+                }
+            }
+        }
+
         g_status.elapsed_ms = (esp_timer_get_time() - t0) / 1000;
         g_status.state = g_status.abort_requested ? ELOTTO_ABORTED : ELOTTO_DONE;
     }

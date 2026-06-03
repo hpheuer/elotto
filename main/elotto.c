@@ -75,25 +75,21 @@ static const char HTML[] =
 " target='_blank' style='color:inherit;text-decoration:none;border-bottom:1px dashed #90ee90'>GCP</a></h1>"
 "<div id='subtitle'>ESP32-P4 &bull; Hardware TRNG &bull; GCP-Analyse</div>"
 "<div class='card'>"
-"<div id='runsRow' style='display:flex;gap:14px;justify-content:center;margin-bottom:10px'>"
-"<div style='display:flex;flex-direction:column;align-items:center;gap:6px'>"
+"<div id='runsRow' style='display:grid;grid-template-columns:1fr 1fr;gap:8px 14px;justify-items:center;margin-bottom:10px'>"
 "<div style='display:flex;align-items:center;gap:6px'>"
 "<label style='color:#90ee90;font-size:.9em'>L&auml;ufe:</label>"
 "<input id='numRuns' type='number' value='1000' min='1' max='8000' step='100'"
 " style='width:80px;padding:5px 8px;border-radius:6px;border:1px solid #4a9e4a;"
 "background:#0a2e0a;color:#fff;font-size:1em;text-align:center'>"
 "</div>"
-"<button class='btn btn-euro' onclick='doStart(0)'>&#127808; Euro-Lotto</button>"
-"</div>"
-"<div style='display:flex;flex-direction:column;align-items:center;gap:6px'>"
 "<div style='display:flex;align-items:center;gap:6px'>"
 "<label style='color:#f0c040;font-size:.9em'>Baseline:</label>"
 "<input id='numBaseline' type='number' value='100' min='10' max='5000' step='50'"
 " style='width:70px;padding:5px 8px;border-radius:6px;border:1px solid #a08030;"
 "background:#0a2e0a;color:#fff;font-size:1em;text-align:center'>"
 "</div>"
-"<button class='btn btn-649' onclick='doStart(1)'>&#127808; 6 aus 49</button>"
-"</div>"
+"<button class='btn btn-euro' style='width:100%' onclick='doStart(0)'>&#127808; Euro-Lotto</button>"
+"<button class='btn btn-649' style='width:100%' onclick='doStart(1)'>&#127808; 6 aus 49</button>"
 "</div>"
 "<div style='text-align:center;margin-bottom:6px'>"
 "<span id='runsErr' style='color:#ff6b6b;font-size:.9em'></span>"
@@ -154,8 +150,8 @@ static const char HTML[] =
 "curMode=d.mode==='euro'?0:1;setMode(curMode);"
 "document.getElementById('msg').textContent="
 "d.state==='done'?'✅ Fertig! ('+fmt(d.elapsed_ms)+')'"
-":'⚠️ Abgebrochen nach '+d.completed+' Läufen';"
-"showResults(d.results,d.mode);"
+":'⚠️ Abgebrochen nach '+d.completed+' Läufen — bisherige Ergebnisse:';"
+"showResults(d);"
 "}}).catch(function(){});};"
 "function doStart(mode){"
 "curMode=mode;"
@@ -207,12 +203,13 @@ static const char HTML[] =
 "var done=d.state==='done';"
 "document.getElementById('msg').textContent="
 "done?'✅ Fertig! ('+fmt(d.elapsed_ms)+')'"
-":'⚠️ Abgebrochen nach '+d.completed+' Läufen';"
-"showResults(d.results,d.mode);"
+":'⚠️ Abgebrochen nach '+d.completed+' Läufen — bisherige Ergebnisse:';"
+"showResults(d);"
 "}"
 "}).catch(function(){});"
 "}"
-"function showResults(res,mode){"
+"function showResults(d){"
+"var res=d.results,mode=d.mode;"
 "if(!res||res.length===0)return;"
 "var isEuro=mode==='euro';"
 "document.getElementById('resTitle').innerHTML="
@@ -232,6 +229,17 @@ static const char HTML[] =
 "tb.innerHTML+='<tr><td>'+(i+1)+'</td><td>'+r.run+'</td>"
 "<td>'+r.z.toFixed(4)+'</td><td>'+r.p+'</td><td>'+nums+'</td>"
 "'+(isEuro?'<td>'+estr+'</td>':'')+'</tr>';"
+"}"
+"if(d.freq_z2>0&&d.freq_nums){"
+"var fn='',fe='',nc=isEuro?5:6;"
+"for(var j=0;j<nc;j++)if(d.freq_nums[j])fn+='<span class=\"num\">'+d.freq_nums[j]+'</span>';"
+"if(isEuro&&d.freq_euro)for(var j=0;j<2;j++)if(d.freq_euro[j])fe+='<span class=\"num euro\">'+d.freq_euro[j]+'</span>';"
+"var sep='border-top:2px solid rgba(240,192,64,.4)';"
+"tb.innerHTML+='<tr style=\"background:rgba(240,192,64,.08)\">'"
+"+'<td colspan=\"4\" style=\"color:#f0c040;font-weight:700;'+sep+';padding-top:10px\">'"
+"+'&#128197; Am h&auml;ufigsten ('+d.freq_z2+'&times; Z&gt;2):</td>'"
+"+'<td style=\"'+sep+'\">'+fn+'</td>'"
+"+(isEuro?'<td style=\"'+sep+'\">'+fe+'</td>':'')+'</tr>';"
 "}"
 "document.getElementById('resCard').style.display='block';"
 "}"
@@ -284,7 +292,12 @@ static esp_err_t status_handler(httpd_req_t *req)
                 r->nums[3], r->nums[4], r->nums[5]);
         }
     }
-    pos += snprintf(buf+pos, sizeof(buf)-pos, "]}");
+    pos += snprintf(buf+pos, sizeof(buf)-pos,
+        "],\"freq_z2\":%d,\"freq_nums\":[%d,%d,%d,%d,%d,%d],\"freq_euro\":[%d,%d]}",
+        g_status.freq_z2_count,
+        g_status.freq_nums[0], g_status.freq_nums[1], g_status.freq_nums[2],
+        g_status.freq_nums[3], g_status.freq_nums[4], g_status.freq_nums[5],
+        g_status.freq_euro[0], g_status.freq_euro[1]);
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
