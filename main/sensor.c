@@ -4,29 +4,20 @@
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "esp_random.h"
 #include "esp_timer.h"
 #include "sensor.h"
 
 ElottoStatus g_status = { .state = ELOTTO_IDLE };
 
+// Direkter TRNG-Register-Zugriff (75× schneller als esp_random)
+// Baseline-Korrektur kompensiert den systematischen Hardware-Bias
+#define RNG_REG  (*((volatile uint32_t *)0x501101A4UL))
+
+static inline uint32_t fast_rng(void) { return RNG_REG; }
+
 #define TRNG_PER_RUN   200000
 #define SEGMENT_BITS   200
 #define NUM_SEGMENTS   ((TRNG_PER_RUN * 32) / SEGMENT_BITS)   // 32000
-
-// Batch-Buffer: esp_fill_random füllt 512 Words auf einmal
-#define BATCH_SIZE  512
-static uint32_t s_rng_buf[BATCH_SIZE];
-static int      s_rng_pos = BATCH_SIZE;  // erzwingt initialen Fill
-
-static inline uint32_t fast_rng(void)
-{
-    if (s_rng_pos >= BATCH_SIZE) {
-        esp_fill_random(s_rng_buf, sizeof(s_rng_buf));
-        s_rng_pos = 0;
-    }
-    return s_rng_buf[s_rng_pos++];
-}
 
 static const char *p_label(double absZ)
 {
@@ -37,11 +28,10 @@ static const char *p_label(double absZ)
     return "n.s.";
 }
 
-static double gcp_zscore(void)
+static double gcp_zscore_raw(void)
 {
     double z_sum = 0.0;
     for (int seg = 0; seg < NUM_SEGMENTS; seg++) {
-        // 6 × 32 Bit + 1 × 8 Bit = 200 Bit, popcount in einem Takt
         int ones = __builtin_popcount(fast_rng())
                  + __builtin_popcount(fast_rng())
                  + __builtin_popcount(fast_rng())
@@ -105,19 +95,33 @@ void elotto_task(void *pvParam)
 {
     g_status.state           = ELOTTO_RUNNING;
     g_status.runs_completed  = 0;
+    g_status.baseline_done   = 0;
     g_status.abort_requested = false;
     g_status.elapsed_ms      = 0;
-    if (g_status.runs_total <= 0 || g_status.runs_total > NUM_RUNS)
-        g_status.runs_total = NUM_RUNS;
-
-    s_rng_pos = BATCH_SIZE;  // Buffer-Reset bei neuem Lauf
+    g_status.baseline_mean   = 0.0;
+    if (g_status.runs_total    <= 0 || g_status.runs_total    > NUM_RUNS) g_status.runs_total    = 1000;
+    if (g_status.baseline_total <= 0 || g_status.baseline_total > 5000)   g_status.baseline_total = 100;
 
     int64_t t0 = esp_timer_get_time();
+
+    /* ── Phase 1: Baseline-Kalibrierung ──────────────────────────── */
+    g_status.phase = PHASE_BASELINE;
+    double bsum = 0.0;
+    for (int i = 0; i < g_status.baseline_total; i++) {
+        if (g_status.abort_requested) goto done;
+        bsum += gcp_zscore_raw();
+        g_status.baseline_done = i + 1;
+        g_status.elapsed_ms = (esp_timer_get_time() - t0) / 1000;
+    }
+    g_status.baseline_mean = bsum / g_status.baseline_total;
+
+    /* ── Phase 2: Messung mit Baseline-Korrektur ─────────────────── */
+    g_status.phase = PHASE_MEASURING;
     int total = g_status.runs_total;
 
     for (int i = 0; i < total; i++) {
         if (g_status.abort_requested) break;
-        double z = gcp_zscore();
+        double z = gcp_zscore_raw() - g_status.baseline_mean;
         g_status.results[i].index   = i + 1;
         g_status.results[i].z_score = z;
         g_status.results[i].chi_sq  = z * z;
@@ -126,11 +130,13 @@ void elotto_task(void *pvParam)
         g_status.elapsed_ms         = (esp_timer_get_time() - t0) / 1000;
     }
 
-    int done = g_status.runs_completed;
-    qsort(g_status.results, done, sizeof(RunResult), cmp_desc);
-    extract_numbers(done);
-
-    g_status.elapsed_ms = (esp_timer_get_time() - t0) / 1000;
-    g_status.state = g_status.abort_requested ? ELOTTO_ABORTED : ELOTTO_DONE;
+done:
+    {
+        int done = g_status.runs_completed;
+        qsort(g_status.results, done, sizeof(RunResult), cmp_desc);
+        extract_numbers(done);
+        g_status.elapsed_ms = (esp_timer_get_time() - t0) / 1000;
+        g_status.state = g_status.abort_requested ? ELOTTO_ABORTED : ELOTTO_DONE;
+    }
     vTaskDelete(NULL);
 }

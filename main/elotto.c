@@ -10,6 +10,7 @@
 #include "esp_http_server.h"
 #include "nvs_flash.h"
 #include "esp_timer.h"
+#include "esp_random.h"
 #include "sensor.h"
 
 static const char *TAG = "ELOTTO";
@@ -70,29 +71,56 @@ static const char HTML[] =
 ".euro{background:#7b6e00}"
 "</style></head><body>"
 "<div class='wrap'>"
-"<h1>&#9752; E-Lotto GCP</h1>"
+"<h1>&#9752; E-Lotto <a href='https://de.wikipedia.org/wiki/Global_Consciousness_Project'"
+" target='_blank' style='color:inherit;text-decoration:none;border-bottom:1px dashed #90ee90'>GCP</a></h1>"
 "<div id='subtitle'>ESP32-P4 &bull; Hardware TRNG &bull; GCP-Analyse</div>"
 "<div class='card'>"
-"<div id='runsRow' style='text-align:center;margin-bottom:14px'>"
-"<label style='color:#90ee90;font-size:1em;margin-right:8px'>L&auml;ufe:</label>"
+"<div id='runsRow' style='display:flex;gap:14px;justify-content:center;margin-bottom:10px'>"
+"<div style='display:flex;flex-direction:column;align-items:center;gap:6px'>"
+"<div style='display:flex;align-items:center;gap:6px'>"
+"<label style='color:#90ee90;font-size:.9em'>L&auml;ufe:</label>"
 "<input id='numRuns' type='number' value='1000' min='1' max='8000' step='100'"
-" style='width:90px;padding:6px 8px;border-radius:6px;border:1px solid #4a9e4a;"
+" style='width:80px;padding:5px 8px;border-radius:6px;border:1px solid #4a9e4a;"
 "background:#0a2e0a;color:#fff;font-size:1em;text-align:center'>"
-"<span id='runsErr' style='color:#ff6b6b;margin-left:8px;font-size:.9em'></span>"
 "</div>"
-"<div class='btns' id='startBtns'>"
 "<button class='btn btn-euro' onclick='doStart(0)'>&#127808; Euro-Lotto</button>"
-"<button class='btn btn-649'  onclick='doStart(1)'>&#127808; 6 aus 49</button>"
 "</div>"
+"<div style='display:flex;flex-direction:column;align-items:center;gap:6px'>"
+"<div style='display:flex;align-items:center;gap:6px'>"
+"<label style='color:#f0c040;font-size:.9em'>Baseline:</label>"
+"<input id='numBaseline' type='number' value='100' min='10' max='5000' step='50'"
+" style='width:70px;padding:5px 8px;border-radius:6px;border:1px solid #a08030;"
+"background:#0a2e0a;color:#fff;font-size:1em;text-align:center'>"
+"</div>"
+"<button class='btn btn-649' onclick='doStart(1)'>&#127808; 6 aus 49</button>"
+"</div>"
+"</div>"
+"<div style='text-align:center;margin-bottom:6px'>"
+"<span id='runsErr' style='color:#ff6b6b;font-size:.9em'></span>"
+"</div>"
+"<div id='startBtns' style='display:none'></div>"
 "<button class='btn btn-abort' id='btnAbort' onclick='doAbort()' style='display:none;margin:0 auto'>"
 "&#9632; Abbrechen</button>"
 "<div id='progArea' style='display:none'>"
+"<div id='calArea'>"
+"<div style='color:#f0c040;font-size:.88em;margin-bottom:4px'>&#128295; Kalibrierung"
+"<span id='calCheck'></span></div>"
+"<div class='prog-wrap' style='height:18px'>"
+"<div id='pfCal' style='background:linear-gradient(90deg,#a08030,#f0c040);"
+"height:100%;border-radius:20px;width:0%;transition:width .5s'></div></div>"
+"<div style='color:#f0c040;font-size:.9em;text-align:center;margin-top:4px'>"
+"<span id='sCalDone'>0</span> / <span id='sCalTotal'>100</span> Läufe</div>"
+"</div>"
+"<div id='measArea' style='display:none;margin-top:14px'>"
+"<div style='color:#90ee90;font-size:.88em;margin-bottom:4px'>&#128202; Messung"
+"<span id='measCheck'></span></div>"
 "<div class='prog-wrap'><div class='prog-fill' id='pf'></div></div>"
 "<div class='stats'>"
 "<div class='stat'><div class='sv' id='sDone'>0</div><div class='sl'>Läufe</div></div>"
 "<div class='stat'><div class='sv' id='sPct'>0%</div><div class='sl'>Fortschritt</div></div>"
-"<div class='stat'><div class='sv' id='sTime'>0:00</div><div class='sl'>Zeit</div></div>"
-"<div class='stat'><div class='sv' id='sEta'>-:--</div><div class='sl'>Noch ca.</div></div>"
+"<div class='stat'><div class='sv' id='sTime'>0 Min</div><div class='sl'>Zeit</div></div>"
+"<div class='stat'><div class='sv' id='sEta'>-</div><div class='sl'>Noch ca.</div></div>"
+"</div>"
 "</div>"
 "</div>"
 "<div id='msg'></div>"
@@ -115,9 +143,12 @@ static const char HTML[] =
 "fetch('/status').then(function(r){return r.json();}).then(function(d){"
 "if(d.state==='running'){"
 "curMode=d.mode==='euro'?0:1;setMode(curMode);"
+"document.getElementById('runsRow').style.display='none';"
 "document.getElementById('startBtns').style.display='none';"
 "document.getElementById('btnAbort').style.display='block';"
 "document.getElementById('progArea').style.display='block';"
+"document.getElementById('sCalTotal').textContent=d.baseline_total;"
+"if(d.phase==='measuring')document.getElementById('measArea').style.display='';"
 "if(timer)clearInterval(timer);timer=setInterval(poll,1000);"
 "}else if(d.state==='done'||d.state==='aborted'){"
 "curMode=d.mode==='euro'?0:1;setMode(curMode);"
@@ -129,11 +160,12 @@ static const char HTML[] =
 "function doStart(mode){"
 "curMode=mode;"
 "var runs=parseInt(document.getElementById('numRuns').value)||1000;"
-"if(runs>8000){"
-"document.getElementById('runsErr').textContent='Max. 8000 Läufe!';"
-"return;}"
+"var base=parseInt(document.getElementById('numBaseline').value)||100;"
+"if(runs>8000){document.getElementById('runsErr').textContent='Max. 8000 Läufe!';return;}"
 "document.getElementById('runsErr').textContent='';"
-"fetch('/start?mode='+mode+'&runs='+runs,{method:'POST'});"
+"document.getElementById('sCalTotal').textContent=base;"
+"document.getElementById('measArea').style.display='none';"
+"fetch('/start?mode='+mode+'&runs='+runs+'&baseline='+base,{method:'POST'});"
 "document.getElementById('runsRow').style.display='none';"
 "document.getElementById('startBtns').style.display='none';"
 "document.getElementById('btnAbort').style.display='block';"
@@ -150,6 +182,14 @@ static const char HTML[] =
 "}"
 "function poll(){"
 "fetch('/status').then(function(r){return r.json();}).then(function(d){"
+"var calPct=d.baseline_total>0?Math.round(d.baseline_done*100/d.baseline_total):0;"
+"document.getElementById('pfCal').style.width=calPct+'%';"
+"document.getElementById('sCalDone').textContent=d.baseline_done;"
+"document.getElementById('sCalTotal').textContent=d.baseline_total;"
+"if(d.baseline_done>=d.baseline_total&&d.baseline_total>0)"
+"document.getElementById('calCheck').textContent=' ✅';"
+"if(d.phase==='measuring'||d.state==='done'||d.state==='aborted'){"
+"document.getElementById('measArea').style.display='';"
 "var pct=d.total>0?Math.round(d.completed*100/d.total):0;"
 "document.getElementById('pf').style.width=pct+'%';"
 "document.getElementById('sDone').textContent=d.completed+'/'+d.total;"
@@ -158,12 +198,12 @@ static const char HTML[] =
 "if(d.completed>0&&d.elapsed_ms>0){"
 "var eta=Math.round(d.elapsed_ms/d.completed*(d.total-d.completed));"
 "document.getElementById('sEta').textContent=fmt(eta);"
-"}else document.getElementById('sEta').textContent='-:--';"
+"}else document.getElementById('sEta').textContent='-';}"
 "if(d.state==='done'||d.state==='aborted'){"
 "clearInterval(timer);"
 "document.getElementById('btnAbort').style.display='none';"
+"document.getElementById('measCheck').textContent=' ✅';"
 "document.getElementById('runsRow').style.display='';"
-"document.getElementById('startBtns').style.display='flex';"
 "var done=d.state==='done';"
 "document.getElementById('msg').textContent="
 "done?'✅ Fertig! ('+fmt(d.elapsed_ms)+')'"
@@ -209,10 +249,13 @@ static esp_err_t status_handler(httpd_req_t *req)
     const char *mode_str =
         g_status.mode == MODE_EUROJACKPOT ? "euro" : "649";
 
+    const char *phase_str = (g_status.phase == PHASE_BASELINE) ? "baseline" : "measuring";
     pos += snprintf(buf+pos, sizeof(buf)-pos,
-        "{\"state\":\"%s\",\"mode\":\"%s\","
+        "{\"state\":\"%s\",\"mode\":\"%s\",\"phase\":\"%s\","
+        "\"baseline_done\":%d,\"baseline_total\":%d,\"baseline_mean\":%.4f,"
         "\"completed\":%d,\"total\":%d,\"elapsed_ms\":%lld,\"results\":[",
-        state_str, mode_str,
+        state_str, mode_str, phase_str,
+        g_status.baseline_done, g_status.baseline_total, g_status.baseline_mean,
         g_status.runs_completed, g_status.runs_total,
         (long long)g_status.elapsed_ms);
 
@@ -255,8 +298,9 @@ static esp_err_t start_handler(httpd_req_t *req)
     if (g_status.state != ELOTTO_RUNNING) {
         // mode aus Query-String lesen (?mode=0 oder ?mode=1)
         char qry[48] = "";
-        g_status.mode = MODE_EUROJACKPOT;
-        g_status.runs_total = NUM_RUNS;
+        g_status.mode           = MODE_EUROJACKPOT;
+        g_status.runs_total     = 1000;
+        g_status.baseline_total = 100;
         if (httpd_req_get_url_query_str(req, qry, sizeof(qry)) == ESP_OK) {
             char val[16] = "";
             if (httpd_query_key_value(qry, "mode", val, sizeof(val)) == ESP_OK)
@@ -264,6 +308,10 @@ static esp_err_t start_handler(httpd_req_t *req)
             if (httpd_query_key_value(qry, "runs", val, sizeof(val)) == ESP_OK) {
                 int r = atoi(val);
                 if (r > 0 && r <= NUM_RUNS) g_status.runs_total = r;
+            }
+            if (httpd_query_key_value(qry, "baseline", val, sizeof(val)) == ESP_OK) {
+                int b = atoi(val);
+                if (b > 0 && b <= 5000) g_status.baseline_total = b;
             }
         }
         xTaskCreate(elotto_task, "elotto", 8192, NULL, 5, NULL);
@@ -277,6 +325,78 @@ static esp_err_t abort_handler(httpd_req_t *req)
 {
     g_status.abort_requested = true;
     httpd_resp_sendstr(req, "ok");
+    return ESP_OK;
+}
+
+/* ── /diag GET – TRNG Register vs esp_random() Diagnose ──────────── */
+#define DIAG_REG   0x501101A4UL
+#define DIAG_N     100000   // Wörter pro Test
+#define DIAG_SEGS  500      // Mini-Runs für Z-Score-Verteilung
+
+static esp_err_t diag_handler(httpd_req_t *req)
+{
+    static char buf[2048];
+    int pos = 0;
+
+    // --- Test 1: Direktes TRNG-Register ---
+    int64_t t0 = esp_timer_get_time();
+    uint64_t ones_reg = 0;
+    uint32_t last = 0, stuck_reg = 0;
+    double   z_sum_reg = 0.0;
+
+    for (int s = 0; s < DIAG_SEGS; s++) {
+        int ones = 0;
+        for (int w = 0; w < 7; w++) {
+            uint32_t v = *((volatile uint32_t *)DIAG_REG);
+            if (w > 0 && v == last) stuck_reg++;
+            last = v;
+            ones += (w < 6) ? __builtin_popcount(v)
+                             : __builtin_popcount(v & 0xFF);
+        }
+        ones_reg += ones;
+        z_sum_reg += (ones - 100.0) / 7.07106781;
+    }
+    int64_t dt_reg = (esp_timer_get_time() - t0) / 1000;
+
+    double bias_reg  = (double)ones_reg / (DIAG_SEGS * 200.0);
+    double z_std_reg = z_sum_reg / DIAG_SEGS;
+
+    // --- Test 2: esp_random() ---
+    t0 = esp_timer_get_time();
+    uint64_t ones_esp = 0;
+    uint32_t stuck_esp = 0; last = 0;
+    double   z_sum_esp = 0.0;
+
+    for (int s = 0; s < DIAG_SEGS; s++) {
+        int ones = 0;
+        for (int w = 0; w < 7; w++) {
+            uint32_t v = esp_random();
+            if (w > 0 && v == last) stuck_esp++;
+            last = v;
+            ones += (w < 6) ? __builtin_popcount(v)
+                             : __builtin_popcount(v & 0xFF);
+        }
+        ones_esp += ones;
+        z_sum_esp += (ones - 100.0) / 7.07106781;
+    }
+    int64_t dt_esp = (esp_timer_get_time() - t0) / 1000;
+
+    double bias_esp  = (double)ones_esp / (DIAG_SEGS * 200.0);
+    double z_std_esp = z_sum_esp / DIAG_SEGS;
+
+    pos += snprintf(buf+pos, sizeof(buf)-pos,
+        "{"
+        "\"reg_ms\":%lld,\"reg_bias\":%.6f,\"reg_stuck\":%lu,\"reg_z_mean\":%.4f,"
+        "\"esp_ms\":%lld,\"esp_bias\":%.6f,\"esp_stuck\":%lu,\"esp_z_mean\":%.4f,"
+        "\"speedup\":%.2f,\"segs\":%d"
+        "}",
+        (long long)dt_reg, bias_reg, (unsigned long)stuck_reg, z_std_reg,
+        (long long)dt_esp, bias_esp, (unsigned long)stuck_esp, z_std_esp,
+        dt_esp > 0 ? (double)dt_esp / dt_reg : 0.0,
+        DIAG_SEGS);
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, buf);
     return ESP_OK;
 }
 
@@ -301,8 +421,9 @@ static void start_webserver(void)
         {"/status", HTTP_GET,  status_handler, NULL},
         {"/start",  HTTP_POST, start_handler,  NULL},
         {"/abort",  HTTP_POST, abort_handler,  NULL},
+        {"/diag",   HTTP_GET,  diag_handler,   NULL},
     };
-    for (int i = 0; i < 4; i++)
+    for (int i = 0; i < 5; i++)
         httpd_register_uri_handler(srv, &uris[i]);
     ESP_LOGI(TAG, "Webserver läuft");
 }
