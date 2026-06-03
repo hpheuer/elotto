@@ -2,7 +2,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#define NUM_RUNS  5000
+#define NUM_RUNS  8000
 #define TOP_N       10
 
 typedef enum { MODE_EUROJACKPOT = 0, MODE_LOTTO_649 = 1 } ElottoMode;
