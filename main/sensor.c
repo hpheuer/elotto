@@ -144,13 +144,20 @@ done:
             for (int i = 0; i < done; i++) {
                 if (g_status.results[i].z_score <= 2.0) break;
                 z2++;
-                uint8_t t[6] = {0};
-                draw_unique_sorted(t, nm, mx, 63);
-                for (int j = 0; j < nm; j++) fm[t[j]]++;
-                if (euro) {
-                    uint8_t et[2] = {0};
-                    draw_unique_sorted(et, 2, 12, 15);
-                    fe[et[0]]++; fe[et[1]]++;
+                if (i < TOP_N) {
+                    // Bereits gezeichnete Zahlen aus Top-N nutzen (sichtbar in Tabelle)
+                    for (int j = 0; j < nm; j++) fm[g_status.results[i].nums[j]]++;
+                    if (euro) { fe[g_status.results[i].euro[0]]++; fe[g_status.results[i].euro[1]]++; }
+                } else {
+                    // Für Z>2-Läufe jenseits Top-N: neue Ziehung
+                    uint8_t t[6] = {0};
+                    draw_unique_sorted(t, nm, mx, 63);
+                    for (int j = 0; j < nm; j++) fm[t[j]]++;
+                    if (euro) {
+                        uint8_t et[2] = {0};
+                        draw_unique_sorted(et, 2, 12, 15);
+                        fe[et[0]]++; fe[et[1]]++;
+                    }
                 }
             }
             g_status.freq_z2_count = z2;
