@@ -73,6 +73,13 @@ static const char HTML[] =
 "<h1>&#9752; E-Lotto GCP</h1>"
 "<div id='subtitle'>ESP32-P4 &bull; Hardware TRNG &bull; GCP-Analyse</div>"
 "<div class='card'>"
+"<div id='runsRow' style='text-align:center;margin-bottom:14px'>"
+"<label style='color:#90ee90;font-size:1em;margin-right:8px'>L&auml;ufe:</label>"
+"<input id='numRuns' type='number' value='1000' min='1' max='8000' step='100'"
+" style='width:90px;padding:6px 8px;border-radius:6px;border:1px solid #4a9e4a;"
+"background:#0a2e0a;color:#fff;font-size:1em;text-align:center'>"
+"<span id='runsErr' style='color:#ff6b6b;margin-left:8px;font-size:.9em'></span>"
+"</div>"
 "<div class='btns' id='startBtns'>"
 "<button class='btn btn-euro' onclick='doStart(0)'>&#127808; Euro-Lotto</button>"
 "<button class='btn btn-649'  onclick='doStart(1)'>&#127808; 6 aus 49</button>"
@@ -98,7 +105,9 @@ static const char HTML[] =
 "</div>"
 "<script>"
 "var timer=null,curMode=0;"
-"function fmt(ms){var s=Math.floor(ms/1000);return Math.floor(s/60)+':'+('0'+s%60).slice(-2);}"
+"function fmt(ms){"
+"var m=Math.floor(ms/60000),h=Math.floor(m/60);m=m%60;"
+"return h>0?h+':'+('0'+m).slice(-2)+' Std':m+' Min';}"
 "function setMode(mode){"
 "document.getElementById('subtitle').textContent="
 "mode===0?'Eurojackpot • 5 aus 50 + 2 Eurozahlen':'6 aus 49 Lotto';}"
@@ -119,7 +128,13 @@ static const char HTML[] =
 "}}).catch(function(){});};"
 "function doStart(mode){"
 "curMode=mode;"
-"fetch('/start?mode='+mode,{method:'POST'});"
+"var runs=parseInt(document.getElementById('numRuns').value)||1000;"
+"if(runs>8000){"
+"document.getElementById('runsErr').textContent='Max. 8000 Läufe!';"
+"return;}"
+"document.getElementById('runsErr').textContent='';"
+"fetch('/start?mode='+mode+'&runs='+runs,{method:'POST'});"
+"document.getElementById('runsRow').style.display='none';"
 "document.getElementById('startBtns').style.display='none';"
 "document.getElementById('btnAbort').style.display='block';"
 "document.getElementById('progArea').style.display='block';"
@@ -147,6 +162,7 @@ static const char HTML[] =
 "if(d.state==='done'||d.state==='aborted'){"
 "clearInterval(timer);"
 "document.getElementById('btnAbort').style.display='none';"
+"document.getElementById('runsRow').style.display='';"
 "document.getElementById('startBtns').style.display='flex';"
 "var done=d.state==='done';"
 "document.getElementById('msg').textContent="
@@ -238,13 +254,17 @@ static esp_err_t start_handler(httpd_req_t *req)
 {
     if (g_status.state != ELOTTO_RUNNING) {
         // mode aus Query-String lesen (?mode=0 oder ?mode=1)
-        char qry[32] = "";
+        char qry[48] = "";
+        g_status.mode = MODE_EUROJACKPOT;
+        g_status.runs_total = NUM_RUNS;
         if (httpd_req_get_url_query_str(req, qry, sizeof(qry)) == ESP_OK) {
-            char val[8] = "";
-            httpd_query_key_value(qry, "mode", val, sizeof(val));
-            g_status.mode = (val[0] == '1') ? MODE_LOTTO_649 : MODE_EUROJACKPOT;
-        } else {
-            g_status.mode = MODE_EUROJACKPOT;
+            char val[16] = "";
+            if (httpd_query_key_value(qry, "mode", val, sizeof(val)) == ESP_OK)
+                g_status.mode = (val[0] == '1') ? MODE_LOTTO_649 : MODE_EUROJACKPOT;
+            if (httpd_query_key_value(qry, "runs", val, sizeof(val)) == ESP_OK) {
+                int r = atoi(val);
+                if (r > 0 && r <= NUM_RUNS) g_status.runs_total = r;
+            }
         }
         xTaskCreate(elotto_task, "elotto", 8192, NULL, 5, NULL);
     }

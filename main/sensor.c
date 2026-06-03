@@ -10,8 +10,23 @@
 
 ElottoStatus g_status = { .state = ELOTTO_IDLE };
 
-#define SEGMENT_BITS  200
-#define NUM_SEGMENTS  ((100000 * 32) / SEGMENT_BITS)   // 16000
+#define TRNG_PER_RUN   200000
+#define SEGMENT_BITS   200
+#define NUM_SEGMENTS   ((TRNG_PER_RUN * 32) / SEGMENT_BITS)   // 32000
+
+// Batch-Buffer: esp_fill_random füllt 512 Words auf einmal
+#define BATCH_SIZE  512
+static uint32_t s_rng_buf[BATCH_SIZE];
+static int      s_rng_pos = BATCH_SIZE;  // erzwingt initialen Fill
+
+static inline uint32_t fast_rng(void)
+{
+    if (s_rng_pos >= BATCH_SIZE) {
+        esp_fill_random(s_rng_buf, sizeof(s_rng_buf));
+        s_rng_pos = 0;
+    }
+    return s_rng_buf[s_rng_pos++];
+}
 
 static const char *p_label(double absZ)
 {
@@ -24,17 +39,18 @@ static const char *p_label(double absZ)
 
 static double gcp_zscore(void)
 {
-    double   z_sum    = 0.0;
-    uint32_t word     = 0;
-    int      bits_left = 0;
+    double z_sum = 0.0;
     for (int seg = 0; seg < NUM_SEGMENTS; seg++) {
-        int ones = 0;
-        for (int b = 0; b < SEGMENT_BITS; b++) {
-            if (bits_left == 0) { word = esp_random(); bits_left = 32; }
-            ones += word & 1; word >>= 1; bits_left--;
-        }
+        // 6 × 32 Bit + 1 × 8 Bit = 200 Bit, popcount in einem Takt
+        int ones = __builtin_popcount(fast_rng())
+                 + __builtin_popcount(fast_rng())
+                 + __builtin_popcount(fast_rng())
+                 + __builtin_popcount(fast_rng())
+                 + __builtin_popcount(fast_rng())
+                 + __builtin_popcount(fast_rng())
+                 + __builtin_popcount(fast_rng() & 0xFF);
         z_sum += (ones - 100.0) / 7.07106781;
-        if (seg % 1000 == 0) vTaskDelay(1);
+        if (seg % 4000 == 0) vTaskDelay(1);
     }
     return z_sum / sqrt((double)NUM_SEGMENTS);
 }
@@ -42,7 +58,7 @@ static double gcp_zscore(void)
 static uint8_t draw_unbiased(uint8_t max_val, uint8_t mask)
 {
     uint8_t v;
-    do { v = (uint8_t)((esp_random() & mask) + 1); } while (v > max_val);
+    do { v = (uint8_t)((fast_rng() & mask) + 1); } while (v > max_val);
     return v;
 }
 
@@ -75,10 +91,10 @@ static void extract_numbers(int done)
     int show = done < TOP_N ? done : TOP_N;
     for (int i = 0; i < show; i++) {
         if (g_status.mode == MODE_EUROJACKPOT) {
-            draw_unique_sorted(g_status.results[i].nums,  5, 50, 63);
-            draw_unique_sorted(g_status.results[i].euro,  2, 12, 15);
+            draw_unique_sorted(g_status.results[i].nums, 5, 50, 63);
+            draw_unique_sorted(g_status.results[i].euro, 2, 12, 15);
         } else {
-            draw_unique_sorted(g_status.results[i].nums,  6, 49, 63);
+            draw_unique_sorted(g_status.results[i].nums, 6, 49, 63);
             g_status.results[i].euro[0] = 0;
             g_status.results[i].euro[1] = 0;
         }
@@ -89,13 +105,17 @@ void elotto_task(void *pvParam)
 {
     g_status.state           = ELOTTO_RUNNING;
     g_status.runs_completed  = 0;
-    g_status.runs_total      = NUM_RUNS;
     g_status.abort_requested = false;
     g_status.elapsed_ms      = 0;
+    if (g_status.runs_total <= 0 || g_status.runs_total > NUM_RUNS)
+        g_status.runs_total = NUM_RUNS;
+
+    s_rng_pos = BATCH_SIZE;  // Buffer-Reset bei neuem Lauf
 
     int64_t t0 = esp_timer_get_time();
+    int total = g_status.runs_total;
 
-    for (int i = 0; i < NUM_RUNS; i++) {
+    for (int i = 0; i < total; i++) {
         if (g_status.abort_requested) break;
         double z = gcp_zscore();
         g_status.results[i].index   = i + 1;
