@@ -5,8 +5,8 @@
 #define NUM_RUNS      8000
 #define TOP_N           10
 #define POOL_MAIN_49    15   // C(15,6) = 5005 Kombinationen
-#define POOL_MAIN_50    13   // C(13,5) = 1287 Kombinationen
-#define POOL_EURO_12     4   // C(4,2)  =    6 Kombinationen
+#define POOL_MAIN_50    12   // C(12,5) =  792 Kombinationen
+#define POOL_EURO_12     5   // C(5,2)  =   10 Kombinationen
 
 typedef enum { MODE_EUROJACKPOT = 0, MODE_LOTTO_649 = 1 } ElottoMode;
 typedef enum { ELOTTO_IDLE, ELOTTO_RUNNING, ELOTTO_DONE, ELOTTO_ABORTED } ElottoState;
