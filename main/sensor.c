@@ -131,18 +131,11 @@ void elotto_task(void *pvParam)
     uint8_t pool_euro[POOL_EURO_12] = {0};
     int     main_combos = 0, euro_combos = 1;
 
-    int64_t t0 = esp_timer_get_time();
-
-    /* ── Phase 0: Individuelle Zahlen-Bewertung ──────────────────────── */
-    g_status.phase = PHASE_SCORING;
-    score_and_build_pool(mx, pool_nm, pool_main);
-    if (g_status.abort_requested) goto done;
-    if (euro) score_and_build_pool(12, POOL_EURO_12, pool_euro);
-    if (g_status.abort_requested) goto done;
-
     main_combos = comb(pool_nm, nm);
     euro_combos = euro ? comb(POOL_EURO_12, 2) : 1;
     g_status.runs_total = main_combos * euro_combos;
+
+    int64_t t0 = esp_timer_get_time();
 
     /* ── Phase 1: Baseline-Kalibrierung ──────────────────────────────── */
     g_status.phase = PHASE_BASELINE;
@@ -156,6 +149,13 @@ void elotto_task(void *pvParam)
         }
         g_status.baseline_mean = bsum / g_status.baseline_total;
     }
+
+    /* ── Phase 0: Individuelle Zahlen-Bewertung ──────────────────────── */
+    g_status.phase = PHASE_SCORING;
+    score_and_build_pool(mx, pool_nm, pool_main);
+    if (g_status.abort_requested) goto done;
+    if (euro) score_and_build_pool(12, POOL_EURO_12, pool_euro);
+    if (g_status.abort_requested) goto done;
 
     /* ── Phase 2: Alle Kombinationen messen ──────────────────────────── */
     g_status.phase = PHASE_MEASURING;
