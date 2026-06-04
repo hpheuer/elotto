@@ -10,7 +10,6 @@
 ElottoStatus g_status = { .state = ELOTTO_IDLE };
 
 // Direkter TRNG-Register-Zugriff (75× schneller als esp_random)
-// Baseline-Korrektur kompensiert den systematischen Hardware-Bias
 #define RNG_REG  (*((volatile uint32_t *)0x501101A4UL))
 
 static inline uint32_t fast_rng(void) { return RNG_REG; }
@@ -45,25 +44,57 @@ static double gcp_zscore_raw(void)
     return z_sum / sqrt((double)NUM_SEGMENTS);
 }
 
-static uint8_t draw_unbiased(uint8_t max_val, uint8_t mask)
+// Binomialkoeffizient C(n, r) für kleine Werte (max n=15, r=6)
+static int comb(int n, int r)
 {
-    uint8_t v;
-    do { v = (uint8_t)((fast_rng() & mask) + 1); } while (v > max_val);
-    return v;
+    if (r < 0 || r > n) return 0;
+    if (r == 0) return 1;
+    if (r > n - r) r = n - r;
+    int res = 1;
+    for (int i = 0; i < r; i++)
+        res = res * (n - i) / (i + 1);
+    return res;
 }
 
-static void draw_unique_sorted(uint8_t *out, int count, uint8_t max_val, uint8_t mask)
+// k-te Kombination (0-basiert, lexikografisch) aus sortierten pool[0..n-1], r Elemente
+static void nth_combination(const uint8_t *pool, int n, int r, int k, uint8_t *out)
 {
-    bool used[51] = {false};
-    for (int i = 0; i < count; i++) {
-        uint8_t v;
-        do { v = draw_unbiased(max_val, mask); } while (used[v]);
-        used[v] = true; out[i] = v;
+    int start = 0;
+    for (int i = 0; i < r; i++) {
+        for (int j = start; j <= n - (r - i); j++) {
+            int c = comb(n - 1 - j, r - 1 - i);
+            if (k < c) {
+                out[i] = pool[j];
+                start = j + 1;
+                break;
+            }
+            k -= c;
+        }
     }
-    for (int i = 1; i < count; i++) {
-        uint8_t key = out[i]; int j = i - 1;
-        while (j >= 0 && out[j] > key) { out[j+1] = out[j]; j--; }
-        out[j+1] = key;
+}
+
+// Bewertet jede Zahl 1..max_val per GCP-Lauf, wählt top pool_size Zahlen (aufsteigend sortiert)
+static void score_and_build_pool(int max_val, int pool_size, uint8_t *pool)
+{
+    double scores[51] = {0};
+    for (int k = 1; k <= max_val; k++) {
+        if (g_status.abort_requested) return;
+        scores[k] = gcp_zscore_raw();
+        g_status.scoring_done++;
+    }
+    bool used[51] = {false};
+    for (int i = 0; i < pool_size; i++) {
+        int b = 0; double bs = -1e18;
+        for (int j = 1; j <= max_val; j++)
+            if (!used[j] && scores[j] > bs) { b = j; bs = scores[j]; }
+        pool[i] = (uint8_t)b;
+        if (b) used[b] = true;
+    }
+    // Aufsteigend sortieren (für konsistente Kombinations-Enumeration)
+    for (int i = 1; i < pool_size; i++) {
+        uint8_t key = pool[i]; int j = i - 1;
+        while (j >= 0 && pool[j] > key) { pool[j+1] = pool[j]; j--; }
+        pool[j+1] = key;
     }
 }
 
@@ -76,51 +107,70 @@ static int cmp_desc(const void *a, const void *b)
     return 0;
 }
 
-static void extract_numbers(int done)
-{
-    int show = done < TOP_N ? done : TOP_N;
-    for (int i = 0; i < show; i++) {
-        if (g_status.mode == MODE_EUROJACKPOT) {
-            draw_unique_sorted(g_status.results[i].nums, 5, 50, 63);
-            draw_unique_sorted(g_status.results[i].euro, 2, 12, 15);
-        } else {
-            draw_unique_sorted(g_status.results[i].nums, 6, 49, 63);
-            g_status.results[i].euro[0] = 0;
-            g_status.results[i].euro[1] = 0;
-        }
-    }
-}
-
 void elotto_task(void *pvParam)
 {
     g_status.state           = ELOTTO_RUNNING;
     g_status.runs_completed  = 0;
     g_status.baseline_done   = 0;
+    g_status.scoring_done    = 0;
     g_status.abort_requested = false;
     g_status.elapsed_ms      = 0;
     g_status.baseline_mean   = 0.0;
-    if (g_status.runs_total    <= 0 || g_status.runs_total    > NUM_RUNS) g_status.runs_total    = 1000;
-    if (g_status.baseline_total <= 0 || g_status.baseline_total > 5000)   g_status.baseline_total = 100;
+    if (g_status.baseline_total <= 0 || g_status.baseline_total > 5000)
+        g_status.baseline_total = 100;
+
+    bool euro    = (g_status.mode == MODE_EUROJACKPOT);
+    int  nm      = euro ? 5 : 6;
+    int  mx      = euro ? 50 : 49;
+    int  pool_nm = euro ? POOL_MAIN_50 : POOL_MAIN_49;
+
+    g_status.scoring_total = mx + (euro ? 12 : 0);
+
+    // Deklaration vor goto done (C-Regel: keine Sprünge über Initialisierungen)
+    uint8_t pool_main[POOL_MAIN_49] = {0};   // 15 Plätze, reicht für beide Modi
+    uint8_t pool_euro[POOL_EURO_12] = {0};
+    int     main_combos = 0, euro_combos = 1;
 
     int64_t t0 = esp_timer_get_time();
 
-    /* ── Phase 1: Baseline-Kalibrierung ──────────────────────────── */
+    /* ── Phase 0: Individuelle Zahlen-Bewertung ──────────────────────── */
+    g_status.phase = PHASE_SCORING;
+    score_and_build_pool(mx, pool_nm, pool_main);
+    if (g_status.abort_requested) goto done;
+    if (euro) score_and_build_pool(12, POOL_EURO_12, pool_euro);
+    if (g_status.abort_requested) goto done;
+
+    main_combos = comb(pool_nm, nm);
+    euro_combos = euro ? comb(POOL_EURO_12, 2) : 1;
+    g_status.runs_total = main_combos * euro_combos;
+
+    /* ── Phase 1: Baseline-Kalibrierung ──────────────────────────────── */
     g_status.phase = PHASE_BASELINE;
-    double bsum = 0.0;
-    for (int i = 0; i < g_status.baseline_total; i++) {
-        if (g_status.abort_requested) goto done;
-        bsum += gcp_zscore_raw();
-        g_status.baseline_done = i + 1;
-        g_status.elapsed_ms = (esp_timer_get_time() - t0) / 1000;
+    {
+        double bsum = 0.0;
+        for (int i = 0; i < g_status.baseline_total; i++) {
+            if (g_status.abort_requested) goto done;
+            bsum += gcp_zscore_raw();
+            g_status.baseline_done = i + 1;
+            g_status.elapsed_ms = (esp_timer_get_time() - t0) / 1000;
+        }
+        g_status.baseline_mean = bsum / g_status.baseline_total;
     }
-    g_status.baseline_mean = bsum / g_status.baseline_total;
 
-    /* ── Phase 2: Messung mit Baseline-Korrektur ─────────────────── */
+    /* ── Phase 2: Alle Kombinationen messen ──────────────────────────── */
     g_status.phase = PHASE_MEASURING;
-    int total = g_status.runs_total;
-
-    for (int i = 0; i < total; i++) {
+    for (int i = 0; i < g_status.runs_total; i++) {
         if (g_status.abort_requested) break;
+
+        // Kombination deterministisch zuweisen (lexikografische Enumeration)
+        int mi = i % main_combos;
+        int ei = euro ? (i / main_combos) : 0;
+        nth_combination(pool_main, pool_nm, nm, mi, g_status.results[i].nums);
+        if (euro)
+            nth_combination(pool_euro, POOL_EURO_12, 2, ei, g_status.results[i].euro);
+        else
+            g_status.results[i].euro[0] = g_status.results[i].euro[1] = 0;
+
         double z = gcp_zscore_raw() - g_status.baseline_mean;
         g_status.results[i].index   = i + 1;
         g_status.results[i].z_score = z;
@@ -134,31 +184,15 @@ done:
     {
         int done = g_status.runs_completed;
         qsort(g_status.results, done, sizeof(RunResult), cmp_desc);
-        extract_numbers(done);
 
-        // Frequenz-Analyse: alle Läufe mit Z > 2
+        // Frequenz-Analyse: alle Z>2-Läufe (Kombinationen bereits zugewiesen)
         {
             int fm[51] = {0}, fe[13] = {0}, z2 = 0;
-            bool euro = (g_status.mode == MODE_EUROJACKPOT);
-            int nm = euro ? 5 : 6, mx = euro ? 50 : 49;
             for (int i = 0; i < done; i++) {
                 if (g_status.results[i].z_score <= 2.0) break;
                 z2++;
-                if (i < TOP_N) {
-                    // Bereits gezeichnete Zahlen aus Top-N nutzen (sichtbar in Tabelle)
-                    for (int j = 0; j < nm; j++) fm[g_status.results[i].nums[j]]++;
-                    if (euro) { fe[g_status.results[i].euro[0]]++; fe[g_status.results[i].euro[1]]++; }
-                } else {
-                    // Für Z>2-Läufe jenseits Top-N: neue Ziehung
-                    uint8_t t[6] = {0};
-                    draw_unique_sorted(t, nm, mx, 63);
-                    for (int j = 0; j < nm; j++) fm[t[j]]++;
-                    if (euro) {
-                        uint8_t et[2] = {0};
-                        draw_unique_sorted(et, 2, 12, 15);
-                        fe[et[0]]++; fe[et[1]]++;
-                    }
-                }
+                for (int j = 0; j < nm; j++) fm[g_status.results[i].nums[j]]++;
+                if (euro) { fe[g_status.results[i].euro[0]]++; fe[g_status.results[i].euro[1]]++; }
             }
             g_status.freq_z2_count = z2;
             if (z2 > 0) {
@@ -170,7 +204,6 @@ done:
                     g_status.freq_nums[k] = (uint8_t)b;
                     if (b) used[b] = true;
                 }
-                // Aufsteigend sortieren für Anzeige
                 for (int i = 1; i < nm; i++) {
                     uint8_t key = g_status.freq_nums[i]; int j = i - 1;
                     while (j >= 0 && g_status.freq_nums[j] > key) { g_status.freq_nums[j+1] = g_status.freq_nums[j]; j--; }

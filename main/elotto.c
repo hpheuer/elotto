@@ -76,14 +76,8 @@ static const char HTML[] =
 "<div id='subtitle'>ESP32-P4 &bull; Hardware TRNG &bull; GCP-Analyse</div>"
 "<div class='card'>"
 "<div id='runsRow' style='display:grid;grid-template-columns:1fr 1fr;gap:8px 14px;justify-items:center;margin-bottom:10px'>"
-"<div style='display:flex;align-items:center;gap:6px'>"
-"<label style='color:#90ee90;font-size:.9em'>L&auml;ufe:</label>"
-"<input id='numRuns' type='number' value='1000' min='1' max='8000' step='100'"
-" style='width:80px;padding:5px 8px;border-radius:6px;border:1px solid #4a9e4a;"
-"background:#0a2e0a;color:#fff;font-size:1em;text-align:center'>"
-"</div>"
-"<div style='display:flex;align-items:center;gap:6px'>"
-"<label style='color:#f0c040;font-size:.9em'>Baseline:</label>"
+"<div style='grid-column:span 2;display:flex;align-items:center;gap:6px'>"
+"<label style='color:#f0c040;font-size:.9em'>Baseline-L&auml;ufe:</label>"
 "<input id='numBaseline' type='number' value='100' min='10' max='5000' step='50'"
 " style='width:70px;padding:5px 8px;border-radius:6px;border:1px solid #a08030;"
 "background:#0a2e0a;color:#fff;font-size:1em;text-align:center'>"
@@ -98,7 +92,16 @@ static const char HTML[] =
 "<button class='btn btn-abort' id='btnAbort' onclick='doAbort()' style='display:none;margin:0 auto'>"
 "&#9632; Abbrechen</button>"
 "<div id='progArea' style='display:none'>"
-"<div id='calArea'>"
+"<div id='scoreArea'>"
+"<div style='color:#6ab0e8;font-size:.88em;margin-bottom:4px'>&#127919; Zahlenbewertung"
+"<span id='scoreCheck'></span></div>"
+"<div class='prog-wrap' style='height:18px'>"
+"<div id='pfScore' style='background:linear-gradient(90deg,#206090,#6ab0e8);"
+"height:100%;border-radius:20px;width:0%;transition:width .5s'></div></div>"
+"<div style='color:#6ab0e8;font-size:.9em;text-align:center;margin-top:4px'>"
+"<span id='sScoreDone'>0</span> / <span id='sScoreTotal'>-</span> Zahlen</div>"
+"</div>"
+"<div id='calArea' style='margin-top:14px'>"
 "<div style='color:#f0c040;font-size:.88em;margin-bottom:4px'>&#128295; Kalibrierung"
 "<span id='calCheck'></span></div>"
 "<div class='prog-wrap' style='height:18px'>"
@@ -144,6 +147,12 @@ static const char HTML[] =
 "document.getElementById('btnAbort').style.display='block';"
 "document.getElementById('progArea').style.display='block';"
 "document.getElementById('sCalTotal').textContent=d.baseline_total;"
+"document.getElementById('sScoreTotal').textContent=d.scoring_total||0;"
+"if(d.phase!=='scoring'){"
+"var sp=d.scoring_total>0?Math.round(d.scoring_done*100/d.scoring_total):100;"
+"document.getElementById('pfScore').style.width=sp+'%';"
+"document.getElementById('sScoreDone').textContent=d.scoring_done||0;"
+"document.getElementById('scoreCheck').innerHTML=\" <span style='color:#90ee90;font-size:1.1em'>&#10004;</span>\";}"
 "if(d.phase==='measuring')document.getElementById('measArea').style.display='';"
 "if(timer)clearInterval(timer);timer=setInterval(poll,1000);"
 "}else if(d.state==='done'||d.state==='aborted'){"
@@ -155,13 +164,14 @@ static const char HTML[] =
 "}}).catch(function(){});};"
 "function doStart(mode){"
 "curMode=mode;"
-"var runs=parseInt(document.getElementById('numRuns').value)||1000;"
 "var base=parseInt(document.getElementById('numBaseline').value)||100;"
-"if(runs>8000){document.getElementById('runsErr').textContent='Max. 8000 Läufe!';return;}"
 "document.getElementById('runsErr').textContent='';"
 "document.getElementById('sCalTotal').textContent=base;"
+"document.getElementById('pfScore').style.width='0%';"
+"document.getElementById('sScoreDone').textContent='0';"
+"document.getElementById('scoreCheck').innerHTML='';"
 "document.getElementById('measArea').style.display='none';"
-"fetch('/start?mode='+mode+'&runs='+runs+'&baseline='+base,{method:'POST'});"
+"fetch('/start?mode='+mode+'&baseline='+base,{method:'POST'});"
 "document.getElementById('runsRow').style.display='none';"
 "document.getElementById('startBtns').style.display='none';"
 "document.getElementById('btnAbort').style.display='block';"
@@ -178,13 +188,20 @@ static const char HTML[] =
 "}"
 "function poll(){"
 "fetch('/status').then(function(r){return r.json();}).then(function(d){"
+"var stDone=d.state==='done'||d.state==='aborted';"
+"var scorePct=d.scoring_total>0?Math.round(d.scoring_done*100/d.scoring_total):0;"
+"document.getElementById('pfScore').style.width=scorePct+'%';"
+"document.getElementById('sScoreDone').textContent=d.scoring_done||0;"
+"document.getElementById('sScoreTotal').textContent=d.scoring_total||0;"
+"if(d.phase!=='scoring'||stDone)"
+"document.getElementById('scoreCheck').innerHTML=\" <span style='color:#90ee90;font-size:1.1em'>&#10004;</span>\";"
 "var calPct=d.baseline_total>0?Math.round(d.baseline_done*100/d.baseline_total):0;"
 "document.getElementById('pfCal').style.width=calPct+'%';"
 "document.getElementById('sCalDone').textContent=d.baseline_done;"
 "document.getElementById('sCalTotal').textContent=d.baseline_total;"
 "if(d.baseline_done>=d.baseline_total&&d.baseline_total>0)"
 "document.getElementById('calCheck').innerHTML=\" <span style='color:#90ee90;font-size:1.1em'>&#10004;</span>\";"
-"if(d.phase==='measuring'||d.state==='done'||d.state==='aborted'){"
+"if(d.phase==='measuring'||stDone){"
 "document.getElementById('measArea').style.display='';"
 "var pct=d.total>0?Math.round(d.completed*100/d.total):0;"
 "document.getElementById('pf').style.width=pct+'%';"
@@ -257,12 +274,17 @@ static esp_err_t status_handler(httpd_req_t *req)
     const char *mode_str =
         g_status.mode == MODE_EUROJACKPOT ? "euro" : "649";
 
-    const char *phase_str = (g_status.phase == PHASE_BASELINE) ? "baseline" : "measuring";
+    const char *phase_str =
+        g_status.phase == PHASE_SCORING  ? "scoring"  :
+        g_status.phase == PHASE_BASELINE ? "baseline" :
+                                           "measuring";
     pos += snprintf(buf+pos, sizeof(buf)-pos,
         "{\"state\":\"%s\",\"mode\":\"%s\",\"phase\":\"%s\","
+        "\"scoring_done\":%d,\"scoring_total\":%d,"
         "\"baseline_done\":%d,\"baseline_total\":%d,\"baseline_mean\":%.4f,"
         "\"completed\":%d,\"total\":%d,\"elapsed_ms\":%lld,\"results\":[",
         state_str, mode_str, phase_str,
+        g_status.scoring_done, g_status.scoring_total,
         g_status.baseline_done, g_status.baseline_total, g_status.baseline_mean,
         g_status.runs_completed, g_status.runs_total,
         (long long)g_status.elapsed_ms);
@@ -312,16 +334,12 @@ static esp_err_t start_handler(httpd_req_t *req)
         // mode aus Query-String lesen (?mode=0 oder ?mode=1)
         char qry[48] = "";
         g_status.mode           = MODE_EUROJACKPOT;
-        g_status.runs_total     = 1000;
+        g_status.runs_total     = 0;   // wird in elotto_task aus Kombinatorik berechnet
         g_status.baseline_total = 100;
         if (httpd_req_get_url_query_str(req, qry, sizeof(qry)) == ESP_OK) {
             char val[16] = "";
             if (httpd_query_key_value(qry, "mode", val, sizeof(val)) == ESP_OK)
                 g_status.mode = (val[0] == '1') ? MODE_LOTTO_649 : MODE_EUROJACKPOT;
-            if (httpd_query_key_value(qry, "runs", val, sizeof(val)) == ESP_OK) {
-                int r = atoi(val);
-                if (r > 0 && r <= NUM_RUNS) g_status.runs_total = r;
-            }
             if (httpd_query_key_value(qry, "baseline", val, sizeof(val)) == ESP_OK) {
                 int b = atoi(val);
                 if (b > 0 && b <= 5000) g_status.baseline_total = b;
