@@ -74,6 +74,8 @@ static const char HTML[] =
 "<h1>&#9752; E-Lotto <a href='https://grokipedia.com/page/Global_Consciousness_Project'"
 " target='_blank' style='color:inherit;text-decoration:none;border-bottom:1px dashed #90ee90'>GCP</a></h1>"
 "<div id='subtitle'>ESP32-P4 &bull; Hardware TRNG &bull; GCP-Analyse</div>"
+"<div id='slaveBadge' style='display:none;text-align:center;color:#a0e8ff;"
+"font-size:.88em;margin:-18px 0 12px'>&#128279; Dual-ESP aktiv &bull; SNR &times;&radic;2</div>"
 "<div class='card'>"
 "<div id='runsRow' style='display:grid;grid-template-columns:1fr 1fr;gap:8px 14px;justify-items:center;margin-bottom:10px'>"
 "<div style='grid-column:span 2;display:flex;align-items:center;gap:6px'>"
@@ -214,6 +216,7 @@ static const char HTML[] =
 "document.getElementById('sTime').textContent=fmt(d.elapsed_ms);"
 "var prepDone=(d.baseline_done||0)+(d.scoring_done||0);"
 "var totalDone=prepDone+d.completed;"
+"if(d.slave)document.getElementById('slaveBadge').style.display='';"
 "if(d.completed>0&&totalDone>0&&d.elapsed_ms>0){"
 "var msPerRun=d.elapsed_ms/totalDone;"
 "var eta=Math.round(msPerRun*(d.total-d.completed));"
@@ -287,10 +290,12 @@ static esp_err_t status_handler(httpd_req_t *req)
                                            "measuring";
     pos += snprintf(buf+pos, sizeof(buf)-pos,
         "{\"state\":\"%s\",\"mode\":\"%s\",\"phase\":\"%s\","
+        "\"slave\":%s,"
         "\"scoring_done\":%d,\"scoring_total\":%d,"
         "\"baseline_done\":%d,\"baseline_total\":%d,\"baseline_mean\":%.4f,"
         "\"completed\":%d,\"total\":%d,\"elapsed_ms\":%lld,\"results\":[",
         state_str, mode_str, phase_str,
+        g_status.slave_connected ? "true" : "false",
         g_status.scoring_done, g_status.scoring_total,
         g_status.baseline_done, g_status.baseline_total, g_status.baseline_mean,
         g_status.runs_completed, g_status.runs_total,

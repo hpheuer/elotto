@@ -5,6 +5,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_timer.h"
+#include "esp_err.h"
+#include "driver/uart.h"
 #include "sensor.h"
 
 ElottoStatus g_status = { .state = ELOTTO_IDLE };
@@ -107,6 +109,85 @@ static int cmp_desc(const void *a, const void *b)
     return 0;
 }
 
+/* ── Slave-UART (UART1, TX=GPIO14, RX=GPIO15) ────────────────────────
+ * Verkabelung: Master-GPIO14 → Slave-GPIO15
+ *              Slave-GPIO14  → Master-GPIO15
+ *              GND           ←→ GND
+ * ─────────────────────────────────────────────────────────────────── */
+#define SLAVE_UART    UART_NUM_1
+#define SLAVE_TX_PIN  14
+#define SLAVE_RX_PIN  15
+#define SLAVE_BAUD    460800
+
+static bool s_slave_ok = false;
+
+static bool slave_readline(char *buf, int maxlen, int timeout_ms)
+{
+    int        pos = 0;
+    TickType_t end = xTaskGetTickCount() + pdMS_TO_TICKS(timeout_ms);
+    while (xTaskGetTickCount() < end && pos < maxlen - 1) {
+        uint8_t ch;
+        if (uart_read_bytes(SLAVE_UART, &ch, 1, pdMS_TO_TICKS(10)) > 0) {
+            if (ch == '\n') { buf[pos] = '\0'; return true; }
+            if (ch != '\r') buf[pos++] = (char)ch;
+        }
+    }
+    buf[pos] = '\0';
+    return false;
+}
+
+static void slave_init(void)
+{
+    static bool installed = false;
+    if (!installed) {
+        uart_config_t cfg = {
+            .baud_rate  = SLAVE_BAUD,
+            .data_bits  = UART_DATA_8_BITS,
+            .parity     = UART_PARITY_DISABLE,
+            .stop_bits  = UART_STOP_BITS_1,
+            .flow_ctrl  = UART_HW_FLOWCTRL_DISABLE,
+            .source_clk = UART_SCLK_DEFAULT,
+        };
+        if (uart_driver_install(SLAVE_UART, 512, 256, 0, NULL, 0) != ESP_OK)
+            { g_status.slave_connected = s_slave_ok = false; return; }
+        uart_param_config(SLAVE_UART, &cfg);
+        uart_set_pin(SLAVE_UART, SLAVE_TX_PIN, SLAVE_RX_PIN,
+                     UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+        installed = true;
+    }
+    uart_flush_input(SLAVE_UART);
+    uart_write_bytes(SLAVE_UART, "P\n", 2);
+    char resp[16];
+    s_slave_ok = slave_readline(resp, sizeof(resp), 2000) && resp[0] == 'O';
+    g_status.slave_connected = s_slave_ok;
+}
+
+static void slave_baseline(int n)
+{
+    if (!s_slave_ok) return;
+    char cmd[16];
+    int  len = snprintf(cmd, sizeof(cmd), "B%d\n", n);
+    uart_flush_input(SLAVE_UART);
+    uart_write_bytes(SLAVE_UART, cmd, len);
+    char resp[16];
+    if (!slave_readline(resp, sizeof(resp), n * 600 + 10000))
+        s_slave_ok = g_status.slave_connected = false;
+}
+
+static double slave_measure(void)
+{
+    char resp[32];
+    if (!slave_readline(resp, sizeof(resp), 10000)) {
+        s_slave_ok = g_status.slave_connected = false;
+        return 0.0;
+    }
+    if (resp[0] != 'Z' || resp[1] != ':') {
+        s_slave_ok = g_status.slave_connected = false;
+        return 0.0;
+    }
+    return atof(resp + 2);
+}
+
 void elotto_task(void *pvParam)
 {
     g_status.state           = ELOTTO_RUNNING;
@@ -116,8 +197,11 @@ void elotto_task(void *pvParam)
     g_status.abort_requested = false;
     g_status.elapsed_ms      = 0;
     g_status.baseline_mean   = 0.0;
+    g_status.slave_connected = false;
     if (g_status.baseline_total <= 0 || g_status.baseline_total > 5000)
         g_status.baseline_total = 100;
+
+    slave_init();
 
     bool euro    = (g_status.mode == MODE_EUROJACKPOT);
     int  nm      = euro ? 5 : 6;
@@ -150,6 +234,10 @@ void elotto_task(void *pvParam)
         g_status.baseline_mean = bsum / g_status.baseline_total;
     }
 
+    /* ── Phase 1b: Slave-Kalibrierung (parallel-unabhängig) ─────────────── */
+    if (s_slave_ok && !g_status.abort_requested)
+        slave_baseline(g_status.baseline_total);
+
     /* ── Phase 0: Individuelle Zahlen-Bewertung ──────────────────────── */
     g_status.phase = PHASE_SCORING;
     score_and_build_pool(mx, pool_nm, pool_main);
@@ -160,7 +248,10 @@ void elotto_task(void *pvParam)
     /* ── Phase 2: Alle Kombinationen messen ──────────────────────────── */
     g_status.phase = PHASE_MEASURING;
     for (int i = 0; i < g_status.runs_total; i++) {
-        if (g_status.abort_requested) break;
+        if (g_status.abort_requested) {
+            if (s_slave_ok) uart_write_bytes(SLAVE_UART, "A\n", 2);
+            break;
+        }
 
         // Kombination deterministisch zuweisen (lexikografische Enumeration)
         int mi = i % main_combos;
@@ -171,7 +262,15 @@ void elotto_task(void *pvParam)
         else
             g_status.results[i].euro[0] = g_status.results[i].euro[1] = 0;
 
+        // Slave triggern, dann eigene Messung (beide laufen zeitgleich)
+        bool use_slave = s_slave_ok;
+        if (use_slave) uart_write_bytes(SLAVE_UART, "M\n", 2);
         double z = gcp_zscore_raw() - g_status.baseline_mean;
+        if (use_slave) {
+            double zs = slave_measure();
+            if (s_slave_ok) z = (z + zs) * 0.70710678;   // / sqrt(2)
+        }
+
         g_status.results[i].index   = i + 1;
         g_status.results[i].z_score = z;
         g_status.results[i].chi_sq  = z * z;

@@ -14,4 +14,5 @@ idf_component_register(
         esp_event
         esp_http_server
         esp_hw_support
+        esp_driver_uart
 )

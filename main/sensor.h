@@ -37,6 +37,7 @@ typedef struct {
     uint8_t          freq_nums[6];
     uint8_t          freq_euro[2];
     volatile bool    abort_requested;
+    bool             slave_connected;
     RunResult        results[NUM_RUNS];
 } ElottoStatus;
 
