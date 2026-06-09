@@ -19,10 +19,12 @@ generiert.
 
 ## Hardware
 
-- **Board:** Waveshare ESP32-P4-ETH
-- **PHY:** IP101GRI via RMII (Ethernet RJ45, DHCP)
+- **Master (COM4):** Waveshare ESP32-P4-ETH — Webserver, GCP, Eurojackpot/6-aus-49
+- **Slave (COM6):** zweiter Waveshare ESP32-P4-ETH — nur GCP + UART1-Handler
+- **PHY:** IP101GRI via RMII (Ethernet RJ45, DHCP) — nur Master
 - **CPU:** ESP32-P4 @ 360 MHz, 768 KB SRAM
 - **Chip Revision:** v1.3 (sdkconfig angepasst: `CONFIG_ESP32P4_REV_MIN_0=y`)
+- **UART1-Verbindung:** Master GPIO14 → Slave GPIO15 (TX→RX), Master GPIO15 ← Slave GPIO14 (RX←TX), GND↔GND, 460800 Baud
 
 ## Konzept
 
@@ -48,6 +50,8 @@ Nach dem Start per Ethernet im Browser erreichbar (IP via Serial Monitor ablesen
 | **Messphase** | Grüne Fortschrittsleiste mit Laufzeit, ETA und ✔ wenn fertig |
 | **Am häufigsten** | Häufigste Zahlen aus Top-10 + alle weiteren Z>2-Läufe |
 | **Abbrechen** | Stoppt nach aktuellem Lauf, zeigt Top-10 der bisherigen Läufe |
+| **CSV speichern** | Lädt aktuellen Lauf als `.csv`-Datei herunter (erscheint nach Abschluss) |
+| **Frühere CSV laden** | Frühere CSVs einlesen und mit aktuellem Lauf zusammenführen (erscheint nach Scoring) |
 | **Browser-Reload** | ESP32 läuft im Hintergrund weiter; Seite reconnectet automatisch |
 | **Diagnose** | `http://<IP>/diag` — vergleicht Register vs esp_random() |
 
@@ -85,7 +89,32 @@ for (int seg = 0; seg < 32000; seg++) {
 return z_sum / sqrt(32000.0);
 ```
 
-### 3 — Zwei-Phasen-Messung (Baseline-Korrektur)
+### 3 — Dual-ESP: kombinierter Z-Score (SNR ×√2)
+
+Beide ESPs messen gleichzeitig. Der kombinierte Z-Score erhöht das SNR um den Faktor √2:
+
+```c
+// sensor.c — elotto_task() Messschleife
+if (use_slave) uart_write_bytes(SLAVE_UART, "M\n", 2);  // Slave starten
+double z = gcp_zscore_raw() - g_status.baseline_mean;   // Master misst parallel
+if (use_slave) {
+    double zs = slave_measure();                          // Slave-Z lesen
+    if (s_slave_ok) z = (z + zs) * 0.70710678;           // ÷√2, SNR ×√2
+}
+```
+
+Baseline-Kalibrierung läuft ebenfalls parallel: `slave_baseline_start()` sendet `B<n>\n`
+vor dem Master-Loop, `slave_baseline_wait()` liest `OK\n` danach — beide laufen gleichzeitig.
+
+UART-Protokoll (ASCII, 460800 Baud):
+```
+P\n       → OK\n          Ping (Startup)
+B<n>\n    → OK\n          Baseline (n Läufe, blockiert Slave)
+M\n       → Z:<float>\n   Messung (Master + Slave parallel)
+A\n       → OK\n          Abort
+```
+
+### 5 — Zwei-Phasen-Messung (Baseline-Korrektur)
 
 Der TRNG hat einen systematischen Bias von ca. −0,022 pro Segment.
 Über 32.000 Segmente akkumuliert das zu **Z ≈ −3,95 pro Lauf** ohne Korrektur.
@@ -111,7 +140,7 @@ for (int i = 0; i < runs_total; i++) {
 }
 ```
 
-### 4 — Frequenz-Analyse (Am häufigsten)
+### 6 — Frequenz-Analyse (Am häufigsten)
 
 Nach Abschluss aller Läufe werden die Nummern-Häufigkeiten über **alle Z>2-Läufe**
 aggregiert. Für die Top-10 werden die bereits gezeichneten Zahlen direkt verwendet;
@@ -134,7 +163,7 @@ for (int i = 0; i < done; i++) {
 // Top-N häufigste Zahlen extrahieren + aufsteigend sortieren
 ```
 
-### 5 — Unbiased Rejection Sampling für Lottozahlen
+### 7 — Unbiased Rejection Sampling für Lottozahlen
 
 Modulo-Operationen erzeugen einen Bias wenn `max_val` kein Teiler von 2^n ist.
 Rejection Sampling verwirft unpassende Werte vollständig:
@@ -248,14 +277,17 @@ Korrelationen, Z-Score-Verteilung. Ca. 5 Sekunden Laufzeit.
 
 ```
 main/
-  elotto.c    — app_main, Ethernet, Webserver, HTML/JS inkl. /diag
-  sensor.c    — GCP-Analyse, TRNG-Register, Baseline, Lottozahl-Extraktion
+  elotto.c    — app_main, Ethernet, Webserver, HTML/JS inkl. /diag, CSV Save/Load
+  sensor.c    — GCP-Analyse, TRNG-Register, Baseline, Slave-UART, Lottozahl-Extraktion
   sensor.h    — Typen, ElottoStatus (inkl. Phase/Baseline-Felder)
 docs/
   screenshot_laufend.png   — Web-UI während der Messung
   screenshot_ergebnis.png  — Web-UI mit Top-10 + Am-häufigsten-Ergebnis
 build.ps1     — Build-Hilfsskript für normales PowerShell
 sdkconfig     — ESP-IDF Konfiguration
+
+elotto_slave/main/
+  slave.c     — Slave GCP-Handler, UART1-Protokoll (P/B/M/A), Timestamps im Log
 ```
 
 ## Versionshistorie
@@ -267,3 +299,5 @@ sdkconfig     — ESP-IDF Konfiguration
 | v1.2 | 200K TRNG-Werte/Lauf, popcount-Optimierung, konfigurierbare Läufe (max 8000) |
 | v1.3 | Direktes TRNG-Register (75× schneller) + Baseline-Kalibrierung, /diag-Endpunkt |
 | v1.4 | Buttons-Grid-Layout, Am-häufigsten-Zeile (Z>2), Abbruchtext, Checkmarks |
+| v1.5 | Dual-ESP: Slave via UART1 (460800 Baud), kombinierter Z-Score (÷√2, SNR ×√2), parallele Baseline |
+| v1.6 | CSV-Speichern/Laden im Browser, parallele Slave-Baseline, JS-Fix (Buttons) |

@@ -117,7 +117,7 @@ static int cmp_desc(const void *a, const void *b)
 #define SLAVE_UART    UART_NUM_1
 #define SLAVE_TX_PIN  14
 #define SLAVE_RX_PIN  15
-#define SLAVE_BAUD    460800
+#define SLAVE_BAUD    460800   // muss mit UART_BAUD in elotto_slave/main/slave.c übereinstimmen
 
 static bool s_slave_ok = false;
 
@@ -164,15 +164,20 @@ static void slave_init(void)
     printf("Slave: %s\n", s_slave_ok ? "verbunden" : "nicht erreichbar");
 }
 
-static void slave_baseline(int n)
+static void slave_baseline_start(int n)
 {
     if (!s_slave_ok) return;
     char cmd[16];
     int  len = snprintf(cmd, sizeof(cmd), "B%d\n", n);
     uart_flush_input(SLAVE_UART);
     uart_write_bytes(SLAVE_UART, cmd, len);
+}
+
+static void slave_baseline_wait(void)
+{
+    if (!s_slave_ok) return;
     char resp[16];
-    if (!slave_readline(resp, sizeof(resp), n * 600 + 10000))
+    if (!slave_readline(resp, sizeof(resp), 10000))
         s_slave_ok = g_status.slave_connected = false;
 }
 
@@ -223,8 +228,9 @@ void elotto_task(void *pvParam)
 
     int64_t t0 = esp_timer_get_time();
 
-    /* ── Phase 1: Baseline-Kalibrierung ──────────────────────────────── */
+    /* ── Phase 1: Baseline-Kalibrierung (Master + Slave parallel) ────── */
     g_status.phase = PHASE_BASELINE;
+    if (s_slave_ok) slave_baseline_start(g_status.baseline_total);
     {
         double bsum = 0.0;
         for (int i = 0; i < g_status.baseline_total; i++) {
@@ -235,10 +241,8 @@ void elotto_task(void *pvParam)
         }
         g_status.baseline_mean = bsum / g_status.baseline_total;
     }
-
-    /* ── Phase 1b: Slave-Kalibrierung (parallel-unabhängig) ─────────────── */
     if (s_slave_ok && !g_status.abort_requested)
-        slave_baseline(g_status.baseline_total);
+        slave_baseline_wait();
 
     /* ── Phase 0: Individuelle Zahlen-Bewertung ──────────────────────── */
     g_status.phase = PHASE_SCORING;
