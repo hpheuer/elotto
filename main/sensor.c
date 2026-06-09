@@ -148,8 +148,8 @@ static void slave_init(void)
             .flow_ctrl  = UART_HW_FLOWCTRL_DISABLE,
             .source_clk = UART_SCLK_DEFAULT,
         };
-        if (uart_driver_install(SLAVE_UART, 512, 256, 0, NULL, 0) != ESP_OK)
-            { g_status.slave_connected = s_slave_ok = false; return; }
+        esp_err_t e = uart_driver_install(SLAVE_UART, 512, 256, 0, NULL, 0);
+        if (e != ESP_OK) { g_status.slave_connected = s_slave_ok = false; return; }
         uart_param_config(SLAVE_UART, &cfg);
         uart_set_pin(SLAVE_UART, SLAVE_TX_PIN, SLAVE_RX_PIN,
                      UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
@@ -158,8 +158,10 @@ static void slave_init(void)
     uart_flush_input(SLAVE_UART);
     uart_write_bytes(SLAVE_UART, "P\n", 2);
     char resp[16];
-    s_slave_ok = slave_readline(resp, sizeof(resp), 2000) && resp[0] == 'O';
+    bool ok = slave_readline(resp, sizeof(resp), 2000);
+    s_slave_ok = ok && resp[0] == 'O';
     g_status.slave_connected = s_slave_ok;
+    printf("Slave: %s\n", s_slave_ok ? "verbunden" : "nicht erreichbar");
 }
 
 static void slave_baseline(int n)
