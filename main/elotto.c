@@ -73,59 +73,59 @@ static const char HTML[] =
 "<div class='wrap'>"
 "<h1>&#9752; E-Lotto <a href='https://grokipedia.com/page/Global_Consciousness_Project'"
 " target='_blank' style='color:inherit;text-decoration:none;border-bottom:1px dashed #90ee90'>GCP</a></h1>"
-"<div id='subtitle'>ESP32-P4 &bull; Hardware TRNG &bull; GCP-Analyse</div>"
+"<div id='subtitle'>ESP32-P4 &bull; Hardware TRNG &bull; GCP Analysis</div>"
 "<div id='slaveBadge' style='display:none;text-align:center;color:#a0e8ff;"
-"font-size:.88em;margin:-18px 0 12px'>&#128279; Dual-ESP aktiv &bull; SNR &times;&radic;2</div>"
+"font-size:.88em;margin:-18px 0 12px'>&#128279; Dual-ESP active &bull; SNR &times;&radic;2</div>"
 "<div class='card'>"
 "<div id='runsRow' style='display:grid;grid-template-columns:1fr 1fr;gap:8px 14px;justify-items:center;margin-bottom:10px'>"
 "<div style='grid-column:span 2;display:flex;align-items:center;gap:6px'>"
-"<label style='color:#f0c040;font-size:.9em'>Baseline-L&auml;ufe:</label>"
+"<label style='color:#f0c040;font-size:.9em'>Baseline runs:</label>"
 "<input id='numBaseline' type='number' value='100' min='10' max='5000' step='50'"
 " style='width:70px;padding:5px 8px;border-radius:6px;border:1px solid #a08030;"
 "background:#0a2e0a;color:#fff;font-size:1em;text-align:center'>"
 "</div>"
 "<button class='btn btn-euro' style='width:100%' onclick='doStart(0)'>&#127808; Euro-Lotto</button>"
-"<button class='btn btn-649' style='width:100%' onclick='doStart(1)'>&#127808; 6 aus 49</button>"
+"<button class='btn btn-649' style='width:100%' onclick='doStart(1)'>&#127808; 6 of 49</button>"
 "</div>"
 "<div style='text-align:center;margin-bottom:6px'>"
 "<span id='runsErr' style='color:#ff6b6b;font-size:.9em'></span>"
 "</div>"
 "<div id='startBtns' style='display:none'></div>"
 "<button class='btn btn-abort' id='btnAbort' onclick='doAbort()' style='display:none;margin:0 auto'>"
-"&#9632; Abbrechen</button>"
+"&#9632; Abort</button>"
 "<div id='progArea' style='display:none'>"
 "<div id='calArea'>"
-"<div style='color:#f0c040;font-size:.88em;margin-bottom:4px'>&#128295; Kalibrierung"
+"<div style='color:#f0c040;font-size:.88em;margin-bottom:4px'>&#128295; Calibration"
 "<span id='calCheck'></span></div>"
 "<div class='prog-wrap' style='height:18px'>"
 "<div id='pfCal' style='background:linear-gradient(90deg,#a08030,#f0c040);"
 "height:100%;border-radius:20px;width:0%;transition:width .5s'></div></div>"
 "<div style='color:#f0c040;font-size:.9em;text-align:center;margin-top:4px'>"
-"<span id='sCalDone'>0</span> / <span id='sCalTotal'>100</span> Läufe</div>"
+"<span id='sCalDone'>0</span> / <span id='sCalTotal'>100</span> Runs</div>"
 "</div>"
 "<div id='scoreArea' style='margin-top:14px'>"
-"<div style='color:#6ab0e8;font-size:.88em;margin-bottom:4px'>&#127919; Zahlenbewertung"
+"<div style='color:#6ab0e8;font-size:.88em;margin-bottom:4px'>&#127919; Number scoring"
 "<span id='scoreCheck'></span></div>"
 "<div class='prog-wrap' style='height:18px'>"
 "<div id='pfScore' style='background:linear-gradient(90deg,#206090,#6ab0e8);"
 "height:100%;border-radius:20px;width:0%;transition:width .5s'></div></div>"
 "<div style='color:#6ab0e8;font-size:.9em;text-align:center;margin-top:4px'>"
-"<span id='sScoreDone'>0</span> / <span id='sScoreTotal'>-</span> Zahlen</div>"
+"<span id='sScoreDone'>0</span> / <span id='sScoreTotal'>-</span> Numbers</div>"
 "</div>"
 "<div id='loadArea' style='display:none;text-align:center;margin-top:12px'>"
 "<input type='file' id='csvFiles' accept='.csv' multiple style='display:none' onchange='loadCsvFiles(this.files)'>"
-"<button class='btn' onclick=\"document.getElementById('csvFiles').click()\" style='background:#2e5f8c;color:#fff;font-size:.9em;padding:9px 22px'>&#128194; Fr&uuml;here CSV laden</button>"
+"<button class='btn' onclick=\"document.getElementById('csvFiles').click()\" style='background:#2e5f8c;color:#fff;font-size:.9em;padding:9px 22px'>&#128194; Load previous CSV</button>"
 "<div id='loadStatus' style='color:#a0e8ff;font-size:.85em;margin-top:5px;min-height:1.2em'></div>"
 "</div>"
 "<div id='measArea' style='display:none;margin-top:14px'>"
-"<div style='color:#90ee90;font-size:.88em;margin-bottom:4px'>&#128202; Messung"
+"<div style='color:#90ee90;font-size:.88em;margin-bottom:4px'>&#128202; Measurement"
 "<span id='measCheck'></span></div>"
 "<div class='prog-wrap'><div class='prog-fill' id='pf'></div></div>"
 "<div class='stats'>"
-"<div class='stat'><div class='sv' id='sDone'>0</div><div class='sl'>Läufe</div></div>"
-"<div class='stat'><div class='sv' id='sPct'>0%</div><div class='sl'>Fortschritt</div></div>"
-"<div class='stat'><div class='sv' id='sTime'>0 Min</div><div class='sl'>Zeit</div></div>"
-"<div class='stat'><div class='sv' id='sEta'>-</div><div class='sl'>Noch ca.</div></div>"
+"<div class='stat'><div class='sv' id='sDone'>0</div><div class='sl'>Runs</div></div>"
+"<div class='stat'><div class='sv' id='sPct'>0%</div><div class='sl'>Progress</div></div>"
+"<div class='stat'><div class='sv' id='sTime'>0 min</div><div class='sl'>Time</div></div>"
+"<div class='stat'><div class='sv' id='sEta'>-</div><div class='sl'>ETA</div></div>"
 "</div>"
 "</div>"
 "</div>"
@@ -136,7 +136,7 @@ static const char HTML[] =
 "<table><thead id='resHead'></thead>"
 "<tbody id='resBody'></tbody></table>"
 "<div style='text-align:center;margin-top:14px'>"
-"<button id='btnSave' class='btn' onclick='doSave()' style='display:none;background:#2e7d32;color:#fff;padding:10px 28px'>&#128190; CSV speichern</button>"
+"<button id='btnSave' class='btn' onclick='doSave()' style='display:none;background:#2e7d32;color:#fff;padding:10px 28px'>&#128190; Save CSV</button>"
 "</div>"
 "</div>"
 "</div>"
@@ -144,13 +144,13 @@ static const char HTML[] =
 "var timer=null,curMode=0,loadedData=[],lastData=null;"
 "function fmt(ms){"
 "var m=Math.floor(ms/60000),h=Math.floor(m/60);m=m%60;"
-"return h>0?h+':'+('0'+m).slice(-2)+' Std':m+' Min';}"
+"return h>0?h+':'+('0'+m).slice(-2)+' h':m+' min';}"
 "function fmtEta(ms){"
-"if(ms<90000)return Math.ceil(ms/1000)+' Sek';"
+"if(ms<90000)return Math.ceil(ms/1000)+' s';"
 "return fmt(ms);}"
 "function setMode(mode){"
 "document.getElementById('subtitle').textContent="
-"mode===0?'Eurojackpot • 5 aus 50 + 2 Eurozahlen':'6 aus 49 Lotto';}"
+"mode===0?'Eurojackpot • 5 of 50 + 2 bonus numbers':'6 of 49 Lotto';}"
 "window.onload=function(){"
 "fetch('/status').then(function(r){return r.json();}).then(function(d){"
 "if(d.state==='running'){"
@@ -173,8 +173,8 @@ static const char HTML[] =
 "}}else if(d.state==='done'||d.state==='aborted'){"
 "curMode=d.mode==='euro'?0:1;setMode(curMode);"
 "document.getElementById('msg').textContent="
-"d.state==='done'?'✅ Fertig! ('+fmt(d.elapsed_ms)+')'"
-":'⚠️ Abgebrochen nach '+d.completed+' Läufen — bisherige Ergebnisse:';"
+"d.state==='done'?'✅ Done! ('+fmt(d.elapsed_ms)+')'"
+":'⚠️ Aborted after '+d.completed+' runs — partial results:';"
 "showResults(d);"
 "}}).catch(function(){});};"
 "function doStart(mode){"
@@ -204,7 +204,7 @@ static const char HTML[] =
 "}"
 "function doAbort(){"
 "fetch('/abort',{method:'POST'});"
-"document.getElementById('msg').textContent='Abbruch läuft...';"
+"document.getElementById('msg').textContent='Aborting...';"
 "}"
 "function poll(){"
 "fetch('/status').then(function(r){return r.json();}).then(function(d){"
@@ -262,10 +262,10 @@ static const char HTML[] =
 "res=all;}"
 "var isEuro=mode==='euro';"
 "document.getElementById('resTitle').innerHTML="
-"'☘️ Top-'+res.length+(isEuro?' Eurojackpot-Läufe':' 6-aus-49-Läufe');"
+"'☘️ Top-'+res.length+(isEuro?' Eurojackpot runs':' 6-of-49 runs');"
 "document.getElementById('resHead').innerHTML="
-"'<tr><th>#</th><th>Lauf</th><th>Z-Score</th><th>p-Wert</th><th>Zahlen</th>'"
-"+(isEuro?'<th>Eurozahlen</th>':'')+'</tr>';"
+"'<tr><th>#</th><th>Run</th><th>Z-Score</th><th>p-Value</th><th>Numbers</th>'"
+"+(isEuro?'<th>Bonus</th>':'')+'</tr>';"
 "var tb=document.getElementById('resBody');tb.innerHTML='';"
 "for(var i=0;i<res.length;i++){"
 "var r=res[i],nums='';"
@@ -286,7 +286,7 @@ static const char HTML[] =
 "var sep='border-top:2px solid rgba(240,192,64,.4)';"
 "tb.innerHTML+='<tr style=\"background:rgba(240,192,64,.08)\">'"
 "+'<td colspan=\"4\" style=\"color:#f0c040;font-weight:700;'+sep+';padding-top:10px\">'"
-"+'&#128197; Am h&auml;ufigsten ('+d.freq_z2+'&times; Z&gt;2):</td>'"
+"+'&#128197; Most frequent ('+d.freq_z2+'&times; Z&gt;2):</td>'"
 "+'<td style=\"'+sep+'\">'+fn+'</td>'"
 "+(isEuro?'<td style=\"'+sep+'\">'+fe+'</td>':'')+'</tr>';"
 "}"
@@ -322,7 +322,7 @@ static const char HTML[] =
 "done++;"
 "if(done===total){"
 "document.getElementById('loadStatus').textContent="
-"loadedData.length+' Läufe aus '+total+' Datei(en) geladen';"
+"loadedData.length+' runs from '+total+' file(s) loaded';"
 "if(lastData)showResults(lastData);"
 "}};"
 "reader.readAsText(f);"
@@ -417,10 +417,10 @@ static esp_err_t status_handler(httpd_req_t *req)
 static esp_err_t start_handler(httpd_req_t *req)
 {
     if (g_status.state != ELOTTO_RUNNING) {
-        // mode aus Query-String lesen (?mode=0 oder ?mode=1)
+        // read mode from query string (?mode=0 or ?mode=1)
         char qry[48] = "";
         g_status.mode           = MODE_EUROJACKPOT;
-        g_status.runs_total     = 0;   // wird in elotto_task aus Kombinatorik berechnet
+        g_status.runs_total     = 0;   // computed in elotto_task from combinatorics
         g_status.baseline_total = 100;
         if (httpd_req_get_url_query_str(req, qry, sizeof(qry)) == ESP_OK) {
             char val[16] = "";
@@ -447,8 +447,8 @@ static esp_err_t abort_handler(httpd_req_t *req)
 
 /* ── /diag GET – TRNG Register vs esp_random() Diagnose ──────────── */
 #define DIAG_REG   0x501101A4UL
-#define DIAG_N     100000   // Wörter pro Test
-#define DIAG_SEGS  500      // Mini-Runs für Z-Score-Verteilung
+#define DIAG_N     100000   // words per test
+#define DIAG_SEGS  500      // mini-runs for Z-score distribution
 
 static esp_err_t diag_handler(httpd_req_t *req)
 {
@@ -542,7 +542,7 @@ static void start_webserver(void)
     };
     for (int i = 0; i < 5; i++)
         httpd_register_uri_handler(srv, &uris[i]);
-    ESP_LOGI(TAG, "Webserver läuft");
+    ESP_LOGI(TAG, "Webserver running");
 }
 
 /* ── Ethernet ─────────────────────────────────────────────────────── */
@@ -581,7 +581,7 @@ static void webserver_task(void *arg)
     EventBits_t bits = xEventGroupWaitBits(eth_event_group, ETH_GOT_IP_BIT,
                                            pdFALSE, pdTRUE, pdMS_TO_TICKS(30000));
     if (bits & ETH_GOT_IP_BIT) start_webserver();
-    else ESP_LOGE(TAG, "Kein Ethernet nach 30s");
+    else ESP_LOGE(TAG, "No Ethernet after 30s");
     vTaskDelete(NULL);
 }
 

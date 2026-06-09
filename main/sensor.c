@@ -11,7 +11,7 @@
 
 ElottoStatus g_status = { .state = ELOTTO_IDLE };
 
-// Direkter TRNG-Register-Zugriff (75× schneller als esp_random)
+// Direct TRNG register access (75× faster than esp_random)
 #define RNG_REG  (*((volatile uint32_t *)0x501101A4UL))
 
 static inline uint32_t fast_rng(void) { return RNG_REG; }
@@ -46,7 +46,7 @@ static double gcp_zscore_raw(void)
     return z_sum / sqrt((double)NUM_SEGMENTS);
 }
 
-// Binomialkoeffizient C(n, r) für kleine Werte (max n=15, r=6)
+// Binomial coefficient C(n, r) for small values (max n=15, r=6)
 static int comb(int n, int r)
 {
     if (r < 0 || r > n) return 0;
@@ -58,7 +58,7 @@ static int comb(int n, int r)
     return res;
 }
 
-// k-te Kombination (0-basiert, lexikografisch) aus sortierten pool[0..n-1], r Elemente
+// k-th combination (0-based, lexicographic) from sorted pool[0..n-1], r elements
 static void nth_combination(const uint8_t *pool, int n, int r, int k, uint8_t *out)
 {
     int start = 0;
@@ -75,7 +75,7 @@ static void nth_combination(const uint8_t *pool, int n, int r, int k, uint8_t *o
     }
 }
 
-// Bewertet jede Zahl 1..max_val per GCP-Lauf, wählt top pool_size Zahlen (aufsteigend sortiert)
+// Scores each number 1..max_val with one GCP run, picks top pool_size numbers (sorted ascending)
 static void score_and_build_pool(int max_val, int pool_size, uint8_t *pool)
 {
     double scores[51] = {0};
@@ -92,7 +92,7 @@ static void score_and_build_pool(int max_val, int pool_size, uint8_t *pool)
         pool[i] = (uint8_t)b;
         if (b) used[b] = true;
     }
-    // Aufsteigend sortieren (für konsistente Kombinations-Enumeration)
+    // Sort ascending (for consistent combination enumeration)
     for (int i = 1; i < pool_size; i++) {
         uint8_t key = pool[i]; int j = i - 1;
         while (j >= 0 && pool[j] > key) { pool[j+1] = pool[j]; j--; }
@@ -109,15 +109,15 @@ static int cmp_desc(const void *a, const void *b)
     return 0;
 }
 
-/* ── Slave-UART (UART1, TX=GPIO14, RX=GPIO15) ────────────────────────
- * Verkabelung: Master-GPIO14 → Slave-GPIO15
- *              Slave-GPIO14  → Master-GPIO15
- *              GND           ←→ GND
+/* ── Slave UART (UART1, TX=GPIO14, RX=GPIO15) ────────────────────────
+ * Wiring: Master-GPIO14 → Slave-GPIO15
+ *         Slave-GPIO14  → Master-GPIO15
+ *         GND           ←→ GND
  * ─────────────────────────────────────────────────────────────────── */
 #define SLAVE_UART    UART_NUM_1
 #define SLAVE_TX_PIN  14
 #define SLAVE_RX_PIN  15
-#define SLAVE_BAUD    460800   // muss mit UART_BAUD in elotto_slave/main/slave.c übereinstimmen
+#define SLAVE_BAUD    460800   // must match UART_BAUD in elotto_slave/main/slave.c
 
 static bool s_slave_ok = false;
 
@@ -161,7 +161,7 @@ static void slave_init(void)
     bool ok = slave_readline(resp, sizeof(resp), 2000);
     s_slave_ok = ok && resp[0] == 'O';
     g_status.slave_connected = s_slave_ok;
-    printf("Slave: %s\n", s_slave_ok ? "verbunden" : "nicht erreichbar");
+    printf("Slave: %s\n", s_slave_ok ? "connected" : "not reachable");
 }
 
 static void slave_baseline_start(int n)
@@ -217,8 +217,8 @@ void elotto_task(void *pvParam)
 
     g_status.scoring_total = mx + (euro ? 12 : 0);
 
-    // Deklaration vor goto done (C-Regel: keine Sprünge über Initialisierungen)
-    uint8_t pool_main[POOL_MAIN_49] = {0};   // 15 Plätze, reicht für beide Modi
+    // Declare before goto (C rule: no jumps over initializations)
+    uint8_t pool_main[POOL_MAIN_49] = {0};   // 15 slots, enough for both modes
     uint8_t pool_euro[POOL_EURO_12] = {0};
     int     main_combos = 0, euro_combos = 1;
 
@@ -228,7 +228,7 @@ void elotto_task(void *pvParam)
 
     int64_t t0 = esp_timer_get_time();
 
-    /* ── Phase 1: Baseline-Kalibrierung (Master + Slave parallel) ────── */
+    /* ── Phase 1: Baseline calibration (Master + Slave in parallel) ───── */
     g_status.phase = PHASE_BASELINE;
     if (s_slave_ok) slave_baseline_start(g_status.baseline_total);
     {
@@ -244,14 +244,14 @@ void elotto_task(void *pvParam)
     if (s_slave_ok && !g_status.abort_requested)
         slave_baseline_wait();
 
-    /* ── Phase 0: Individuelle Zahlen-Bewertung ──────────────────────── */
+    /* ── Phase 0: Individual number scoring ─────────────────────────── */
     g_status.phase = PHASE_SCORING;
     score_and_build_pool(mx, pool_nm, pool_main);
     if (g_status.abort_requested) goto done;
     if (euro) score_and_build_pool(12, POOL_EURO_12, pool_euro);
     if (g_status.abort_requested) goto done;
 
-    /* ── Phase 2: Alle Kombinationen messen ──────────────────────────── */
+    /* ── Phase 2: Measure all combinations ──────────────────────────── */
     g_status.phase = PHASE_MEASURING;
     for (int i = 0; i < g_status.runs_total; i++) {
         if (g_status.abort_requested) {
@@ -259,7 +259,7 @@ void elotto_task(void *pvParam)
             break;
         }
 
-        // Kombination deterministisch zuweisen (lexikografische Enumeration)
+        // Deterministically assign combination (lexicographic enumeration)
         int mi = i % main_combos;
         int ei = euro ? (i / main_combos) : 0;
         nth_combination(pool_main, pool_nm, nm, mi, g_status.results[i].nums);
@@ -268,7 +268,7 @@ void elotto_task(void *pvParam)
         else
             g_status.results[i].euro[0] = g_status.results[i].euro[1] = 0;
 
-        // Slave triggern, dann eigene Messung (beide laufen zeitgleich)
+        // Trigger slave, then measure locally (both run simultaneously)
         bool use_slave = s_slave_ok;
         if (use_slave) uart_write_bytes(SLAVE_UART, "M\n", 2);
         double z = gcp_zscore_raw() - g_status.baseline_mean;
@@ -290,7 +290,7 @@ done:
         int done = g_status.runs_completed;
         qsort(g_status.results, done, sizeof(RunResult), cmp_desc);
 
-        // Frequenz-Analyse: alle Z>2-Läufe (Kombinationen bereits zugewiesen)
+        // Frequency analysis: all Z>2 runs (combinations already assigned)
         {
             int fm[51] = {0}, fe[13] = {0}, z2 = 0;
             for (int i = 0; i < done; i++) {

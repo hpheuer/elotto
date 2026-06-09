@@ -1,15 +1,14 @@
-# E-Lotto — GCP-Analyse auf ESP32-P4
+# E-Lotto — GCP Analysis on ESP32-P4
 
-ESP32-P4 Projekt das Eurojackpot- und 6-aus-49-Lottozahlen mittels Hardware-TRNG und
-[GCP-Methodik (Global Consciousness Project)](https://grokipedia.com/page/Global_Consciousness_Project)
-generiert.
+ESP32-P4 project that generates Eurojackpot and 6-of-49 lottery numbers using the hardware
+TRNG and [GCP methodology (Global Consciousness Project)](https://grokipedia.com/page/Global_Consciousness_Project).
 
 ## Screenshots
 
 <table>
 <tr>
-<td align="center"><b>Messung läuft</b></td>
-<td align="center"><b>Ergebnis mit Top-10 + Am häufigsten</b></td>
+<td align="center"><b>Measurement running</b></td>
+<td align="center"><b>Results with Top-10 + Most frequent</b></td>
 </tr>
 <tr>
 <td><img src="docs/screenshot_laufend.png" width="390"></td>
@@ -19,48 +18,49 @@ generiert.
 
 ## Hardware
 
-- **Master (COM4):** Waveshare ESP32-P4-ETH — Webserver, GCP, Eurojackpot/6-aus-49
-- **Slave (COM6):** zweiter Waveshare ESP32-P4-ETH — nur GCP + UART1-Handler
-- **PHY:** IP101GRI via RMII (Ethernet RJ45, DHCP) — nur Master
+- **Master (COM4):** Waveshare ESP32-P4-ETH — webserver, GCP, Eurojackpot/6-of-49
+- **Slave (COM6):** second Waveshare ESP32-P4-ETH — GCP + UART1 handler only
+- **PHY:** IP101GRI via RMII (Ethernet RJ45, DHCP) — master only
 - **CPU:** ESP32-P4 @ 360 MHz, 768 KB SRAM
-- **Chip Revision:** v1.3 (sdkconfig angepasst: `CONFIG_ESP32P4_REV_MIN_0=y`)
-- **UART1-Verbindung:** Master GPIO14 → Slave GPIO15 (TX→RX), Master GPIO15 ← Slave GPIO14 (RX←TX), GND↔GND, 460800 Baud
+- **Chip revision:** v1.3 (sdkconfig adjusted: `CONFIG_ESP32P4_REV_MIN_0=y`)
+- **UART1 connection:** Master GPIO14 → Slave GPIO15 (TX→RX), Master GPIO15 ← Slave GPIO14 (RX←TX), GND↔GND, 460800 baud
 
-## Konzept
+## Concept
 
-Pro Lauf werden 200.000 TRNG-Werte direkt vom Hardware-Register gelesen und nach
-GCP-Methodik ausgewertet:
-- **32.000 Segmente** à 200 Bit
-- Z-Score je Segment: `(Einsen − 100) / √50`
-- Lauf-Z-Score: `Σ(Z_segment) / √32.000`, **korrigiert um Baseline-Mittelwert**
-- Die **Top-10 Läufe** mit dem höchsten korrigierten Z-Score liefern die Lottozahlen
-- Zusätzlich: häufigste Zahlen aus **allen Läufen mit Z > 2**
+Each run reads 200,000 TRNG values directly from the hardware register and evaluates them
+using GCP methodology:
+- **32,000 segments** of 200 bits each
+- Z-score per segment: `(ones − 100) / √50`
+- Run Z-score: `Σ(Z_segment) / √32,000`, **corrected by baseline mean**
+- The **Top-10 runs** with the highest corrected Z-score yield the lottery numbers
+- Additionally: most frequent numbers from **all runs with Z > 2**
 
-## Web-Interface
+## Web Interface
 
-Nach dem Start per Ethernet im Browser erreichbar (IP via Serial Monitor ablesen).
+Accessible in the browser via Ethernet after startup (read IP from Serial Monitor).
 
-| Element | Beschreibung |
+| Element | Description |
 |---|---|
-| **Läufe** | Eingabefeld, Standard 1000, max. 8000 |
-| **Baseline** | Kalibrierungsläufe, Standard 100, max. 5000 |
-| **Euro-Lotto** | 5 Zahlen (1–50) + 2 Eurozahlen (1–12) |
-| **6 aus 49** | 6 Zahlen (1–49) |
-| **Kalibrierungsphase** | Goldene Fortschrittsleiste mit ✔ wenn fertig |
-| **Messphase** | Grüne Fortschrittsleiste mit Laufzeit, ETA und ✔ wenn fertig |
-| **Am häufigsten** | Häufigste Zahlen aus Top-10 + alle weiteren Z>2-Läufe |
-| **Abbrechen** | Stoppt nach aktuellem Lauf, zeigt Top-10 der bisherigen Läufe |
-| **CSV speichern** | Lädt aktuellen Lauf als `.csv`-Datei herunter (erscheint nach Abschluss) |
-| **Frühere CSV laden** | Frühere CSVs einlesen und mit aktuellem Lauf zusammenführen (erscheint nach Scoring) |
-| **Browser-Reload** | ESP32 läuft im Hintergrund weiter; Seite reconnectet automatisch |
-| **Diagnose** | `http://<IP>/diag` — vergleicht Register vs esp_random() |
+| **Runs** | Input field, default 1000, max 8000 |
+| **Baseline** | Calibration runs, default 100, max 5000 |
+| **Euro-Lotto** | 5 numbers (1–50) + 2 bonus numbers (1–12) |
+| **6 of 49** | 6 numbers (1–49) |
+| **Calibration phase** | Gold progress bar with ✔ when done |
+| **Number scoring phase** | Blue progress bar with ✔ when done |
+| **Measurement phase** | Green progress bar with runtime, ETA and ✔ when done |
+| **Most frequent** | Most frequent numbers from Top-10 + all further Z>2 runs |
+| **Abort** | Stops after current run, shows Top-10 of runs so far |
+| **Save CSV** | Downloads current run as `.csv` file (appears after completion) |
+| **Load previous CSV** | Load earlier CSVs and merge with current run (appears after scoring) |
+| **Browser reload** | ESP32 keeps running in background; page reconnects automatically |
+| **Diagnostics** | `http://<IP>/diag` — compares register vs esp_random() |
 
-## Schlüsselcode
+## Key Code
 
-### 1 — Direkter TRNG-Register-Zugriff
+### 1 — Direct TRNG Register Access
 
-Statt `esp_random()` (der intern einen Treiber durchläuft) wird das Hardware-Register
-direkt gelesen — **75× schneller**, identische Qualität:
+Instead of `esp_random()` (which goes through an internal driver), the hardware register
+is read directly — **75× faster**, identical quality:
 
 ```c
 // sensor.c
@@ -68,62 +68,62 @@ direkt gelesen — **75× schneller**, identische Qualität:
 static inline uint32_t fast_rng(void) { return RNG_REG; }
 ```
 
-### 2 — GCP-Z-Score mit `__builtin_popcount`
+### 2 — GCP Z-Score with `__builtin_popcount`
 
-Pro 200-Bit-Segment werden 6×32 + 1×8 = 200 Bit mit 7 TRNG-Reads ausgelesen.
-`__builtin_popcount` zählt die Einsen in einem Takt statt in einer 32-Bit-Schleife
-(**28× weniger CPU-Arbeit** pro Segment):
+Per 200-bit segment, 6×32 + 1×8 = 200 bits are read with 7 TRNG reads.
+`__builtin_popcount` counts the ones in one clock cycle instead of a 32-bit loop
+(**28× less CPU work** per segment):
 
 ```c
 // sensor.c — gcp_zscore_raw()
 for (int seg = 0; seg < 32000; seg++) {
-    int ones = __builtin_popcount(fast_rng())   // 32 Bit
+    int ones = __builtin_popcount(fast_rng())   // 32 bits
              + __builtin_popcount(fast_rng())
              + __builtin_popcount(fast_rng())
              + __builtin_popcount(fast_rng())
              + __builtin_popcount(fast_rng())
              + __builtin_popcount(fast_rng())
-             + __builtin_popcount(fast_rng() & 0xFF);  //  8 Bit
+             + __builtin_popcount(fast_rng() & 0xFF);  //  8 bits
     z_sum += (ones - 100.0) / 7.07106781;  // sqrt(50) ≈ 7.071
 }
 return z_sum / sqrt(32000.0);
 ```
 
-### 3 — Dual-ESP: kombinierter Z-Score (SNR ×√2)
+### 3 — Dual-ESP: Combined Z-Score (SNR ×√2)
 
-Beide ESPs messen gleichzeitig. Der kombinierte Z-Score erhöht das SNR um den Faktor √2:
+Both ESPs measure simultaneously. The combined Z-score increases SNR by factor √2:
 
 ```c
-// sensor.c — elotto_task() Messschleife
-if (use_slave) uart_write_bytes(SLAVE_UART, "M\n", 2);  // Slave starten
-double z = gcp_zscore_raw() - g_status.baseline_mean;   // Master misst parallel
+// sensor.c — elotto_task() measurement loop
+if (use_slave) uart_write_bytes(SLAVE_UART, "M\n", 2);  // start slave
+double z = gcp_zscore_raw() - g_status.baseline_mean;   // master measures in parallel
 if (use_slave) {
-    double zs = slave_measure();                          // Slave-Z lesen
+    double zs = slave_measure();                          // read slave Z
     if (s_slave_ok) z = (z + zs) * 0.70710678;           // ÷√2, SNR ×√2
 }
 ```
 
-Baseline-Kalibrierung läuft ebenfalls parallel: `slave_baseline_start()` sendet `B<n>\n`
-vor dem Master-Loop, `slave_baseline_wait()` liest `OK\n` danach — beide laufen gleichzeitig.
+Baseline calibration also runs in parallel: `slave_baseline_start()` sends `B<n>\n`
+before the master loop, `slave_baseline_wait()` reads `OK\n` afterward — both run concurrently.
 
-UART-Protokoll (ASCII, 460800 Baud):
+UART protocol (ASCII, 460800 baud):
 ```
-P\n       → OK\n          Ping (Startup)
-B<n>\n    → OK\n          Baseline (n Läufe, blockiert Slave)
-M\n       → Z:<float>\n   Messung (Master + Slave parallel)
+P\n       → OK\n          Ping (startup)
+B<n>\n    → OK\n          Baseline (n runs, blocks slave)
+M\n       → Z:<float>\n   Measure (master + slave in parallel)
 A\n       → OK\n          Abort
 ```
 
-### 5 — Zwei-Phasen-Messung (Baseline-Korrektur)
+### 4 — Two-Phase Measurement (Baseline Correction)
 
-Der TRNG hat einen systematischen Bias von ca. −0,022 pro Segment.
-Über 32.000 Segmente akkumuliert das zu **Z ≈ −3,95 pro Lauf** ohne Korrektur.
-Lösung: Phase 1 misst den Bias, Phase 2 subtrahiert ihn:
+The TRNG has a systematic bias of approx. −0.022 per segment.
+Over 32,000 segments this accumulates to **Z ≈ −3.95 per run** without correction.
+Solution: Phase 1 measures the bias, Phase 2 subtracts it:
 
 ```c
 // sensor.c — elotto_task()
 
-// Phase 1: Kalibrierung
+// Phase 1: Calibration
 g_status.phase = PHASE_BASELINE;
 double bsum = 0.0;
 for (int i = 0; i < baseline_total; i++) {
@@ -132,41 +132,41 @@ for (int i = 0; i < baseline_total; i++) {
 }
 double baseline_mean = bsum / baseline_total;
 
-// Phase 2: Bias-korrigierte Messung
+// Phase 2: Bias-corrected measurement
 g_status.phase = PHASE_MEASURING;
 for (int i = 0; i < runs_total; i++) {
-    double z = gcp_zscore_raw() - baseline_mean;   // ← Korrektur
+    double z = gcp_zscore_raw() - baseline_mean;   // ← correction
     g_status.results[i].z_score = z;
 }
 ```
 
-### 6 — Frequenz-Analyse (Am häufigsten)
+### 5 — Frequency Analysis (Most Frequent)
 
-Nach Abschluss aller Läufe werden die Nummern-Häufigkeiten über **alle Z>2-Läufe**
-aggregiert. Für die Top-10 werden die bereits gezeichneten Zahlen direkt verwendet;
-für weitere Z>2-Läufe jenseits Rang 10 werden neue Ziehungen vorgenommen:
+After all runs complete, number frequencies are aggregated across **all Z>2 runs**.
+For Top-10, the already-drawn numbers are counted directly; for additional Z>2 runs
+beyond rank 10, new draws are performed:
 
 ```c
-// sensor.c — nach qsort + extract_numbers()
+// sensor.c — after qsort + extract_numbers()
 for (int i = 0; i < done; i++) {
-    if (g_status.results[i].z_score <= 2.0) break;  // sortiert absteigend
+    if (g_status.results[i].z_score <= 2.0) break;  // sorted descending
     z2_count++;
     if (i < TOP_N) {
-        // Bereits gezeichnete Top-10-Zahlen direkt zählen
+        // directly count already-drawn Top-10 numbers
         for (int j = 0; j < nm; j++) freq[results[i].nums[j]]++;
     } else {
-        // Neue Ziehung für weitere Z>2-Läufe
+        // new draw for additional Z>2 runs
         draw_unique_sorted(tmp, nm, max_val, mask);
         for (int j = 0; j < nm; j++) freq[tmp[j]]++;
     }
 }
-// Top-N häufigste Zahlen extrahieren + aufsteigend sortieren
+// Extract top-N most frequent numbers + sort ascending
 ```
 
-### 7 — Unbiased Rejection Sampling für Lottozahlen
+### 6 — Unbiased Rejection Sampling for Lottery Numbers
 
-Modulo-Operationen erzeugen einen Bias wenn `max_val` kein Teiler von 2^n ist.
-Rejection Sampling verwirft unpassende Werte vollständig:
+Modulo operations introduce bias when `max_val` is not a divisor of 2^n.
+Rejection sampling discards unsuitable values entirely:
 
 ```c
 // sensor.c
@@ -174,17 +174,17 @@ static uint8_t draw_unbiased(uint8_t max_val, uint8_t mask) {
     uint8_t v;
     do { v = (uint8_t)((fast_rng() & mask) + 1); } while (v > max_val);
     return v;
-    // Eurojackpot: mask=63 → 1..64, reject >50; ~21% Verwurf
-    // 6 aus 49:    mask=63 → 1..64, reject >49; ~23% Verwurf
-    // Eurozahlen:  mask=15 → 1..16, reject >12; ~25% Verwurf
+    // Eurojackpot: mask=63 → 1..64, reject >50; ~21% discarded
+    // 6 of 49:     mask=63 → 1..64, reject >49; ~23% discarded
+    // Bonus nums:  mask=15 → 1..16, reject >12; ~25% discarded
 }
 ```
 
-## Erkenntnisse aus der Entwicklung
+## Insights from Development
 
-### TRNG-Register ist 75× schneller als esp_random()
+### TRNG Register is 75× Faster than esp_random()
 
-Die Diagnose (`/diag`) ergab:
+The diagnostics (`/diag`) showed:
 
 ```json
 {"reg_ms":3, "reg_bias":0.499220, "reg_stuck":0, "reg_z_mean":-0.0221,
@@ -192,112 +192,111 @@ Die Diagnose (`/diag`) ergab:
  "speedup":75.0}
 ```
 
-- Kein einziger Stuck-Wert (reg_stuck: 0) — keine Korrelationen
-- Bit-Bias: 0.499220 statt ideal 0.500000 — winzige aber messbare Abweichung
-- **Kritisch:** Ohne Baseline-Korrektur ergibt der Bias systematisch Z ≈ −3.95 pro Lauf
+- No stuck values (reg_stuck: 0) — no correlations
+- Bit bias: 0.499220 instead of ideal 0.500000 — tiny but measurable deviation
+- **Critical:** without baseline correction the bias produces systematically Z ≈ −3.95 per run
 
-### Baseline-Korrektur ist zwingend erforderlich
+### Baseline Correction is Mandatory
 
-Der systematische Hardware-Bias akkumuliert sich über 32.000 Segmente:
+The systematic hardware bias accumulates over 32,000 segments:
 
 ```
-E[z_run] = -0.0221 × √32.000 ≈ -3.95 pro Lauf
+E[z_run] = -0.0221 × √32,000 ≈ -3.95 per run
 ```
 
-Lösung analog zum eTensor-Projekt (Princeton PEAR-Labor-Methodik):
-1. **Phase 1:** N Kalibrierungsläufe → `baseline_mean` ermitteln
-2. **Phase 2:** Messläufe, jeder korrigiert: `z_korrigiert = z_raw - baseline_mean`
+Solution analogous to the eTensor project (Princeton PEAR lab methodology):
+1. **Phase 1:** N calibration runs → determine `baseline_mean`
+2. **Phase 2:** Measurement runs, each corrected: `z_corrected = z_raw - baseline_mean`
 
-Damit hat jede Messung einen Erwartungswert von 0 — statistisch korrekt.
+This gives each measurement an expected value of 0 — statistically correct.
 
-### TRNG-Register-Adresse war anfangs biased
+### TRNG Register Address was Initially Biased
 
-Der direkte Zugriff auf Register `0x501101A4` lieferte in einem frühen Test
-**ausschließlich positive Z-Scores** (alle 50 Läufe > 0). Vermutliche Ursache:
-TRNG-Initialisierungszustand beim allerersten Start. Nach vollständigem IDF-Boot
-und mit Baseline-Korrektur arbeitet das Register korrekt.
+Direct access to register `0x501101A4` produced **exclusively positive Z-scores** in an
+early test (all 50 runs > 0). Likely cause: TRNG initialization state on very first start.
+After full IDF boot and with baseline correction the register works correctly.
 
-Zwischenzeitlich wurde `esp_random()` verwendet — korrekte Ergebnisse, aber 75× langsamer.
+Temporarily `esp_random()` was used — correct results, but 75× slower.
 
-### Timing-Richtwerte (200.000 Werte/Lauf, ESP32-P4 @ 360 MHz, direktes Register)
+### Timing Benchmarks (200,000 values/run, ESP32-P4 @ 360 MHz, direct register)
 
-| Config | Kalibrierung | Messung | Gesamt |
+| Config | Calibration | Measurement | Total |
 |---|---|---|---|
-| 100 Baseline + 1000 Läufe | ~20 Sek | ~3 Min | **~3 Min** |
-| 100 Baseline + 4000 Läufe | ~20 Sek | ~13 Min | **~14 Min** |
-| 100 Baseline + 7000 Läufe | ~20 Sek | ~26 Min | **~27 Min** |
-| 1000 Baseline + 7000 Läufe | ~3 Min | ~26 Min | **~29 Min** |
+| 100 baseline + 1000 runs | ~20 s | ~3 min | **~3 min** |
+| 100 baseline + 4000 runs | ~20 s | ~13 min | **~14 min** |
+| 100 baseline + 7000 runs | ~20 s | ~26 min | **~27 min** |
+| 1000 baseline + 7000 runs | ~3 min | ~26 min | **~29 min** |
 
-Zum Vergleich mit `esp_random()` (75× langsamer): 1000 Läufe ≈ 4 Stunden.
+For comparison with `esp_random()` (75× slower): 1000 runs ≈ 4 hours.
 
-### Optimierungen
+### Optimizations
 
-- **`__builtin_popcount`** statt 200-Bit-Schleife: 28× weniger CPU-Arbeit pro Segment
-- **Direktes TRNG-Register** statt `esp_random()`: 75× schneller (TRNG-limitiert)
-- **Baseline-Korrektur**: eliminiert Hardware-Bias, statistisch korrekte Z-Scores
-- **Rejection Sampling**: bias-freie Lottozahlen-Ziehung ohne Modulo-Bias
+- **`__builtin_popcount`** instead of 200-bit loop: 28× less CPU work per segment
+- **Direct TRNG register** instead of `esp_random()`: 75× faster (TRNG-limited)
+- **Baseline correction**: eliminates hardware bias, statistically correct Z-scores
+- **Rejection sampling**: bias-free lottery number drawing without modulo bias
 
-### RAM-Limit
+### RAM Limit
 
-`RunResult` belegt ~40 Bytes. **Maximum: ~8000 Läufe** (320 KB Resultate-Array).
-Im UI erzwungen. ESP32-P4 hat 768 KB SRAM.
+`RunResult` occupies ~40 bytes. **Maximum: ~8000 runs** (320 KB result array).
+Enforced in UI. ESP32-P4 has 768 KB SRAM.
 
 ### Chip Revision v1.3
 
-Bootloader-Fehler beim ersten Flash: `requires chip revision [v3.1 - v3.99]`.  
+Bootloader error on first flash: `requires chip revision [v3.1 - v3.99]`.  
 Fix: `idf.py menuconfig` → Component config → ESP32P4-Specific →
 Minimum Supported ESP32-P4 Revision → v0.0
 
 ## Build & Flash
 
 ```powershell
-# IDF-Terminal (Desktop-Shortcut "IDF_v6.0.1_Powershell")
+# IDF terminal (desktop shortcut "IDF_v6.0.1_Powershell")
 cd D:\E-Lotto\elotto
 idf.py build
 idf.py flash -p COM4
 idf.py monitor -p COM4
 ```
 
-## Diagnose
+## Diagnostics
 
 ```
 http://<IP>/diag
 ```
 
-Vergleicht direktes TRNG-Register mit `esp_random()`: Geschwindigkeit, Bias,
-Korrelationen, Z-Score-Verteilung. Ca. 5 Sekunden Laufzeit.
+Compares direct TRNG register with `esp_random()`: speed, bias,
+correlations, Z-score distribution. Runtime approx. 5 seconds.
 
-## Umgebung
+## Environment
 
 - ESP-IDF v6.0.1 (`C:\esp\v6.0.1\esp-idf`)
-- Tools: `C:\Espressif` (EIM-Standard auf diesem System)
-- Target: `esp32p4`, Chip Rev v1.3
+- Tools: `C:\Espressif` (EIM standard on this system)
+- Target: `esp32p4`, chip rev v1.3
 
-## Projektstruktur
+## Project Structure
 
 ```
 main/
-  elotto.c    — app_main, Ethernet, Webserver, HTML/JS inkl. /diag, CSV Save/Load
-  sensor.c    — GCP-Analyse, TRNG-Register, Baseline, Slave-UART, Lottozahl-Extraktion
-  sensor.h    — Typen, ElottoStatus (inkl. Phase/Baseline-Felder)
+  elotto.c    — app_main, Ethernet, webserver, HTML/JS incl. /diag, CSV Save/Load
+  sensor.c    — GCP analysis, TRNG register, baseline, slave UART, lottery extraction
+  sensor.h    — types, ElottoStatus (incl. phase/baseline fields)
 docs/
-  screenshot_laufend.png   — Web-UI während der Messung
-  screenshot_ergebnis.png  — Web-UI mit Top-10 + Am-häufigsten-Ergebnis
-build.ps1     — Build-Hilfsskript für normales PowerShell
-sdkconfig     — ESP-IDF Konfiguration
+  screenshot_laufend.png   — web UI during measurement
+  screenshot_ergebnis.png  — web UI with Top-10 + most-frequent result
+build.ps1     — build helper script for standard PowerShell
+sdkconfig     — ESP-IDF configuration
 
 elotto_slave/main/
-  slave.c     — Slave GCP-Handler, UART1-Protokoll (P/B/M/A), Timestamps im Log
+  slave.c     — slave GCP handler, UART1 protocol (P/B/M/A commands), timestamps in log
 ```
 
-## Versionshistorie
+## Version History
 
-| Version | Beschreibung |
+| Version | Description |
 |---|---|
-| v1.0 | GCP-Webserver, Eurojackpot + 6-aus-49, Live-Progress, Abort, Top-10 |
-| v1.1 | Browser-Reconnect: Seite stellt State nach Reload wieder her |
-| v1.2 | 200K TRNG-Werte/Lauf, popcount-Optimierung, konfigurierbare Läufe (max 8000) |
-| v1.3 | Direktes TRNG-Register (75× schneller) + Baseline-Kalibrierung, /diag-Endpunkt |
-| v1.4 | Buttons-Grid-Layout, Am-häufigsten-Zeile (Z>2), Abbruchtext, Checkmarks |
-| v1.5 | Dual-ESP: Slave via UART1 (460800 Baud), kombinierter Z-Score (÷√2, SNR ×√2), parallele Baseline |
-| v1.6 | CSV-Speichern/Laden im Browser, parallele Slave-Baseline, JS-Fix (Buttons) |
+| v1.0 | GCP webserver, Eurojackpot + 6-of-49, live progress, abort, Top-10 |
+| v1.1 | Browser reconnect: page restores state after reload |
+| v1.2 | 200K TRNG values/run, popcount optimization, configurable runs (max 8000) |
+| v1.3 | Direct TRNG register (75× faster) + baseline calibration, /diag endpoint |
+| v1.4 | Button grid layout, most-frequent row (Z>2), abort text, checkmarks |
+| v1.5 | Dual-ESP: slave via UART1 (460800 baud), combined Z-score (÷√2, SNR ×√2), parallel baseline |
+| v1.6 | CSV save/load in browser, parallel slave baseline, JS fix (buttons) |
