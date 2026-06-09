@@ -75,7 +75,7 @@ static const char HTML[] =
 " target='_blank' style='color:inherit;text-decoration:none;border-bottom:1px dashed #90ee90'>GCP</a></h1>"
 "<div id='subtitle'>ESP32-P4 &bull; Hardware TRNG &bull; GCP Analysis</div>"
 "<div id='slaveBadge' style='display:none;text-align:center;color:#a0e8ff;"
-"font-size:.88em;margin:-18px 0 12px'>&#128279; Dual-ESP active &bull; SNR &times;&radic;2</div>"
+"font-size:.88em;margin:-18px 0 12px'>&#128279; Dual-ESP connected &bull; SNR &times;&radic;2</div>"
 "<div class='card'>"
 "<div id='runsRow' style='display:grid;grid-template-columns:1fr 1fr;gap:8px 14px;justify-items:center;margin-bottom:10px'>"
 "<div style='grid-column:span 2;display:flex;align-items:center;gap:6px'>"
@@ -176,7 +176,9 @@ static const char HTML[] =
 "d.state==='done'?'✅ Done! ('+fmt(d.elapsed_ms)+')'"
 ":'⚠️ Aborted after '+d.completed+' runs — partial results:';"
 "showResults(d);"
-"}}).catch(function(){});};"
+"}"
+"if(d.slave)document.getElementById('slaveBadge').style.display='';"
+"}).catch(function(){});};"
 "function doStart(mode){"
 "curMode=mode;"
 "var base=parseInt(document.getElementById('numBaseline').value)||100;"
@@ -244,8 +246,8 @@ static const char HTML[] =
 "document.getElementById('runsRow').style.display='grid';"
 "var done=d.state==='done';"
 "document.getElementById('msg').textContent="
-"done?'✅ Fertig! ('+fmt(d.elapsed_ms)+')'"
-":'⚠️ Abgebrochen nach '+d.completed+' Läufen — bisherige Ergebnisse:';"
+"done?'✅ Done! ('+fmt(d.elapsed_ms)+')'"
+":'⚠️ Aborted after '+d.completed+' runs — partial results:';"
 "showResults(d);"
 "}"
 "}).catch(function(){});"
@@ -259,7 +261,7 @@ static const char HTML[] =
 "for(var i=0;i<loadedData.length;i++)"
 "if(loadedData[i]._mode===mode)all.push(loadedData[i]);"
 "all.sort(function(a,b){return b.z-a.z;});"
-"res=all;}"
+"res=all.slice(0,10);}"
 "var isEuro=mode==='euro';"
 "document.getElementById('resTitle').innerHTML="
 "'☘️ Top-'+res.length+(isEuro?' Eurojackpot runs':' 6-of-49 runs');"
@@ -585,6 +587,13 @@ static void webserver_task(void *arg)
     vTaskDelete(NULL);
 }
 
+static void slave_probe_task(void *arg)
+{
+    vTaskDelay(pdMS_TO_TICKS(500));   // let UART/boot settle
+    slave_probe();
+    vTaskDelete(NULL);
+}
+
 /* ── app_main ─────────────────────────────────────────────────────── */
 void app_main(void)
 {
@@ -599,6 +608,7 @@ void app_main(void)
 
     eth_event_group = xEventGroupCreate();
     ethernet_init();
+    xTaskCreate(slave_probe_task, "slave_probe", 4096, NULL, 3, NULL);
     xTaskCreate(webserver_task, "ws_task", 8192, NULL, 5, NULL);
 
     while (1) {

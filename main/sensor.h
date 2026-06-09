@@ -43,4 +43,5 @@ typedef struct {
 
 extern ElottoStatus g_status;
 
+void slave_probe(void);
 void elotto_task(void *pvParam);

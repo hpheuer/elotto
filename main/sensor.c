@@ -195,6 +195,8 @@ static double slave_measure(void)
     return atof(resp + 2);
 }
 
+void slave_probe(void) { slave_init(); }
+
 void elotto_task(void *pvParam)
 {
     g_status.state           = ELOTTO_RUNNING;
