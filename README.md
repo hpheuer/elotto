@@ -27,13 +27,37 @@ TRNG and [GCP methodology (Global Consciousness Project)](https://grokipedia.com
 
 ## Concept
 
-Each run reads 200,000 TRNG values directly from the hardware register and evaluates them
-using GCP methodology:
+**Goal: filter out the best number *combinations* by scoring them with the GCP algorithm.**
+The combinations whose parallel TRNG stream deviates most strongly from chance — the highest
+baseline-corrected **Z-scores** — are surfaced as the suggested lottery numbers.
+
+Each **GCP run** reads 200,000 TRNG values directly from the hardware register:
 - **32,000 segments** of 200 bits each
 - Z-score per segment: `(ones − 100) / √50`
-- Run Z-score: `Σ(Z_segment) / √32,000`, **corrected by baseline mean**
-- The **Top-10 runs** with the highest corrected Z-score yield the lottery numbers
-- Additionally: most frequent numbers from **all runs with Z > 2**
+- Run Z-score: `Σ(Z_segment) / √32,000`, **corrected by the baseline mean**
+
+### Program flow
+
+A job runs three phases, optionally repeated over several **loops**:
+
+1. **Baseline calibration** (`PHASE_BASELINE`) — N runs measure the TRNG's systematic bias;
+   master and slave calibrate in parallel.
+2. **Number scoring** (`PHASE_SCORING`) — every individual candidate number gets one GCP run.
+   The highest-scoring numbers form a small candidate **pool**.
+3. **Combination measurement** (`PHASE_MEASURING`) — every combination of the pool is
+   enumerated lexicographically and measured with its own GCP run, then ranked by Z-score.
+   The **Top-10** combinations are the result.
+
+| Mode | Candidate pool | Combinations / loop |
+|---|---|---|
+| 6 of 49 | best **15** of 49 | C(15,6) = **5005** |
+| Eurojackpot | best **12** of 50 + best **5** of 12 | C(12,5) × C(5,2) = 792 × 10 = **7920** |
+
+**Loops** repeat the whole three-phase experiment N times — each loop runs a *fresh*
+baseline, scoring and measurement. The cumulative **global Top-10** across all loops is
+carried forward and shown live after every loop, so a strong combination found early
+survives to the end. The **most frequent** numbers are aggregated across **all** loops'
+runs with Z > 2.
 
 ## Web Interface
 
@@ -41,18 +65,21 @@ Accessible in the browser via Ethernet after startup (read IP from Serial Monito
 
 | Element | Description |
 |---|---|
-| **Runs** | Input field, default 1000, max 8000 |
-| **Baseline** | Calibration runs, default 100, max 5000 |
+| **Baseline runs** | Calibration runs per loop, default 100 (10–5000) |
+| **Loops** | How often the whole experiment repeats, default 1 (1–50) |
+| **Runs (0=all)** | Cap on measured combinations per loop for quick tests, `0` = all |
 | **Euro-Lotto** | 5 numbers (1–50) + 2 bonus numbers (1–12) |
 | **6 of 49** | 6 numbers (1–49) |
+| **🔁 Loop X / N** | Loop counter, shown while running when Loops > 1 |
 | **Calibration phase** | Gold progress bar with ✔ when done |
 | **Number scoring phase** | Blue progress bar with ✔ when done |
 | **Measurement phase** | Green progress bar with runtime, ETA and ✔ when done |
-| **Most frequent** | Most frequent numbers from Top-10 + all further Z>2 runs |
-| **Abort** | Stops after current run, shows Top-10 of runs so far |
-| **Save CSV** | Downloads current run as `.csv` file (appears after completion) |
-| **Load previous CSV** | Load earlier CSVs and merge with current run (appears after scoring) |
-| **Browser reload** | ESP32 keeps running in background; page reconnects automatically |
+| **Top-10** | Best combinations by Z-score; updates live after each loop |
+| **Most frequent** | Most frequent numbers across all Z>2 runs |
+| **Abort** | Stops after current run, shows cumulative Top-10 so far |
+| **Save CSV** | Downloads the displayed (merged) Top-10 as `.csv` |
+| **Load previous CSV** | Load earlier CSVs and merge them into the ranking |
+| **Browser reload / close** | ESP keeps running all loops; page reconnects and shows live progress |
 | **Diagnostics** | `http://<IP>/diag` — compares register vs esp_random() |
 
 ## Key Code
@@ -140,44 +167,50 @@ for (int i = 0; i < runs_total; i++) {
 }
 ```
 
-### 5 — Frequency Analysis (Most Frequent)
+### 5 — Number Scoring → Candidate Pool
 
-After all runs complete, number frequencies are aggregated across **all Z>2 runs**.
-For Top-10, the already-drawn numbers are counted directly; for additional Z>2 runs
-beyond rank 10, new draws are performed:
+Numbers are **not** drawn randomly. Every candidate number is GCP-scored with one run; the
+highest-scoring numbers form the pool that combinations are later built from:
 
 ```c
-// sensor.c — after qsort + extract_numbers()
-for (int i = 0; i < done; i++) {
-    if (g_status.results[i].z_score <= 2.0) break;  // sorted descending
-    z2_count++;
-    if (i < TOP_N) {
-        // directly count already-drawn Top-10 numbers
-        for (int j = 0; j < nm; j++) freq[results[i].nums[j]]++;
-    } else {
-        // new draw for additional Z>2 runs
-        draw_unique_sorted(tmp, nm, max_val, mask);
-        for (int j = 0; j < nm; j++) freq[tmp[j]]++;
-    }
-}
-// Extract top-N most frequent numbers + sort ascending
+// sensor.c — score_and_build_pool()
+for (int k = 1; k <= max_val; k++)
+    scores[k] = gcp_zscore_raw();          // one GCP run per number 1..max_val
+// keep the pool_size highest scores, then insertion-sort the pool ascending
 ```
 
-### 6 — Unbiased Rejection Sampling for Lottery Numbers
+### 6 — Combination Enumeration & Ranking
 
-Modulo operations introduce bias when `max_val` is not a divisor of 2^n.
-Rejection sampling discards unsuitable values entirely:
+Phase 2 enumerates **every** combination of the pool lexicographically (no randomness),
+GCP-scores each, and ranks them by Z-score:
 
 ```c
-// sensor.c
-static uint8_t draw_unbiased(uint8_t max_val, uint8_t mask) {
-    uint8_t v;
-    do { v = (uint8_t)((fast_rng() & mask) + 1); } while (v > max_val);
-    return v;
-    // Eurojackpot: mask=63 → 1..64, reject >50; ~21% discarded
-    // 6 of 49:     mask=63 → 1..64, reject >49; ~23% discarded
-    // Bonus nums:  mask=15 → 1..16, reject >12; ~25% discarded
+// sensor.c — elotto_task() Phase 2
+for (int i = 0; i < runs_total; i++) {
+    int mi = i % main_combos, ei = i / main_combos;   // lexicographic index
+    nth_combination(pool_main, pool_nm, nm, mi, g_status.results[i].nums);
+    if (euro) nth_combination(pool_euro, 5, 2, ei, g_status.results[i].euro);
+    g_status.results[i].z_score = gcp_zscore_raw() - g_status.baseline_mean;
 }
+qsort(g_status.results, runs_total, sizeof(RunResult), cmp_desc);   // rank by Z desc
+```
+
+### 7 — Multi-Loop Accumulation + Frequency
+
+Each loop's results are folded into a cumulative **global Top-10** carry, and the Z>2
+frequency histogram is accumulated across all loops. Both are published after every loop
+so `/status` can show intermediate results, not only at the end:
+
+```c
+// sensor.c — absorb_loop()
+qsort(g_status.results, done, sizeof(RunResult), cmp_desc);
+for (int i = 0; i < done; i++) {
+    if (g_status.results[i].z_score <= 2.0) break;   // sorted descending
+    z2++;
+    for (int j = 0; j < nm; j++) fm[g_status.results[i].nums[j]]++;
+}
+// merge this loop's top-N with the running carry, keep the global best TOP_N,
+// then publish carry → g_status.top[] and most-frequent → g_status.freq_nums[]
 ```
 
 ## Insights from Development
@@ -234,7 +267,8 @@ For comparison with `esp_random()` (75× slower): 1000 runs ≈ 4 hours.
 - **`__builtin_popcount`** instead of 200-bit loop: 28× less CPU work per segment
 - **Direct TRNG register** instead of `esp_random()`: 75× faster (TRNG-limited)
 - **Baseline correction**: eliminates hardware bias, statistically correct Z-scores
-- **Rejection sampling**: bias-free lottery number drawing without modulo bias
+- **Number scoring + combination enumeration**: candidates are GCP-ranked, not randomly drawn
+- **Multi-loop accumulation**: cumulative global Top-10 across loops, published live
 
 ### RAM Limit
 
@@ -276,9 +310,10 @@ correlations, Z-score distribution. Runtime approx. 5 seconds.
 
 ```
 main/
-  elotto.c    — app_main, Ethernet, webserver, HTML/JS incl. /diag, CSV Save/Load
-  sensor.c    — GCP analysis, TRNG register, baseline, slave UART, lottery extraction
-  sensor.h    — types, ElottoStatus (incl. phase/baseline fields)
+  elotto.c    — app_main, Ethernet, webserver, HTML/JS incl. /diag, CSV Save/Load, loop UI
+  sensor.c    — GCP analysis, TRNG register, baseline, number scoring, combination
+                enumeration, multi-loop accumulation, slave UART
+  sensor.h    — types, ElottoStatus (phase/baseline/loop/top fields)
 docs/
   screenshot_laufend.png   — web UI during measurement
   screenshot_ergebnis.png  — web UI with Top-10 + most-frequent result
@@ -300,3 +335,4 @@ elotto_slave/main/
 | v1.4 | Button grid layout, most-frequent row (Z>2), abort text, checkmarks |
 | v1.5 | Dual-ESP: slave via UART1 (460800 baud), combined Z-score (÷√2, SNR ×√2), parallel baseline |
 | v1.6 | CSV save/load in browser, parallel slave baseline, JS fix (buttons) |
+| v1.7 | Multi-loop runs: cumulative global Top-10, live intermediate results after each loop, loop counter, `Runs` cap for quick tests; device-side loop (browser-independent); docs updated to reflect number-scoring + combination-enumeration flow |

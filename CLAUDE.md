@@ -22,6 +22,12 @@ Phase 0: score individual numbers 1..N with GCP runs to build candidate pool.
 Phase 2: measure all pool combinations (lexicographic enumeration), sort by z-score.
 Results shown in browser UI (Ethernet, DHCP). Top-10 runs + most-frequent from Z>2 runs.
 
+Loops: the whole 3-phase experiment repeats N times (device-side, in elotto_task). Each
+loop runs fresh baseline+scoring+measurement; absorb_loop() folds each loop's results into
+a cumulative global Top-10 (g_status.top[]) + cross-loop frequency, published after every
+loop so /status shows intermediate results. Optional Runs cap (g_status.runs_limit) shortens
+Phase 2 for quick tests.
+
 Modes: Eurojackpot (5 of 50 + 2 of 12, 7920 combinations) and 6 of 49 (5005 combinations).
 
 ## Build, Flash, Monitor
