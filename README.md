@@ -59,6 +59,106 @@ carried forward and shown live after every loop, so a strong combination found e
 survives to the end. The **most frequent** numbers are aggregated across **all** loops'
 runs with Z > 2.
 
+## Dual-ESP: Master & Slave
+
+The system runs on **one** ESP32-P4 (master only) or **two** (master + slave) for a higher
+signal-to-noise ratio. The slave is fully **optional** — if it is not detected at startup the
+master runs standalone with identical results, just without the √2 SNR boost.
+
+### What the slave does
+
+The slave (`elotto_slave/main/slave.c`) is a second ESP32-P4 running the **identical GCP
+engine** (same `gcp_zscore_raw()`, same TRNG register `0x501101A4`, same 32,000 × 200-bit
+math) but **nothing else** — no Ethernet, no webserver, no lottery logic. It boots, configures
+UART1, and sits in a blocking command loop waiting for the master. Its only job: when told to,
+run a GCP measurement on its **own independent TRNG** and report the Z-score back.
+
+Because the two TRNGs are physically separate noise sources, their measurements are
+statistically independent. Averaging two independent Z-scores of equal variance halves the
+variance, i.e. improves SNR by √2:
+
+```
+z_combined = (z_master + z_slave) / √2        // = (z_m + z_s) × 0.70710678
+```
+
+Each device subtracts **its own** baseline mean first, so the two hardware biases are removed
+independently before the two Z-scores are combined.
+
+### Wiring (UART1 crossover)
+
+| Master | | Slave |
+|---|:---:|---|
+| GPIO14 (TX) | → | GPIO15 (RX) |
+| GPIO15 (RX) | ← | GPIO14 (TX) |
+| GND | ↔ | GND |
+
+460800 baud, 8N1, no flow control. `SLAVE_BAUD` in `sensor.c` must equal `UART_BAUD` in `slave.c`.
+
+### Sync protocol (ASCII, line-based)
+
+The master is always the initiator; the slave only ever answers. Every command and reply ends
+with `\n`.
+
+| Command (master → slave) | Reply (slave → master) | Meaning |
+|---|---|---|
+| `P\n` | `OK\n` | Ping — detect the slave at startup |
+| `B<n>\n` | `OK\n` (after n runs) | Run n baseline runs, store own baseline mean |
+| `M\n` | `Z:<float>\n` | Run one measurement, return baseline-corrected Z |
+| `A\n` | `OK\n` | Abort the current/next operation |
+
+The slave discards boot noise and UART break bytes (`0x00` and bytes ≥ `0x80`), so a master
+reset cannot desync its line parser.
+
+### How they run in parallel
+
+The trick is that the master **triggers the slave first, then does its own work while the
+slave works** — so the two measurements overlap in wall-clock time instead of running
+back-to-back. Net cost of the slave per measurement is only the UART round-trip, not a second
+full GCP run.
+
+**Startup**
+```
+master  slave_init() ──── "P\n" ───►  slave
+master  slave_connected = true ◄─ "OK\n" ── slave
+```
+
+**Phase 1 — baseline (parallel)**
+```
+master  slave_baseline_start(n) ── "B<n>\n" ─►  slave    (fire-and-forget)
+master  ── runs its own n baseline runs ──┐  both calibrate
+slave   ── runs its own n baseline runs ──┘  simultaneously
+master  slave_baseline_wait() ◄──── "OK\n" ──── slave    (resync at the end)
+```
+
+**Phase 2 — every combination (parallel)**
+```
+for each combination:
+  master  "M\n" ──────────────►  slave starts measuring
+  master  gcp_zscore_raw() ─────  both measure the same time window
+  master  slave_measure() ◄─ "Z:<float>\n" ── slave
+  master  z = (z_master + z_slave) / √2
+```
+
+**Abort**
+```
+master  "A\n" ─►  slave sets g_abort and returns from its run at the next
+        4000-segment checkpoint (a non-blocking UART poll inside gcp_zscore_raw)
+```
+
+### Robustness
+
+- **Optional / auto-detected** — `slave_init()` pings once; on timeout the master clears
+  `slave_connected` and runs solo. A `static bool installed` guard makes re-pings safe.
+- **Self-healing disconnect** — if the slave ever misses its reply window
+  (`slave_baseline_wait` / `slave_measure`), the master sets `s_slave_ok = false` and finishes
+  the job master-only instead of hanging.
+- **Proportional baseline timeout** — `slave_baseline_wait()` waits `baseline_total × 800 ms +
+  15 s`, so a large baseline (minutes of slave work) never trips a false timeout.
+- **Cooperative abort** — the slave polls for an `A` byte every 4000 segments, so even a long
+  in-flight run stops within ~½ second.
+- **Per-loop** — in multi-loop runs every loop re-issues `B<n>\n` and the per-combination
+  `M\n`/`Z:` exchange, so master and slave stay in lock-step across all loops.
+
 ## Web Interface
 
 Accessible in the browser via Ethernet after startup (read IP from Serial Monitor).
@@ -130,16 +230,8 @@ if (use_slave) {
 }
 ```
 
-Baseline calibration also runs in parallel: `slave_baseline_start()` sends `B<n>\n`
-before the master loop, `slave_baseline_wait()` reads `OK\n` afterward — both run concurrently.
-
-UART protocol (ASCII, 460800 baud):
-```
-P\n       → OK\n          Ping (startup)
-B<n>\n    → OK\n          Baseline (n runs, blocks slave)
-M\n       → Z:<float>\n   Measure (master + slave in parallel)
-A\n       → OK\n          Abort
-```
+Baseline calibration also runs in parallel. See **[Dual-ESP: Master & Slave](#dual-esp-master--slave)**
+for the full protocol, timing and robustness details.
 
 ### 4 — Two-Phase Measurement (Baseline Correction)
 
