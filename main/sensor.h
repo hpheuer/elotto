@@ -36,9 +36,14 @@ typedef struct {
     int              freq_z2_count;
     uint8_t          freq_nums[6];
     uint8_t          freq_euro[2];
+    int              loops_total;
+    volatile int     loop_current;
+    int              runs_limit;          // cap on Phase-2 combos (0 = all), for testing
+    int              result_count;       // valid entries in top[] (published)
+    RunResult        top[TOP_N];          // cumulative best across loops so far
     volatile bool    abort_requested;
     bool             slave_connected;
-    RunResult        results[NUM_RUNS];
+    RunResult        results[NUM_RUNS];   // live per-loop measurement scratch
 } ElottoStatus;
 
 extern ElottoStatus g_status;

@@ -84,6 +84,18 @@ static const char HTML[] =
 " style='width:70px;padding:5px 8px;border-radius:6px;border:1px solid #a08030;"
 "background:#0a2e0a;color:#fff;font-size:1em;text-align:center'>"
 "</div>"
+"<div style='grid-column:span 2;display:flex;align-items:center;gap:6px'>"
+"<label style='color:#f0c040;font-size:.9em'>Loops:</label>"
+"<input id='numLoops' type='number' value='1' min='1' max='50' step='1'"
+" style='width:70px;padding:5px 8px;border-radius:6px;border:1px solid #a08030;"
+"background:#0a2e0a;color:#fff;font-size:1em;text-align:center'>"
+"</div>"
+"<div style='grid-column:span 2;display:flex;align-items:center;gap:6px'>"
+"<label style='color:#f0c040;font-size:.9em'>Runs (0=all):</label>"
+"<input id='numRuns' type='number' value='0' min='0' max='8000' step='1'"
+" style='width:70px;padding:5px 8px;border-radius:6px;border:1px solid #a08030;"
+"background:#0a2e0a;color:#fff;font-size:1em;text-align:center'>"
+"</div>"
 "<button class='btn btn-euro' style='width:100%' onclick='doStart(0)'>&#127808; Euro-Lotto</button>"
 "<button class='btn btn-649' style='width:100%' onclick='doStart(1)'>&#127808; 6 of 49</button>"
 "</div>"
@@ -94,6 +106,8 @@ static const char HTML[] =
 "<button class='btn btn-abort' id='btnAbort' onclick='doAbort()' style='display:none;margin:0 auto'>"
 "&#9632; Abort</button>"
 "<div id='progArea' style='display:none'>"
+"<div id='loopBadge' style='display:none;text-align:center;color:#f0c040;"
+"font-weight:700;font-size:1.05em;margin-bottom:10px'></div>"
 "<div id='calArea'>"
 "<div style='color:#f0c040;font-size:.88em;margin-bottom:4px'>&#128295; Calibration"
 "<span id='calCheck'></span></div>"
@@ -141,7 +155,7 @@ static const char HTML[] =
 "</div>"
 "</div>"
 "<script>"
-"var timer=null,curMode=0,loadedData=[],lastData=null;"
+"var timer=null,curMode=0,loadedData=[],lastData=null,lastDisplayed=null;"
 "function fmt(ms){"
 "var m=Math.floor(ms/60000),h=Math.floor(m/60);m=m%60;"
 "return h>0?h+':'+('0'+m).slice(-2)+' h':m+' min';}"
@@ -159,6 +173,7 @@ static const char HTML[] =
 "document.getElementById('startBtns').style.display='none';"
 "document.getElementById('btnAbort').style.display='block';"
 "document.getElementById('progArea').style.display='block';"
+"updateLoopBadge(d.loop_current||1,d.loops_total||1);"
 "document.getElementById('sCalTotal').textContent=d.baseline_total;"
 "document.getElementById('sScoreTotal').textContent=d.scoring_total||0;"
 "if(d.scoring_total>0){"
@@ -169,6 +184,7 @@ static const char HTML[] =
 "document.getElementById('scoreCheck').innerHTML=\" <span style='color:#90ee90;font-size:1.1em'>&#10004;</span>\";"
 "document.getElementById('loadArea').style.display='';}"
 "if(d.phase==='measuring')document.getElementById('measArea').style.display='';"
+"if(d.results&&d.results.length)showResults(d);"
 "if(timer)clearInterval(timer);timer=setInterval(poll,1000);"
 "}}else if(d.state==='done'||d.state==='aborted'){"
 "curMode=d.mode==='euro'?0:1;setMode(curMode);"
@@ -179,27 +195,36 @@ static const char HTML[] =
 "}"
 "if(d.slave)document.getElementById('slaveBadge').style.display='';"
 "}).catch(function(){});};"
+"function updateLoopBadge(cur,total){"
+"var b=document.getElementById('loopBadge');"
+"if(total>1){b.style.display='';b.textContent='\\uD83D\\uDD01 Loop '+cur+' / '+total;}"
+"else b.style.display='none';"
+"}"
 "function doStart(mode){"
 "curMode=mode;"
 "var base=parseInt(document.getElementById('numBaseline').value)||100;"
+"var loops=parseInt(document.getElementById('numLoops').value)||1;"
+"if(loops<1)loops=1;if(loops>50)loops=50;"
+"var runs=parseInt(document.getElementById('numRuns').value)||0;"
+"if(runs<0)runs=0;if(runs>8000)runs=8000;"
 "document.getElementById('runsErr').textContent='';"
 "document.getElementById('sCalTotal').textContent=base;"
 "document.getElementById('pfScore').style.width='0%';"
 "document.getElementById('sScoreDone').textContent='0';"
-"document.getElementById('scoreCheck').innerHTML='';"
 "document.getElementById('measArea').style.display='none';"
-"fetch('/start?mode='+mode+'&baseline='+base,{method:'POST'});"
+"fetch('/start?mode='+mode+'&baseline='+base+'&loops='+loops+'&runs='+runs,{method:'POST'});"
 "document.getElementById('runsRow').style.display='none';"
 "document.getElementById('startBtns').style.display='none';"
 "document.getElementById('btnAbort').style.display='block';"
 "document.getElementById('progArea').style.display='block';"
-"loadedData=[];lastData=null;"
+"loadedData=[];lastData=null;lastDisplayed=null;"
 "document.getElementById('loadArea').style.display='none';"
 "document.getElementById('loadStatus').textContent='';"
 "document.getElementById('btnSave').style.display='none';"
 "document.getElementById('csvFiles').value='';"
 "document.getElementById('resCard').style.display='none';"
 "document.getElementById('msg').textContent='';"
+"updateLoopBadge(1,loops);"
 "setMode(mode);"
 "if(timer)clearInterval(timer);"
 "timer=setInterval(poll,1000);"
@@ -210,6 +235,7 @@ static const char HTML[] =
 "}"
 "function poll(){"
 "fetch('/status').then(function(r){return r.json();}).then(function(d){"
+"updateLoopBadge(d.loop_current||1,d.loops_total||1);"
 "var stDone=d.state==='done'||d.state==='aborted';"
 "var scorePct=d.scoring_total>0?Math.round(d.scoring_done*100/d.scoring_total):0;"
 "document.getElementById('pfScore').style.width=scorePct+'%';"
@@ -218,27 +244,41 @@ static const char HTML[] =
 "if(d.scoring_total>0&&d.scoring_done>=d.scoring_total){"
 "document.getElementById('scoreCheck').innerHTML=\" <span style='color:#90ee90;font-size:1.1em'>&#10004;</span>\";"
 "document.getElementById('loadArea').style.display='';}"
+"else document.getElementById('scoreCheck').innerHTML='';"
 "var calPct=d.baseline_total>0?Math.round(d.baseline_done*100/d.baseline_total):0;"
 "document.getElementById('pfCal').style.width=calPct+'%';"
 "document.getElementById('sCalDone').textContent=d.baseline_done;"
 "document.getElementById('sCalTotal').textContent=d.baseline_total;"
 "if(d.baseline_done>=d.baseline_total&&d.baseline_total>0)"
 "document.getElementById('calCheck').innerHTML=\" <span style='color:#90ee90;font-size:1.1em'>&#10004;</span>\";"
+"else document.getElementById('calCheck').innerHTML='';"
 "if(d.phase==='measuring'||stDone){"
 "document.getElementById('measArea').style.display='';"
+"if(!stDone)document.getElementById('measCheck').innerHTML='';"
 "var pct=d.total>0?Math.round(d.completed*100/d.total):0;"
 "document.getElementById('pf').style.width=pct+'%';"
 "document.getElementById('sDone').textContent=d.completed+'/'+d.total;"
 "document.getElementById('sPct').textContent=pct+'%';"
 "document.getElementById('sTime').textContent=fmt(d.elapsed_ms);"
-"var prepDone=(d.baseline_done||0)+(d.scoring_done||0);"
-"var totalDone=prepDone+d.completed;"
+"var perLoop=(d.baseline_total||0)+(d.scoring_total||0)+(d.total||0);"
+"var lc=d.loop_current||1,lt=d.loops_total||1;"
+"var gDone=(lc-1)*perLoop+(d.baseline_done||0)+(d.scoring_done||0)+d.completed;"
+"var gTotal=lt*perLoop;"
 "if(d.slave)document.getElementById('slaveBadge').style.display='';"
-"if(d.completed>0&&totalDone>0&&d.elapsed_ms>0){"
-"var msPerRun=d.elapsed_ms/totalDone;"
-"var eta=Math.round(msPerRun*(d.total-d.completed));"
+"if(gDone>0&&d.elapsed_ms>0&&gTotal>gDone){"
+"var msPer=d.elapsed_ms/gDone;"
+"var eta=Math.round(msPer*(gTotal-gDone));"
 "document.getElementById('sEta').textContent=fmtEta(eta);"
-"}else document.getElementById('sEta').textContent='-';}"
+"}else document.getElementById('sEta').textContent='-';"
+"}else if((d.loop_current||1)>1){"
+"document.getElementById('measArea').style.display='';"
+"document.getElementById('pf').style.width='100%';"
+"document.getElementById('sDone').textContent=d.total+'/'+d.total;"
+"document.getElementById('sPct').textContent='100%';"
+"document.getElementById('sTime').textContent=fmt(d.elapsed_ms);"
+"document.getElementById('measCheck').innerHTML=\" <span style='color:#90ee90;font-size:1.1em'>&#10004;</span>\";"
+"}"
+"if(d.state==='running'&&d.results&&d.results.length)showResults(d);"
 "if(d.state==='done'||d.state==='aborted'){"
 "clearInterval(timer);"
 "document.getElementById('btnAbort').style.display='none';"
@@ -262,6 +302,7 @@ static const char HTML[] =
 "if(loadedData[i]._mode===mode)all.push(loadedData[i]);"
 "all.sort(function(a,b){return b.z-a.z;});"
 "res=all.slice(0,10);}"
+"lastDisplayed=res;"
 "var isEuro=mode==='euro';"
 "document.getElementById('resTitle').innerHTML="
 "'☘️ Top-'+res.length+(isEuro?' Eurojackpot runs':' 6-of-49 runs');"
@@ -296,12 +337,12 @@ static const char HTML[] =
 "document.getElementById('resCard').style.display='block';"
 "}"
 "function doSave(){"
-"if(!lastData)return;"
+"if(!lastData||!lastDisplayed)return;"
 "var d=lastData,isEuro=d.mode==='euro',nc=isEuro?5:6;"
 "var hdr=isEuro?'run,z_score,p_value,n1,n2,n3,n4,n5,e1,e2':'run,z_score,p_value,n1,n2,n3,n4,n5,n6';"
 "var lines=['# mode='+d.mode+',date='+new Date().toISOString().slice(0,10),hdr];"
-"for(var i=0;i<d.results.length;i++){"
-"var r=d.results[i],cols=[r.run,r.z.toFixed(6),r.p];"
+"for(var i=0;i<lastDisplayed.length;i++){"
+"var r=lastDisplayed[i],cols=[r.run,r.z.toFixed(6),r.p];"
 "for(var j=0;j<nc;j++)cols.push(r.nums[j]);"
 "if(isEuro){cols.push(r.euro[0]);cols.push(r.euro[1]);}"
 "lines.push(cols.join(','));}"
@@ -367,24 +408,26 @@ static esp_err_t status_handler(httpd_req_t *req)
     pos += snprintf(buf+pos, sizeof(buf)-pos,
         "{\"state\":\"%s\",\"mode\":\"%s\",\"phase\":\"%s\","
         "\"slave\":%s,"
+        "\"loop_current\":%d,\"loops_total\":%d,"
         "\"scoring_done\":%d,\"scoring_total\":%d,"
         "\"baseline_done\":%d,\"baseline_total\":%d,\"baseline_mean\":%.4f,"
         "\"completed\":%d,\"total\":%d,\"elapsed_ms\":%lld,\"results\":[",
         state_str, mode_str, phase_str,
         g_status.slave_connected ? "true" : "false",
+        g_status.loop_current, g_status.loops_total,
         g_status.scoring_done, g_status.scoring_total,
         g_status.baseline_done, g_status.baseline_total, g_status.baseline_mean,
         g_status.runs_completed, g_status.runs_total,
         (long long)g_status.elapsed_ms);
 
-    int show = 0;
-    if (g_status.state == ELOTTO_DONE || g_status.state == ELOTTO_ABORTED) {
-        show = g_status.runs_completed < TOP_N ? g_status.runs_completed : TOP_N;
-    }
+    // Cumulative top-N is published continuously, so intermediate results
+    // (after each loop) are shown too — not only when the whole job is done.
+    int show = g_status.result_count < TOP_N ? g_status.result_count : TOP_N;
+    if (show < 0) show = 0;
     bool euro = (g_status.mode == MODE_EUROJACKPOT);
 
     for (int i = 0; i < show; i++) {
-        RunResult *r = &g_status.results[i];
+        RunResult *r = &g_status.top[i];
         if (i) pos += snprintf(buf+pos, sizeof(buf)-pos, ",");
         if (euro) {
             pos += snprintf(buf+pos, sizeof(buf)-pos,
@@ -420,10 +463,12 @@ static esp_err_t start_handler(httpd_req_t *req)
 {
     if (g_status.state != ELOTTO_RUNNING) {
         // read mode from query string (?mode=0 or ?mode=1)
-        char qry[48] = "";
+        char qry[64] = "";
         g_status.mode           = MODE_EUROJACKPOT;
         g_status.runs_total     = 0;   // computed in elotto_task from combinatorics
         g_status.baseline_total = 100;
+        g_status.loops_total    = 1;
+        g_status.runs_limit     = 0;   // 0 = measure all combinations
         if (httpd_req_get_url_query_str(req, qry, sizeof(qry)) == ESP_OK) {
             char val[16] = "";
             if (httpd_query_key_value(qry, "mode", val, sizeof(val)) == ESP_OK)
@@ -431,6 +476,14 @@ static esp_err_t start_handler(httpd_req_t *req)
             if (httpd_query_key_value(qry, "baseline", val, sizeof(val)) == ESP_OK) {
                 int b = atoi(val);
                 if (b > 0 && b <= 5000) g_status.baseline_total = b;
+            }
+            if (httpd_query_key_value(qry, "loops", val, sizeof(val)) == ESP_OK) {
+                int l = atoi(val);
+                if (l > 0 && l <= 50) g_status.loops_total = l;
+            }
+            if (httpd_query_key_value(qry, "runs", val, sizeof(val)) == ESP_OK) {
+                int r = atoi(val);
+                if (r > 0 && r <= NUM_RUNS) g_status.runs_limit = r;
             }
         }
         xTaskCreate(elotto_task, "elotto", 8192, NULL, 5, NULL);
