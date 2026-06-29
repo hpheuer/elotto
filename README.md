@@ -3,6 +3,38 @@
 ESP32-P4 project that generates Eurojackpot and 6-of-49 lottery numbers using the hardware
 TRNG and [GCP methodology (Global Consciousness Project)](https://grokipedia.com/page/Global_Consciousness_Project).
 
+## In a Nutshell
+
+A hobby experiment that turns two ESP32 chips into a tiny "random-event detector" inspired by
+the [Global Consciousness Project](https://grokipedia.com/page/Global_Consciousness_Project).
+The whole idea in plain language:
+
+- Each chip has a **true hardware random number generator** (randomness from electrical
+  noise). Over a fair sample it produces 0-bits and 1-bits in equal amounts.
+- The device grabs millions of these bits and asks: *did this batch lean a little more toward
+  1s (or 0s) than pure chance predicts?* That tiny lean is summarized as a **Z-score** — how
+  many standard deviations the batch sits from "perfectly fair." Z ≈ 0 is ordinary; large
+  positive or large negative means an unusually one-sided batch.
+- It attaches a Z-score to **lottery number combinations**: for each candidate combination it
+  takes a fresh batch of randomness and records how far it deviated. Combinations tied to the
+  biggest deviations rise to the top (and the biggest *negative* deviations to the bottom).
+- Measuring **many times** and adding the deviations together — instead of keeping a single
+  lucky spike — lets a real, repeatable lean stand out from noise. A built-in **significance
+  check** then says honestly whether anything actually beat chance.
+
+You watch it live in a web browser: a progress bar per phase, a loop counter, the current
+**Top-10** (most positive Z) and **Bottom-10** (most negative Z), and the most-frequent
+numbers.
+
+Two chips instead of one? A second ESP measures the same instant on its own independent
+randomness; combining two independent measurements sharpens the signal (see
+[Dual-ESP](#dual-esp-master--slave)).
+
+> **Reality check:** a real lottery draw is physically independent of these measurements, so
+> this **cannot predict winning numbers**. The interest is in measuring tiny statistical
+> deviations in true randomness *correctly*. Treat the output as an experiment, not a betting
+> tip.
+
 ## Screenshots
 
 <table>
@@ -46,18 +78,39 @@ A job runs three phases, optionally repeated over several **loops**:
    The highest-scoring numbers form a small candidate **pool**.
 3. **Combination measurement** (`PHASE_MEASURING`) — every combination of the pool is
    enumerated lexicographically and measured with its own GCP run, then ranked by Z-score.
-   The **Top-10** combinations are the result.
+   The **Top-10** (most positive Z) and **Bottom-10** (most negative Z) combinations are the
+   result; a large |Z| in either direction is the interesting signal.
 
 | Mode | Candidate pool | Combinations / loop |
 |---|---|---|
 | 6 of 49 | best **15** of 49 | C(15,6) = **5005** |
 | Eurojackpot | best **12** of 50 + best **5** of 12 | C(12,5) × C(5,2) = 792 × 10 = **7920** |
 
-**Loops** repeat the whole three-phase experiment N times — each loop runs a *fresh*
-baseline, scoring and measurement. The cumulative **global Top-10** across all loops is
-carried forward and shown live after every loop, so a strong combination found early
-survives to the end. The **most frequent** numbers are aggregated across **all** loops'
-runs with Z > 2.
+### Ranking across loops
+
+**Loops** repeat the experiment N times so that a real, repeatable lean stands out from
+one-off noise. Two ranking modes decide how the loops are combined:
+
+- **Cumulative Z (Stouffer, default)** — the candidate pool is locked after loop 0 and the
+  *same* combination set is re-measured every loop, accumulating `Σz` per combination. The
+  ranking is by **`Z = Σz / √k`** over `k` loops, which improves the signal-to-noise ratio by
+  √k and converges to the true deviation (or 0). This is the GCP cumulative-deviation method
+  and the statistically sound choice.
+- **Peak Z (best single run)** — each loop runs a fresh baseline + scoring + measurement, and
+  the global **best single-run Z** is kept across all loops. Simpler, but it selects noise
+  extremes (the max of thousands of runs is large even with no signal), so use it mainly for
+  comparison.
+
+Either way the Top-10 / Bottom-10 and the **most-frequent** numbers (aggregated across all
+loops' Z > 2 runs) are published live after every loop.
+
+### Honest significance
+
+Picking the most extreme of thousands of combinations inflates apparent significance (the max
+of 5005 random Z-scores is ≈ 3.5 by chance alone). So the results show the **most extreme
+|Z|** together with a **Bonferroni-corrected p-value** over the number of comparisons, labelled
+*significant* (p < 0.05) or *consistent with chance* — telling you whether anything genuinely
+exceeded noise.
 
 ## Dual-ESP: Master & Slave
 
@@ -168,16 +221,19 @@ Accessible in the browser via Ethernet after startup (read IP from Serial Monito
 | **Baseline runs** | Calibration runs per loop, default 100 (10–5000) |
 | **Loops** | How often the whole experiment repeats, default 1 (1–50) |
 | **Runs (0=all)** | Cap on measured combinations per loop for quick tests, `0` = all |
+| **Ranking** | Cumulative Z (Stouffer, default) or Peak Z (best single run) |
 | **Euro-Lotto** | 5 numbers (1–50) + 2 bonus numbers (1–12) |
 | **6 of 49** | 6 numbers (1–49) |
 | **🔁 Loop X / N** | Loop counter, shown while running when Loops > 1 |
 | **Calibration phase** | Gold progress bar with ✔ when done |
 | **Number scoring phase** | Blue progress bar with ✔ when done |
 | **Measurement phase** | Green progress bar with runtime, ETA and ✔ when done |
-| **Top-10** | Best combinations by Z-score; updates live after each loop |
+| **Top-10** | Highest-Z combinations; updates live after each loop |
+| **Bottom-10** | Lowest-Z combinations (largest negative deviation) |
+| **Significance line** | Most extreme \|Z\| + Bonferroni-corrected p over N comparisons |
 | **Most frequent** | Most frequent numbers across all Z>2 runs |
-| **Abort** | Stops after current run, shows cumulative Top-10 so far |
-| **Save CSV** | Downloads the displayed (merged) Top-10 as `.csv` |
+| **Abort** | Stops after current run, shows cumulative results so far |
+| **Save CSV** | Downloads Top-10 **and** Bottom-10 sections as `.csv` |
 | **Load previous CSV** | Load earlier CSVs and merge them into the ranking |
 | **Browser reload / close** | ESP keeps running all loops; page reconnects and shows live progress |
 | **Diagnostics** | `http://<IP>/diag` — compares register vs esp_random() |
@@ -287,22 +343,40 @@ for (int i = 0; i < runs_total; i++) {
 qsort(g_status.results, runs_total, sizeof(RunResult), cmp_desc);   // rank by Z desc
 ```
 
-### 7 — Multi-Loop Accumulation + Frequency
+### 7 — Ranking Across Loops (Peak vs Cumulative)
 
-Each loop's results are folded into a cumulative **global Top-10** carry, and the Z>2
-frequency histogram is accumulated across all loops. Both are published after every loop
-so `/status` can show intermediate results, not only at the end:
+**Peak Z** keeps the best single-run Z across all loops (`absorb_loop()`): each loop's
+Top-N/Bottom-N is merged into a running carry. Simple, but it selects noise extremes.
+
+**Cumulative Z** (default) is the GCP cumulative-deviation method: the pool is locked, the
+*same* combinations are re-measured each loop, and the per-combination sum `Σz` is ranked by
+the **Stouffer Z = Σz/√k**. Under the null this stays ~N(0,1), so the p-value is meaningful,
+and the signal-to-noise ratio grows √k:
 
 ```c
-// sensor.c — absorb_loop()
-qsort(g_status.results, done, sizeof(RunResult), cmp_desc);
-for (int i = 0; i < done; i++) {
-    if (g_status.results[i].z_score <= 2.0) break;   // sorted descending
-    z2++;
-    for (int j = 0; j < nm; j++) fm[g_status.results[i].nums[j]]++;
-}
-// merge this loop's top-N with the running carry, keep the global best TOP_N,
-// then publish carry → g_status.top[] and most-frequent → g_status.freq_nums[]
+// sensor.c — per loop: accumulate Σz over the fixed combination set
+for (int i = 0; i < runs_total; i++) s_zsum[i] += g_status.results[i].z_score;
+meas_k++;
+
+// sensor.c — publish_cumulative(): rank by Stouffer Z, no in-place sort so the
+// combination↔index mapping stays stable for the next loop's accumulation
+for (int i = 0; i < n; i++) g_status.results[i].z_score = s_zsum[i] / sqrt((double)k);
+// insertion-select Top-N (highest) and Bottom-N (lowest) into g_status.top[]/low[]
+```
+
+### 8 — Bottom-10 + Bonferroni-Corrected Significance
+
+A strongly **negative** Z is as significant as a positive one (large |Z|), so the lowest-Z
+combinations are tracked and shown too. The most extreme |Z| is reported with a
+multiple-comparison-corrected p-value, so a big-looking Z from a huge search is judged
+honestly:
+
+```c
+// sensor.c — compute_significance()
+double zmax = max(|top[0].z|, |low[0].z|);
+double p1   = erfc(zmax / sqrt(2));          // two-sided single-test tail
+double pc   = min(1.0, comparisons * p1);    // Bonferroni over N comparisons
+// comparisons = runs_total (cumulative)  |  runs_total × loops (peak)
 ```
 
 ## Insights from Development
@@ -360,7 +434,8 @@ For comparison with `esp_random()` (75× slower): 1000 runs ≈ 4 hours.
 - **Direct TRNG register** instead of `esp_random()`: 75× faster (TRNG-limited)
 - **Baseline correction**: eliminates hardware bias, statistically correct Z-scores
 - **Number scoring + combination enumeration**: candidates are GCP-ranked, not randomly drawn
-- **Multi-loop accumulation**: cumulative global Top-10 across loops, published live
+- **Cumulative (Stouffer) Z**: Σz/√k across loops — SNR grows √k, converges instead of
+  chasing noise extremes; honest Bonferroni-corrected significance
 
 ### RAM Limit
 
@@ -428,3 +503,4 @@ elotto_slave/main/
 | v1.5 | Dual-ESP: slave via UART1 (460800 baud), combined Z-score (÷√2, SNR ×√2), parallel baseline |
 | v1.6 | CSV save/load in browser, parallel slave baseline, JS fix (buttons) |
 | v1.7 | Multi-loop runs: cumulative global Top-10, live intermediate results after each loop, loop counter, `Runs` cap for quick tests; device-side loop (browser-independent); docs updated to reflect number-scoring + combination-enumeration flow |
+| v1.8 | Cumulative (Stouffer) Z ranking mode `Σz/√k` (default) vs Peak Z, selectable; Bottom-10 lowest-Z table; Bonferroni-corrected significance line; CSV save with Top-10 + Bottom-10; plain-language "In a Nutshell" overview |
