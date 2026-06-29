@@ -11,6 +11,9 @@
 typedef enum { MODE_EUROJACKPOT = 0, MODE_LOTTO_649 = 1 } ElottoMode;
 typedef enum { ELOTTO_IDLE, ELOTTO_RUNNING, ELOTTO_DONE, ELOTTO_ABORTED } ElottoState;
 typedef enum { PHASE_SCORING, PHASE_BASELINE, PHASE_MEASURING } ElottoPhase;
+// Ranking across loops: PEAK = best single-run Z (noise extreme); CUMULATIVE =
+// Stouffer Z = Σz/√k per fixed combination (GCP cumulative-deviation method)
+typedef enum { RANK_PEAK = 0, RANK_CUMULATIVE = 1 } ElottoRank;
 
 typedef struct {
     int        index;
@@ -39,8 +42,14 @@ typedef struct {
     int              loops_total;
     volatile int     loop_current;
     int              runs_limit;          // cap on Phase-2 combos (0 = all), for testing
+    ElottoRank       rank_mode;           // peak vs cumulative-Z ranking across loops
+    double           best_z;              // most extreme |Z| in the published ranking
+    double           p_corrected;         // Bonferroni-corrected two-sided p of best_z
+    int              comparisons;         // number of comparisons used for correction
     int              result_count;       // valid entries in top[] (published)
-    RunResult        top[TOP_N];          // cumulative best across loops so far
+    RunResult        top[TOP_N];          // cumulative highest-Z across loops so far
+    int              low_count;           // valid entries in low[] (published)
+    RunResult        low[TOP_N];          // cumulative lowest-Z across loops so far
     volatile bool    abort_requested;
     bool             slave_connected;
     RunResult        results[NUM_RUNS];   // live per-loop measurement scratch

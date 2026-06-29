@@ -11,6 +11,9 @@
 
 ElottoStatus g_status = { .state = ELOTTO_IDLE };
 
+// Per-combination running Σz across loops (cumulative / Stouffer ranking mode)
+static double s_zsum[NUM_RUNS];
+
 // Direct TRNG register access (75× faster than esp_random)
 #define RNG_REG  (*((volatile uint32_t *)0x501101A4UL))
 
@@ -109,6 +112,11 @@ static int cmp_desc(const void *a, const void *b)
     return 0;
 }
 
+static int cmp_asc(const void *a, const void *b)
+{
+    return -cmp_desc(a, b);
+}
+
 /* ── Slave UART (UART1, TX=GPIO14, RX=GPIO15) ────────────────────────
  * Wiring: Master-GPIO14 → Slave-GPIO15
  *         Slave-GPIO14  → Master-GPIO15
@@ -198,11 +206,120 @@ static double slave_measure(void)
 
 void slave_probe(void) { slave_init(); }
 
+/* Select the most-frequent numbers from the accumulated Z>2 histograms and
+ * publish them (sorted ascending) to g_status.freq_*. */
+static void publish_frequency(int *fm, int *fe, int z2, int nm, int mx, bool euro)
+{
+    g_status.freq_z2_count = z2;
+    if (z2 <= 0) return;
+    bool used[51] = {false};
+    for (int k = 0; k < nm; k++) {
+        int b = 0, bf = -1;
+        for (int j = 1; j <= mx; j++)
+            if (!used[j] && fm[j] > bf) { b = j; bf = fm[j]; }
+        g_status.freq_nums[k] = (uint8_t)b;
+        if (b) used[b] = true;
+    }
+    for (int i = 1; i < nm; i++) {
+        uint8_t key = g_status.freq_nums[i]; int j = i - 1;
+        while (j >= 0 && g_status.freq_nums[j] > key) { g_status.freq_nums[j+1] = g_status.freq_nums[j]; j--; }
+        g_status.freq_nums[j+1] = key;
+    }
+    if (euro) {
+        bool eu[13] = {false};
+        for (int k = 0; k < 2; k++) {
+            int b = 0, bf = -1;
+            for (int j = 1; j <= 12; j++)
+                if (!eu[j] && fe[j] > bf) { b = j; bf = fe[j]; }
+            g_status.freq_euro[k] = (uint8_t)b;
+            if (b) eu[b] = true;
+        }
+        if (g_status.freq_euro[0] > g_status.freq_euro[1]) {
+            uint8_t t = g_status.freq_euro[0];
+            g_status.freq_euro[0] = g_status.freq_euro[1];
+            g_status.freq_euro[1] = t;
+        }
+    }
+}
+
+/* Bonferroni-corrected significance of the most extreme |Z| in the published
+ * ranking — honest about the multiple-comparison search over `comparisons`. */
+static void compute_significance(int comparisons)
+{
+    if (comparisons <= 0) {
+        g_status.best_z = 0.0; g_status.p_corrected = 1.0; g_status.comparisons = 0;
+        return;
+    }
+    double zt = (g_status.result_count > 0) ? fabs(g_status.top[0].z_score) : 0.0;
+    double zb = (g_status.low_count   > 0) ? fabs(g_status.low[0].z_score) : 0.0;
+    double zmax = zt > zb ? zt : zb;
+    double p1 = erfc(zmax / 1.41421356237);   // two-sided single-test tail prob
+    double pc = (double)comparisons * p1;      // Bonferroni
+    if (pc > 1.0) pc = 1.0;
+    g_status.best_z      = zmax;
+    g_status.p_corrected = pc;
+    g_status.comparisons = comparisons;
+}
+
+/* Cumulative (Stouffer) ranking: each of the n fixed combinations has its
+ * running Σz in zsum[] over k measured loops. Rank by Z = Σz/√k, publish the
+ * top-N / bottom-N and most-frequent (over cumulative Z>2). */
+static void publish_cumulative(double *zsum, int n, int k,
+                               int *fm, int *fe, int *z2, int nm, int mx, bool euro)
+{
+    if (k <= 0 || n <= 0) return;
+    double sk = sqrt((double)k);
+    for (int i = 0; i < n; i++) {
+        double z = zsum[i] / sk;                  // Stouffer Z = Σz / √k
+        g_status.results[i].z_score = z;
+        g_status.results[i].chi_sq  = z * z;
+        g_status.results[i].p_value = p_label(fabs(z));
+    }
+
+    // Select top-N (highest) and bottom-N (lowest) by insertion, WITHOUT
+    // sorting results[] — it must stay in combination-index order so the next
+    // loop's Σz accumulation and nums stay aligned by index.
+    RunResult top[TOP_N], low[TOP_N];
+    int tn = 0, ln = 0;
+    for (int i = 0; i < n; i++) {
+        RunResult *r = &g_status.results[i];
+        if (tn < TOP_N || r->z_score > top[tn ? tn - 1 : 0].z_score) {
+            if (tn < TOP_N) tn++;
+            int p = tn - 1;
+            while (p > 0 && top[p - 1].z_score < r->z_score) { top[p] = top[p - 1]; p--; }
+            top[p] = *r;
+        }
+        if (ln < TOP_N || r->z_score < low[ln ? ln - 1 : 0].z_score) {
+            if (ln < TOP_N) ln++;
+            int p = ln - 1;
+            while (p > 0 && low[p - 1].z_score > r->z_score) { low[p] = low[p - 1]; p--; }
+            low[p] = *r;
+        }
+    }
+    for (int i = 0; i < tn; i++) g_status.top[i] = top[i];
+    g_status.result_count = tn;
+    for (int i = 0; i < ln; i++) g_status.low[i] = low[i];
+    g_status.low_count = ln;
+
+    // Most-frequent over cumulative Z>2 (scan, order-independent)
+    for (int j = 0; j <= 50; j++) fm[j] = 0;
+    for (int j = 0; j <= 12; j++) fe[j] = 0;
+    *z2 = 0;
+    for (int i = 0; i < n; i++) {
+        if (g_status.results[i].z_score <= 2.0) continue;
+        (*z2)++;
+        for (int j = 0; j < nm; j++) fm[g_status.results[i].nums[j]]++;
+        if (euro) { fe[g_status.results[i].euro[0]]++; fe[g_status.results[i].euro[1]]++; }
+    }
+    publish_frequency(fm, fe, *z2, nm, mx, euro);
+}
+
 /* Fold one completed (or partial) loop's results into the cumulative top-N
  * carry, accumulate the cross-loop Z>2 frequency histograms, and publish the
  * current cumulative top-N + most-frequent so /status can show them between
  * loops (intermediate results), not only at the very end. */
 static void absorb_loop(RunResult *carry, int *carry_n,
+                        RunResult *low, int *low_n,
                         int *fm, int *fe, int *z2, int nm, int mx, bool euro)
 {
     int done = g_status.runs_completed;
@@ -217,53 +334,35 @@ static void absorb_loop(RunResult *carry, int *carry_n,
             if (euro) { fe[g_status.results[i].euro[0]]++; fe[g_status.results[i].euro[1]]++; }
         }
 
-        // Merge this loop's top-N into the carry, keep the global top-N
-        RunResult tmp[2 * TOP_N];
-        int tn = 0;
-        for (int i = 0; i < *carry_n; i++) tmp[tn++] = carry[i];
         int take = done < TOP_N ? done : TOP_N;
-        for (int i = 0; i < take; i++) tmp[tn++] = g_status.results[i];
+        RunResult tmp[2 * TOP_N];
+        int tn;
+
+        // Merge this loop's highest-Z into the top carry, keep global top-N
+        tn = 0;
+        for (int i = 0; i < *carry_n; i++) tmp[tn++] = carry[i];
+        for (int i = 0; i < take; i++) tmp[tn++] = g_status.results[i];   // results[] sorted desc
         qsort(tmp, tn, sizeof(RunResult), cmp_desc);
         *carry_n = tn < TOP_N ? tn : TOP_N;
         for (int i = 0; i < *carry_n; i++) carry[i] = tmp[i];
+
+        // Merge this loop's lowest-Z into the low carry, keep global bottom-N
+        tn = 0;
+        for (int i = 0; i < *low_n; i++) tmp[tn++] = low[i];
+        for (int i = 0; i < take; i++) tmp[tn++] = g_status.results[done - take + i];
+        qsort(tmp, tn, sizeof(RunResult), cmp_asc);
+        *low_n = tn < TOP_N ? tn : TOP_N;
+        for (int i = 0; i < *low_n; i++) low[i] = tmp[i];
     }
 
-    // Publish cumulative top-N (entries first, then count for reader safety)
+    // Publish cumulative top-N + bottom-N (entries first, then count)
     for (int i = 0; i < *carry_n; i++) g_status.top[i] = carry[i];
     g_status.result_count = *carry_n;
+    for (int i = 0; i < *low_n; i++) g_status.low[i] = low[i];
+    g_status.low_count = *low_n;
 
     // Publish most-frequent numbers across all loops' Z>2 runs
-    g_status.freq_z2_count = *z2;
-    if (*z2 > 0) {
-        bool used[51] = {false};
-        for (int k = 0; k < nm; k++) {
-            int b = 0, bf = -1;
-            for (int j = 1; j <= mx; j++)
-                if (!used[j] && fm[j] > bf) { b = j; bf = fm[j]; }
-            g_status.freq_nums[k] = (uint8_t)b;
-            if (b) used[b] = true;
-        }
-        for (int i = 1; i < nm; i++) {
-            uint8_t key = g_status.freq_nums[i]; int j = i - 1;
-            while (j >= 0 && g_status.freq_nums[j] > key) { g_status.freq_nums[j+1] = g_status.freq_nums[j]; j--; }
-            g_status.freq_nums[j+1] = key;
-        }
-        if (euro) {
-            bool eu[13] = {false};
-            for (int k = 0; k < 2; k++) {
-                int b = 0, bf = -1;
-                for (int j = 1; j <= 12; j++)
-                    if (!eu[j] && fe[j] > bf) { b = j; bf = fe[j]; }
-                g_status.freq_euro[k] = (uint8_t)b;
-                if (b) eu[b] = true;
-            }
-            if (g_status.freq_euro[0] > g_status.freq_euro[1]) {
-                uint8_t t = g_status.freq_euro[0];
-                g_status.freq_euro[0] = g_status.freq_euro[1];
-                g_status.freq_euro[1] = t;
-            }
-        }
-    }
+    publish_frequency(fm, fe, *z2, nm, mx, euro);
 }
 
 void elotto_task(void *pvParam)
@@ -277,8 +376,12 @@ void elotto_task(void *pvParam)
     g_status.baseline_mean   = 0.0;
     g_status.slave_connected = false;
     g_status.result_count    = 0;
+    g_status.low_count       = 0;
     g_status.freq_z2_count   = 0;
     g_status.loop_current    = 0;
+    g_status.best_z          = 0.0;
+    g_status.p_corrected     = 1.0;
+    g_status.comparisons     = 0;
     if (g_status.baseline_total <= 0 || g_status.baseline_total > 5000)
         g_status.baseline_total = 100;
     if (g_status.loops_total <= 0 || g_status.loops_total > 50)
@@ -301,11 +404,19 @@ void elotto_task(void *pvParam)
     g_status.runs_total = (g_status.runs_limit > 0 && g_status.runs_limit < full_combos)
                           ? g_status.runs_limit : full_combos;
 
-    // Cumulative best across all loops + cross-loop frequency histograms
+    // Peak-mode carries (best/worst single-run Z across loops) + freq histograms
     RunResult carry[TOP_N];
-    int carry_n = 0;
+    RunResult low_carry[TOP_N];
+    int carry_n = 0, low_n = 0;
     int fm[51] = {0}, fe[13] = {0}, z2 = 0;
 
+    // Cumulative (Stouffer) mode: fixed pool, Σz per combination over meas_k loops
+    bool cumulative = (g_status.rank_mode == RANK_CUMULATIVE);
+    int  meas_k = 0;
+    if (cumulative)
+        memset(s_zsum, 0, sizeof(double) * (size_t)g_status.runs_total);
+
+    int comparisons = 0;
     int64_t t0 = esp_timer_get_time();
 
     for (int loop = 0; loop < g_status.loops_total; loop++) {
@@ -314,8 +425,12 @@ void elotto_task(void *pvParam)
         g_status.scoring_done   = 0;
         g_status.runs_completed = 0;
         g_status.baseline_mean  = 0.0;
-        memset(pool_main, 0, sizeof(pool_main));
-        memset(pool_euro, 0, sizeof(pool_euro));
+        // Cumulative mode locks the pool after loop 0; peak mode rebuilds it
+        bool do_score = (!cumulative || loop == 0);
+        if (do_score) {
+            memset(pool_main, 0, sizeof(pool_main));
+            memset(pool_euro, 0, sizeof(pool_euro));
+        }
 
         /* ── Phase 1: Baseline calibration (Master + Slave in parallel) ── */
         g_status.phase = PHASE_BASELINE;
@@ -336,12 +451,16 @@ void elotto_task(void *pvParam)
         if (s_slave_ok && !g_status.abort_requested)
             slave_baseline_wait();
 
-        /* ── Phase 0: Individual number scoring ───────────────────────── */
+        /* ── Phase 0: Individual number scoring (cumulative: loop 0 only) ── */
         g_status.phase = PHASE_SCORING;
-        score_and_build_pool(mx, pool_nm, pool_main);
-        if (g_status.abort_requested) goto done;
-        if (euro) score_and_build_pool(12, POOL_EURO_12, pool_euro);
-        if (g_status.abort_requested) goto done;
+        if (do_score) {
+            score_and_build_pool(mx, pool_nm, pool_main);
+            if (g_status.abort_requested) goto done;
+            if (euro) score_and_build_pool(12, POOL_EURO_12, pool_euro);
+            if (g_status.abort_requested) goto done;
+        } else {
+            g_status.scoring_done = g_status.scoring_total;   // pool already locked
+        }
 
         /* ── Phase 2: Measure all combinations ────────────────────────── */
         g_status.phase = PHASE_MEASURING;
@@ -377,14 +496,40 @@ void elotto_task(void *pvParam)
             g_status.elapsed_ms         = (esp_timer_get_time() - t0) / 1000;
         }
 
-        // Loop finished cleanly: fold + publish cumulative top-N
-        absorb_loop(carry, &carry_n, fm, fe, &z2, nm, mx, euro);
+        // Loop finished cleanly: fold + publish the ranking
+        if (cumulative) {
+            for (int i = 0; i < g_status.runs_total; i++)
+                s_zsum[i] += g_status.results[i].z_score;   // Σz per fixed combination
+            meas_k++;
+            publish_cumulative(s_zsum, g_status.runs_total, meas_k, fm, fe, &z2, nm, mx, euro);
+            comparisons = g_status.runs_total;
+        } else {
+            absorb_loop(carry, &carry_n, low_carry, &low_n, fm, fe, &z2, nm, mx, euro);
+            comparisons = g_status.runs_total * g_status.loop_current;
+        }
+        compute_significance(comparisons);
     }
     goto finalize;
 
 done:
-    // Aborted mid-loop: fold + publish whatever this loop produced so far
-    absorb_loop(carry, &carry_n, fm, fe, &z2, nm, mx, euro);
+    // Aborted mid-loop: publish whatever was completed so far
+    if (cumulative) {
+        if (meas_k > 0) {
+            publish_cumulative(s_zsum, g_status.runs_total, meas_k, fm, fe, &z2, nm, mx, euro);
+            comparisons = g_status.runs_total;
+        } else if (g_status.runs_completed > 0) {
+            // Aborted during the first measurement loop: treat the measured
+            // subset as a single sample so partial results are still shown
+            for (int i = 0; i < g_status.runs_completed; i++)
+                s_zsum[i] = g_status.results[i].z_score;
+            publish_cumulative(s_zsum, g_status.runs_completed, 1, fm, fe, &z2, nm, mx, euro);
+            comparisons = g_status.runs_completed;
+        }
+    } else {
+        absorb_loop(carry, &carry_n, low_carry, &low_n, fm, fe, &z2, nm, mx, euro);
+        comparisons = g_status.runs_total * (g_status.loop_current > 0 ? g_status.loop_current : 1);
+    }
+    compute_significance(comparisons);
 
 finalize:
     g_status.elapsed_ms = (esp_timer_get_time() - t0) / 1000;

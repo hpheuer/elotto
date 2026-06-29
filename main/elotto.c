@@ -96,6 +96,14 @@ static const char HTML[] =
 " style='width:70px;padding:5px 8px;border-radius:6px;border:1px solid #a08030;"
 "background:#0a2e0a;color:#fff;font-size:1em;text-align:center'>"
 "</div>"
+"<div style='grid-column:span 2;display:flex;align-items:center;gap:6px'>"
+"<label style='color:#f0c040;font-size:.9em'>Ranking:</label>"
+"<select id='selRank' style='padding:5px 8px;border-radius:6px;border:1px solid #a08030;"
+"background:#0a2e0a;color:#fff;font-size:.92em'>"
+"<option value='1'>Cumulative Z (Stouffer, recommended)</option>"
+"<option value='0'>Peak Z (best single run)</option>"
+"</select>"
+"</div>"
 "<button class='btn btn-euro' style='width:100%' onclick='doStart(0)'>&#127808; Euro-Lotto</button>"
 "<button class='btn btn-649' style='width:100%' onclick='doStart(1)'>&#127808; 6 of 49</button>"
 "</div>"
@@ -146,12 +154,18 @@ static const char HTML[] =
 "<div id='msg'></div>"
 "</div>"
 "<div class='card' id='resCard' style='display:none'>"
-"<h3 id='resTitle' style='color:#90ee90;margin-bottom:14px'></h3>"
+"<h3 id='resTitle' style='color:#90ee90;margin-bottom:4px'></h3>"
+"<div id='sigLine' style='color:#a0c0a0;font-size:.82em;margin-bottom:12px'></div>"
 "<table><thead id='resHead'></thead>"
 "<tbody id='resBody'></tbody></table>"
 "<div style='text-align:center;margin-top:14px'>"
 "<button id='btnSave' class='btn' onclick='doSave()' style='display:none;background:#2e7d32;color:#fff;padding:10px 28px'>&#128190; Save CSV</button>"
 "</div>"
+"</div>"
+"<div class='card' id='resCardLow' style='display:none'>"
+"<h3 id='resTitleLow' style='color:#e8a0a0;margin-bottom:14px'></h3>"
+"<table><thead id='resHeadLow'></thead>"
+"<tbody id='resBodyLow'></tbody></table>"
 "</div>"
 "</div>"
 "<script>"
@@ -207,12 +221,13 @@ static const char HTML[] =
 "if(loops<1)loops=1;if(loops>50)loops=50;"
 "var runs=parseInt(document.getElementById('numRuns').value)||0;"
 "if(runs<0)runs=0;if(runs>8000)runs=8000;"
+"var rank=document.getElementById('selRank').value;"
 "document.getElementById('runsErr').textContent='';"
 "document.getElementById('sCalTotal').textContent=base;"
 "document.getElementById('pfScore').style.width='0%';"
 "document.getElementById('sScoreDone').textContent='0';"
 "document.getElementById('measArea').style.display='none';"
-"fetch('/start?mode='+mode+'&baseline='+base+'&loops='+loops+'&runs='+runs,{method:'POST'});"
+"fetch('/start?mode='+mode+'&baseline='+base+'&loops='+loops+'&runs='+runs+'&rank='+rank,{method:'POST'});"
 "document.getElementById('runsRow').style.display='none';"
 "document.getElementById('startBtns').style.display='none';"
 "document.getElementById('btnAbort').style.display='block';"
@@ -223,6 +238,7 @@ static const char HTML[] =
 "document.getElementById('btnSave').style.display='none';"
 "document.getElementById('csvFiles').value='';"
 "document.getElementById('resCard').style.display='none';"
+"document.getElementById('resCardLow').style.display='none';"
 "document.getElementById('msg').textContent='';"
 "updateLoopBadge(1,loops);"
 "setMode(mode);"
@@ -306,6 +322,14 @@ static const char HTML[] =
 "var isEuro=mode==='euro';"
 "document.getElementById('resTitle').innerHTML="
 "'☘️ Top-'+res.length+(isEuro?' Eurojackpot runs':' 6-of-49 runs');"
+"var sl=document.getElementById('sigLine');"
+"if(d.best_z!==undefined&&d.comparisons>0){"
+"var rk=d.rank==='cum'?'cumulative Z (Stouffer)':'peak Z';"
+"var pc=d.p_corr<0.001?d.p_corr.toExponential(1):d.p_corr.toFixed(3);"
+"var sig=d.p_corr<0.05?'significant':'consistent with chance';"
+"sl.innerHTML='Ranking: '+rk+' \\u00b7 most extreme |Z| = '+d.best_z.toFixed(2)"
+"+' \\u00b7 corrected p = '+pc+' over '+d.comparisons+' comparisons ('+sig+')';"
+"}else sl.innerHTML='';"
 "document.getElementById('resHead').innerHTML="
 "'<tr><th>#</th><th>Run</th><th>Z-Score</th><th>p-Value</th><th>Numbers</th>'"
 "+(isEuro?'<th>Bonus</th>':'')+'</tr>';"
@@ -335,17 +359,46 @@ static const char HTML[] =
 "}"
 "document.getElementById('btnSave').style.display='';"
 "document.getElementById('resCard').style.display='block';"
+"showLow(d);"
+"}"
+"function showLow(d){"
+"var res=d.low,isEuro=d.mode==='euro';"
+"if(!res||res.length===0){document.getElementById('resCardLow').style.display='none';return;}"
+"document.getElementById('resTitleLow').innerHTML="
+"'\\uD83D\\uDD3B Bottom-'+res.length+(isEuro?' Eurojackpot runs':' 6-of-49 runs')+' (lowest Z)';"
+"document.getElementById('resHeadLow').innerHTML="
+"'<tr><th>#</th><th>Run</th><th>Z-Score</th><th>p-Value</th><th>Numbers</th>'"
+"+(isEuro?'<th>Bonus</th>':'')+'</tr>';"
+"var tb=document.getElementById('resBodyLow');tb.innerHTML='';"
+"for(var i=0;i<res.length;i++){"
+"var r=res[i],nums='';"
+"for(var j=0;j<r.nums.length;j++)"
+"nums+='<span class=\"num\">'+r.nums[j]+'</span>';"
+"var estr='';"
+"if(isEuro&&r.euro&&r.euro.length)"
+"for(var j=0;j<r.euro.length;j++)"
+"estr+='<span class=\"num euro\">'+r.euro[j]+'</span>';"
+"tb.innerHTML+='<tr><td>'+(i+1)+'</td><td>'+r.run+'</td>"
+"<td>'+r.z.toFixed(4)+'</td><td>'+r.p+'</td><td>'+nums+'</td>"
+"'+(isEuro?'<td>'+estr+'</td>':'')+'</tr>';"
+"}"
+"document.getElementById('resCardLow').style.display='block';"
 "}"
 "function doSave(){"
 "if(!lastData||!lastDisplayed)return;"
 "var d=lastData,isEuro=d.mode==='euro',nc=isEuro?5:6;"
 "var hdr=isEuro?'run,z_score,p_value,n1,n2,n3,n4,n5,e1,e2':'run,z_score,p_value,n1,n2,n3,n4,n5,n6';"
-"var lines=['# mode='+d.mode+',date='+new Date().toISOString().slice(0,10),hdr];"
-"for(var i=0;i<lastDisplayed.length;i++){"
-"var r=lastDisplayed[i],cols=[r.run,r.z.toFixed(6),r.p];"
+"function rows(arr){var o=[];for(var i=0;i<arr.length;i++){"
+"var r=arr[i],cols=[r.run,r.z.toFixed(6),r.p];"
 "for(var j=0;j<nc;j++)cols.push(r.nums[j]);"
 "if(isEuro){cols.push(r.euro[0]);cols.push(r.euro[1]);}"
-"lines.push(cols.join(','));}"
+"o.push(cols.join(','));}return o;}"
+"var lines=['# mode='+d.mode+',date='+new Date().toISOString().slice(0,10),'# top-10 (highest z)',hdr];"
+"lines=lines.concat(rows(lastDisplayed));"
+"if(d.low&&d.low.length){"
+"lines.push('# bottom-10 (lowest z)');"
+"lines.push(hdr);"
+"lines=lines.concat(rows(d.low));}"
 "var url=URL.createObjectURL(new Blob([lines.join('\\n')],{type:'text/csv'}));"
 "var a=document.createElement('a');"
 "a.href=url;"
@@ -389,6 +442,24 @@ static const char HTML[] =
 "}}"
 "</script></body></html>";
 
+/* Serialize one RunResult as a JSON object; returns chars written. */
+static int emit_run(char *buf, int cap, const RunResult *r, bool euro)
+{
+    if (euro)
+        return snprintf(buf, cap,
+            "{\"run\":%d,\"z\":%.4f,\"p\":\"%s\","
+            "\"nums\":[%d,%d,%d,%d,%d],\"euro\":[%d,%d]}",
+            r->index, r->z_score, r->p_value,
+            r->nums[0], r->nums[1], r->nums[2], r->nums[3], r->nums[4],
+            r->euro[0], r->euro[1]);
+    return snprintf(buf, cap,
+        "{\"run\":%d,\"z\":%.4f,\"p\":\"%s\","
+        "\"nums\":[%d,%d,%d,%d,%d,%d],\"euro\":[]}",
+        r->index, r->z_score, r->p_value,
+        r->nums[0], r->nums[1], r->nums[2],
+        r->nums[3], r->nums[4], r->nums[5]);
+}
+
 /* ── /status JSON ─────────────────────────────────────────────────── */
 static esp_err_t status_handler(httpd_req_t *req)
 {
@@ -405,15 +476,18 @@ static esp_err_t status_handler(httpd_req_t *req)
         g_status.phase == PHASE_SCORING  ? "scoring"  :
         g_status.phase == PHASE_BASELINE ? "baseline" :
                                            "measuring";
+    const char *rank_str = (g_status.rank_mode == RANK_CUMULATIVE) ? "cum" : "peak";
     pos += snprintf(buf+pos, sizeof(buf)-pos,
         "{\"state\":\"%s\",\"mode\":\"%s\",\"phase\":\"%s\","
-        "\"slave\":%s,"
+        "\"slave\":%s,\"rank\":\"%s\","
+        "\"best_z\":%.4f,\"p_corr\":%.6g,\"comparisons\":%d,"
         "\"loop_current\":%d,\"loops_total\":%d,"
         "\"scoring_done\":%d,\"scoring_total\":%d,"
         "\"baseline_done\":%d,\"baseline_total\":%d,\"baseline_mean\":%.4f,"
         "\"completed\":%d,\"total\":%d,\"elapsed_ms\":%lld,\"results\":[",
         state_str, mode_str, phase_str,
-        g_status.slave_connected ? "true" : "false",
+        g_status.slave_connected ? "true" : "false", rank_str,
+        g_status.best_z, g_status.p_corrected, g_status.comparisons,
         g_status.loop_current, g_status.loops_total,
         g_status.scoring_done, g_status.scoring_total,
         g_status.baseline_done, g_status.baseline_total, g_status.baseline_mean,
@@ -427,30 +501,23 @@ static esp_err_t status_handler(httpd_req_t *req)
     bool euro = (g_status.mode == MODE_EUROJACKPOT);
 
     for (int i = 0; i < show; i++) {
-        RunResult *r = &g_status.top[i];
         if (i) pos += snprintf(buf+pos, sizeof(buf)-pos, ",");
-        if (euro) {
-            pos += snprintf(buf+pos, sizeof(buf)-pos,
-                "{\"run\":%d,\"z\":%.4f,\"p\":\"%s\","
-                "\"nums\":[%d,%d,%d,%d,%d],\"euro\":[%d,%d]}",
-                r->index, r->z_score, r->p_value,
-                r->nums[0], r->nums[1], r->nums[2], r->nums[3], r->nums[4],
-                r->euro[0], r->euro[1]);
-        } else {
-            pos += snprintf(buf+pos, sizeof(buf)-pos,
-                "{\"run\":%d,\"z\":%.4f,\"p\":\"%s\","
-                "\"nums\":[%d,%d,%d,%d,%d,%d],\"euro\":[]}",
-                r->index, r->z_score, r->p_value,
-                r->nums[0], r->nums[1], r->nums[2],
-                r->nums[3], r->nums[4], r->nums[5]);
-        }
+        pos += emit_run(buf+pos, sizeof(buf)-pos, &g_status.top[i], euro);
     }
     pos += snprintf(buf+pos, sizeof(buf)-pos,
-        "],\"freq_z2\":%d,\"freq_nums\":[%d,%d,%d,%d,%d,%d],\"freq_euro\":[%d,%d]}",
+        "],\"freq_z2\":%d,\"freq_nums\":[%d,%d,%d,%d,%d,%d],\"freq_euro\":[%d,%d],\"low\":[",
         g_status.freq_z2_count,
         g_status.freq_nums[0], g_status.freq_nums[1], g_status.freq_nums[2],
         g_status.freq_nums[3], g_status.freq_nums[4], g_status.freq_nums[5],
         g_status.freq_euro[0], g_status.freq_euro[1]);
+
+    int lshow = g_status.low_count < TOP_N ? g_status.low_count : TOP_N;
+    if (lshow < 0) lshow = 0;
+    for (int i = 0; i < lshow; i++) {
+        if (i) pos += snprintf(buf+pos, sizeof(buf)-pos, ",");
+        pos += emit_run(buf+pos, sizeof(buf)-pos, &g_status.low[i], euro);
+    }
+    pos += snprintf(buf+pos, sizeof(buf)-pos, "]}");
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
@@ -469,6 +536,7 @@ static esp_err_t start_handler(httpd_req_t *req)
         g_status.baseline_total = 100;
         g_status.loops_total    = 1;
         g_status.runs_limit     = 0;   // 0 = measure all combinations
+        g_status.rank_mode      = RANK_CUMULATIVE;
         if (httpd_req_get_url_query_str(req, qry, sizeof(qry)) == ESP_OK) {
             char val[16] = "";
             if (httpd_query_key_value(qry, "mode", val, sizeof(val)) == ESP_OK)
@@ -485,6 +553,8 @@ static esp_err_t start_handler(httpd_req_t *req)
                 int r = atoi(val);
                 if (r > 0 && r <= NUM_RUNS) g_status.runs_limit = r;
             }
+            if (httpd_query_key_value(qry, "rank", val, sizeof(val)) == ESP_OK)
+                g_status.rank_mode = (val[0] == '0') ? RANK_PEAK : RANK_CUMULATIVE;
         }
         xTaskCreate(elotto_task, "elotto", 8192, NULL, 5, NULL);
     }
