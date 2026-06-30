@@ -50,6 +50,10 @@ typedef struct {
     RunResult        top[TOP_N];          // cumulative highest-Z across loops so far
     int              low_count;           // valid entries in low[] (published)
     RunResult        low[TOP_N];          // cumulative lowest-Z across loops so far
+    int              cover_count;         // valid entries in cover[] (cumulative mode only)
+    RunResult        cover[TOP_N];        // high-Z but diversified (max-spread) picks
+    int              cover_low_count;     // valid entries in cover_low[] (cumulative only)
+    RunResult        cover_low[TOP_N];    // low-Z but diversified (max-spread) picks
     volatile bool    abort_requested;
     bool             slave_connected;
     RunResult        results[NUM_RUNS];   // live per-loop measurement scratch

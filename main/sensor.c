@@ -261,6 +261,58 @@ static void compute_significance(int comparisons)
     g_status.comparisons = comparisons;
 }
 
+/* Greedy diversified "coverage" picks: from the COVER_POOL most extreme
+ * combinations (highest Z if !lowest, most-negative if lowest), choose up to
+ * TOP_N that each share at most nm/2 numbers with every already-chosen one —
+ * strong by Z but spread out, so the set collectively covers more of the draw
+ * space than the (often near-duplicate) raw top-N / bottom-N. Operates on
+ * g_status.results[] in combination-index order (cumulative mode). */
+#define COVER_POOL 48
+static void publish_coverage(int n, int nm, bool lowest,
+                             RunResult *out, int *out_count)
+{
+    if (n <= 0) { *out_count = 0; return; }
+
+    // Gather the COVER_POOL most extreme combinations by Z (best candidate first)
+    int candIdx[COVER_POOL];
+    int mc = 0;
+    for (int i = 0; i < n; i++) {
+        double z = g_status.results[i].z_score;
+        double worst = (mc > 0) ? g_status.results[candIdx[mc - 1]].z_score : 0.0;
+        bool better = (mc < COVER_POOL) || (lowest ? (z < worst) : (z > worst));
+        if (!better) continue;
+        if (mc < COVER_POOL) mc++;
+        int p = mc - 1;
+        while (p > 0 && (lowest ? (z < g_status.results[candIdx[p - 1]].z_score)
+                                : (z > g_status.results[candIdx[p - 1]].z_score))) {
+            candIdx[p] = candIdx[p - 1]; p--;
+        }
+        candIdx[p] = i;
+    }
+
+    int  maxov = nm / 2;
+    bool chosen[COVER_POOL] = {false};
+    int  sel = 0;
+    // Pass 1: greedy by Z, enforce the pairwise overlap constraint
+    for (int j = 0; j < mc && sel < TOP_N; j++) {
+        RunResult *cj = &g_status.results[candIdx[j]];
+        bool ok = true;
+        for (int s = 0; s < sel && ok; s++) {
+            int shared = 0;
+            for (int a = 0; a < nm; a++)
+                for (int b = 0; b < nm; b++)
+                    if (out[s].nums[a] == cj->nums[b]) shared++;
+            if (shared > maxov) ok = false;
+        }
+        if (ok) { out[sel++] = *cj; chosen[j] = true; }
+    }
+    // Pass 2: if the constraint was too tight, fill remaining slots by Z
+    for (int j = 0; j < mc && sel < TOP_N; j++) {
+        if (!chosen[j]) out[sel++] = g_status.results[candIdx[j]];
+    }
+    *out_count = sel;
+}
+
 /* Cumulative (Stouffer) ranking: each of the n fixed combinations has its
  * running Σz in zsum[] over k measured loops. Rank by Z = Σz/√k, publish the
  * top-N / bottom-N and most-frequent (over cumulative Z>2). */
@@ -312,6 +364,10 @@ static void publish_cumulative(double *zsum, int n, int k,
         if (euro) { fe[g_status.results[i].euro[0]]++; fe[g_status.results[i].euro[1]]++; }
     }
     publish_frequency(fm, fe, *z2, nm, mx, euro);
+
+    // Diversified max-spread picks from the top-Z and bottom-Z pools
+    publish_coverage(n, nm, false, g_status.cover,     &g_status.cover_count);
+    publish_coverage(n, nm, true,  g_status.cover_low, &g_status.cover_low_count);
 }
 
 /* Fold one completed (or partial) loop's results into the cumulative top-N
@@ -360,6 +416,7 @@ static void absorb_loop(RunResult *carry, int *carry_n,
     g_status.result_count = *carry_n;
     for (int i = 0; i < *low_n; i++) g_status.low[i] = low[i];
     g_status.low_count = *low_n;
+    g_status.cover_count = g_status.cover_low_count = 0;   // coverage is cumulative-only
 
     // Publish most-frequent numbers across all loops' Z>2 runs
     publish_frequency(fm, fe, *z2, nm, mx, euro);
@@ -377,6 +434,8 @@ void elotto_task(void *pvParam)
     g_status.slave_connected = false;
     g_status.result_count    = 0;
     g_status.low_count       = 0;
+    g_status.cover_count     = 0;
+    g_status.cover_low_count = 0;
     g_status.freq_z2_count   = 0;
     g_status.loop_current    = 0;
     g_status.best_z          = 0.0;

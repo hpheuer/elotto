@@ -134,11 +134,6 @@ static const char HTML[] =
 "<div style='color:#6ab0e8;font-size:.9em;text-align:center;margin-top:4px'>"
 "<span id='sScoreDone'>0</span> / <span id='sScoreTotal'>-</span> Numbers</div>"
 "</div>"
-"<div id='loadArea' style='display:none;text-align:center;margin-top:12px'>"
-"<input type='file' id='csvFiles' accept='.csv' multiple style='display:none' onchange='loadCsvFiles(this.files)'>"
-"<button class='btn' onclick=\"document.getElementById('csvFiles').click()\" style='background:#2e5f8c;color:#fff;font-size:.9em;padding:9px 22px'>&#128194; Load previous CSV</button>"
-"<div id='loadStatus' style='color:#a0e8ff;font-size:.85em;margin-top:5px;min-height:1.2em'></div>"
-"</div>"
 "<div id='measArea' style='display:none;margin-top:14px'>"
 "<div style='color:#90ee90;font-size:.88em;margin-bottom:4px'>&#128202; Measurement"
 "<span id='measCheck'></span></div>"
@@ -154,22 +149,28 @@ static const char HTML[] =
 "<div id='msg'></div>"
 "</div>"
 "<div class='card' id='resCard' style='display:none'>"
-"<h3 id='resTitle' style='color:#90ee90;margin-bottom:4px'></h3>"
-"<div id='sigLine' style='color:#a0c0a0;font-size:.82em;margin-bottom:12px'></div>"
+"<h3 id='resTitle' style='color:#6ab0e8;margin-bottom:4px'></h3>"
+"<div id='sigLine' style='color:#a0c0a0;font-size:.82em;margin-bottom:4px'></div>"
+"<div style='color:#a0c0d0;font-size:.82em;margin-bottom:12px'>High-Z combinations"
+" chosen to overlap as little as possible &mdash; spread across more numbers to cover"
+" more potential draws.</div>"
 "<table><thead id='resHead'></thead>"
 "<tbody id='resBody'></tbody></table>"
 "<div style='text-align:center;margin-top:14px'>"
 "<button id='btnSave' class='btn' onclick='doSave()' style='display:none;background:#2e7d32;color:#fff;padding:10px 28px'>&#128190; Save CSV</button>"
 "</div>"
 "</div>"
-"<div class='card' id='resCardLow' style='display:none'>"
-"<h3 id='resTitleLow' style='color:#e8a0a0;margin-bottom:14px'></h3>"
-"<table><thead id='resHeadLow'></thead>"
-"<tbody id='resBodyLow'></tbody></table>"
+"<div class='card' id='resCardCoverLow' style='display:none'>"
+"<h3 id='resTitleCoverLow' style='color:#e8a0a0;margin-bottom:4px'></h3>"
+"<div style='color:#d0b0b0;font-size:.82em;margin-bottom:12px'>Low-Z combinations"
+" chosen to overlap as little as possible &mdash; the spread-out negative-deviation"
+" picks.</div>"
+"<table><thead id='resHeadCoverLow'></thead>"
+"<tbody id='resBodyCoverLow'></tbody></table>"
 "</div>"
 "</div>"
 "<script>"
-"var timer=null,curMode=0,loadedData=[],lastData=null,lastDisplayed=null;"
+"var timer=null,curMode=0,lastData=null,lastDisplayed=null;"
 "function fmt(ms){"
 "var m=Math.floor(ms/60000),h=Math.floor(m/60);m=m%60;"
 "return h>0?h+':'+('0'+m).slice(-2)+' h':m+' min';}"
@@ -194,11 +195,10 @@ static const char HTML[] =
 "var sp=Math.round(d.scoring_done*100/d.scoring_total);"
 "document.getElementById('pfScore').style.width=sp+'%';"
 "document.getElementById('sScoreDone').textContent=d.scoring_done||0;"
-"if(d.scoring_done>=d.scoring_total){"
+"if(d.scoring_done>=d.scoring_total)"
 "document.getElementById('scoreCheck').innerHTML=\" <span style='color:#90ee90;font-size:1.1em'>&#10004;</span>\";"
-"document.getElementById('loadArea').style.display='';}"
 "if(d.phase==='measuring')document.getElementById('measArea').style.display='';"
-"if(d.results&&d.results.length)showResults(d);"
+"if(d.cover&&d.cover.length)showResults(d);"
 "if(timer)clearInterval(timer);timer=setInterval(poll,1000);"
 "}}else if(d.state==='done'||d.state==='aborted'){"
 "curMode=d.mode==='euro'?0:1;setMode(curMode);"
@@ -232,13 +232,10 @@ static const char HTML[] =
 "document.getElementById('startBtns').style.display='none';"
 "document.getElementById('btnAbort').style.display='block';"
 "document.getElementById('progArea').style.display='block';"
-"loadedData=[];lastData=null;lastDisplayed=null;"
-"document.getElementById('loadArea').style.display='none';"
-"document.getElementById('loadStatus').textContent='';"
+"lastData=null;lastDisplayed=null;"
 "document.getElementById('btnSave').style.display='none';"
-"document.getElementById('csvFiles').value='';"
 "document.getElementById('resCard').style.display='none';"
-"document.getElementById('resCardLow').style.display='none';"
+"document.getElementById('resCardCoverLow').style.display='none';"
 "document.getElementById('msg').textContent='';"
 "updateLoopBadge(1,loops);"
 "setMode(mode);"
@@ -257,9 +254,8 @@ static const char HTML[] =
 "document.getElementById('pfScore').style.width=scorePct+'%';"
 "document.getElementById('sScoreDone').textContent=d.scoring_done||0;"
 "document.getElementById('sScoreTotal').textContent=d.scoring_total||0;"
-"if(d.scoring_total>0&&d.scoring_done>=d.scoring_total){"
+"if(d.scoring_total>0&&d.scoring_done>=d.scoring_total)"
 "document.getElementById('scoreCheck').innerHTML=\" <span style='color:#90ee90;font-size:1.1em'>&#10004;</span>\";"
-"document.getElementById('loadArea').style.display='';}"
 "else document.getElementById('scoreCheck').innerHTML='';"
 "var calPct=d.baseline_total>0?Math.round(d.baseline_done*100/d.baseline_total):0;"
 "document.getElementById('pfCal').style.width=calPct+'%';"
@@ -294,7 +290,7 @@ static const char HTML[] =
 "document.getElementById('sTime').textContent=fmt(d.elapsed_ms);"
 "document.getElementById('measCheck').innerHTML=\" <span style='color:#90ee90;font-size:1.1em'>&#10004;</span>\";"
 "}"
-"if(d.state==='running'&&d.results&&d.results.length)showResults(d);"
+"if(d.state==='running'&&d.cover&&d.cover.length)showResults(d);"
 "if(d.state==='done'||d.state==='aborted'){"
 "clearInterval(timer);"
 "document.getElementById('btnAbort').style.display='none';"
@@ -310,18 +306,7 @@ static const char HTML[] =
 "}"
 "function showResults(d){"
 "lastData=d;"
-"var res=d.results,mode=d.mode;"
-"if(!res||res.length===0)return;"
-"if(loadedData.length>0){"
-"var all=res.slice();"
-"for(var i=0;i<loadedData.length;i++)"
-"if(loadedData[i]._mode===mode)all.push(loadedData[i]);"
-"all.sort(function(a,b){return b.z-a.z;});"
-"res=all.slice(0,10);}"
-"lastDisplayed=res;"
-"var isEuro=mode==='euro';"
-"document.getElementById('resTitle').innerHTML="
-"'☘️ Top-'+res.length+(isEuro?' Eurojackpot runs':' 6-of-49 runs');"
+"var res=d.cover,isEuro=d.mode==='euro';"
 "var sl=document.getElementById('sigLine');"
 "if(d.best_z!==undefined&&d.comparisons>0){"
 "var rk=d.rank==='cum'?'cumulative Z (Stouffer)':'peak Z';"
@@ -330,23 +315,21 @@ static const char HTML[] =
 "sl.innerHTML='Ranking: '+rk+' \\u00b7 most extreme |Z| = '+d.best_z.toFixed(2)"
 "+' \\u00b7 corrected p = '+pc+' over '+d.comparisons+' comparisons ('+sig+')';"
 "}else sl.innerHTML='';"
-"document.getElementById('resHead').innerHTML="
-"'<tr><th>#</th><th>Run</th><th>Z-Score</th><th>p-Value</th><th>Numbers</th>'"
-"+(isEuro?'<th>Bonus</th>':'')+'</tr>';"
-"var tb=document.getElementById('resBody');tb.innerHTML='';"
-"for(var i=0;i<res.length;i++){"
-"var r=res[i],nums='';"
-"for(var j=0;j<r.nums.length;j++)"
-"nums+='<span class=\"num\">'+r.nums[j]+'</span>';"
-"var estr='';"
-"if(isEuro&&r.euro&&r.euro.length)"
-"for(var j=0;j<r.euro.length;j++)"
-"estr+='<span class=\"num euro\">'+r.euro[j]+'</span>';"
-"tb.innerHTML+='<tr><td>'+(i+1)+'</td><td>'+r.run+'</td>"
-"<td>'+r.z.toFixed(4)+'</td><td>'+r.p+'</td><td>'+nums+'</td>"
-"'+(isEuro?'<td>'+estr+'</td>':'')+'</tr>';"
-"}"
+"document.getElementById('resCard').style.display='block';"
+"if(!res||res.length===0){"
+"document.getElementById('resTitle').innerHTML='\\uD83E\\uDDE9 Coverage';"
+"document.getElementById('resHead').innerHTML='';"
+"document.getElementById('resBody').innerHTML="
+"'<tr><td style=\"color:#d0b0b0;padding:10px\">Coverage needs the <b>Cumulative Z</b> ranking mode.</td></tr>';"
+"document.getElementById('btnSave').style.display='none';"
+"document.getElementById('resCardCoverLow').style.display='none';"
+"return;}"
+"lastDisplayed=res;"
+"document.getElementById('resTitle').innerHTML="
+"'\\uD83E\\uDDE9 Coverage-'+res.length+(isEuro?' Eurojackpot':' 6-of-49')+' (highest Z, diversified)';"
+"renderRunTable('resHead','resBody',res,isEuro);"
 "if(d.freq_z2>0&&d.freq_nums){"
+"var tb=document.getElementById('resBody');"
 "var fn='',fe='',nc=isEuro?5:6;"
 "for(var j=0;j<nc;j++)if(d.freq_nums[j])fn+='<span class=\"num\">'+d.freq_nums[j]+'</span>';"
 "if(isEuro&&d.freq_euro)for(var j=0;j<2;j++)if(d.freq_euro[j])fe+='<span class=\"num euro\">'+d.freq_euro[j]+'</span>';"
@@ -358,18 +341,13 @@ static const char HTML[] =
 "+(isEuro?'<td style=\"'+sep+'\">'+fe+'</td>':'')+'</tr>';"
 "}"
 "document.getElementById('btnSave').style.display='';"
-"document.getElementById('resCard').style.display='block';"
-"showLow(d);"
+"showCoverLow(d);"
 "}"
-"function showLow(d){"
-"var res=d.low,isEuro=d.mode==='euro';"
-"if(!res||res.length===0){document.getElementById('resCardLow').style.display='none';return;}"
-"document.getElementById('resTitleLow').innerHTML="
-"'\\uD83D\\uDD3B Bottom-'+res.length+(isEuro?' Eurojackpot runs':' 6-of-49 runs')+' (lowest Z)';"
-"document.getElementById('resHeadLow').innerHTML="
+"function renderRunTable(headId,bodyId,res,isEuro){"
+"document.getElementById(headId).innerHTML="
 "'<tr><th>#</th><th>Run</th><th>Z-Score</th><th>p-Value</th><th>Numbers</th>'"
 "+(isEuro?'<th>Bonus</th>':'')+'</tr>';"
-"var tb=document.getElementById('resBodyLow');tb.innerHTML='';"
+"var tb=document.getElementById(bodyId);tb.innerHTML='';"
 "for(var i=0;i<res.length;i++){"
 "var r=res[i],nums='';"
 "for(var j=0;j<r.nums.length;j++)"
@@ -382,7 +360,14 @@ static const char HTML[] =
 "<td>'+r.z.toFixed(4)+'</td><td>'+r.p+'</td><td>'+nums+'</td>"
 "'+(isEuro?'<td>'+estr+'</td>':'')+'</tr>';"
 "}"
-"document.getElementById('resCardLow').style.display='block';"
+"}"
+"function showCoverLow(d){"
+"var res=d.cover_low,isEuro=d.mode==='euro';"
+"if(!res||res.length===0){document.getElementById('resCardCoverLow').style.display='none';return;}"
+"document.getElementById('resTitleCoverLow').innerHTML="
+"'\\uD83E\\uDDE9 Coverage-'+res.length+(isEuro?' Eurojackpot':' 6-of-49')+' (lowest, diversified)';"
+"renderRunTable('resHeadCoverLow','resBodyCoverLow',res,isEuro);"
+"document.getElementById('resCardCoverLow').style.display='block';"
 "}"
 "function doSave(){"
 "if(!lastData||!lastDisplayed)return;"
@@ -393,12 +378,12 @@ static const char HTML[] =
 "for(var j=0;j<nc;j++)cols.push(r.nums[j]);"
 "if(isEuro){cols.push(r.euro[0]);cols.push(r.euro[1]);}"
 "o.push(cols.join(','));}return o;}"
-"var lines=['# mode='+d.mode+',date='+new Date().toISOString().slice(0,10),'# top-10 (highest z)',hdr];"
+"var lines=['# mode='+d.mode+',date='+new Date().toISOString().slice(0,10),'# coverage-10 (highest z, diversified)',hdr];"
 "lines=lines.concat(rows(lastDisplayed));"
-"if(d.low&&d.low.length){"
-"lines.push('# bottom-10 (lowest z)');"
+"if(d.cover_low&&d.cover_low.length){"
+"lines.push('# coverage-10 (lowest z, diversified)');"
 "lines.push(hdr);"
-"lines=lines.concat(rows(d.low));}"
+"lines=lines.concat(rows(d.cover_low));}"
 "var url=URL.createObjectURL(new Blob([lines.join('\\n')],{type:'text/csv'}));"
 "var a=document.createElement('a');"
 "a.href=url;"
@@ -406,40 +391,6 @@ static const char HTML[] =
 "document.body.appendChild(a);a.click();"
 "setTimeout(function(){URL.revokeObjectURL(url);document.body.removeChild(a);},100);"
 "}"
-"function loadCsvFiles(files){"
-"if(!files||files.length===0)return;"
-"var total=files.length,done=0;"
-"loadedData=[];"
-"for(var fi=0;fi<files.length;fi++){"
-"(function(f){"
-"var reader=new FileReader();"
-"reader.onload=function(e){"
-"parseCsvInto(e.target.result);"
-"done++;"
-"if(done===total){"
-"document.getElementById('loadStatus').textContent="
-"loadedData.length+' runs from '+total+' file(s) loaded';"
-"if(lastData)showResults(lastData);"
-"}};"
-"reader.readAsText(f);"
-"})(files[fi]);}"
-"document.getElementById('csvFiles').value='';"
-"}"
-"function parseCsvInto(text){"
-"var lines=text.split('\\n');"
-"var mm=text.match(/mode=(euro|649)/);"
-"var m=mm?mm[1]:'euro';"
-"for(var i=0;i<lines.length;i++){"
-"var line=lines[i].trim();"
-"if(!line||line[0]==='#'||line.slice(0,3)==='run')continue;"
-"var p=line.split(',');"
-"var need=m==='euro'?10:9;"
-"if(p.length<need)continue;"
-"var r={run:parseInt(p[0]),z:parseFloat(p[1]),p:p[2],nums:[],euro:[],_mode:m};"
-"if(m==='euro'){for(var j=0;j<5;j++)r.nums.push(parseInt(p[3+j]));r.euro=[parseInt(p[8]),parseInt(p[9])];}"
-"else{for(var j=0;j<6;j++)r.nums.push(parseInt(p[3+j]));r.euro=[];}"
-"if(!isNaN(r.z)&&r.nums.length>0)loadedData.push(r);"
-"}}"
 "</script></body></html>";
 
 /* Serialize one RunResult as a JSON object; returns chars written. */
@@ -463,7 +414,7 @@ static int emit_run(char *buf, int cap, const RunResult *r, bool euro)
 /* ── /status JSON ─────────────────────────────────────────────────── */
 static esp_err_t status_handler(httpd_req_t *req)
 {
-    static char buf[4096];
+    static char buf[6144];
     int  pos = 0;
     const char *state_str =
         g_status.state == ELOTTO_RUNNING ? "running" :
@@ -484,7 +435,7 @@ static esp_err_t status_handler(httpd_req_t *req)
         "\"loop_current\":%d,\"loops_total\":%d,"
         "\"scoring_done\":%d,\"scoring_total\":%d,"
         "\"baseline_done\":%d,\"baseline_total\":%d,\"baseline_mean\":%.4f,"
-        "\"completed\":%d,\"total\":%d,\"elapsed_ms\":%lld,\"results\":[",
+        "\"completed\":%d,\"total\":%d,\"elapsed_ms\":%lld,",
         state_str, mode_str, phase_str,
         g_status.slave_connected ? "true" : "false", rank_str,
         g_status.best_z, g_status.p_corrected, g_status.comparisons,
@@ -496,26 +447,31 @@ static esp_err_t status_handler(httpd_req_t *req)
 
     // Cumulative top-N is published continuously, so intermediate results
     // (after each loop) are shown too — not only when the whole job is done.
-    int show = g_status.result_count < TOP_N ? g_status.result_count : TOP_N;
-    if (show < 0) show = 0;
     bool euro = (g_status.mode == MODE_EUROJACKPOT);
 
-    for (int i = 0; i < show; i++) {
-        if (i) pos += snprintf(buf+pos, sizeof(buf)-pos, ",");
-        pos += emit_run(buf+pos, sizeof(buf)-pos, &g_status.top[i], euro);
-    }
+    // Only the diversified coverage sets are shown; raw top/bottom rankings
+    // (g_status.top[]/low[]) are still computed internally for the significance
+    // line but no longer serialized.
     pos += snprintf(buf+pos, sizeof(buf)-pos,
-        "],\"freq_z2\":%d,\"freq_nums\":[%d,%d,%d,%d,%d,%d],\"freq_euro\":[%d,%d],\"low\":[",
+        "\"freq_z2\":%d,\"freq_nums\":[%d,%d,%d,%d,%d,%d],\"freq_euro\":[%d,%d],\"cover\":[",
         g_status.freq_z2_count,
         g_status.freq_nums[0], g_status.freq_nums[1], g_status.freq_nums[2],
         g_status.freq_nums[3], g_status.freq_nums[4], g_status.freq_nums[5],
         g_status.freq_euro[0], g_status.freq_euro[1]);
 
-    int lshow = g_status.low_count < TOP_N ? g_status.low_count : TOP_N;
-    if (lshow < 0) lshow = 0;
-    for (int i = 0; i < lshow; i++) {
+    int cshow = g_status.cover_count < TOP_N ? g_status.cover_count : TOP_N;
+    if (cshow < 0) cshow = 0;
+    for (int i = 0; i < cshow; i++) {
         if (i) pos += snprintf(buf+pos, sizeof(buf)-pos, ",");
-        pos += emit_run(buf+pos, sizeof(buf)-pos, &g_status.low[i], euro);
+        pos += emit_run(buf+pos, sizeof(buf)-pos, &g_status.cover[i], euro);
+    }
+    pos += snprintf(buf+pos, sizeof(buf)-pos, "],\"cover_low\":[");
+
+    int clshow = g_status.cover_low_count < TOP_N ? g_status.cover_low_count : TOP_N;
+    if (clshow < 0) clshow = 0;
+    for (int i = 0; i < clshow; i++) {
+        if (i) pos += snprintf(buf+pos, sizeof(buf)-pos, ",");
+        pos += emit_run(buf+pos, sizeof(buf)-pos, &g_status.cover_low[i], euro);
     }
     pos += snprintf(buf+pos, sizeof(buf)-pos, "]}");
 
