@@ -35,6 +35,38 @@ randomness; combining two independent measurements sharpens the signal (see
 > deviations in true randomness *correctly*. Treat the output as an experiment, not a betting
 > tip.
 
+## What is "Coverage Mode"? (in plain words)
+
+When you rank lottery combinations purely by Z-score, the very top picks tend to look almost
+identical — they share most of their numbers (you'll see 1-2-5-9-… repeated across nearly
+every row). Ten near-duplicate tickets only "cover" a handful of numbers, so they essentially
+all win or all lose together.
+
+**Coverage mode fixes that.** Instead of just taking the ten highest-scoring combinations, it
+picks ten that are each strong *and* as different from one another as possible:
+
+1. Take the ~50 best-scoring combinations.
+2. Keep the best one.
+3. Add the next-best one **only if it doesn't reuse too many numbers** already used — at most
+   half overlap with any ticket already chosen (≤3 shared for 6-of-49, ≤2 for Eurojackpot).
+4. Repeat until ten are chosen (if the rule is too strict to reach ten, the rest are filled by
+   score).
+
+The result is ten strong tickets spread across many more numbers, so together they touch a
+much larger slice of the possible draws. (This is the classic lottery idea of **wheeling** —
+playing a spread of tickets — except here the numbers to spread are chosen by the GCP scores
+instead of by hand.)
+
+You get two such sets:
+- **🧩 Coverage (highest Z)** — the spread-out picks with the biggest *positive* deviation.
+- **🧩 Coverage (lowest Z)** — the spread-out picks with the biggest *negative* deviation.
+
+> It still can't beat the lottery — the draw is independent of the measurement. Coverage just
+> makes the suggestions less repetitive and spread over more of the number space.
+
+**Requires Cumulative Z ranking.** Coverage is built from the full, repeatedly-measured
+ranking, so in Peak-Z mode the coverage tables are empty.
+
 ## Screenshots
 
 <table>
@@ -77,9 +109,9 @@ A job runs three phases, optionally repeated over several **loops**:
 2. **Number scoring** (`PHASE_SCORING`) — every individual candidate number gets one GCP run.
    The highest-scoring numbers form a small candidate **pool**.
 3. **Combination measurement** (`PHASE_MEASURING`) — every combination of the pool is
-   enumerated lexicographically and measured with its own GCP run, then ranked by Z-score.
-   The **Top-10** (most positive Z) and **Bottom-10** (most negative Z) combinations are the
-   result; a large |Z| in either direction is the interesting signal.
+   enumerated lexicographically and measured with its own GCP run, then ranked by Z-score
+   (a large |Z| in either direction is the interesting signal). The displayed result is the
+   diversified **Coverage** set — see [Coverage Mode](#what-is-coverage-mode-in-plain-words).
 
 | Mode | Candidate pool | Combinations / loop |
 |---|---|---|
@@ -101,8 +133,11 @@ one-off noise. Two ranking modes decide how the loops are combined:
   extremes (the max of thousands of runs is large even with no signal), so use it mainly for
   comparison.
 
-Either way the Top-10 / Bottom-10 and the **most-frequent** numbers (aggregated across all
-loops' Z > 2 runs) are published live after every loop.
+After every loop the diversified **Coverage** sets (highest-Z and lowest-Z) and the
+**most-frequent** numbers (aggregated across all loops' Z > 2 runs) are published live. The
+raw top/bottom rankings are still computed internally to feed the significance line, but only
+the Coverage view is displayed. (Coverage is built from the full cumulative ranking, so it is
+shown only in **Cumulative Z** mode.)
 
 ### Honest significance
 
@@ -228,13 +263,12 @@ Accessible in the browser via Ethernet after startup (read IP from Serial Monito
 | **Calibration phase** | Gold progress bar with ✔ when done |
 | **Number scoring phase** | Blue progress bar with ✔ when done |
 | **Measurement phase** | Green progress bar with runtime, ETA and ✔ when done |
-| **Top-10** | Highest-Z combinations; updates live after each loop |
-| **Bottom-10** | Lowest-Z combinations (largest negative deviation) |
+| **🧩 Coverage (highest Z)** | Diversified high-Z picks (spread out); updates live after each loop |
+| **🧩 Coverage (lowest Z)** | Diversified low-Z picks (largest negative deviation) |
 | **Significance line** | Most extreme \|Z\| + Bonferroni-corrected p over N comparisons |
 | **Most frequent** | Most frequent numbers across all Z>2 runs |
 | **Abort** | Stops after current run, shows cumulative results so far |
-| **Save CSV** | Downloads Top-10 **and** Bottom-10 sections as `.csv` |
-| **Load previous CSV** | Load earlier CSVs and merge them into the ranking |
+| **Save CSV** | Downloads both Coverage sections (highest + lowest Z) as `.csv` |
 | **Browser reload / close** | ESP keeps running all loops; page reconnects and shows live progress |
 | **Diagnostics** | `http://<IP>/diag` — compares register vs esp_random() |
 
@@ -379,6 +413,24 @@ double pc   = min(1.0, comparisons * p1);    // Bonferroni over N comparisons
 // comparisons = runs_total (cumulative)  |  runs_total × loops (peak)
 ```
 
+### 9 — Coverage: Diversified Picks (the displayed result)
+
+The raw top-N picks overlap heavily and cover few distinct draws. `publish_coverage()` instead
+greedily selects, from the COVER_POOL most extreme combinations, up to TOP_N that each share at
+most `nm/2` numbers with every already-chosen one — strong by Z but spread out. Run for both the
+highest-Z and lowest-Z pools. See [Coverage Mode](#what-is-coverage-mode-in-plain-words) for the
+plain-language version.
+
+```c
+// sensor.c — publish_coverage(): greedy max-spread over the top-Z candidates
+for (j in candidates by Z) {              // best score first
+    shared = max overlap with any already-chosen pick;
+    if (shared <= nm/2) keep(j);          // strong AND different enough
+    if (chosen == TOP_N) break;
+}
+// pass 2: if the rule was too strict, fill the rest by Z
+```
+
 ## Insights from Development
 
 ### TRNG Register is 75× Faster than esp_random()
@@ -504,3 +556,4 @@ elotto_slave/main/
 | v1.6 | CSV save/load in browser, parallel slave baseline, JS fix (buttons) |
 | v1.7 | Multi-loop runs: cumulative global Top-10, live intermediate results after each loop, loop counter, `Runs` cap for quick tests; device-side loop (browser-independent); docs updated to reflect number-scoring + combination-enumeration flow |
 | v1.8 | Cumulative (Stouffer) Z ranking mode `Σz/√k` (default) vs Peak Z, selectable; Bottom-10 lowest-Z table; Bonferroni-corrected significance line; CSV save with Top-10 + Bottom-10; plain-language "In a Nutshell" overview |
+| v1.9 | Diversified **Coverage** selection (greedy max-spread over the top-/bottom-Z pool) for highest- and lowest-Z; results view is now coverage-only (raw Top/Bottom tables removed, kept internally only for significance); slimmer `/status`; removed inert CSV-load path; plain-language "What is Coverage Mode?" section |

@@ -20,9 +20,12 @@ via UART1 (GPIO14/15, 460800 baud); combined z-score = (z_master + z_slave) / sq
 Phase 1: baseline calibration (master + slave in parallel).
 Phase 0: score individual numbers 1..N with GCP runs to build candidate pool.
 Phase 2: measure all pool combinations (lexicographic enumeration), rank by z-score.
-Results shown in browser UI (Ethernet, DHCP): Top-10 (highest z) + Bottom-10 (lowest z,
-g_status.low[]) + most-frequent from Z>2 runs + a Bonferroni-corrected significance line
-(compute_significance()).
+Results shown in browser UI (Ethernet, DHCP): two diversified Coverage sets — highest-z
+(g_status.cover[]) and lowest-z (g_status.cover_low[]), via publish_coverage() greedy
+max-spread (≤ nm/2 shared numbers per pick) — plus most-frequent from Z>2 runs and a
+Bonferroni-corrected significance line (compute_significance()). The raw top[]/low[] rankings
+are still computed (for significance) but no longer displayed or serialized. Coverage is
+cumulative-mode only.
 
 Loops: the whole experiment repeats N times (device-side, in elotto_task). Two ranking modes
 (g_status.rank_mode): RANK_PEAK keeps the best single-run z across loops via absorb_loop();
