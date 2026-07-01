@@ -86,7 +86,7 @@ static const char HTML[] =
 "</div>"
 "<div style='grid-column:span 2;display:flex;align-items:center;gap:6px'>"
 "<label style='color:#f0c040;font-size:.9em'>Loops:</label>"
-"<input id='numLoops' type='number' value='1' min='1' max='50' step='1'"
+"<input id='numLoops' type='number' value='1' min='1' max='500' step='1'"
 " style='width:70px;padding:5px 8px;border-radius:6px;border:1px solid #a08030;"
 "background:#0a2e0a;color:#fff;font-size:1em;text-align:center'>"
 "</div>"
@@ -218,7 +218,7 @@ static const char HTML[] =
 "curMode=mode;"
 "var base=parseInt(document.getElementById('numBaseline').value)||100;"
 "var loops=parseInt(document.getElementById('numLoops').value)||1;"
-"if(loops<1)loops=1;if(loops>50)loops=50;"
+"if(loops<1)loops=1;if(loops>500)loops=500;"
 "var runs=parseInt(document.getElementById('numRuns').value)||0;"
 "if(runs<0)runs=0;if(runs>8000)runs=8000;"
 "var rank=document.getElementById('selRank').value;"
@@ -503,7 +503,7 @@ static esp_err_t start_handler(httpd_req_t *req)
             }
             if (httpd_query_key_value(qry, "loops", val, sizeof(val)) == ESP_OK) {
                 int l = atoi(val);
-                if (l > 0 && l <= 50) g_status.loops_total = l;
+                if (l > 0 && l <= 500) g_status.loops_total = l;
             }
             if (httpd_query_key_value(qry, "runs", val, sizeof(val)) == ESP_OK) {
                 int r = atoi(val);

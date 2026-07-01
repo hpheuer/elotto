@@ -443,7 +443,7 @@ void elotto_task(void *pvParam)
     g_status.comparisons     = 0;
     if (g_status.baseline_total <= 0 || g_status.baseline_total > 5000)
         g_status.baseline_total = 100;
-    if (g_status.loops_total <= 0 || g_status.loops_total > 50)
+    if (g_status.loops_total <= 0 || g_status.loops_total > 500)
         g_status.loops_total = 1;
 
     slave_init();
