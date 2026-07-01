@@ -71,12 +71,35 @@ ranking, so in Peak-Z mode the coverage tables are empty.
 
 <table>
 <tr>
-<td align="center"><b>Measurement running</b></td>
-<td align="center"><b>Results with Top-10 + Most frequent</b></td>
+<td align="center"><b>Start screen</b></td>
+<td align="center"><b>Run finished</b></td>
 </tr>
 <tr>
-<td><img src="docs/screenshot_laufend.png" width="390"></td>
-<td><img src="docs/screenshot_ergebnis.png" width="390"></td>
+<td><img src="docs/ui_start.png" width="390"></td>
+<td><img src="docs/ui_done.png" width="390"></td>
+</tr>
+<tr>
+<td>Inputs: <b>Baseline runs</b>, <b>Loops</b>, <b>Runs</b> (0 = all) and the
+<b>Ranking</b> mode, then the Euro-Lotto / 6-of-49 buttons.</td>
+<td>The three phases — calibration, number scoring, measurement — each fill to 100&nbsp;% with
+a ✔, plus runs / progress / time / ETA.</td>
+</tr>
+</table>
+
+<table>
+<tr>
+<td align="center"><b>Coverage (highest Z)</b></td>
+<td align="center"><b>Coverage (lowest Z)</b></td>
+</tr>
+<tr>
+<td><img src="docs/coverage_high.png" width="390"></td>
+<td><img src="docs/coverage_low.png" width="390"></td>
+</tr>
+<tr>
+<td>Ten diversified high-Z combinations (spread out to cover more draws), the
+<b>significance line</b> (most extreme |Z| + corrected p) and the most-frequent row. Save CSV
+exports both coverage sets.</td>
+<td>Ten diversified low-Z combinations — the spread-out largest-negative-deviation picks.</td>
 </tr>
 </table>
 
@@ -529,13 +552,15 @@ correlations, Z-score distribution. Runtime approx. 5 seconds.
 
 ```
 main/
-  elotto.c    — app_main, Ethernet, webserver, HTML/JS incl. /diag, CSV Save/Load, loop UI
+  elotto.c    — app_main, Ethernet, webserver, HTML/JS incl. /diag, CSV save, loop UI
   sensor.c    — GCP analysis, TRNG register, baseline, number scoring, combination
-                enumeration, multi-loop accumulation, slave UART
-  sensor.h    — types, ElottoStatus (phase/baseline/loop/top fields)
+                enumeration, multi-loop accumulation, coverage selection, slave UART
+  sensor.h    — types, ElottoStatus (phase/baseline/loop/ranking/coverage fields)
 docs/
-  screenshot_laufend.png   — web UI during measurement
-  screenshot_ergebnis.png  — web UI with Top-10 + most-frequent result
+  ui_start.png       — start screen (inputs + mode buttons)
+  ui_done.png        — a finished run (three phase bars complete)
+  coverage_high.png  — Coverage highest-Z table + significance + most-frequent
+  coverage_low.png   — Coverage lowest-Z table
 build.ps1     — build helper script for standard PowerShell
 sdkconfig     — ESP-IDF configuration
 
