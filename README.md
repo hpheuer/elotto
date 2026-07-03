@@ -201,7 +201,8 @@ master runs standalone with identical results, just without the √2 SNR boost.
 
 ### What the slave does
 
-The slave (`elotto_slave/main/slave.c`) is a second ESP32-P4 running the **identical GCP
+The slave ([hpheuer/elotto_slave](https://github.com/hpheuer/elotto_slave),
+`main/slave.c`) is a second ESP32-P4 running the **identical GCP
 engine** (same `gcp_zscore_raw()`, same TRNG register `0x501101A4`, same 32,000 × 200-bit
 math) but **nothing else** — no Ethernet, no webserver, no lottery logic. It boots, configures
 UART1, and sits in a blocking command loop waiting for the master. Its only job: when told to,
@@ -584,8 +585,8 @@ docs/
 build.ps1     — build helper script for standard PowerShell
 sdkconfig     — ESP-IDF configuration
 
-elotto_slave/main/
-  slave.c     — slave GCP handler, UART1 protocol (P/B/M/A commands), timestamps in log
+elotto_slave/  — separate repo: https://github.com/hpheuer/elotto_slave
+  main/slave.c — slave GCP handler, UART1 protocol (P/B/M/A commands), timestamps in log
 ```
 
 ## Version History
