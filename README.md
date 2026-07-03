@@ -170,6 +170,29 @@ of 5005 random Z-scores is ≈ 3.5 by chance alone). So the results show the **m
 *significant* (p < 0.05) or *consistent with chance* — telling you whether anything genuinely
 exceeded noise.
 
+### Measurement hygiene
+
+Four guards keep systematic hardware effects from masquerading as GCP signal:
+
+- **Studentization** — every loop's z-values are re-expressed as `(z − loop mean) / loop σ`
+  using the loop's own ~5005 measurements. This removes the unstable TRNG bias with a far
+  better estimate than the small baseline phase (whose error would otherwise accumulate
+  √k-coherently across loops), and makes per-run Z exactly N(0,1) even if raw register reads
+  are correlated (true σ ≠ 1). The pre-scaling **per-run σ** is shown in the results — ~1.000
+  means the TRNG is healthy.
+- **Random measurement order** — each loop measures the combinations in a fresh random
+  permutation. With a fixed order, slow drift (e.g. a temperature ramp over a ~20-min loop)
+  would hit each combination at the same position every loop and accumulate exactly like a
+  real signal.
+- **Master–slave independence check** — Pearson **r** between the per-run (z_master, z_slave)
+  pairs (centered per loop), shown with per-device σ. r ≈ 0 confirms the two TRNGs are
+  independent and the √2 combine is valid; the UI flags significant correlation with ⚠.
+- **Stride sampling** — a `Runs` cap measures every ⌊full/cap⌋-th combination across the whole
+  space instead of the lexicographic prefix (which all shared the pool's lowest numbers).
+
+The number-scoring phase also runs **5 GCP runs per candidate number** (Stouffer), so the
+pool choice doesn't ride on single-run noise.
+
 ## Dual-ESP: Master & Slave
 
 The system runs on **one** ESP32-P4 (master only) or **two** (master + slave) for a higher
@@ -289,6 +312,7 @@ Accessible in the browser via Ethernet after startup (read IP from Serial Monito
 | **🧩 Coverage (highest Z)** | Diversified high-Z picks (spread out); updates live after each loop |
 | **🧩 Coverage (lowest Z)** | Diversified low-Z picks (largest negative deviation) |
 | **Significance line** | Most extreme \|Z\| + Bonferroni-corrected p over N comparisons |
+| **Stats line** | per-run σ (TRNG health, ideal 1.0) · master–slave r with ok/⚠ flag · σm/σs |
 | **Most frequent** | Most frequent numbers across all Z>2 runs |
 | **Abort** | Stops after current run, shows cumulative results so far |
 | **Save CSV** | Downloads both Coverage sections (highest + lowest Z) as `.csv` |
@@ -346,41 +370,37 @@ if (use_slave) {
 Baseline calibration also runs in parallel. See **[Dual-ESP: Master & Slave](#dual-esp-master--slave)**
 for the full protocol, timing and robustness details.
 
-### 4 — Two-Phase Measurement (Baseline Correction)
+### 4 — Bias Correction: Studentization per Loop
 
-The TRNG has a systematic bias of approx. −0.022 per segment.
-Over 32,000 segments this accumulates to **Z ≈ −3.95 per run** without correction.
-Solution: Phase 1 measures the bias, Phase 2 subtracts it:
+The TRNG has a large, *unstable* systematic bias (measured between **Z ≈ −4 and +5 per run**
+across sessions). The baseline phase gives a rough estimate for display, but the real
+correction is **studentization**: each loop's z-values are centered on the loop's own mean and
+scaled by the loop's own empirical σ — the ~5005 measurement runs are a far better bias
+estimator than a small baseline, taken in the very same time window, and the σ scaling keeps
+Z ~ N(0,1) even if raw register reads are partially correlated:
 
 ```c
-// sensor.c — elotto_task()
-
-// Phase 1: Calibration
-g_status.phase = PHASE_BASELINE;
-double bsum = 0.0;
-for (int i = 0; i < baseline_total; i++) {
-    bsum += gcp_zscore_raw();
-    g_status.baseline_done = i + 1;
-}
-double baseline_mean = bsum / baseline_total;
-
-// Phase 2: Bias-corrected measurement
-g_status.phase = PHASE_MEASURING;
-for (int i = 0; i < runs_total; i++) {
-    double z = gcp_zscore_raw() - baseline_mean;   // ← correction
-    g_status.results[i].z_score = z;
-}
+// sensor.c — studentize(), after each loop
+double m = Σ z_i / n,  s = √(Σ(z_i − m)² / (n−1));   // loop's own mean and σ
+g_status.loop_sigma = s;                              // TRNG health metric (ideal 1.0)
+for (i)  z_i = (z_i − m) / s;                         // exactly N(0,1) under the null
 ```
+
+Measurement order is a fresh **Fisher–Yates permutation** every loop (`s_perm[]`), so slow
+drift cannot hit the same combinations at the same loop position each time and accumulate
+√k-coherently like a real signal.
 
 ### 5 — Number Scoring → Candidate Pool
 
-Numbers are **not** drawn randomly. Every candidate number is GCP-scored with one run; the
-highest-scoring numbers form the pool that combinations are later built from:
+Numbers are **not** drawn randomly. Every candidate number is GCP-scored with **5 runs**
+(Stouffer per number); the highest-scoring numbers form the pool that combinations are later
+built from:
 
 ```c
 // sensor.c — score_and_build_pool()
 for (int k = 1; k <= max_val; k++)
-    scores[k] = gcp_zscore_raw();          // one GCP run per number 1..max_val
+    for (int r = 0; r < SCORE_REPS; r++)   // 5 runs per number (Stouffer)
+        scores[k] += gcp_zscore_raw();
 // keep the pool_size highest scores, then insertion-sort the pool ascending
 ```
 
@@ -582,3 +602,4 @@ elotto_slave/main/
 | v1.7 | Multi-loop runs: cumulative global Top-10, live intermediate results after each loop, loop counter, `Runs` cap for quick tests; device-side loop (browser-independent); docs updated to reflect number-scoring + combination-enumeration flow |
 | v1.8 | Cumulative (Stouffer) Z ranking mode `Σz/√k` (default) vs Peak Z, selectable; Bottom-10 lowest-Z table; Bonferroni-corrected significance line; CSV save with Top-10 + Bottom-10; plain-language "In a Nutshell" overview |
 | v1.9 | Diversified **Coverage** selection (greedy max-spread over the top-/bottom-Z pool) for highest- and lowest-Z; results view is now coverage-only (raw Top/Bottom tables removed, kept internally only for significance); slimmer `/status`; removed inert CSV-load path; plain-language "What is Coverage Mode?" section |
+| v2.0 | GCP methodology upgrade: per-loop **studentization** (`(z−m)/σ`, TRNG health σ published), **random measurement order** per loop (drift immunity), **master–slave independence check** (Pearson r, per-loop centered, per-device σ), 5× number scoring, **stride sampling** for capped runs, fewer yields (~15% faster). ⚠ Z-scores not comparable with pre-v2.0 sessions |
