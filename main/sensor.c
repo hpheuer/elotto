@@ -14,6 +14,11 @@ ElottoStatus g_status = { .state = ELOTTO_IDLE };
 // Per-combination running Σz across loops (cumulative / Stouffer ranking mode)
 static double s_zsum[NUM_RUNS];
 
+// Random measurement order for the current loop (Fisher–Yates, rebuilt per
+// loop) — decouples slow TRNG drift from fixed combination indices, so drift
+// cannot accumulate coherently on specific combinations across loops
+static uint16_t s_perm[NUM_RUNS];
+
 // Direct TRNG register access (75× faster than esp_random)
 #define RNG_REG  (*((volatile uint32_t *)0x501101A4UL))
 
@@ -44,7 +49,7 @@ static double gcp_zscore_raw(void)
                  + __builtin_popcount(fast_rng())
                  + __builtin_popcount(fast_rng() & 0xFF);
         z_sum += (ones - 100.0) / 7.07106781;
-        if (seg % 4000 == 0) vTaskDelay(1);
+        if (seg % 8000 == 0) vTaskDelay(1);   // 4 yields/run (~40 ms) instead of 8
     }
     return z_sum / sqrt((double)NUM_SEGMENTS);
 }
@@ -78,14 +83,21 @@ static void nth_combination(const uint8_t *pool, int n, int r, int k, uint8_t *o
     }
 }
 
-// Scores each number 1..max_val with one GCP run, picks top pool_size numbers (sorted ascending)
+// Scores each number 1..max_val with SCORE_REPS GCP runs (Stouffer per number),
+// picks the top pool_size numbers (sorted ascending). One run per number would
+// make the pool choice ride on pure single-run noise (SE = 1.0).
+#define SCORE_REPS 5
 static void score_and_build_pool(int max_val, int pool_size, uint8_t *pool)
 {
     double scores[51] = {0};
     for (int k = 1; k <= max_val; k++) {
-        if (g_status.abort_requested) return;
-        scores[k] = gcp_zscore_raw();
-        g_status.scoring_done++;
+        double sum = 0.0;
+        for (int r = 0; r < SCORE_REPS; r++) {
+            if (g_status.abort_requested) return;
+            sum += gcp_zscore_raw();
+            g_status.scoring_done++;
+        }
+        scores[k] = sum;   // ranking by Σz ≡ ranking by Stouffer Σz/√R
     }
     bool used[51] = {false};
     for (int i = 0; i < pool_size; i++) {
@@ -259,6 +271,91 @@ static void compute_significance(int comparisons)
     g_status.best_z      = zmax;
     g_status.p_corrected = pc;
     g_status.comparisons = comparisons;
+}
+
+/* Studentize one loop's measurements: center on the loop's own mean and scale
+ * by the loop's own empirical σ. This (a) removes the common bias offset with
+ * a 5005-sample estimate instead of the noisy 100-run baseline (whose error
+ * would otherwise accumulate √k-coherently in cumulative mode), and (b) makes
+ * per-run Z exactly N(0,1) under the null even if raw TRNG reads are
+ * correlated and true σ ≠ 1. Reports the pre-scaling σ as a quality metric. */
+static void studentize(int n)
+{
+    if (n < 4) { g_status.loop_sigma = 0.0; return; }
+    double m = 0.0;
+    for (int i = 0; i < n; i++) m += g_status.results[i].z_score;
+    m /= n;
+    double v = 0.0;
+    for (int i = 0; i < n; i++) {
+        double d = g_status.results[i].z_score - m;
+        v += d * d;
+    }
+    double s = sqrt(v / (n - 1));
+    g_status.loop_sigma = s;
+    if (s < 1e-9) s = 1.0;
+    for (int i = 0; i < n; i++) {
+        double z = (g_status.results[i].z_score - m) / s;
+        g_status.results[i].z_score = z;
+        g_status.results[i].chi_sq  = z * z;
+        g_status.results[i].p_value = p_label(fabs(z));
+    }
+}
+
+static int cmp_u16(const void *a, const void *b)
+{
+    return (int)*(const uint16_t *)a - (int)*(const uint16_t *)b;
+}
+
+/* After a mid-measurement abort the measured entries sit scattered at
+ * results[s_perm[0..done-1]] (random order). Compact them into
+ * results[0..done-1]: sorted ascending each source index is >= its
+ * destination, so the stable forward copy never clobbers unread data. */
+static void compact_partial(int done)
+{
+    qsort(s_perm, done, sizeof(uint16_t), cmp_u16);
+    for (int j = 0; j < done; j++)
+        g_status.results[j] = g_status.results[s_perm[j]];
+}
+
+/* Master–slave independence diagnostics from the (z_m, z_s) pairs collected
+ * during Phase 2 — free bookkeeping that verifies the √2 combine assumption.
+ * Pairs are centered PER LOOP before folding into the session moments:
+ * pooling raw pairs across loops would let each loop's random baseline offset
+ * (SE = 1/√n_baseline per device) masquerade as correlation.
+ * Publishes Pearson r (should be ~0) and per-device per-run σ (should be ~1). */
+typedef struct {
+    // per-loop raw sums (reset each loop)
+    double lm, ls, lm2, ls2, lms;
+    int    ln;
+    // session-wide centered second moments
+    double cxx, cyy, cxy;
+    int    cn, cloops;
+} PairStats;
+
+static void pair_fold_loop(PairStats *p)
+{
+    if (p->ln >= 2) {
+        double n  = (double)p->ln;
+        double mm = p->lm / n, ms = p->ls / n;
+        p->cxx += p->lm2 - n * mm * mm;
+        p->cyy += p->ls2 - n * ms * ms;
+        p->cxy += p->lms - n * mm * ms;
+        p->cn  += p->ln;
+        p->cloops++;
+    }
+    p->lm = p->ls = p->lm2 = p->ls2 = p->lms = 0.0;
+    p->ln = 0;
+}
+
+static void publish_pair_stats(const PairStats *p)
+{
+    g_status.pair_n = p->cn;
+    int df = p->cn - p->cloops;   // one mean estimated per loop
+    if (df < 1) { g_status.pair_r = 0.0; g_status.sigma_m = g_status.sigma_s = 0.0; return; }
+    double vm = p->cxx / df, vs = p->cyy / df;
+    g_status.sigma_m = vm > 0 ? sqrt(vm) : 0.0;
+    g_status.sigma_s = vs > 0 ? sqrt(vs) : 0.0;
+    g_status.pair_r  = (p->cxx > 0 && p->cyy > 0) ? p->cxy / sqrt(p->cxx * p->cyy) : 0.0;
 }
 
 /* Greedy diversified "coverage" picks: from the COVER_POOL most extreme
@@ -441,6 +538,11 @@ void elotto_task(void *pvParam)
     g_status.best_z          = 0.0;
     g_status.p_corrected     = 1.0;
     g_status.comparisons     = 0;
+    g_status.loop_sigma      = 0.0;
+    g_status.pair_r          = 0.0;
+    g_status.pair_n          = 0;
+    g_status.sigma_m         = 0.0;
+    g_status.sigma_s         = 0.0;
     if (g_status.baseline_total <= 0 || g_status.baseline_total > 5000)
         g_status.baseline_total = 100;
     if (g_status.loops_total <= 0 || g_status.loops_total > 500)
@@ -453,7 +555,7 @@ void elotto_task(void *pvParam)
     int  mx      = euro ? 50 : 49;
     int  pool_nm = euro ? POOL_MAIN_50 : POOL_MAIN_49;
 
-    g_status.scoring_total = mx + (euro ? 12 : 0);
+    g_status.scoring_total = (mx + (euro ? 12 : 0)) * SCORE_REPS;
 
     uint8_t pool_main[POOL_MAIN_49] = {0};   // 15 slots, enough for both modes
     uint8_t pool_euro[POOL_EURO_12] = {0};
@@ -474,6 +576,9 @@ void elotto_task(void *pvParam)
     int  meas_k = 0;
     if (cumulative)
         memset(s_zsum, 0, sizeof(double) * (size_t)g_status.runs_total);
+
+    // Master–slave pair stats for the independence check (per-loop centered)
+    PairStats pairs = {0};
 
     int comparisons = 0;
     int64_t t0 = esp_timer_get_time();
@@ -521,17 +626,31 @@ void elotto_task(void *pvParam)
             g_status.scoring_done = g_status.scoring_total;   // pool already locked
         }
 
-        /* ── Phase 2: Measure all combinations ────────────────────────── */
+        /* ── Phase 2: Measure all combinations in fresh random order ───── */
+        // Fisher–Yates: with a fixed order, slow drift (temperature ramp over
+        // the ~20-min loop) would hit each combination at the same position
+        // every loop and accumulate √k-coherently — exactly like a real signal.
+        for (int i = 0; i < g_status.runs_total; i++) s_perm[i] = (uint16_t)i;
+        for (int i = g_status.runs_total - 1; i > 0; i--) {
+            int j = (int)(fast_rng() % (uint32_t)(i + 1));
+            uint16_t t = s_perm[i]; s_perm[i] = s_perm[j]; s_perm[j] = t;
+        }
+
         g_status.phase = PHASE_MEASURING;
-        for (int i = 0; i < g_status.runs_total; i++) {
+        for (int j = 0; j < g_status.runs_total; j++) {
             if (g_status.abort_requested) {
                 if (s_slave_ok) uart_write_bytes(SLAVE_UART, "A\n", 2);
                 goto done;
             }
+            int i = s_perm[j];   // slot index; results[] stays slot-indexed
 
-            // Deterministically assign combination (lexicographic enumeration)
-            int mi = i % main_combos;
-            int ei = euro ? (i / main_combos) : 0;
+            // Slot → combination: spread slots evenly over the full space so a
+            // Runs cap samples across all combinations instead of taking the
+            // lexicographic prefix (which all shares the pool's lowest numbers).
+            // Uncapped, runs_total == full_combos and c == i exactly.
+            int c  = (int)(((int64_t)i * full_combos) / g_status.runs_total);
+            int mi = c % main_combos;
+            int ei = euro ? (c / main_combos) : 0;
             nth_combination(pool_main, pool_nm, nm, mi, g_status.results[i].nums);
             if (euro)
                 nth_combination(pool_euro, POOL_EURO_12, 2, ei, g_status.results[i].euro);
@@ -541,21 +660,30 @@ void elotto_task(void *pvParam)
             // Trigger slave, then measure locally (both run simultaneously)
             bool use_slave = s_slave_ok;
             if (use_slave) uart_write_bytes(SLAVE_UART, "M\n", 2);
-            double z = gcp_zscore_raw() - g_status.baseline_mean;
+            double zm = gcp_zscore_raw() - g_status.baseline_mean;
+            double z  = zm;
             if (use_slave) {
                 double zs = slave_measure();
-                if (s_slave_ok) z = (z + zs) * 0.70710678;   // / sqrt(2)
+                if (s_slave_ok) {
+                    pairs.ln++; pairs.lm += zm; pairs.ls += zs;   // independence check
+                    pairs.lm2 += zm * zm; pairs.ls2 += zs * zs; pairs.lms += zm * zs;
+                    z = (zm + zs) * 0.70710678;                   // / sqrt(2)
+                }
             }
 
             g_status.results[i].index   = i + 1;
             g_status.results[i].z_score = z;
             g_status.results[i].chi_sq  = z * z;
             g_status.results[i].p_value = p_label(fabs(z));
-            g_status.runs_completed     = i + 1;
+            g_status.runs_completed     = j + 1;
             g_status.elapsed_ms         = (esp_timer_get_time() - t0) / 1000;
         }
 
-        // Loop finished cleanly: fold + publish the ranking
+        // Loop finished cleanly: studentize on the loop's own mean/σ, then
+        // fold + publish the ranking
+        studentize(g_status.runs_total);
+        pair_fold_loop(&pairs);
+        publish_pair_stats(&pairs);
         if (cumulative) {
             for (int i = 0; i < g_status.runs_total; i++)
                 s_zsum[i] += g_status.results[i].z_score;   // Σz per fixed combination
@@ -571,20 +699,33 @@ void elotto_task(void *pvParam)
     goto finalize;
 
 done:
-    // Aborted mid-loop: publish whatever was completed so far
+    // Aborted mid-loop: publish whatever was completed so far. Measured
+    // entries of the aborted loop sit scattered at results[s_perm[...]], so
+    // compact them to the front before using them as a partial prefix.
+    pair_fold_loop(&pairs);
+    publish_pair_stats(&pairs);
     if (cumulative) {
         if (meas_k > 0) {
+            // Complete loops exist: discard the partial loop, publish those
             publish_cumulative(s_zsum, g_status.runs_total, meas_k, fm, fe, &z2, nm, mx, euro);
             comparisons = g_status.runs_total;
         } else if (g_status.runs_completed > 0) {
             // Aborted during the first measurement loop: treat the measured
             // subset as a single sample so partial results are still shown
-            for (int i = 0; i < g_status.runs_completed; i++)
+            int pdone = g_status.runs_completed;
+            compact_partial(pdone);
+            studentize(pdone);
+            for (int i = 0; i < pdone; i++)
                 s_zsum[i] = g_status.results[i].z_score;
-            publish_cumulative(s_zsum, g_status.runs_completed, 1, fm, fe, &z2, nm, mx, euro);
-            comparisons = g_status.runs_completed;
+            publish_cumulative(s_zsum, pdone, 1, fm, fe, &z2, nm, mx, euro);
+            comparisons = pdone;
         }
     } else {
+        int pdone = g_status.runs_completed;
+        if (pdone > 0 && pdone < g_status.runs_total) {
+            compact_partial(pdone);
+            studentize(pdone);
+        }
         absorb_loop(carry, &carry_n, low_carry, &low_n, fm, fe, &z2, nm, mx, euro);
         comparisons = g_status.runs_total * (g_status.loop_current > 0 ? g_status.loop_current : 1);
     }

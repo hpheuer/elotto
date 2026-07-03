@@ -46,6 +46,10 @@ typedef struct {
     double           best_z;              // most extreme |Z| in the published ranking
     double           p_corrected;         // Bonferroni-corrected two-sided p of best_z
     int              comparisons;         // number of comparisons used for correction
+    double           loop_sigma;          // empirical per-run σ of last loop (pre-studentize; 1.0 = ideal)
+    double           pair_r;              // master–slave Pearson r over all session pairs (0 = independent)
+    int              pair_n;              // number of (z_master, z_slave) pairs collected
+    double           sigma_m, sigma_s;    // per-device per-run σ from the pairs
     int              result_count;       // valid entries in top[] (published)
     RunResult        top[TOP_N];          // cumulative highest-Z across loops so far
     int              low_count;           // valid entries in low[] (published)

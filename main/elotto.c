@@ -132,7 +132,7 @@ static const char HTML[] =
 "<div id='pfScore' style='background:linear-gradient(90deg,#206090,#6ab0e8);"
 "height:100%;border-radius:20px;width:0%;transition:width .5s'></div></div>"
 "<div style='color:#6ab0e8;font-size:.9em;text-align:center;margin-top:4px'>"
-"<span id='sScoreDone'>0</span> / <span id='sScoreTotal'>-</span> Numbers</div>"
+"<span id='sScoreDone'>0</span> / <span id='sScoreTotal'>-</span> Runs (5/number)</div>"
 "</div>"
 "<div id='measArea' style='display:none;margin-top:14px'>"
 "<div style='color:#90ee90;font-size:.88em;margin-bottom:4px'>&#128202; Measurement"
@@ -315,6 +315,14 @@ static const char HTML[] =
 "sl.innerHTML='Ranking: '+rk+' \\u00b7 most extreme |Z| = '+d.best_z.toFixed(2)"
 "+' \\u00b7 corrected p = '+pc+' over '+d.comparisons+' comparisons ('+sig+')';"
 "}else sl.innerHTML='';"
+"var s2='';"
+"if(d.loop_sigma>0)s2+='per-run \\u03c3 = '+d.loop_sigma.toFixed(3);"
+"if(d.pair_n>1){"
+"var rz=Math.abs(d.pair_r)*Math.sqrt(d.pair_n);"
+"s2+=(s2?' \\u00b7 ':'')+'master\\u2013slave r = '+d.pair_r.toFixed(3)"
+"+(rz>3?' \\u26a0 correlated':' (ok)')"
+"+' \\u00b7 \\u03c3m = '+d.sigma_m.toFixed(2)+' \\u03c3s = '+d.sigma_s.toFixed(2);}"
+"if(s2)sl.innerHTML+=(sl.innerHTML?'<br>':'')+s2;"
 "document.getElementById('resCard').style.display='block';"
 "if(!res||res.length===0){"
 "document.getElementById('resTitle').innerHTML='\\uD83E\\uDDE9 Coverage';"
@@ -432,6 +440,8 @@ static esp_err_t status_handler(httpd_req_t *req)
         "{\"state\":\"%s\",\"mode\":\"%s\",\"phase\":\"%s\","
         "\"slave\":%s,\"rank\":\"%s\","
         "\"best_z\":%.4f,\"p_corr\":%.6g,\"comparisons\":%d,"
+        "\"loop_sigma\":%.4f,\"pair_r\":%.4f,\"pair_n\":%d,"
+        "\"sigma_m\":%.4f,\"sigma_s\":%.4f,"
         "\"loop_current\":%d,\"loops_total\":%d,"
         "\"scoring_done\":%d,\"scoring_total\":%d,"
         "\"baseline_done\":%d,\"baseline_total\":%d,\"baseline_mean\":%.4f,"
@@ -439,6 +449,8 @@ static esp_err_t status_handler(httpd_req_t *req)
         state_str, mode_str, phase_str,
         g_status.slave_connected ? "true" : "false", rank_str,
         g_status.best_z, g_status.p_corrected, g_status.comparisons,
+        g_status.loop_sigma, g_status.pair_r, g_status.pair_n,
+        g_status.sigma_m, g_status.sigma_s,
         g_status.loop_current, g_status.loops_total,
         g_status.scoring_done, g_status.scoring_total,
         g_status.baseline_done, g_status.baseline_total, g_status.baseline_mean,
