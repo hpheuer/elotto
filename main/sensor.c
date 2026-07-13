@@ -84,9 +84,13 @@ static void nth_combination(const uint8_t *pool, int n, int r, int k, uint8_t *o
 }
 
 // Scores each number 1..max_val with SCORE_REPS GCP runs (Stouffer per number),
-// picks the top pool_size numbers (sorted ascending). One run per number would
-// make the pool choice ride on pure single-run noise (SE = 1.0).
-#define SCORE_REPS 5
+// slave-combined like Phase 2 (÷√2), picks the top pool_size numbers (sorted
+// ascending). The pool is locked for the whole cumulative session, so this is
+// where selection confidence matters most: 20 dual-ESP reps give per-number
+// SE = 1/√(20·2) ≈ 0.16 vs 1.0 for a single master-only run.
+#define SCORE_REPS 20
+static double score_one_run(void);   // forward (defined after the slave UART block)
+
 static void score_and_build_pool(int max_val, int pool_size, uint8_t *pool)
 {
     double scores[51] = {0};
@@ -94,7 +98,7 @@ static void score_and_build_pool(int max_val, int pool_size, uint8_t *pool)
         double sum = 0.0;
         for (int r = 0; r < SCORE_REPS; r++) {
             if (g_status.abort_requested) return;
-            sum += gcp_zscore_raw();
+            sum += score_one_run();
             g_status.scoring_done++;
         }
         scores[k] = sum;   // ranking by Σz ≡ ranking by Stouffer Σz/√R
@@ -217,6 +221,21 @@ static double slave_measure(void)
 }
 
 void slave_probe(void) { slave_init(); }
+
+/* One scoring run, slave-combined like Phase 2: trigger the slave, measure
+ * locally in parallel, combine ÷√2. No baseline subtraction — the offset is
+ * common to every number and scoring only ranks them. */
+static double score_one_run(void)
+{
+    bool use_slave = s_slave_ok;
+    if (use_slave) uart_write_bytes(SLAVE_UART, "M\n", 2);
+    double z = gcp_zscore_raw();
+    if (use_slave) {
+        double zs = slave_measure();
+        if (s_slave_ok) z = (z + zs) * 0.70710678;   // / sqrt(2)
+    }
+    return z;
+}
 
 /* Select the most-frequent numbers from the accumulated Z>2 histograms and
  * publish them (sorted ascending) to g_status.freq_*. */
