@@ -190,8 +190,8 @@ Four guards keep systematic hardware effects from masquerading as GCP signal:
 - **Stride sampling** — a `Runs` cap measures every ⌊full/cap⌋-th combination across the whole
   space instead of the lexicographic prefix (which all shared the pool's lowest numbers).
 
-The number-scoring phase also runs **20 dual-ESP GCP runs per candidate number** (Stouffer,
-slave-combined ÷√2 → per-number SE ≈ 0.16), so the pool choice — locked for the whole
+The number-scoring phase also runs **40 dual-ESP GCP runs per candidate number** (Stouffer,
+slave-combined ÷√2 → per-number SE ≈ 0.11), so the pool choice — locked for the whole
 cumulative session — doesn't ride on single-run noise.
 
 ## Dual-ESP: Master & Slave
@@ -401,7 +401,7 @@ form the pool that combinations are later built from:
 ```c
 // sensor.c — score_and_build_pool()
 for (int k = 1; k <= max_val; k++)
-    for (int r = 0; r < SCORE_REPS; r++)   // 20 dual-ESP runs per number (Stouffer)
+    for (int r = 0; r < SCORE_REPS; r++)   // 40 dual-ESP runs per number (Stouffer)
         scores[k] += score_one_run();      // master + slave in parallel, / sqrt(2)
 // keep the pool_size highest scores, then insertion-sort the pool ascending
 ```

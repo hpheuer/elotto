@@ -86,9 +86,9 @@ static void nth_combination(const uint8_t *pool, int n, int r, int k, uint8_t *o
 // Scores each number 1..max_val with SCORE_REPS GCP runs (Stouffer per number),
 // slave-combined like Phase 2 (÷√2), picks the top pool_size numbers (sorted
 // ascending). The pool is locked for the whole cumulative session, so this is
-// where selection confidence matters most: 20 dual-ESP reps give per-number
-// SE = 1/√(20·2) ≈ 0.16 vs 1.0 for a single master-only run.
-#define SCORE_REPS 20
+// where selection confidence matters most: 40 dual-ESP reps give per-number
+// SE = 1/√(40·2) ≈ 0.11 vs 1.0 for a single master-only run.
+#define SCORE_REPS 40
 static double score_one_run(void);   // forward (defined after the slave UART block)
 
 static void score_and_build_pool(int max_val, int pool_size, uint8_t *pool)

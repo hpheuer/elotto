@@ -132,7 +132,7 @@ static const char HTML[] =
 "<div id='pfScore' style='background:linear-gradient(90deg,#206090,#6ab0e8);"
 "height:100%;border-radius:20px;width:0%;transition:width .5s'></div></div>"
 "<div style='color:#6ab0e8;font-size:.9em;text-align:center;margin-top:4px'>"
-"<span id='sScoreDone'>0</span> / <span id='sScoreTotal'>-</span> Runs (20/number, dual)</div>"
+"<span id='sScoreDone'>0</span> / <span id='sScoreTotal'>-</span> Runs (40/number, dual)</div>"
 "</div>"
 "<div id='measArea' style='display:none;margin-top:14px'>"
 "<div style='color:#90ee90;font-size:.88em;margin-bottom:4px'>&#128202; Measurement"
