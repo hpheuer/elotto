@@ -228,15 +228,17 @@ static const char HTML[] =
 "}"
 "showSlaveBadge(d);"
 "}).catch(function(){});};"
-// The badge names the transport and the peer address: after Phase C the slave is
-// discovered by UDP broadcast rather than wired to a known UART, so "connected"
-// alone no longer says which box answered.
+// The badge names the array size and the SNR that follows from it. Nodes are
+// discovered by broadcast, so "connected" alone says neither how many answered
+// nor how many are still contributing after a drop.
 "function showSlaveBadge(d){"
 "var b=document.getElementById('slaveBadge');"
-"if(!d.slave){b.style.display='none';return;}"
+"var n=d.nodes_total||1,ok=d.nodes_ok||n;"
+"if(n<2){b.style.display='none';return;}"
 "b.style.display='';"
-"b.innerHTML='\\uD83D\\uDD17 Dual-ESP connected \\u00b7 UDP '+(d.slave_ip||'?')"
-"+' \\u00b7 SNR \\u00d7\\u221a2';"
+"var gain=Math.sqrt(ok).toFixed(ok===Math.round(Math.sqrt(ok))*Math.round(Math.sqrt(ok))?0:2);"
+"b.innerHTML='\\uD83D\\uDD17 '+n+'-node array \\u00b7 SNR \\u00d7'+gain"
+"+(ok<n?' \\u26a0 '+(n-ok)+' dropped, running on '+ok:'');"
 "}"
 "function updateLoopBadge(cur,total){"
 "var b=document.getElementById('loopBadge');"
@@ -347,24 +349,39 @@ static const char HTML[] =
 "}else sl.innerHTML='';"
 "var s2='';"
 "if(d.loop_sigma>0)s2+='per-run \\u03c3 = '+d.loop_sigma.toFixed(3);"
+// The WORST pair, not an average: the sqrt(n) gain fails if ANY pair
+// correlates, so five clean pairs must not dilute one bad one.
 "if(d.pair_n>1){"
 "var rz=Math.abs(d.pair_r)*Math.sqrt(d.pair_n);"
-"s2+=(s2?' \\u00b7 ':'')+'master\\u2013slave r = '+d.pair_r.toFixed(3)"
-"+(rz>3?' \\u26a0 correlated':' (ok)')"
-"+' \\u00b7 \\u03c3m = '+d.sigma_m.toFixed(2)+' \\u03c3s = '+d.sigma_s.toFixed(2);}"
+"s2+=(s2?' \\u00b7 ':'')+'worst pair r = '+d.pair_r.toFixed(3)"
+"+' (n'+d.pair_i+'\\u2013n'+d.pair_j+' of '+d.pair_count+' pairs)'"
+"+(rz>3?' \\u26a0 correlated':' ok');}"
 "if(s2)sl.innerHTML+=(sl.innerHTML?'<br>':'')+s2;"
-// Per-node entropy source. Camera = raw quantum-origin noise, TRNG = whitened
-// on-chip fallback; a node that silently degraded must be visible here.
-"var srcM=d.src==='cam'?'\\uD83D\\uDCF7 cam':'TRNG';"
-"var srcS=d.slave_src==='cam'?'\\uD83D\\uDCF7 cam':'TRNG';"
-"var s3='entropy: master '+srcM+(d.src_stalled?' \\u26a0 camera stalled \\u2013 aborted':'')"
-"+(d.slave?' \\u00b7 slave '+srcS:'');"
-"sl.innerHTML+=(sl.innerHTML?'<br>':'')+s3;"
+// Per-node row: source, own sigma, camera rate, stalls and missed replies. The
+// combined z averages exactly these differences away, so a node that quietly
+// degraded is invisible anywhere else.
+"if(d.nodes&&d.nodes.length){"
+"var s3='<table style=\"width:100%;font-size:.82em;margin-top:6px\">'"
+"+'<tr style=\"color:#90ee90\"><th align=left>node</th><th align=left>src</th>'"
+"+'<th align=left>\\u03c3</th><th align=left>Mbit/s</th><th align=left>stalls</th>'"
+"+'<th align=left>lost</th></tr>';"
+"for(var i=0;i<d.nodes.length;i++){var N=d.nodes[i];"
+"var nm=(i===0?'master':'slave'+i)+(N.ip&&N.ip!=='self'?' '+N.ip:'');"
+"var st=N.ok?'':' \\u26a0 dropped';"
+"s3+='<tr style=\"opacity:'+(N.ok?1:.55)+'\"><td>'+nm+st+'</td>'"
+"+'<td>'+(N.src==='cam'?'\\uD83D\\uDCF7':'TRNG')+'</td>'"
+"+'<td>'+(N.sigma>0?N.sigma.toFixed(3):'\\u2013')+'</td>'"
+"+'<td>'+(N.cam_mbit>0?N.cam_mbit.toFixed(2):'\\u2013')+'</td>'"
+"+'<td>'+(N.cam_stalls>0?'\\u26a0 '+N.cam_stalls:'0')+'</td>'"
+"+'<td>'+(N.lost>0?'\\u26a0 '+N.lost:'0')+'</td></tr>';}"
+"s3+='</table>';"
+"if(d.src_stalled)s3='\\u26a0 source lost \\u2013 too few nodes left, aborted'+s3;"
+"sl.innerHTML+=(sl.innerHTML?'<br>':'')+s3;}"
 // Transport health (PLAN_NETWORK Phase C). UDP can drop where the UART could
 // not, so the gate is a counted "zero lost triggers", not an impression that it
 // felt reliable. Stale replies are answers that arrived after we stopped
 // waiting — dropped by sequence number, never folded into a z.
-"if(d.slave){"
+"if(d.nodes_total>1){"
 "var nl=d.net_lost||0;"
 "var s5='link: UDP \\u00b7 lost triggers '+nl+(nl?' \\u26a0':' \\u2713')"
 "+' \\u00b7 resends '+(d.net_retries||0)+' \\u00b7 stale replies '+(d.net_stale||0);"
@@ -498,11 +515,12 @@ static esp_err_t status_handler(httpd_req_t *req)
     pos += snprintf(buf+pos, sizeof(buf)-pos,
         "{\"state\":\"%s\",\"mode\":\"%s\",\"phase\":\"%s\","
         "\"slave\":%s,\"rank\":\"%s\","
-        "\"src\":\"%s\",\"src_stalled\":%s,\"slave_src\":\"%s\","
+        "\"src\":\"%s\",\"src_stalled\":%s,"
         "\"best_z\":%.4f,\"p_corr\":%.6g,\"comparisons\":%d,"
         "\"loop_sigma\":%.4f,\"pair_r\":%.4f,\"pair_n\":%d,"
-        "\"sigma_m\":%.4f,\"sigma_s\":%.4f,"
-        "\"slave_ip\":\"%s\",\"net_retries\":%lu,\"net_lost\":%lu,\"net_stale\":%lu,"
+        "\"pair_i\":%d,\"pair_j\":%d,\"pair_count\":%d,"
+        "\"nodes_total\":%d,\"nodes_ok\":%d,"
+        "\"net_retries\":%lu,\"net_lost\":%lu,\"net_stale\":%lu,"
         "\"loops_done\":%d,\"drift_slope\":%.5f,\"drift_t\":%.2f,"
         "\"off_first\":%.4f,\"off_last\":%.4f,"
         "\"sigma_lo\":%.4f,\"sigma_hi\":%.4f,"
@@ -514,11 +532,10 @@ static esp_err_t status_handler(httpd_req_t *req)
         g_status.slave_connected ? "true" : "false", rank_str,
         (g_status.noise_source == NOISE_CAMERA) ? "cam" : "trng",
         g_status.noise_stalled ? "true" : "false",
-        (g_status.slave_source == NOISE_CAMERA) ? "cam" : "trng",
         g_status.best_z, g_status.p_corrected, g_status.comparisons,
-        g_status.loop_sigma, g_status.pair_r, g_status.pair_n,
-        g_status.sigma_m, g_status.sigma_s,
-        g_status.slave_ip,
+        g_status.loop_sigma, g_status.pair_r_max, g_status.pair_n,
+        g_status.pair_r_i, g_status.pair_r_j, g_status.pair_count,
+        g_status.node_count, g_status.node_ok,
         (unsigned long)g_status.net_retries, (unsigned long)g_status.net_lost,
         (unsigned long)g_status.net_stale,
         g_status.loops_done, g_status.drift_slope, g_status.drift_t,
@@ -535,6 +552,22 @@ static esp_err_t status_handler(httpd_req_t *req)
      * from one that silently rolled back. */
     pos += elotto_ota_status_json(buf + pos, sizeof(buf) - pos);
     pos += snprintf(buf + pos, sizeof(buf) - pos, ",");
+
+    /* Per-node health (PLAN_NETWORK Phase D). A node that quietly degraded —
+     * fell back to the TRNG, started missing replies, or drifted off σ = 1 —
+     * has to be visible individually; the combined z averages exactly that away.
+     * Index 0 is the master. */
+    pos += snprintf(buf + pos, sizeof(buf) - pos, "\"nodes\":[");
+    for (int i = 0; i < g_status.node_count && i < MAX_NODES; i++) {
+        const NodeStatus *N = &g_status.nodes[i];
+        pos += snprintf(buf + pos, sizeof(buf) - pos,
+            "%s{\"id\":%d,\"ip\":\"%s\",\"ok\":%s,\"src\":\"%s\",\"sigma\":%.4f,"
+            "\"lost\":%lu,\"cam_mbit\":%.3f,\"cam_stalls\":%lu}",
+            i ? "," : "", i, i ? N->ip : "self", N->ok ? "true" : "false",
+            (N->src == NOISE_CAMERA) ? "cam" : "trng", N->sigma,
+            (unsigned long)N->lost, N->cam_mbit, (unsigned long)N->cam_stalls);
+    }
+    pos += snprintf(buf + pos, sizeof(buf) - pos, "],");
 
     // Cumulative top-N is published continuously, so intermediate results
     // (after each loop) are shown too — not only when the whole job is done.
@@ -597,18 +630,22 @@ static esp_err_t loops_handler(httpd_req_t *req)
 
     for (int i = 0; i < n; i++) {
         const LoopStat *L = &g_status.loop_hist[i];
+        int nn = L->nodes ? L->nodes : 1;
+        if (nn > MAX_NODES) nn = MAX_NODES;
         len = snprintf(buf, sizeof(buf),
             "%s{\"loop\":%d,\"t_s\":%lu,\"base\":%.4f,\"raw_m\":%.4f,"
-            "\"mean\":%.4f,\"sigma\":%.4f,"
-            "\"mean_m\":%.4f,\"mean_s\":%.4f,\"sig_m\":%.4f,\"sig_s\":%.4f,"
-            "\"cam_mbit\":%.3f,\"cam_stalls\":%lu,"
-            "\"s_cam_mbit\":%.3f,\"s_cam_stalls\":%lu}",
+            "\"mean\":%.4f,\"sigma\":%.4f,\"nodes\":%d,\"n\":[",
             i ? "," : "", i + 1, (unsigned long)L->t_s,
-            L->base, L->base + L->mean_m, L->mean, L->sigma,
-            L->mean_m, L->mean_s, L->sig_m, L->sig_s,
-            L->cam_mbit, (unsigned long)L->cam_stalls,
-            L->s_cam_mbit, (unsigned long)L->s_cam_stalls);
+            L->base, L->base + L->mean_n[0], L->mean, L->sigma, nn);
         httpd_resp_send_chunk(req, buf, len);
+        for (int k = 0; k < nn; k++) {
+            len = snprintf(buf, sizeof(buf),
+                "%s{\"mean\":%.4f,\"sigma\":%.4f,\"cam_mbit\":%.3f,\"cam_stalls\":%lu}",
+                k ? "," : "", L->mean_n[k], L->sig_n[k], L->cam_mbit[k],
+                (unsigned long)L->cam_stalls[k]);
+            httpd_resp_send_chunk(req, buf, len);
+        }
+        httpd_resp_send_chunk(req, "]}", 2);
     }
     httpd_resp_send_chunk(req, "]}", 2);
     httpd_resp_send_chunk(req, NULL, 0);

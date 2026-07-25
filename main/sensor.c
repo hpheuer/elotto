@@ -46,18 +46,42 @@ static inline uint32_t fast_rng(void) { return RNG_REG; }
 // Distinct from g_status.noise_source (what was *requested*).
 static volatile int s_active_source = NOISE_TRNG;
 
-// Camera stall policy: ABORT the session. Substituting the TRNG would swap the
-// measured physics — the whole point of camera entropy is replacing the opaque
-// whitened TRNG with raw quantum noise — and a session-level flag cannot say
-// *which* runs were affected. A stall at run 3 of 2560 would otherwise leave
-// 2557 TRNG-sourced runs inside a session still labelled "camera".
+/* Camera stall policy (PLAN_4NODE "Fallback policy" + PLAN_NETWORK §5).
+ *
+ * Substituting the TRNG for a node's camera would swap the measured physics —
+ * the whole point of camera entropy is replacing the opaque whitened TRNG with
+ * raw quantum noise — and a session-level flag cannot say *which* runs were
+ * affected. So a node whose source degrades is DROPPED from the combine rather
+ * than averaged in; the nodes that remain are all still camera-sourced, which
+ * keeps the session source-clean by construction.
+ *
+ * Aborting is the right response only while dropping would leave too few nodes.
+ * At n=2 losing one halves the instrument, which is why Phase C aborted; at
+ * n>=3 the rest carry on over √(n−1) and aborting would be needless. Both are
+ * the same rule with a different floor. */
+static void node_source_lost(int node)
+{
+    if (node < 0 || node >= g_status.node_count || !g_status.nodes[node].ok) return;
+    g_status.nodes[node].ok = false;
+    g_status.node_ok--;
+    printf("node %d (%s): source fell back to TRNG -- dropped, %d node(s) left\n",
+           node, node ? g_status.nodes[node].ip : "master", g_status.node_ok);
+
+    // A solo master has nothing to fall back to, so its floor is 1; any array
+    // that drops below two nodes has stopped being the instrument it started as.
+    int floor_n = (g_status.node_count >= 2) ? 2 : 1;
+    if (g_status.node_ok < floor_n) {
+        g_status.noise_stalled   = true;
+        g_status.abort_requested = true;
+    }
+}
+
 static void noise_camera_stalled(void)
 {
-    g_status.noise_stalled    = true;
-    g_status.abort_requested  = true;
-    // The in-flight run is discarded by the abort, so the words that finish it
-    // do not enter any published result. Switching the local source stops each
-    // remaining word from re-paying the 2 s stall timeout while unwinding.
+    node_source_lost(0);
+    // The master keeps running full-length runs either way (it paces the loop),
+    // but switching its local source stops every remaining word from re-paying
+    // the 2 s stall timeout. Its z is simply no longer folded into the combine.
     s_active_source = NOISE_TRNG;
 }
 
@@ -71,10 +95,11 @@ static inline uint32_t noise_word(void)
     return RNG_REG;
 }
 
-// Called once per session, before any measurement.
+// Called once per session, after discovery, before any measurement.
 static void noise_source_begin(void)
 {
     g_status.noise_stalled = false;
+    g_status.nodes[0].src  = g_status.noise_source;
     if (g_status.noise_source == NOISE_CAMERA) {
         if (camera_is_ready()) {
             s_active_source = NOISE_CAMERA;
@@ -147,14 +172,18 @@ static void nth_combination(const uint8_t *pool, int n, int r, int k, uint8_t *o
 }
 
 // Scores each number 1..max_val with SCORE_REPS GCP runs (Stouffer per number),
-// slave-combined like Phase 2 (÷√2), picks the top pool_size numbers (sorted
+// node-combined like Phase 2 (÷√k), picks the top pool_size numbers (sorted
 // ascending). The pool is locked for the whole cumulative session, so this is
-// where selection confidence matters most: per-number SE = 1/√(REPS·2), i.e.
-// 0.22 at 10 reps and 0.11 at 40, vs 1.0 for a single master-only run.
-// Currently 10 to keep the one-time scoring phase short (~7 min for 6/49)
-// while the long-run instrumentation is being iterated on; raise it back to 40
-// for a session whose pool choice has to be trusted.
-#define SCORE_REPS 10
+// where selection confidence matters most: per-number SE = 1/√(REPS·k) over k
+// nodes, i.e. 0.32 at 5 reps on two nodes, 0.22 at 10, 0.11 at 40 — against 1.0
+// for a single master-only run. More nodes buy this back: 5 reps on four nodes
+// is 0.22, the same as 10 reps on two.
+//
+// 5 keeps the one-time scoring phase short (~2 min for 6/49 at two nodes) while
+// the array is being brought up and sessions are started often. It changes only
+// WHICH numbers enter the pool, never the Phase-2 statistics measured on them —
+// raise it for a session whose pool choice has to be trusted on its own.
+#define SCORE_REPS 5
 static double score_one_run(void);   // forward (defined after the slave UART block)
 
 static void score_and_build_pool(int max_val, int pool_size, uint8_t *pool)
@@ -219,11 +248,29 @@ static int cmp_asc(const void *a, const void *b)
 #define LINK_MEAS_MS    4000      // a run is ~0.5 s (camera) / ~1 s (TRNG)
 #define LINK_DIAG_MS    1500
 
-static bool     s_slave_ok = false;
+// Consecutive missed replies before a node leaves the session. Without it an
+// unplugged node would cost every remaining run the full retry budget forever;
+// the Phase D gate wants an unplug to *degrade* the array, not to slow it down.
+#define NODE_MISS_LIMIT 3
+
+static bool     s_slave_ok = false;   // at least one slave is participating
 static int      s_sock     = -1;
 static uint32_t s_seq;
 static struct sockaddr_in s_bcast;
 static struct { uint32_t seq; char cmd[24]; } s_pending;
+
+/* Per-slave link state. g_status.nodes[k+1] is the published view of s_link[k];
+ * this holds what only the transport needs. */
+typedef struct {
+    struct sockaddr_in addr;
+    bool   replied;                    // answered the command in flight
+    int    miss_streak;                // consecutive commands unanswered
+    double z;                          // its z for the current run
+    char   reply[ELOTTO_LINK_MAX];
+} SlaveLink;
+
+static SlaveLink s_link[MAX_SLAVES];
+static int       s_nslaves;
 
 static bool link_open(void)
 {
@@ -281,18 +328,44 @@ static void link_send(uint32_t seq, const char *cmd)
         sendto(s_sock, msg, n, 0, (struct sockaddr *)&s_bcast, sizeof(s_bcast));
 }
 
-/* Wait for the reply to `seq`. A frame carrying any other sequence number is a
- * late answer to a command already given up on — counted and dropped, never
- * attributed to the run in flight. */
-static bool link_recv(uint32_t seq, char *out, int cap, int timeout_ms)
+/* Arm the socket's receive timeout for what is left of `deadline`. Returns false
+ * when too little remains to wait on, so the caller stops instead of receiving.
+ *
+ * The 1 ms floor is load-bearing, not tidiness. lwIP converts SO_RCVTIMEO to
+ * whole milliseconds — ((tv_usec + 500) / 1000) — and a resulting 0 means "no
+ * timeout": sys_arch_mbox_fetch() documents zero as "wait infinitely". So a
+ * window with under 500 µs left silently turns a bounded wait into a permanent
+ * one. That is exactly how discovery hung after it had already found its node,
+ * and the same pattern was latent in the Phase C code from the moment it
+ * shipped — it would have fired the first time the master booted with no slave
+ * powered on. */
+static bool link_arm_timeout(int64_t deadline)
 {
-    int64_t deadline = esp_timer_get_time() + (int64_t)timeout_ms * 1000;
+    int64_t left = deadline - esp_timer_get_time();
+    if (left < 1000) return false;
+    struct timeval tv = { .tv_sec  = (time_t)(left / 1000000),
+                          .tv_usec = (suseconds_t)(left % 1000000) };
+    setsockopt(s_sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    return true;
+}
+
+/* Which slave a datagram came from. Identity is the source address: replies are
+ * unicast, so this is exact and needs no node id on the wire. */
+static int link_node_of(const struct sockaddr_in *from)
+{
+    for (int k = 0; k < s_nslaves; k++)
+        if (s_link[k].addr.sin_addr.s_addr == from->sin_addr.s_addr) return k;
+    return -1;
+}
+
+/* Receive one reply to `seq` before `deadline`, from any known slave. Returns
+ * the slave index, or -1 on timeout. A frame carrying a different sequence
+ * number is a late answer to a command already given up on — counted and
+ * dropped, never attributed to the run in flight. */
+static int link_recv_any(uint32_t seq, char *out, int cap, int64_t deadline)
+{
     for (;;) {
-        int64_t left = deadline - esp_timer_get_time();
-        if (left <= 0) return false;
-        struct timeval tv = { .tv_sec  = (time_t)(left / 1000000),
-                              .tv_usec = (suseconds_t)(left % 1000000) };
-        setsockopt(s_sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        if (!link_arm_timeout(deadline)) return -1;
 
         char buf[ELOTTO_LINK_MAX];
         struct sockaddr_in from;
@@ -307,63 +380,138 @@ static bool link_recv(uint32_t seq, char *out, int cap, int timeout_ms)
         if (!elotto_link_parse(buf, &rseq, &payload)) continue;   // foreign traffic
         if (rseq != seq) { g_status.net_stale++; continue; }
 
-        inet_ntoa_r(from.sin_addr, g_status.slave_ip, sizeof(g_status.slave_ip));
+        int k = link_node_of(&from);
+        if (k < 0) continue;              // answered, but not a node of this session
         snprintf(out, cap, "%s", payload);
-        return true;
+        return k;
     }
 }
 
-/* Send a command; the caller measures locally in parallel and collects the
- * reply with link_wait(). Split exactly like the UART version so the trigger
- * still goes out *before* the master's own run starts. */
-static void link_begin(const char *cmd)
+/* Send a command to every node at once. The caller measures locally in parallel
+ * and collects with nodes_collect(), so the trigger still goes out *before* the
+ * master's own run starts — and one datagram starts all of them, which is the
+ * whole reason this is not N sequential writes. */
+static void nodes_send(const char *cmd)
 {
     s_pending.seq = ++s_seq;
     snprintf(s_pending.cmd, sizeof(s_pending.cmd), "%s", cmd);
+    for (int k = 0; k < s_nslaves; k++) s_link[k].replied = false;
     link_send(s_pending.seq, s_pending.cmd);
 }
 
-/* Collect the pending reply, resending once under the SAME sequence number: the
- * slave answers a repeat of a completed command from its reply cache, so a lost
- * reply costs a round trip while a lost command is re-executed exactly once.
- * `critical` separates a lost trigger (the gate wants zero) from a lost 'D',
- * which is diagnostics and must never cost the session half its SNR. */
-static bool link_wait(char *out, int cap, int timeout_ms, bool critical)
+/* Gather replies from every node still marked ok. Returns how many answered.
+ *
+ * The resend is a broadcast, which sounds wasteful at n=4 but is not: a node
+ * that already answered this sequence number replies from its cache without
+ * measuring again, so only the node that actually missed it pays anything.
+ *
+ * A node that stays silent is dropped FOR THIS RUN (PLAN_NETWORK §4) — at n>=3
+ * that is a degraded run over √(n−1), not a reason to end the session. After
+ * NODE_MISS_LIMIT consecutive misses it leaves the session altogether, so an
+ * unplugged node degrades the array instead of taxing every later run with the
+ * full retry budget. */
+static int nodes_collect(int timeout_ms, bool critical)
 {
-    if (link_recv(s_pending.seq, out, cap, timeout_ms)) return true;
-    g_status.net_retries++;
-    link_send(s_pending.seq, s_pending.cmd);
-    if (link_recv(s_pending.seq, out, cap, timeout_ms)) return true;
-    if (critical) g_status.net_lost++;
-    return false;
+    int want = 0;
+    for (int k = 0; k < s_nslaves; k++)
+        if (g_status.nodes[k + 1].ok) want++;
+    if (want == 0) return 0;
+
+    int got = 0;
+    for (int attempt = 0; attempt < 2 && got < want; attempt++) {
+        if (attempt) {
+            g_status.net_retries++;
+            link_send(s_pending.seq, s_pending.cmd);
+        }
+        int64_t deadline = esp_timer_get_time() + (int64_t)timeout_ms * 1000;
+        while (got < want) {
+            char payload[ELOTTO_LINK_MAX];
+            int k = link_recv_any(s_pending.seq, payload, sizeof(payload), deadline);
+            if (k < 0) break;                                  // deadline reached
+            if (s_link[k].replied || !g_status.nodes[k + 1].ok) continue;  // duplicate
+            s_link[k].replied = true;
+            snprintf(s_link[k].reply, sizeof(s_link[k].reply), "%s", payload);
+            got++;
+        }
+    }
+
+    for (int k = 0; k < s_nslaves; k++) {
+        if (!g_status.nodes[k + 1].ok) continue;
+        if (s_link[k].replied) { s_link[k].miss_streak = 0; continue; }
+        g_status.nodes[k + 1].lost++;
+        if (critical) g_status.net_lost++;
+        if (++s_link[k].miss_streak >= NODE_MISS_LIMIT) {
+            g_status.nodes[k + 1].ok = false;
+            g_status.node_ok--;
+            printf("node %d (%s): %d missed replies -- dropped, %d node(s) left\n",
+                   k + 1, g_status.nodes[k + 1].ip, s_link[k].miss_streak,
+                   g_status.node_ok);
+            int floor_n = (g_status.node_count >= 2) ? 2 : 1;
+            if (g_status.node_ok < floor_n) g_status.abort_requested = true;
+        }
+    }
+    s_slave_ok = (g_status.node_ok > (g_status.nodes[0].ok ? 1 : 0));
+    return got;
 }
 
-static bool link_xact(const char *cmd, char *out, int cap, int timeout_ms, bool critical)
+/* Discovery by broadcast: no static IP table to maintain, and a node on a
+ * dynamic DHCP lease joins exactly like one on a static one. Every probe round
+ * is a single datagram; several rounds because one can be lost, and every
+ * distinct responder is a node. */
+static void nodes_discover(void)
 {
-    link_begin(cmd);
-    return link_wait(out, cap, timeout_ms, critical);
-}
+    s_nslaves            = 0;
+    g_status.node_count  = 1;                 // the master itself
+    g_status.node_ok     = 1;
+    memset(s_link, 0, sizeof(s_link));
+    memset(g_status.nodes, 0, sizeof(g_status.nodes));
+    g_status.nodes[0].ok = true;
 
-/* Discovery by broadcast, replacing the wired 'P' probe: no static IP table to
- * maintain, and at Phase D the same call collects every node that answers. */
-static void slave_init(void)
-{
-    g_status.slave_ip[0] = '\0';
     if (!link_open()) { g_status.slave_connected = s_slave_ok = false; return; }
     link_drain();
 
-    char resp[32];
-    s_slave_ok = false;
-    for (int i = 0; i < LINK_PROBE_TRIES && !s_slave_ok; i++) {
-        link_begin("P");
-        // Not link_wait(): a probe that goes unanswered is the normal
-        // "running solo" case, not a fault, so it must not count as loss.
-        if (link_recv(s_pending.seq, resp, sizeof(resp), LINK_PROBE_MS))
-            s_slave_ok = (resp[0] == 'O');
+    for (int round = 0; round < LINK_PROBE_TRIES && s_nslaves < MAX_SLAVES; round++) {
+        s_pending.seq = ++s_seq;
+        snprintf(s_pending.cmd, sizeof(s_pending.cmd), "P");
+        link_send(s_pending.seq, s_pending.cmd);
+
+        // Collect for the WHOLE window rather than stopping at the first answer:
+        // at n>1 the other nodes are exactly the ones that would be missed.
+        int64_t deadline = esp_timer_get_time() + (int64_t)LINK_PROBE_MS * 1000;
+        for (;;) {
+            if (!link_arm_timeout(deadline)) break;
+
+            char buf[ELOTTO_LINK_MAX];
+            struct sockaddr_in from;
+            socklen_t fl = sizeof(from);
+            int n = recvfrom(s_sock, buf, sizeof(buf) - 1, 0,
+                             (struct sockaddr *)&from, &fl);
+            if (n <= 0) continue;
+            buf[n] = '\0';
+
+            uint32_t rseq;
+            char    *payload;
+            if (!elotto_link_parse(buf, &rseq, &payload)) continue;
+            if (rseq != s_pending.seq || payload[0] != 'O') continue;
+            if (link_node_of(&from) >= 0) continue;          // already known
+            if (s_nslaves >= MAX_SLAVES) break;
+
+            int k = s_nslaves++;
+            s_link[k].addr = from;
+            int idx = k + 1;
+            inet_ntoa_r(from.sin_addr, g_status.nodes[idx].ip,
+                        sizeof(g_status.nodes[idx].ip));
+            g_status.nodes[idx].ok = true;
+            g_status.node_count++;
+            g_status.node_ok++;
+        }
     }
+
+    s_slave_ok = (s_nslaves > 0);
     g_status.slave_connected = s_slave_ok;
-    printf("Slave: %s%s%s\n", s_slave_ok ? "connected at " : "not reachable",
-           s_slave_ok ? g_status.slave_ip : "", s_slave_ok ? " (UDP)" : "");
+    printf("Nodes: %d (master", g_status.node_count);
+    for (int k = 0; k < s_nslaves; k++) printf(" + %s", g_status.nodes[k + 1].ip);
+    printf(")\n");
 }
 
 static void slave_baseline_start(int n)
@@ -371,93 +519,106 @@ static void slave_baseline_start(int n)
     if (!s_slave_ok) return;
     char cmd[16];
     snprintf(cmd, sizeof(cmd), "B%d", n);
-    link_begin(cmd);
+    nodes_send(cmd);
 }
 
 static void slave_baseline_wait(void)
 {
     if (!s_slave_ok) return;
-    char resp[32];
-    int timeout_ms = g_status.baseline_total * 800 + 15000;
-    if (!link_wait(resp, sizeof(resp), timeout_ms, true))
-        s_slave_ok = g_status.slave_connected = false;
+    nodes_collect(g_status.baseline_total * 800 + 15000, true);
 }
 
 static void slave_trigger(void)
 {
-    link_begin("M");
+    if (s_slave_ok) nodes_send("M");
 }
 
 static void slave_abort(void)
 {
     if (!s_slave_ok) return;
     // Fire and forget, twice: nothing waits for the answer (the caller is on its
-    // way out), and a single dropped datagram would otherwise leave the slave
+    // way out), and a single dropped datagram would otherwise leave a node
     // grinding through a run whose result no one will read.
-    link_begin("A");
+    nodes_send("A");
     link_send(s_pending.seq, s_pending.cmd);
 }
 
-static double slave_measure(void)
+/* Parse one node's "Z:<float>,<C|T>" reply into s_link[k].z. Returns false if
+ * the node did not contribute a usable value this run. */
+static bool node_take_z(int k)
 {
-    char resp[48];
-    if (!link_wait(resp, sizeof(resp), LINK_MEAS_MS, true)) {
-        s_slave_ok = g_status.slave_connected = false;
-        return 0.0;
-    }
-    if (resp[0] != 'Z' || resp[1] != ':') {
-        s_slave_ok = g_status.slave_connected = false;
-        return 0.0;
-    }
-    // "Z:<float>,<C|T>" — the trailing source tag is optional so a pre-camera
-    // slave still parses. atof() stops at the comma either way.
-    const char *tag = strchr(resp, ',');
-    g_status.slave_source = (tag && tag[1] == 'C') ? NOISE_CAMERA : NOISE_TRNG;
-    // Same policy as a local stall: if this session asked for camera entropy and
-    // the slave says it measured on its TRNG, the combined z would mix sources.
-    // Abort rather than quietly average them.
-    if (g_status.noise_source == NOISE_CAMERA && g_status.slave_source == NOISE_TRNG)
-        noise_camera_stalled();
-    return atof(resp + 2);
-}
+    if (!s_link[k].replied) return false;
+    const char *resp = s_link[k].reply;
+    if (resp[0] != 'Z' || resp[1] != ':') return false;
 
-/* Ask the slave for its camera health (protocol 'D'). Only ever called between
- * loops, when the slave is idle — never between an 'M' and its 'Z:' reply.
- * A missing/garbled answer is NOT treated as a disconnect: this is diagnostics,
- * and dropping the slave over it would cost the session half its SNR. */
-static bool slave_diag(float *mbit, uint32_t *stalls)
-{
-    if (!s_slave_ok) return false;
-    char resp[ELOTTO_LINK_MAX];
-    if (!link_xact("D", resp, sizeof(resp), LINK_DIAG_MS, false) ||
-        resp[0] != 'D' || resp[1] != ':')
-        return false;
-    // "D:<ready>,<bias>,<sigma>,<mbit_s>,<stalls>,<stuck>,<C|T>"
-    int   ready = 0, n;
-    float bias = 0, sigma = 0, mb = 0;
-    unsigned long st = 0, stuck = 0;
-    n = sscanf(resp + 2, "%d,%f,%f,%f,%lu,%lu", &ready, &bias, &sigma, &mb, &st, &stuck);
-    if (n < 5) return false;
-    *mbit   = mb;
-    *stalls = (uint32_t)st;
+    // The trailing source tag is optional so a pre-camera slave still parses;
+    // atof() stops at the comma either way.
+    const char *tag = strchr(resp, ',');
+    int src = (tag && tag[1] == 'C') ? NOISE_CAMERA : NOISE_TRNG;
+    g_status.nodes[k + 1].src = src;
+    if (g_status.noise_source == NOISE_CAMERA && src == NOISE_TRNG) {
+        node_source_lost(k + 1);
+        return false;               // its bits came from the wrong physics
+    }
+    s_link[k].z = atof(resp + 2);
     return true;
 }
 
-void slave_probe(void) { slave_init(); }
+/* Ask each node for its camera health (protocol 'D'). Only ever called between
+ * loops, when the nodes are idle — never between an 'M' and its 'Z:' reply.
+ * A missing/garbled answer is NOT treated as a disconnect: this is diagnostics,
+ * and dropping a node over it would cost the session part of its SNR. */
+static void slaves_diag(void)
+{
+    if (!s_slave_ok) return;
+    nodes_send("D");
+    nodes_collect(LINK_DIAG_MS, false);
+    for (int k = 0; k < s_nslaves; k++) {
+        NodeStatus *N = &g_status.nodes[k + 1];
+        N->cam_mbit = 0.0f;
+        if (!s_link[k].replied) continue;
+        const char *resp = s_link[k].reply;
+        if (resp[0] != 'D' || resp[1] != ':') continue;
+        // "D:<ready>,<bias>,<sigma>,<mbit_s>,<stalls>,<stuck>,<C|T>"
+        int   ready = 0;
+        float bias = 0, sigma = 0, mb = 0;
+        unsigned long st = 0, stuck = 0;
+        if (sscanf(resp + 2, "%d,%f,%f,%f,%lu,%lu",
+                   &ready, &bias, &sigma, &mb, &st, &stuck) < 5) continue;
+        N->cam_mbit   = mb;
+        N->cam_stalls = (uint32_t)st;
+    }
+    // A 'D' miss must not count toward the drop rule — it says nothing about
+    // whether the node can still measure.
+    for (int k = 0; k < s_nslaves; k++) s_link[k].miss_streak = 0;
+}
 
-/* One scoring run, slave-combined like Phase 2: trigger the slave, measure
- * locally in parallel, combine ÷√2. No baseline subtraction — the offset is
+void slave_probe(void) { nodes_discover(); }
+
+/* Combine this run's per-node z into one N(0,1) value: Σz / √k over the k nodes
+ * that actually contributed. k varies run to run when a node is dropped, and
+ * that is fine — each combined z is still unit-variance under the null, which
+ * is the only property the statistics above depend on. Returns k via *n_used. */
+static double combine_z(double z_master, int *n_used)
+{
+    double sum = 0.0;
+    int    k   = 0;
+    if (g_status.nodes[0].ok) { sum += z_master; k++; }
+    for (int i = 0; i < s_nslaves; i++)
+        if (g_status.nodes[i + 1].ok && node_take_z(i)) { sum += s_link[i].z; k++; }
+    if (n_used) *n_used = k;
+    return k > 0 ? sum / sqrt((double)k) : 0.0;
+}
+
+/* One scoring run, node-combined like Phase 2: trigger every node, measure
+ * locally in parallel, combine ÷√k. No baseline subtraction — the offset is
  * common to every number and scoring only ranks them. */
 static double score_one_run(void)
 {
-    bool use_slave = s_slave_ok;
-    if (use_slave) slave_trigger();
-    double z = gcp_zscore_raw();
-    if (use_slave) {
-        double zs = slave_measure();
-        if (s_slave_ok) z = (z + zs) * 0.70710678;   // / sqrt(2)
-    }
-    return z;
+    slave_trigger();
+    double zm = gcp_zscore_raw();
+    if (s_slave_ok) nodes_collect(LINK_MEAS_MS, true);
+    return combine_z(zm, NULL);
 }
 
 /* Select the most-frequent numbers from the accumulated Z>2 histograms and
@@ -561,45 +722,115 @@ static void compact_partial(int done)
         g_status.results[j] = g_status.results[s_perm[j]];
 }
 
-/* Master–slave independence diagnostics from the (z_m, z_s) pairs collected
- * during Phase 2 — free bookkeeping that verifies the √2 combine assumption.
- * Pairs are centered PER LOOP before folding into the session moments:
- * pooling raw pairs across loops would let each loop's random baseline offset
- * (SE = 1/√n_baseline per device) masquerade as correlation.
- * Publishes Pearson r (should be ~0) and per-device per-run σ (should be ~1). */
+/* Independence diagnostics over every pair of nodes — free bookkeeping that
+ * verifies the √n combine assumption. At n=4 there are six pairs, i.e. six ways
+ * for the assumption to be false, and ONE correlated pair invalidates the
+ * combine. So the worst pair is what gets published; averaging the six would
+ * let one bad pair hide behind five good ones.
+ *
+ * Moments are centered PER LOOP before folding into the session totals: pooling
+ * raw values across loops would let each loop's random baseline offset
+ * (SE = 1/√n_baseline per node) masquerade as correlation.
+ *
+ * A pair only accumulates on runs where BOTH nodes contributed, so a node that
+ * was dropped part-way through does not silently shift the other's mean. */
 typedef struct {
-    // per-loop raw sums (reset each loop)
-    double lm, ls, lm2, ls2, lms;
-    int    ln;
-    // session-wide centered second moments
-    double cxx, cyy, cxy;
+    double sx, sy, sxx, syy, sxy;   // this loop
+    int    n;
+    double cxx, cyy, cxy;           // session, per-loop centered
     int    cn, cloops;
-} PairStats;
+} PairAcc;
 
-static void pair_fold_loop(PairStats *p)
+typedef struct {
+    double s, ss;                   // this loop
+    int    n;
+    double css;                     // session, per-loop centered
+    int    cn, cloops;
+} NodeAcc;
+
+static PairAcc s_pair[MAX_NODES][MAX_NODES];   // upper triangle, i < j
+static NodeAcc s_nacc[MAX_NODES];
+
+static void pairs_reset(void)
 {
-    if (p->ln >= 2) {
-        double n  = (double)p->ln;
-        double mm = p->lm / n, ms = p->ls / n;
-        p->cxx += p->lm2 - n * mm * mm;
-        p->cyy += p->ls2 - n * ms * ms;
-        p->cxy += p->lms - n * mm * ms;
-        p->cn  += p->ln;
-        p->cloops++;
-    }
-    p->lm = p->ls = p->lm2 = p->ls2 = p->lms = 0.0;
-    p->ln = 0;
+    memset(s_pair, 0, sizeof(s_pair));
+    memset(s_nacc, 0, sizeof(s_nacc));
 }
 
-static void publish_pair_stats(const PairStats *p)
+/* Fold one run's per-node values in. `z[]` holds each node's own z and `have[]`
+ * says which of them are real this run. */
+static void pairs_add_run(const double *z, const bool *have)
 {
-    g_status.pair_n = p->cn;
-    int df = p->cn - p->cloops;   // one mean estimated per loop
-    if (df < 1) { g_status.pair_r = 0.0; g_status.sigma_m = g_status.sigma_s = 0.0; return; }
-    double vm = p->cxx / df, vs = p->cyy / df;
-    g_status.sigma_m = vm > 0 ? sqrt(vm) : 0.0;
-    g_status.sigma_s = vs > 0 ? sqrt(vs) : 0.0;
-    g_status.pair_r  = (p->cxx > 0 && p->cyy > 0) ? p->cxy / sqrt(p->cxx * p->cyy) : 0.0;
+    for (int i = 0; i < g_status.node_count; i++) {
+        if (!have[i]) continue;
+        s_nacc[i].s  += z[i];
+        s_nacc[i].ss += z[i] * z[i];
+        s_nacc[i].n++;
+        for (int j = i + 1; j < g_status.node_count; j++) {
+            if (!have[j]) continue;
+            PairAcc *p = &s_pair[i][j];
+            p->sx  += z[i];       p->sy  += z[j];
+            p->sxx += z[i] * z[i]; p->syy += z[j] * z[j];
+            p->sxy += z[i] * z[j];
+            p->n++;
+        }
+    }
+}
+
+static void pairs_fold_loop(void)
+{
+    for (int i = 0; i < MAX_NODES; i++) {
+        NodeAcc *a = &s_nacc[i];
+        if (a->n >= 2) {
+            double n = (double)a->n, m = a->s / n;
+            a->css += a->ss - n * m * m;
+            a->cn  += a->n;
+            a->cloops++;
+        }
+        a->s = a->ss = 0.0; a->n = 0;
+
+        for (int j = i + 1; j < MAX_NODES; j++) {
+            PairAcc *p = &s_pair[i][j];
+            if (p->n >= 2) {
+                double n = (double)p->n, mx = p->sx / n, my = p->sy / n;
+                p->cxx += p->sxx - n * mx * mx;
+                p->cyy += p->syy - n * my * my;
+                p->cxy += p->sxy - n * mx * my;
+                p->cn  += p->n;
+                p->cloops++;
+            }
+            p->sx = p->sy = p->sxx = p->syy = p->sxy = 0.0; p->n = 0;
+        }
+    }
+}
+
+static void publish_pair_stats(void)
+{
+    for (int i = 0; i < g_status.node_count; i++) {
+        const NodeAcc *a = &s_nacc[i];
+        int df = a->cn - a->cloops;          // one mean estimated per loop
+        double v = (df >= 1) ? a->css / df : 0.0;
+        g_status.nodes[i].sigma = v > 0.0 ? sqrt(v) : 0.0;
+    }
+
+    double best = 0.0;
+    int    bi = 0, bj = 0, bn = 0, count = 0;
+    for (int i = 0; i < g_status.node_count; i++)
+        for (int j = i + 1; j < g_status.node_count; j++) {
+            const PairAcc *p = &s_pair[i][j];
+            if (p->cn - p->cloops < 1 || p->cxx <= 0.0 || p->cyy <= 0.0) continue;
+            count++;
+            double r = p->cxy / sqrt(p->cxx * p->cyy);
+            // |r| decides, but the signed value is what gets published — the
+            // sign says whether nodes move together or against each other, and
+            // that is the first clue to a mechanism if one ever shows up.
+            if (fabs(r) >= fabs(best)) { best = r; bi = i; bj = j; bn = p->cn; }
+        }
+    g_status.pair_r_max = best;
+    g_status.pair_r_i   = bi;
+    g_status.pair_r_j   = bj;
+    g_status.pair_n     = bn;
+    g_status.pair_count = count;
 }
 
 /* ── Phase 3: cross-loop drift instrumentation ─────────────────────────
@@ -631,50 +862,53 @@ static void drift_add(double x, double y)
 }
 
 /* Append one completed loop to the health table. Must run BEFORE
- * pair_fold_loop(), which clears the per-loop pair sums this reads. */
-static void record_loop(const PairStats *p, double loop_mean, int loop_idx)
+ * pairs_fold_loop(), which clears the per-loop sums this reads. */
+static void record_loop(double loop_mean, int loop_idx)
 {
-    double mean_m = loop_mean, mean_s = 0.0, sig_m = 0.0, sig_s = 0.0;
-    if (p->ln >= 2) {   // with a slave, split the combined mean per node
-        double n = (double)p->ln;
-        mean_m = p->lm / n;
-        mean_s = p->ls / n;
-        double vm = (p->lm2 - n * mean_m * mean_m) / (n - 1.0);
-        double vs = (p->ls2 - n * mean_s * mean_s) / (n - 1.0);
-        sig_m = vm > 0.0 ? sqrt(vm) : 0.0;
-        sig_s = vs > 0.0 ? sqrt(vs) : 0.0;
+    // Per-node mean and σ for this loop, straight from the un-folded sums.
+    double mean_n[MAX_NODES] = {0}, sig_n[MAX_NODES] = {0};
+    for (int i = 0; i < g_status.node_count; i++) {
+        const NodeAcc *a = &s_nacc[i];
+        if (a->n < 2) continue;
+        double n = (double)a->n;
+        mean_n[i] = a->s / n;
+        double v = (a->ss - n * mean_n[i] * mean_n[i]) / (n - 1.0);
+        sig_n[i] = v > 0.0 ? sqrt(v) : 0.0;
     }
+    // Solo master: no per-node accumulation happened, so fall back to the
+    // combined mean, which is the master's own mean in that case.
+    if (s_nacc[0].n < 2) mean_n[0] = loop_mean;
 
     camera_stats_t cs;
     camera_get_stats(&cs);
-    float    s_mbit   = 0.0f;
-    uint32_t s_stalls = 0;
-    slave_diag(&s_mbit, &s_stalls);   // slave is idle between loops
+    slaves_diag();                    // nodes are idle between loops
 
     if (g_status.loop_hist && g_status.loop_hist_n < LOOP_HIST) {
         LoopStat *L = &g_status.loop_hist[g_status.loop_hist_n++];
-        L->base         = (float)g_status.baseline_mean;
-        L->mean         = (float)loop_mean;
-        L->sigma        = (float)g_status.loop_sigma;
-        L->mean_m       = (float)mean_m;
-        L->mean_s       = (float)mean_s;
-        L->sig_m        = (float)sig_m;
-        L->sig_s        = (float)sig_s;
-        L->cam_mbit     = (float)cs.mbit_per_sec;
-        L->s_cam_mbit   = s_mbit;
-        L->t_s          = (uint32_t)(g_status.elapsed_ms / 1000);
-        L->cam_stalls   = cs.stalls;
-        L->s_cam_stalls = s_stalls;
+        memset(L, 0, sizeof(*L));
+        L->base  = (float)g_status.baseline_mean;
+        L->mean  = (float)loop_mean;
+        L->sigma = (float)g_status.loop_sigma;
+        L->nodes = (uint8_t)g_status.node_count;
+        L->t_s   = (uint32_t)(g_status.elapsed_ms / 1000);
+        for (int i = 0; i < g_status.node_count && i < MAX_NODES; i++) {
+            L->mean_n[i] = (float)mean_n[i];
+            L->sig_n[i]  = (float)sig_n[i];
+            L->cam_mbit[i]   = i ? g_status.nodes[i].cam_mbit : (float)cs.mbit_per_sec;
+            L->cam_stalls[i] = i ? g_status.nodes[i].cam_stalls : cs.stalls;
+        }
     }
+    g_status.nodes[0].cam_mbit   = (float)cs.mbit_per_sec;
+    g_status.nodes[0].cam_stalls = cs.stalls;
 
     double s = g_status.loop_sigma;
     if (s > 0.0) {
         if (g_status.loops_done == 0 || s < g_status.sigma_lo) g_status.sigma_lo = s;
         if (g_status.loops_done == 0 || s > g_status.sigma_hi) g_status.sigma_hi = s;
     }
-    // The master's RAW per-run offset: what the source actually produced this
+    // The master's RAW per-run offset: what its source actually produced this
     // loop, before studentization removed it (baseline + post-baseline residual)
-    double raw_off = g_status.baseline_mean + mean_m;
+    double raw_off = g_status.baseline_mean + mean_n[0];
     if (g_status.loops_done == 0) g_status.off_first = raw_off;
     g_status.off_last = raw_off;
     g_status.loops_done++;
@@ -877,10 +1111,10 @@ void elotto_task(void *pvParam)
     // a finished session survives for inspection.
     if (!g_status.loop_hist)
         g_status.loop_hist = heap_caps_calloc(LOOP_HIST, sizeof(LoopStat), MALLOC_CAP_SPIRAM);
-    g_status.pair_r          = 0.0;
+    g_status.pair_r_max      = 0.0;
     g_status.pair_n          = 0;
-    g_status.sigma_m         = 0.0;
-    g_status.sigma_s         = 0.0;
+    g_status.pair_count      = 0;
+    g_status.pair_r_i        = g_status.pair_r_j = 0;
     // Per-session transport health. "Zero lost triggers" is the Phase C gate,
     // so it has to be a counted number rather than an impression.
     g_status.net_retries     = 0;
@@ -891,7 +1125,9 @@ void elotto_task(void *pvParam)
     if (g_status.loops_total <= 0 || g_status.loops_total > 500)
         g_status.loops_total = 1;
 
-    slave_init();
+    // Re-discover every session: a node that was powered off last time joins
+    // this one, and one that vanished does not sit in the table as a phantom.
+    nodes_discover();
 
     // After abort_requested is cleared, so a camera that is not ready can abort
     // the session immediately instead of having the flag wiped by the reset above.
@@ -924,8 +1160,8 @@ void elotto_task(void *pvParam)
     if (cumulative)
         memset(s_zsum, 0, sizeof(double) * (size_t)g_status.runs_total);
 
-    // Master–slave pair stats for the independence check (per-loop centered)
-    PairStats pairs = {0};
+    // Pairwise independence check across all nodes (per-loop centered)
+    pairs_reset();
 
     int comparisons = 0;
     int64_t t0 = esp_timer_get_time();
@@ -943,9 +1179,9 @@ void elotto_task(void *pvParam)
             memset(pool_euro, 0, sizeof(pool_euro));
         }
 
-        /* ── Phase 1: Baseline calibration (Master + Slave in parallel) ── */
+        /* ── Phase 1: Baseline calibration (every node in parallel) ────── */
         g_status.phase = PHASE_BASELINE;
-        if (s_slave_ok) slave_baseline_start(g_status.baseline_total);
+        slave_baseline_start(g_status.baseline_total);
         {
             double bsum = 0.0;
             for (int i = 0; i < g_status.baseline_total; i++) {
@@ -1008,19 +1244,29 @@ void elotto_task(void *pvParam)
             else
                 g_status.results[i].euro[0] = g_status.results[i].euro[1] = 0;
 
-            // Trigger slave, then measure locally (both run simultaneously)
-            bool use_slave = s_slave_ok;
-            if (use_slave) slave_trigger();
+            // One broadcast starts every node, then measure locally — all of
+            // them integrate the same window, which is the premise the √n
+            // combine rests on.
+            slave_trigger();
             double zm = gcp_zscore_raw() - g_status.baseline_mean;
-            double z  = zm;
-            if (use_slave) {
-                double zs = slave_measure();
-                if (s_slave_ok) {
-                    pairs.ln++; pairs.lm += zm; pairs.ls += zs;   // independence check
-                    pairs.lm2 += zm * zm; pairs.ls2 += zs * zs; pairs.lms += zm * zs;
-                    z = (zm + zs) * 0.70710678;                   // / sqrt(2)
-                }
+            if (s_slave_ok) nodes_collect(LINK_MEAS_MS, true);
+
+            // Per-node values for the independence check, gathered before the
+            // combine so a dropped node is excluded from both consistently.
+            double znode[MAX_NODES] = {0};
+            bool   have[MAX_NODES]  = {false};
+            double sum = 0.0;
+            int    k   = 0;
+            if (g_status.nodes[0].ok) {
+                znode[0] = zm; have[0] = true; sum += zm; k++;
             }
+            for (int s = 0; s < s_nslaves; s++) {
+                if (!g_status.nodes[s + 1].ok || !node_take_z(s)) continue;
+                znode[s + 1] = s_link[s].z; have[s + 1] = true;
+                sum += s_link[s].z; k++;
+            }
+            pairs_add_run(znode, have);
+            double z = (k > 0) ? sum / sqrt((double)k) : 0.0;
 
             g_status.results[i].index   = i + 1;
             g_status.results[i].z_score = z;
@@ -1034,9 +1280,9 @@ void elotto_task(void *pvParam)
         // fold + publish the ranking
         double loop_mean = 0.0;
         studentize(g_status.runs_total, &loop_mean);
-        record_loop(&pairs, loop_mean, loop);   // before the fold clears pairs.l*
-        pair_fold_loop(&pairs);
-        publish_pair_stats(&pairs);
+        record_loop(loop_mean, loop);   // before the fold clears the per-loop sums
+        pairs_fold_loop();
+        publish_pair_stats();
         if (cumulative) {
             for (int i = 0; i < g_status.runs_total; i++)
                 s_zsum[i] += g_status.results[i].z_score;   // Σz per fixed combination
@@ -1055,8 +1301,8 @@ done:
     // Aborted mid-loop: publish whatever was completed so far. Measured
     // entries of the aborted loop sit scattered at results[s_perm[...]], so
     // compact them to the front before using them as a partial prefix.
-    pair_fold_loop(&pairs);
-    publish_pair_stats(&pairs);
+    pairs_fold_loop();
+    publish_pair_stats();
     if (cumulative) {
         if (meas_k > 0) {
             // Complete loops exist: discard the partial loop, publish those

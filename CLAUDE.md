@@ -29,14 +29,21 @@
   flash and commit them together.
 
 ## Nodes (2026-07-25)
-| node | IP | MAC | flash contents |
-|------|----|-----|----------------|
-| master | 192.168.178.100 | 80:f1:b2:d2:e3:1d | factory = updater, ota_0/ota_1 = elotto app |
-| slave  | 192.168.178.103 (static lease) | 80:f1:b2:d2:e3:e5 | factory = updater, ota_1 = slave app (running) |
+| node | IP | MAC | COM | flash contents |
+|------|----|-----|-----|----------------|
+| master | 192.168.178.100 | 80:f1:b2:d2:e3:1d | COM4 | factory = updater, ota_0/ota_1 = elotto app |
+| slave0 | 192.168.178.103 (static lease) | 80:f1:b2:d2:e3:e5 | — | factory = updater, ota_1 = slave app |
+| slave1 | 192.168.178.145 (static lease) | e8:f6:0a:e0:ce:a8 | COM8 | factory = updater, ota_0 = slave app |
 
-Two more ESP32-P4-ETH boards + a 4-port PoE switch exist for the 4-node array (Phase D).
-Both nodes are on Ethernet and OTA-updatable; the slave has run the full GCP firmware again
-since Phase C, so `slave_connected` is true and sessions are dual-node.
+One more ESP32-P4-ETH board + a 4-port PoE switch exist for the full 4-node array (Phase D).
+**COM ports are not stable** — the slave enumerated as COM6 historically and as COM8 today, so
+always list the ports before an `erase-flash` rather than trusting a number written down here.
+
+**Boards are USB-powered**: pulling the cable powers the node down. slave0 is off whenever its
+cable is on another board, and the master then runs solo.
+
+Node addresses are informational only — the master finds slaves by UDP broadcast, so a dynamic
+lease (slave1) works exactly like a static one and no IP table is maintained anywhere.
 
 ## Concept
 Dual-ESP32-P4 system. Master (COM4) scores lottery numbers via GCP methodology. An optional
@@ -75,9 +82,9 @@ Phase 4. Both record every gate result and design decision.
 
 Phase 1: baseline calibration (master + slave in parallel; informational — ranking uses
 studentization instead).
-Phase 0: score individual numbers 1..N, SCORE_REPS slave-combined runs each (**10**, per-number
-SE = 1/√(2·REPS) ≈ 0.22; raise to 40 → 0.11 when the pool choice must be trusted — it changes
-only which numbers enter the pool, not the Phase-2 statistics)
+Phase 0: score individual numbers 1..N, SCORE_REPS node-combined runs each (**5**, per-number
+SE = 1/√(k·REPS) ≈ 0.32 at two nodes, 0.22 at four; raise REPS when the pool choice must be
+trusted on its own — it changes only which numbers enter the pool, not the Phase-2 statistics)
 (score_one_run(), Stouffer), to build the pool.
 Phase 2: measure all pool combinations in a fresh Fisher–Yates random order per loop
 (s_perm[], drift immunity); results[] stays slot-indexed. A Runs cap stride-samples the full

@@ -27,6 +27,26 @@ typedef struct {
     uint8_t    euro[2];
 } RunResult;
 
+// Nodes in the array, master included as index 0 (docs/PLAN_NETWORK.md Phase D).
+// 4 nodes → C(4,2) = 6 pairwise correlations, which is what the gate checks.
+#define MAX_NODES   4
+#define MAX_SLAVES  (MAX_NODES - 1)
+#define MAX_PAIRS   (MAX_NODES * (MAX_NODES - 1) / 2)
+
+// Per-node health, published so a node that quietly degraded is visible rather
+// than merely averaged in. `ok` is session-scoped participation: a node whose
+// source fell back to the TRNG during a camera session is dropped from the
+// combine and stays dropped until the next baseline re-arms it.
+typedef struct {
+    char     ip[16];        // discovered by broadcast; "" for the master
+    bool     ok;            // still contributing to the combined z
+    int      src;           // NoiseSource it last reported
+    double   sigma;         // per-run σ over the session (ideal 1.0)
+    uint32_t lost;          // runs this node failed to answer in time
+    float    cam_mbit;      // camera rate at the last per-loop 'D' query
+    uint32_t cam_stalls;
+} NodeStatus;
+
 // Per-loop health record (PLAN_4NODE Phase 3). A 20 h session gives slow drift
 // far more room than the three loops of Phase 1/2, and drift is the one bias
 // form studentize() does NOT absorb: it removes a constant per-loop offset
@@ -39,14 +59,14 @@ typedef struct {
     float    base;         // master baseline_mean of this loop = raw per-run z offset
     float    mean;         // combined per-run z mean over the loop (pre-studentize)
     float    sigma;        // combined per-run σ (== loop_sigma), ideal 1.0
-    float    mean_m;       // master-only mean z (after its own baseline subtraction)
-    float    mean_s;       // slave-only mean z (after the slave's own baseline)
-    float    sig_m, sig_s; // per-node per-run σ over this loop
-    float    cam_mbit;     // master camera sustained rate at loop end
-    float    s_cam_mbit;   // slave camera rate (D command), 0 = not answered
+    uint8_t  nodes;        // nodes contributing to this loop (master included)
+    // Per node, index 0 = master. A node that did not take part leaves zeros,
+    // which is distinguishable from a measured 0 by `nodes` and by sig_n == 0.
+    float    mean_n[MAX_NODES];   // per-node mean z (after its own baseline)
+    float    sig_n[MAX_NODES];    // per-node per-run σ over this loop, ideal 1.0
+    float    cam_mbit[MAX_NODES]; // camera rate at loop end, 0 = not answered
+    uint32_t cam_stalls[MAX_NODES];
     uint32_t t_s;          // elapsed seconds at loop end
-    uint32_t cam_stalls;   // master camera stalls, cumulative (gate wants 0)
-    uint32_t s_cam_stalls; // slave camera stalls, cumulative
 } LoopStat;
 
 typedef struct {
@@ -79,9 +99,14 @@ typedef struct {
     double           drift_t;             // slope / SE(slope); |t| > 3 = real drift, not noise
     double           off_first, off_last; // master raw per-run z offset, first / latest loop
     double           sigma_lo, sigma_hi;  // min / max per-loop combined σ across the session
-    double           pair_r;              // master–slave Pearson r over all session pairs (0 = independent)
-    int              pair_n;              // number of (z_master, z_slave) pairs collected
-    double           sigma_m, sigma_s;    // per-device per-run σ from the pairs
+    // Independence check across ALL node pairs (6 of them at n=4). Only the
+    // worst is published as a scalar: the √n gain fails if ANY pair correlates,
+    // so the maximum is the number that decides, not an average that would
+    // dilute one bad pair among five good ones.
+    double           pair_r_max;          // largest |r| over the pairs (signed value kept)
+    int              pair_r_i, pair_r_j;  // which two nodes produced it
+    int              pair_n;              // runs behind that worst pair
+    int              pair_count;          // pairs actually evaluated
     int              result_count;       // valid entries in top[] (published)
     RunResult        top[TOP_N];          // cumulative highest-Z across loops so far
     int              low_count;           // valid entries in low[] (published)
@@ -91,8 +116,10 @@ typedef struct {
     int              cover_low_count;     // valid entries in cover_low[] (cumulative only)
     RunResult        cover_low[TOP_N];    // low-Z but diversified (max-spread) picks
     volatile bool    abort_requested;
-    bool             slave_connected;
-    char             slave_ip[16];        // discovered by UDP broadcast ("" = solo)
+    bool             slave_connected;     // at least one slave answered discovery
+    int              node_count;          // nodes discovered, master included (>= 1)
+    int              node_ok;             // of those, still contributing
+    NodeStatus       nodes[MAX_NODES];    // [0] = master
     // UDP transport health (PLAN_NETWORK Phase C / Risk 3: "UDP loss must be
     // handled explicitly, not assumed away"). Per session.
     uint32_t         net_retries;         // commands resent because no reply came
@@ -106,15 +133,16 @@ typedef struct {
                                           // run k+1 — correlation dressed as
                                           // physics, so they are counted, not used
     int              noise_source;        // NoiseSource requested for this session
-    volatile bool    noise_stalled;       // camera requested but unavailable/stalled →
-                                          // session ABORTED rather than silently
-                                          // substituting the TRNG (see PLAN_4NODE
-                                          // "Fallback policy": mixing sources mid-session
-                                          // changes the measured physics and leaves no
-                                          // record of which runs were affected)
-    volatile int     slave_source;        // NoiseSource the slave reported on its last
-                                          // measurement (it chooses its own, and can
-                                          // fall back independently of the master)
+    volatile bool    noise_stalled;       // a camera session lost its source and could
+                                          // not continue: at n <= 2 losing one node
+                                          // halves the instrument, so the session
+                                          // ABORTS rather than silently substituting
+                                          // the TRNG (PLAN_4NODE "Fallback policy" —
+                                          // mixing sources mid-session changes the
+                                          // physics with no record of which runs were
+                                          // affected). At n >= 3 the stalled node is
+                                          // dropped instead and the rest continue over
+                                          // √(n−1) — PLAN_NETWORK §5.
     LoopStat        *loop_hist;           // per-loop health table (LOOP_HIST entries,
                                           // PSRAM — internal RAM is full with results[];
                                           // NULL if the allocation failed, in which case
