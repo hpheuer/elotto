@@ -233,6 +233,53 @@ passes.
   reasoned about do not count as passing — `PLAN_4NODE.md` already carries one such untested
   safety claim (the camera-stall abort), and that is one too many.
 
+**Status: PASSED on the slave** (2026-07-25, MAC 80:f1:b2:d2:e3:e5, DHCP 192.168.178.103).
+Gate 4 deferred — see below.
+
+| | measured | budget |
+|---|---|---|
+| Static RAM (DIRAM) | **68.3 KB** (11.85 %) | ≤ 130 KB ✔ |
+| Free heap at idle | 556 KB of 576 KB | — |
+| Image size | 396 KB in the 1 MB `factory` slot (61 % free) | — |
+| Update over Ethernet | 406 128 bytes in **1.59 s** | vs ~9 s over USB |
+| Flash detected | 32 MB, partition table exactly as specified | — |
+
+Gates, each observed on the console rather than inferred:
+
+1. **Two updates back to back** — `factory` → `ota_0` → `ota_1`, alternating slots, each image
+   validating itself once Ethernet was up (`ota_state: 2` = `ESP_OTA_IMG_VALID`).
+2. **Rollback** — an image poisoned to abort *before* validating: booted `ota_0`, aborted,
+   rebooted, and the bootloader came back up **on `ota_1`** with the network live. No cable.
+3. **Boot counter** — an image poisoned to abort 5 s *after* validating (rollback disarmed by
+   then): `boot attempt 1 … 2 … 3`, then `3 failed boots — falling back to factory updater`,
+   `Defaulting to factory image`, and the recovery updater took over.
+
+Notes worth keeping:
+
+- **One binary, both roles works.** The same image runs as `factory` and as the OTA app; the
+  role is decided by which partition it boots from. The poison hooks are skipped when running
+  from `factory`, so the recovery image cannot poison itself into a loop — without that guard,
+  gate 3 would have taken the node down permanently.
+- The poison flag is one-shot for the *early* case and persistent for the *late* case,
+  deliberately: a persistent early-crash flag would also kill the image being rolled back to,
+  which would have conflated gates 2 and 3 into "everything dies".
+- During each crash-loop iteration the node was reachable for ~5 s and could have been
+  updated. The boot counter still fired, which is the correct bias: fall back to a known-good
+  recovery image rather than depend on a human catching a 5 s window.
+
+**Gate 4 (GPIO factory reset) is deferred, not skipped**, and `CONFIG_BOOTLOADER_FACTORY_RESET`
+is intentionally left off. Naming the wrong pin is actively harmful — a pin held low by hardware
+would erase `otadata` on *every* boot — and it must not be the BOOT strapping pin, since ROM
+download mode wins before the second-stage bootloader runs. Needs a free pin on the Waveshare
+header, with a button or jumper to ground. The three software paths above already cover every
+failure except a *hang* with no reboot.
+
+**Consequence to be aware of:** the slave now runs the updater, not the GCP slave firmware, and
+its old 2 MB partition layout is gone. It cannot rejoin a measurement session until the slave
+app gains Ethernet (Phase C) — because with rollback armed, an app that cannot be reached over
+the network is by design rolled back on the next boot. Restoring the old firmware over USB is a
+few minutes' work if the 2-node system is needed sooner.
+
 ### Phase B — OTA endpoint in the application
 
 - `POST /update` in the app (fast path), running-image sha256 + build id in `/status`.

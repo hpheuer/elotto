@@ -1,0 +1,20 @@
+# Shared partition table — master, slave and the OTA updater must all use THIS file,
+# or a board flashed by one project cannot be updated by another.
+#   elotto        : CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+#   ota_firmware  : ... "../partitions.csv"
+#   elotto_slave  : ... "../elotto/partitions.csv"    (repos are siblings on disk)
+#
+# Flash is 32 MB on these boards (measured, both units). Only ~7.5 MB is used here;
+# the rest is deliberately left free for later (session logs, /loops history).
+#
+# factory = the network updater (docs/PLAN_NETWORK.md). It is never an OTA target,
+# so it survives any bad application image — that is the whole point of it existing.
+# App partitions must start on a 64 KB boundary.
+#
+# Name,     Type, SubType,  Offset,    Size,      Flags
+nvs,        data, nvs,      0x9000,    0x6000,
+otadata,    data, ota,      0xF000,    0x2000,
+phy_init,   data, phy,      0x11000,   0x1000,
+factory,    app,  factory,  0x20000,   0x100000,
+ota_0,      app,  ota_0,    0x120000,  0x300000,
+ota_1,      app,  ota_1,    0x420000,  0x300000,

@@ -3,3 +3,8 @@ sdkconfig.old
 .vscode/
 managed_components/
 .claude/settings.local.json
+
+# OTA updater build output
+ota_firmware/build/
+ota_firmware/sdkconfig
+ota_firmware/sdkconfig.old

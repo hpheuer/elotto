@@ -1,0 +1,43 @@
+# The boards are ESP32-P4 rev v1.3. ESP32P4_REV_MIN_0 *depends on*
+# ESP32P4_SELECTS_REV_LESS_V3, which defaults to n — without the line below the
+# choice silently falls back to rev v3.1 and the binary refuses to boot on this
+# hardware. Support for <3.0 and >=3.0 is mutually exclusive, so this comes first.
+CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y
+CONFIG_ESP32P4_REV_MIN_0=y
+CONFIG_ESP32P4_REV_MIN_FULL=0
+CONFIG_ESP_REV_MIN_FULL=0
+CONFIG_ESP32P4_REV_MAX_FULL=199
+CONFIG_ESP_REV_MAX_FULL=199
+
+# --- Flash and partitions (docs/PLAN_NETWORK.md Phase A) --------------------
+# 32 MB measured on both boards; the project shipped configured for 2 MB.
+CONFIG_ESPTOOLPY_FLASHSIZE_32MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="32MB"
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="../partitions.csv"
+
+# --- Rollback ---------------------------------------------------------------
+# Defaults to n. Without it a broken OTA image simply boots again on reset and
+# the reset button does nothing for you (see PLAN_NETWORK "Failure modes").
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+
+# --- GPIO factory reset: intentionally NOT enabled yet ----------------------
+# CONFIG_BOOTLOADER_FACTORY_RESET requires naming a pin, and picking the wrong
+# one is actively harmful: a pin held low by hardware would erase otadata on
+# EVERY boot. It must not be the BOOT strapping pin either — ROM download mode
+# wins before the second-stage bootloader runs. Enable once a free pin on the
+# Waveshare header is confirmed:
+#   CONFIG_BOOTLOADER_FACTORY_RESET=y
+#   CONFIG_BOOTLOADER_NUM_PIN_FACTORY_RESET=<pin>
+#   CONFIG_BOOTLOADER_OTA_DATA_ERASE=y
+#   CONFIG_BOOTLOADER_DATA_FACTORY_RESET=""   # keep NVS; default wipes "nvs"
+
+# --- Size ------------------------------------------------------------------
+# No PSRAM, no camera, no statistics tables. Optimise for size: this image only
+# has to bring up Ethernet and write flash.
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+
+# The upload handler streams a multi-hundred-KB body; give the HTTP server room
+# and patience without making it a memory hog.
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=30
