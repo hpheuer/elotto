@@ -210,6 +210,69 @@ mid-session would test it.
 - README: new "Camera entropy" section (physics, extraction, gates), updated wiring
   diagram/screenshots; CLAUDE.md concept sync; version bump.
 
+**Status: instrumentation + docs DONE (2026-07-25, v2.1); 20 h gate session pending.**
+
+A 20 h session cannot be *judged* with what Phase 1/2 published — `loop_sigma` held only the
+last loop, and nothing recorded the offset studentization removed. Phase 1 explicitly deferred
+the drift question here ("drift is the one form this correction does not fully absorb"), so
+Phase 3 first built the instrument to answer it:
+
+- **`record_loop()`** stores one `LoopStat` per completed loop: raw (pre-studentize) per-run
+  offset `base` + `raw_m`, combined and per-node means and σ, and camera health at that moment
+  for *both* nodes. Lives in **PSRAM** — internal RAM is full with `results[]`, and the few KB
+  of extra `.bss` failed the *link*, not the run.
+- **`drift_add()`** regresses the master's raw per-run offset on the loop index and publishes
+  `drift_slope` (z per loop) and `drift_t = slope / SE(slope)`; |t| > 3 means the trend is real
+  rather than noise. Running sums, so the test stays exact past the 128 stored loops.
+- **`GET /loops`** serves the whole table (chunked); `/status` adds `loops_done`,
+  `drift_slope`, `drift_t`, `off_first`/`off_last`, `sigma_lo`/`sigma_hi`; the results line
+  shows `offset a → b · drift ±s z/loop (t = …) · σ lo–hi over N loops` with a ⚠ at |t| > 3.
+- Slave per-loop camera numbers come from the existing `D` command, queried once per loop
+  while the slave is idle. A missing reply is diagnostics only and never drops the slave —
+  losing it would cost the session half its SNR over a failed status query.
+- **Entropy selector in the UI**, and `/start` now sets the source *explicitly* (camera by
+  default) instead of inheriting whatever the previous session used. The source decides what
+  physics is being measured; it must never carry over silently.
+
+Sizing the gate session: measured ~0.66 s per slave-combined camera run → Eurojackpot loop ≈
+7920 runs + 100 baseline ≈ 88 min, plus one-time scoring. **Loops = 12 ≈ 20 h.**
+
+`SCORE_REPS` was lowered 40 → **10** while this instrumentation is being iterated on: scoring
+is a one-time phase that costs ~27 min at 40 reps for Eurojackpot and blocks every test run
+from reaching the loops it is supposed to exercise. It only affects pool *selection*
+confidence (per-number SE 0.11 → 0.22), not the Phase-2 statistics. **Raise it back to 40
+before the 20 h gate session** — the pool is locked for the whole session, so that is exactly
+the run where selection noise matters.
+
+What the gate must show: `loop_sigma` stable near 1 across all 12 loops (not just the last),
+|drift_t| < 3 on the raw offset, `cam_stalls` = 0 on both nodes, `pair_r` ≈ 0 at n ≈ 95k pairs,
+and a corrected p that stays honest over 7920 comparisons.
+
+**Instrument verified** (2026-07-25, 6/49, Loops=3, Runs=20, both `src=cam`, 7 min — a
+functional check of the new plumbing, *not* the gate, whose n is far too small to conclude
+anything about drift):
+
+| loop | base | raw_m | σ | σm / σs | cam Mbit/s M/S | stalls M/S |
+|------|------|-------|---|---------|----------------|------------|
+| 1 | −0.8903 | −0.2225 | 0.9785 | 1.017 / 0.851 | 3.487 / 3.221 | 0 / 0 |
+| 2 | +0.0658 | +0.2049 | 1.0323 | — | 3.472 / 3.211 | 0 / 0 |
+| 3 | −0.2308 | −0.1185 | 1.1623 | — | 3.458 / 3.200 | 0 / 0 |
+
+- `raw_m = base + mean_m` holds on every row; `mean = (mean_m + mean_s)/√2` reproduces the
+  published combined mean. The device's `drift_slope`/`drift_t` (0.05202 / 0.24) recompute
+  exactly from the served table, and the running-sums regression was separately checked
+  against closed-form OLS (agrees to 1e−13; flags a synthetic 0.004 z/loop trend at t = 5.1
+  while passing flat noise at t = 1.4).
+- `slave_diag()` round-trips: the slave's own camera rate and stall count appear per loop.
+- The results line renders `offset −0.223 → −0.118 z/run · drift +0.0520 z/loop (t = 0.2 ok)
+  · σ 0.979–1.162 over 3 loops · table`.
+
+Open for the gate run itself:
+- **Raise `SCORE_REPS` back to 40** (see above).
+- Refresh `docs/ui_done.png` / `coverage_*.png` from the 20 h session — the current images
+  predate the entropy + drift rows in the stats line. `docs/ui_start.png` is already updated
+  (Entropy selector).
+
 ## Phase 4 — 4-node scale-out (future, blocked on hardware)
 
 Not started. Requires 2 more ESP32-P4-ETH boards and 3 more OV5647 cameras (see hardware

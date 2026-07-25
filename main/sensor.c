@@ -1,3 +1,4 @@
+#include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
 #include <stdbool.h>
@@ -6,6 +7,7 @@
 #include "freertos/task.h"
 #include "esp_timer.h"
 #include "esp_err.h"
+#include "esp_heap_caps.h"
 #include "driver/uart.h"
 #include "sensor.h"
 #include "camera.h"
@@ -145,9 +147,12 @@ static void nth_combination(const uint8_t *pool, int n, int r, int k, uint8_t *o
 // Scores each number 1..max_val with SCORE_REPS GCP runs (Stouffer per number),
 // slave-combined like Phase 2 (÷√2), picks the top pool_size numbers (sorted
 // ascending). The pool is locked for the whole cumulative session, so this is
-// where selection confidence matters most: 40 dual-ESP reps give per-number
-// SE = 1/√(40·2) ≈ 0.11 vs 1.0 for a single master-only run.
-#define SCORE_REPS 40
+// where selection confidence matters most: per-number SE = 1/√(REPS·2), i.e.
+// 0.22 at 10 reps and 0.11 at 40, vs 1.0 for a single master-only run.
+// Currently 10 to keep the one-time scoring phase short (~7 min for 6/49)
+// while the long-run instrumentation is being iterated on; raise it back to 40
+// for a session whose pool choice has to be trusted.
+#define SCORE_REPS 10
 static double score_one_run(void);   // forward (defined after the slave UART block)
 
 static void score_and_build_pool(int max_val, int pool_size, uint8_t *pool)
@@ -288,6 +293,31 @@ static double slave_measure(void)
     return atof(resp + 2);
 }
 
+/* Ask the slave for its camera health (protocol 'D'). Only ever called between
+ * loops, when the slave is idle — never between an 'M' and its 'Z:' reply.
+ * A missing/garbled answer is NOT treated as a disconnect: this is diagnostics,
+ * and dropping the slave over it would cost the session half its SNR. */
+static bool slave_diag(float *mbit, uint32_t *stalls)
+{
+    if (!s_slave_ok) return false;
+    uart_flush_input(SLAVE_UART);
+    uart_write_bytes(SLAVE_UART, "D\n", 2);
+    char resp[128];
+    if (!slave_readline(resp, sizeof(resp), 1500) || resp[0] != 'D' || resp[1] != ':') {
+        uart_flush_input(SLAVE_UART);   // drop a late/partial reply so the next
+        return false;                   // slave_measure() does not read it
+    }
+    // "D:<ready>,<bias>,<sigma>,<mbit_s>,<stalls>,<stuck>,<C|T>"
+    int   ready = 0, n;
+    float bias = 0, sigma = 0, mb = 0;
+    unsigned long st = 0, stuck = 0;
+    n = sscanf(resp + 2, "%d,%f,%f,%f,%lu,%lu", &ready, &bias, &sigma, &mb, &st, &stuck);
+    if (n < 5) return false;
+    *mbit   = mb;
+    *stalls = (uint32_t)st;
+    return true;
+}
+
 void slave_probe(void) { slave_init(); }
 
 /* One scoring run, slave-combined like Phase 2: trigger the slave, measure
@@ -364,10 +394,11 @@ static void compute_significance(int comparisons)
  * by the loop's own empirical σ. This (a) removes the common bias offset with
  * a 5005-sample estimate instead of the noisy 100-run baseline (whose error
  * would otherwise accumulate √k-coherently in cumulative mode), and (b) makes
- * per-run Z exactly N(0,1) under the null even if raw TRNG reads are
+ * per-run Z exactly N(0,1) under the null even if raw source reads are
  * correlated and true σ ≠ 1. Reports the pre-scaling σ as a quality metric. */
-static void studentize(int n)
+static void studentize(int n, double *out_mean)
 {
+    if (out_mean) *out_mean = 0.0;
     if (n < 4) { g_status.loop_sigma = 0.0; return; }
     double m = 0.0;
     for (int i = 0; i < n; i++) m += g_status.results[i].z_score;
@@ -379,6 +410,7 @@ static void studentize(int n)
     }
     double s = sqrt(v / (n - 1));
     g_status.loop_sigma = s;
+    if (out_mean) *out_mean = m;   // the offset removed here — Phase 3 drift check
     if (s < 1e-9) s = 1.0;
     for (int i = 0; i < n; i++) {
         double z = (g_status.results[i].z_score - m) / s;
@@ -443,6 +475,86 @@ static void publish_pair_stats(const PairStats *p)
     g_status.sigma_m = vm > 0 ? sqrt(vm) : 0.0;
     g_status.sigma_s = vs > 0 ? sqrt(vs) : 0.0;
     g_status.pair_r  = (p->cxx > 0 && p->cyy > 0) ? p->cxy / sqrt(p->cxx * p->cyy) : 0.0;
+}
+
+/* ── Phase 3: cross-loop drift instrumentation ─────────────────────────
+ * studentize() removes each loop's own mean exactly, so a *constant* offset
+ * (e.g. the camera's residual LSB bias, ≈ −0.33 z/run in Phase 1) is harmless.
+ * A trend across loops is not: it survives centering and, over a 20 h session,
+ * has far more room to develop than the three loops of Phase 1/2. So regress
+ * the master's raw per-run offset on the loop index and publish slope + t.
+ * Running sums, so the test stays exact past LOOP_HIST stored loops. */
+static struct { double n, sx, sxx, sy, sxy, syy; } s_drift;
+
+static void drift_add(double x, double y)
+{
+    s_drift.n++;
+    s_drift.sx += x; s_drift.sxx += x * x;
+    s_drift.sy += y; s_drift.sxy += x * y; s_drift.syy += y * y;
+    if (s_drift.n < 3) return;
+    double n   = s_drift.n;
+    double sxx = s_drift.sxx - s_drift.sx * s_drift.sx / n;
+    double sxy = s_drift.sxy - s_drift.sx * s_drift.sy / n;
+    double syy = s_drift.syy - s_drift.sy * s_drift.sy / n;
+    if (sxx <= 0.0) return;
+    double b     = sxy / sxx;
+    double resid = syy - b * sxy;              // Σ of squared residuals
+    if (resid < 0.0) resid = 0.0;
+    double var_b = resid / (n - 2.0) / sxx;    // SE(slope)²
+    g_status.drift_slope = b;
+    g_status.drift_t     = (var_b > 0.0) ? b / sqrt(var_b) : 0.0;
+}
+
+/* Append one completed loop to the health table. Must run BEFORE
+ * pair_fold_loop(), which clears the per-loop pair sums this reads. */
+static void record_loop(const PairStats *p, double loop_mean, int loop_idx)
+{
+    double mean_m = loop_mean, mean_s = 0.0, sig_m = 0.0, sig_s = 0.0;
+    if (p->ln >= 2) {   // with a slave, split the combined mean per node
+        double n = (double)p->ln;
+        mean_m = p->lm / n;
+        mean_s = p->ls / n;
+        double vm = (p->lm2 - n * mean_m * mean_m) / (n - 1.0);
+        double vs = (p->ls2 - n * mean_s * mean_s) / (n - 1.0);
+        sig_m = vm > 0.0 ? sqrt(vm) : 0.0;
+        sig_s = vs > 0.0 ? sqrt(vs) : 0.0;
+    }
+
+    camera_stats_t cs;
+    camera_get_stats(&cs);
+    float    s_mbit   = 0.0f;
+    uint32_t s_stalls = 0;
+    slave_diag(&s_mbit, &s_stalls);   // slave is idle between loops
+
+    if (g_status.loop_hist && g_status.loop_hist_n < LOOP_HIST) {
+        LoopStat *L = &g_status.loop_hist[g_status.loop_hist_n++];
+        L->base         = (float)g_status.baseline_mean;
+        L->mean         = (float)loop_mean;
+        L->sigma        = (float)g_status.loop_sigma;
+        L->mean_m       = (float)mean_m;
+        L->mean_s       = (float)mean_s;
+        L->sig_m        = (float)sig_m;
+        L->sig_s        = (float)sig_s;
+        L->cam_mbit     = (float)cs.mbit_per_sec;
+        L->s_cam_mbit   = s_mbit;
+        L->t_s          = (uint32_t)(g_status.elapsed_ms / 1000);
+        L->cam_stalls   = cs.stalls;
+        L->s_cam_stalls = s_stalls;
+    }
+
+    double s = g_status.loop_sigma;
+    if (s > 0.0) {
+        if (g_status.loops_done == 0 || s < g_status.sigma_lo) g_status.sigma_lo = s;
+        if (g_status.loops_done == 0 || s > g_status.sigma_hi) g_status.sigma_hi = s;
+    }
+    // The master's RAW per-run offset: what the source actually produced this
+    // loop, before studentization removed it (baseline + post-baseline residual)
+    double raw_off = g_status.baseline_mean + mean_m;
+    if (g_status.loops_done == 0) g_status.off_first = raw_off;
+    g_status.off_last = raw_off;
+    g_status.loops_done++;
+
+    drift_add((double)loop_idx, raw_off);
 }
 
 /* Greedy diversified "coverage" picks: from the COVER_POOL most extreme
@@ -626,6 +738,20 @@ void elotto_task(void *pvParam)
     g_status.p_corrected     = 1.0;
     g_status.comparisons     = 0;
     g_status.loop_sigma      = 0.0;
+    g_status.loops_done      = 0;
+    g_status.loop_hist_n     = 0;
+    g_status.drift_slope     = 0.0;
+    g_status.drift_t         = 0.0;
+    g_status.off_first       = 0.0;
+    g_status.off_last        = 0.0;
+    g_status.sigma_lo        = 0.0;
+    g_status.sigma_hi        = 0.0;
+    memset(&s_drift, 0, sizeof(s_drift));
+    // Loop history lives in PSRAM: results[] already fills internal RAM. Kept
+    // for the lifetime of the app (allocated once, never freed) so the table of
+    // a finished session survives for inspection.
+    if (!g_status.loop_hist)
+        g_status.loop_hist = heap_caps_calloc(LOOP_HIST, sizeof(LoopStat), MALLOC_CAP_SPIRAM);
     g_status.pair_r          = 0.0;
     g_status.pair_n          = 0;
     g_status.sigma_m         = 0.0;
@@ -776,7 +902,9 @@ void elotto_task(void *pvParam)
 
         // Loop finished cleanly: studentize on the loop's own mean/σ, then
         // fold + publish the ranking
-        studentize(g_status.runs_total);
+        double loop_mean = 0.0;
+        studentize(g_status.runs_total, &loop_mean);
+        record_loop(&pairs, loop_mean, loop);   // before the fold clears pairs.l*
         pair_fold_loop(&pairs);
         publish_pair_stats(&pairs);
         if (cumulative) {
@@ -809,7 +937,7 @@ done:
             // subset as a single sample so partial results are still shown
             int pdone = g_status.runs_completed;
             compact_partial(pdone);
-            studentize(pdone);
+            studentize(pdone, NULL);
             for (int i = 0; i < pdone; i++)
                 s_zsum[i] = g_status.results[i].z_score;
             publish_cumulative(s_zsum, pdone, 1, fm, fe, &z2, nm, mx, euro);
@@ -819,7 +947,7 @@ done:
         int pdone = g_status.runs_completed;
         if (pdone > 0 && pdone < g_status.runs_total) {
             compact_partial(pdone);
-            studentize(pdone);
+            studentize(pdone, NULL);
         }
         absorb_loop(carry, &carry_n, low_carry, &low_n, fm, fe, &z2, nm, mx, euro);
         comparisons = g_status.runs_total * (g_status.loop_current > 0 ? g_status.loop_current : 1);

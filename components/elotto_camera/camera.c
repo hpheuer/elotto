@@ -18,10 +18,11 @@
 #include "esp_cam_sensor_xclk.h"
 #include "camera.h"
 
-// Phase 0 (docs/PLAN_4NODE.md): OV5647 dark-frame noise bring-up + validation.
+// OV5647 dark-frame noise source (docs/PLAN_4NODE.md).
 // Extraction: non-overlapping frame pairs, diff = f[2k+1] - f[2k] per pixel
 // (cancels fixed-pattern noise exactly), LSB of each diff packed into a
-// ring buffer. Not wired into gcp_zscore_raw() -- that is Phase 1.
+// ring buffer, XOR-folded. camera_read_word() feeds noise_word() in sensor.c.
+// SHARED between the master and slave repos -- a change here affects both nodes.
 
 static const char *TAG_CAM = "cam";
 

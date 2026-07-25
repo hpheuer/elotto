@@ -3,8 +3,10 @@
 #include <stdbool.h>
 #include "esp_err.h"
 
-// Phase 0 (docs/PLAN_4NODE.md): OV5647 dark-frame noise bring-up + validation.
-// Not wired into gcp_zscore_raw() yet — that swap-in is Phase 1.
+// OV5647 dark-frame noise source (docs/PLAN_4NODE.md): photon shot + read noise
+// from non-overlapping frame pairs. This component is SHARED with the slave repo
+// via EXTRA_COMPONENT_DIRS — one source of truth, byte-identical extraction on
+// both nodes, so a change here means rebuilding and flashing both.
 
 typedef struct {
     bool     ready;               // stream running, ring buffer filling

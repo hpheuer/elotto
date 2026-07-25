@@ -74,7 +74,7 @@ static const char HTML[] =
 "<div class='wrap'>"
 "<h1>&#9752; E-Lotto <a href='https://grokipedia.com/page/Global_Consciousness_Project'"
 " target='_blank' style='color:inherit;text-decoration:none;border-bottom:1px dashed #90ee90'>GCP</a></h1>"
-"<div id='subtitle'>ESP32-P4 &bull; Hardware TRNG &bull; GCP Analysis</div>"
+"<div id='subtitle'>ESP32-P4 &bull; Camera dark-frame entropy &bull; GCP Analysis</div>"
 "<div id='slaveBadge' style='display:none;text-align:center;color:#a0e8ff;"
 "font-size:.88em;margin:-18px 0 12px'>&#128279; Dual-ESP connected &bull; SNR &times;&radic;2</div>"
 "<div class='card'>"
@@ -105,6 +105,14 @@ static const char HTML[] =
 "<option value='0'>Peak Z (best single run)</option>"
 "</select>"
 "</div>"
+"<div style='grid-column:span 2;display:flex;align-items:center;gap:6px'>"
+"<label style='color:#f0c040;font-size:.9em'>Entropy:</label>"
+"<select id='selSrc' style='padding:5px 8px;border-radius:6px;border:1px solid #a08030;"
+"background:#0a2e0a;color:#fff;font-size:.92em'>"
+"<option value='1'>&#128247; Camera (OV5647 dark frame)</option>"
+"<option value='0'>On-chip TRNG</option>"
+"</select>"
+"</div>"
 "<button class='btn btn-euro' style='width:100%' onclick='doStart(0)'>&#127808; Euro-Lotto</button>"
 "<button class='btn btn-649' style='width:100%' onclick='doStart(1)'>&#127808; 6 of 49</button>"
 "</div>"
@@ -133,7 +141,8 @@ static const char HTML[] =
 "<div id='pfScore' style='background:linear-gradient(90deg,#206090,#6ab0e8);"
 "height:100%;border-radius:20px;width:0%;transition:width .5s'></div></div>"
 "<div style='color:#6ab0e8;font-size:.9em;text-align:center;margin-top:4px'>"
-"<span id='sScoreDone'>0</span> / <span id='sScoreTotal'>-</span> Runs (40/number, dual)</div>"
+"<span id='sScoreDone'>0</span> / <span id='sScoreTotal'>-</span> Runs "
+"(<span id='sScoreReps'>-</span>/number, dual)</div>"
 "</div>"
 "<div id='measArea' style='display:none;margin-top:14px'>"
 "<div style='color:#90ee90;font-size:.88em;margin-bottom:4px'>&#128202; Measurement"
@@ -178,6 +187,14 @@ static const char HTML[] =
 "function fmtEta(ms){"
 "if(ms<90000)return Math.ceil(ms/1000)+' s';"
 "return fmt(ms);}"
+// Reps per number are derived from scoring_total, not hardcoded, so the label
+// cannot drift away from SCORE_REPS in sensor.c the way it did before.
+"function setScoreTotal(d){"
+"document.getElementById('sScoreTotal').textContent=d.scoring_total||0;"
+"var nn=(d.mode==='euro')?62:49;"
+"document.getElementById('sScoreReps').textContent="
+"d.scoring_total>0?Math.round(d.scoring_total/nn):'-';"
+"}"
 "function setMode(mode){"
 "document.getElementById('subtitle').textContent="
 "mode===0?'Eurojackpot • 5 of 50 + 2 bonus numbers':'6 of 49 Lotto';}"
@@ -191,7 +208,7 @@ static const char HTML[] =
 "document.getElementById('progArea').style.display='block';"
 "updateLoopBadge(d.loop_current||1,d.loops_total||1);"
 "document.getElementById('sCalTotal').textContent=d.baseline_total;"
-"document.getElementById('sScoreTotal').textContent=d.scoring_total||0;"
+"setScoreTotal(d);"
 "if(d.scoring_total>0){"
 "var sp=Math.round(d.scoring_done*100/d.scoring_total);"
 "document.getElementById('pfScore').style.width=sp+'%';"
@@ -223,12 +240,13 @@ static const char HTML[] =
 "var runs=parseInt(document.getElementById('numRuns').value)||0;"
 "if(runs<0)runs=0;if(runs>8000)runs=8000;"
 "var rank=document.getElementById('selRank').value;"
+"var src=document.getElementById('selSrc').value;"
 "document.getElementById('runsErr').textContent='';"
 "document.getElementById('sCalTotal').textContent=base;"
 "document.getElementById('pfScore').style.width='0%';"
 "document.getElementById('sScoreDone').textContent='0';"
 "document.getElementById('measArea').style.display='none';"
-"fetch('/start?mode='+mode+'&baseline='+base+'&loops='+loops+'&runs='+runs+'&rank='+rank,{method:'POST'});"
+"fetch('/start?mode='+mode+'&baseline='+base+'&loops='+loops+'&runs='+runs+'&rank='+rank+'&src='+src,{method:'POST'});"
 "document.getElementById('runsRow').style.display='none';"
 "document.getElementById('startBtns').style.display='none';"
 "document.getElementById('btnAbort').style.display='block';"
@@ -254,7 +272,7 @@ static const char HTML[] =
 "var scorePct=d.scoring_total>0?Math.round(d.scoring_done*100/d.scoring_total):0;"
 "document.getElementById('pfScore').style.width=scorePct+'%';"
 "document.getElementById('sScoreDone').textContent=d.scoring_done||0;"
-"document.getElementById('sScoreTotal').textContent=d.scoring_total||0;"
+"setScoreTotal(d);"
 "if(d.scoring_total>0&&d.scoring_done>=d.scoring_total)"
 "document.getElementById('scoreCheck').innerHTML=\" <span style='color:#90ee90;font-size:1.1em'>&#10004;</span>\";"
 "else document.getElementById('scoreCheck').innerHTML='';"
@@ -331,6 +349,19 @@ static const char HTML[] =
 "var s3='entropy: master '+srcM+(d.src_stalled?' \\u26a0 camera stalled \\u2013 aborted':'')"
 "+(d.slave?' \\u00b7 slave '+srcS:'');"
 "sl.innerHTML+=(sl.innerHTML?'<br>':'')+s3;"
+// Cross-loop drift. studentize() removes each loop's own offset exactly, so a
+// constant bias is harmless — a trend across loops is not, and only a long
+// session gives it room to show. |t| > 3 means the slope is real, not noise.
+"if(d.loops_done>1){"
+"var sgn=d.drift_slope>=0?'+':'';"
+// The slope needs >= 3 loops before it has a standard error at all
+"var d4=d.loops_done<3?'':(' \\u00b7 drift '+sgn+d.drift_slope.toFixed(4)+' z/loop (t = '"
+"+d.drift_t.toFixed(1)+(Math.abs(d.drift_t)>3?' \\u26a0 drifting)':' ok)'));"
+"var s4='offset '+d.off_first.toFixed(3)+' \\u2192 '+d.off_last.toFixed(3)+' z/run'+d4"
+"+' \\u00b7 \\u03c3 '+d.sigma_lo.toFixed(3)+'\\u2013'+d.sigma_hi.toFixed(3)"
+"+' over '+d.loops_done+' loops'"
+"+\" \\u00b7 <a href='/loops' target='_blank' style='color:#90ee90'>table</a>\";"
+"sl.innerHTML+='<br>'+s4;}"
 "document.getElementById('resCard').style.display='block';"
 "if(!res||res.length===0){"
 "document.getElementById('resTitle').innerHTML='\\uD83E\\uDDE9 Coverage';"
@@ -451,6 +482,9 @@ static esp_err_t status_handler(httpd_req_t *req)
         "\"best_z\":%.4f,\"p_corr\":%.6g,\"comparisons\":%d,"
         "\"loop_sigma\":%.4f,\"pair_r\":%.4f,\"pair_n\":%d,"
         "\"sigma_m\":%.4f,\"sigma_s\":%.4f,"
+        "\"loops_done\":%d,\"drift_slope\":%.5f,\"drift_t\":%.2f,"
+        "\"off_first\":%.4f,\"off_last\":%.4f,"
+        "\"sigma_lo\":%.4f,\"sigma_hi\":%.4f,"
         "\"loop_current\":%d,\"loops_total\":%d,"
         "\"scoring_done\":%d,\"scoring_total\":%d,"
         "\"baseline_done\":%d,\"baseline_total\":%d,\"baseline_mean\":%.4f,"
@@ -463,6 +497,9 @@ static esp_err_t status_handler(httpd_req_t *req)
         g_status.best_z, g_status.p_corrected, g_status.comparisons,
         g_status.loop_sigma, g_status.pair_r, g_status.pair_n,
         g_status.sigma_m, g_status.sigma_s,
+        g_status.loops_done, g_status.drift_slope, g_status.drift_t,
+        g_status.off_first, g_status.off_last,
+        g_status.sigma_lo, g_status.sigma_hi,
         g_status.loop_current, g_status.loops_total,
         g_status.scoring_done, g_status.scoring_total,
         g_status.baseline_done, g_status.baseline_total, g_status.baseline_mean,
@@ -505,6 +542,49 @@ static esp_err_t status_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* ── /loops GET – per-loop health table (PLAN_4NODE Phase 3) ──────────
+ * The long-run drift record: one row per completed loop with the raw
+ * (pre-studentize) per-run offsets and σ per node, plus camera health at that
+ * moment. Chunked — the table outgrows any sane single buffer.
+ * `raw_m` = base + mean_m is the offset the master's source actually produced;
+ * that series is what drift_slope/drift_t are regressed on. */
+static esp_err_t loops_handler(httpd_req_t *req)
+{
+    char buf[288];
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+
+    int n = g_status.loop_hist ? g_status.loop_hist_n : 0;
+    if (n > LOOP_HIST) n = LOOP_HIST;
+    int len = snprintf(buf, sizeof(buf),
+        "{\"loops_done\":%d,\"stored\":%d,\"cap\":%d,"
+        "\"drift_slope\":%.5f,\"drift_t\":%.2f,"
+        "\"sigma_lo\":%.4f,\"sigma_hi\":%.4f,\"loops\":[",
+        g_status.loops_done, n, LOOP_HIST,
+        g_status.drift_slope, g_status.drift_t,
+        g_status.sigma_lo, g_status.sigma_hi);
+    httpd_resp_send_chunk(req, buf, len);
+
+    for (int i = 0; i < n; i++) {
+        const LoopStat *L = &g_status.loop_hist[i];
+        len = snprintf(buf, sizeof(buf),
+            "%s{\"loop\":%d,\"t_s\":%lu,\"base\":%.4f,\"raw_m\":%.4f,"
+            "\"mean\":%.4f,\"sigma\":%.4f,"
+            "\"mean_m\":%.4f,\"mean_s\":%.4f,\"sig_m\":%.4f,\"sig_s\":%.4f,"
+            "\"cam_mbit\":%.3f,\"cam_stalls\":%lu,"
+            "\"s_cam_mbit\":%.3f,\"s_cam_stalls\":%lu}",
+            i ? "," : "", i + 1, (unsigned long)L->t_s,
+            L->base, L->base + L->mean_m, L->mean, L->sigma,
+            L->mean_m, L->mean_s, L->sig_m, L->sig_s,
+            L->cam_mbit, (unsigned long)L->cam_stalls,
+            L->s_cam_mbit, (unsigned long)L->s_cam_stalls);
+        httpd_resp_send_chunk(req, buf, len);
+    }
+    httpd_resp_send_chunk(req, "]}", 2);
+    httpd_resp_send_chunk(req, NULL, 0);
+    return ESP_OK;
+}
+
 /* ── /start POST ──────────────────────────────────────────────────── */
 static esp_err_t start_handler(httpd_req_t *req)
 {
@@ -517,6 +597,10 @@ static esp_err_t start_handler(httpd_req_t *req)
         g_status.loops_total    = 1;
         g_status.runs_limit     = 0;   // 0 = measure all combinations
         g_status.rank_mode      = RANK_CUMULATIVE;
+        // Explicit default, not "whatever the last session used": the entropy
+        // source decides what physics is being measured, so it must never be
+        // inherited silently. Camera matches the UI default; ?src=0 = TRNG.
+        g_status.noise_source   = NOISE_CAMERA;
         if (httpd_req_get_url_query_str(req, qry, sizeof(qry)) == ESP_OK) {
             char val[16] = "";
             if (httpd_query_key_value(qry, "mode", val, sizeof(val)) == ESP_OK)
@@ -535,9 +619,9 @@ static esp_err_t start_handler(httpd_req_t *req)
             }
             if (httpd_query_key_value(qry, "rank", val, sizeof(val)) == ESP_OK)
                 g_status.rank_mode = (val[0] == '0') ? RANK_PEAK : RANK_CUMULATIVE;
-            // ?src=1 -> camera entropy, ?src=0 -> TRNG. Falls back to TRNG with
-            // the session aborts (g_status.noise_stalled) if the camera is not streaming --
-            // a "camera" session is never silently run on TRNG bits.
+            // ?src=1 -> camera entropy, ?src=0 -> on-chip TRNG. A camera session
+            // whose camera is not streaming ABORTS (g_status.noise_stalled)
+            // instead of substituting the TRNG -- see PLAN_4NODE "Fallback policy".
             if (httpd_query_key_value(qry, "src", val, sizeof(val)) == ESP_OK)
                 g_status.noise_source = (val[0] == '1') ? NOISE_CAMERA : NOISE_TRNG;
         }
@@ -668,8 +752,9 @@ static void start_webserver(void)
         {"/start",  HTTP_POST, start_handler,  NULL},
         {"/abort",  HTTP_POST, abort_handler,  NULL},
         {"/diag",   HTTP_GET,  diag_handler,   NULL},
+        {"/loops",  HTTP_GET,  loops_handler,  NULL},
     };
-    for (int i = 0; i < 5; i++)
+    for (int i = 0; i < (int)(sizeof(uris) / sizeof(uris[0])); i++)
         httpd_register_uri_handler(srv, &uris[i]);
     ESP_LOGI(TAG, "Webserver running");
 }
@@ -738,9 +823,10 @@ void app_main(void)
     xTaskCreate(slave_probe_task, "slave_probe", 4096, NULL, 3, NULL);
     xTaskCreate(webserver_task, "ws_task", 8192, NULL, 5, NULL);
 
-    // Phase 0 (docs/PLAN_4NODE.md): camera bring-up, non-fatal -- the rest of
-    // the system (Ethernet/webserver/TRNG scoring) must keep working while
-    // this is still being tuned. Not wired into gcp_zscore_raw() yet.
+    // Camera bring-up (docs/PLAN_4NODE.md), non-fatal here: the rest of the
+    // system (Ethernet/webserver/TRNG sessions) must keep working without it.
+    // A *camera* session that finds no camera aborts instead — see
+    // noise_source_begin() in sensor.c.
     esp_err_t cam_ret = camera_init();
     if (cam_ret != ESP_OK) {
         ESP_LOGW(TAG, "camera_init: %s", esp_err_to_name(cam_ret));

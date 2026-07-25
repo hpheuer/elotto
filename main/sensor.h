@@ -27,6 +27,28 @@ typedef struct {
     uint8_t    euro[2];
 } RunResult;
 
+// Per-loop health record (PLAN_4NODE Phase 3). A 20 h session gives slow drift
+// far more room than the three loops of Phase 1/2, and drift is the one bias
+// form studentize() does NOT absorb: it removes a constant per-loop offset
+// exactly, but a trend *across* loops survives. So each completed loop stores
+// the numbers a drift check needs — the raw (pre-studentize) offsets and σ per
+// node, plus camera health at that moment — and /loops serves the whole table.
+#define LOOP_HIST 128            // loops kept in the table; the drift regression
+                                 // runs on running sums and is exact beyond it
+typedef struct {
+    float    base;         // master baseline_mean of this loop = raw per-run z offset
+    float    mean;         // combined per-run z mean over the loop (pre-studentize)
+    float    sigma;        // combined per-run σ (== loop_sigma), ideal 1.0
+    float    mean_m;       // master-only mean z (after its own baseline subtraction)
+    float    mean_s;       // slave-only mean z (after the slave's own baseline)
+    float    sig_m, sig_s; // per-node per-run σ over this loop
+    float    cam_mbit;     // master camera sustained rate at loop end
+    float    s_cam_mbit;   // slave camera rate (D command), 0 = not answered
+    uint32_t t_s;          // elapsed seconds at loop end
+    uint32_t cam_stalls;   // master camera stalls, cumulative (gate wants 0)
+    uint32_t s_cam_stalls; // slave camera stalls, cumulative
+} LoopStat;
+
 typedef struct {
     ElottoState      state;
     ElottoPhase      phase;
@@ -50,6 +72,13 @@ typedef struct {
     double           p_corrected;         // Bonferroni-corrected two-sided p of best_z
     int              comparisons;         // number of comparisons used for correction
     double           loop_sigma;          // empirical per-run σ of last loop (pre-studentize; 1.0 = ideal)
+    int              loops_done;          // loops completed and folded into the drift stats
+    int              loop_hist_n;         // entries valid in loop_hist[] (<= LOOP_HIST)
+    double           drift_slope;         // z-offset change per loop (linear regression on
+                                          // the master's raw per-run offset base+mean_m)
+    double           drift_t;             // slope / SE(slope); |t| > 3 = real drift, not noise
+    double           off_first, off_last; // master raw per-run z offset, first / latest loop
+    double           sigma_lo, sigma_hi;  // min / max per-loop combined σ across the session
     double           pair_r;              // master–slave Pearson r over all session pairs (0 = independent)
     int              pair_n;              // number of (z_master, z_slave) pairs collected
     double           sigma_m, sigma_s;    // per-device per-run σ from the pairs
@@ -73,6 +102,10 @@ typedef struct {
     volatile int     slave_source;        // NoiseSource the slave reported on its last
                                           // measurement (it chooses its own, and can
                                           // fall back independently of the master)
+    LoopStat        *loop_hist;           // per-loop health table (LOOP_HIST entries,
+                                          // PSRAM — internal RAM is full with results[];
+                                          // NULL if the allocation failed, in which case
+                                          // only the drift/σ aggregates are available)
     RunResult        results[NUM_RUNS];   // live per-loop measurement scratch
 } ElottoStatus;
 
