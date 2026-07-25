@@ -391,25 +391,28 @@ cumulative mode re-measures the same 1000 slots each loop — Stouffer accumulat
   `focus_seq` is what tells the UI a *new* window started, including when two consecutive draws
   happen to look similar.
 
-### Synchronisation — the part that can quietly invalidate the whole idea
+### Synchronisation — 10 Hz polling is enough; the failure to avoid is a *skipped* window
 
-If the observer's attention is supposed to coincide with the sampled bits, then **display
-latency and jitter are not cosmetic**. Polling `/focus` at 4 Hz puts up to 250 ms of jitter on a
-500 ms window: the numbers could appear halfway through the run they belong to, or after it
-ended. The experiment would then be measuring attention against the *wrong* bits, and would look
-like a null result no matter what is true.
+**A 50–100 ms offset is not a problem, and tight sync is not worth building.** At a 500 ms
+window that is still 80–90 % overlap, so the worst case is mild attenuation. More to the point,
+conscious noticing is itself smeared over roughly 100–300 ms from photons to awareness — so
+sub-100 ms alignment is already finer than the resolution of the thing being tested. WebSocket
+push or clock-synced scheduling would be precision the experiment cannot use.
 
-Options, cheapest first:
+`GET /focus` polled at **10 Hz** (~600 B/s, five samples per 500 ms window) is therefore the
+design, not a first step towards something better.
 
-1. **Poll `/focus` at 10 Hz** — ~600 B/s, trivial for the ESP. Bounds jitter at ≤100 ms (20 % of
-   a 500 ms window). Good enough to start, and the simplest thing that could work.
-2. **WebSocket push** on run start (`esp_http_server` supports it —
-   `examples/protocols/http_server/ws_echo_server`). Sub-10 ms, no polling. The right answer if
-   step 1's jitter turns out to matter.
-3. **Scheduled targets**: device sends the *next* target plus a start timestamp, UI syncs a
-   local clock and renders on time. Most precise, most machinery — only if 1 and 2 disappoint.
+What *would* matter is a different failure: a window the UI **misses entirely**, or a display
+that persists so long it lands mostly inside the *next* run. That is not attenuation, it is
+mislabeling — the observer notices combination N while combination N+1's bits are collected, and
+because per-combination z feeds the Stouffer accumulation, any effect gets credited to an
+unrelated combination. It takes ~250 ms of slip at a 500 ms window to start happening, which
+10 Hz polling comfortably avoids.
 
-Start with (1), but **measure the jitter rather than assuming it** — see the gate.
+Cheap guard instead of precise measurement: `focus_seq` is monotonic, so the UI can notice a
+gap (`seq` jumped by more than 1) and count it. A "windows missed" counter is a more honest and
+far cheaper diagnostic than a jitter histogram, because it detects the failure that actually
+corrupts the data rather than the one that merely blurs it.
 - UI: a card below the progress card, title "Focus:", reusing the existing `.num` circle styling
   at a larger size; hidden unless a target is active.
 
@@ -427,11 +430,9 @@ Start with (1), but **measure the jitter rather than assuming it** — see the g
 
 - Panel updates in lockstep with the measurement: `focus_seq` strictly increasing, no skipped or
   repeated targets over a full loop.
-- **Display-to-measurement jitter bounded and actually measured** — not assumed. Log the
-  device-side run-start time and the browser-side render time for a few hundred windows and
-  report the distribution; ≤100 ms is acceptable at a 500 ms window, and if it is not achieved,
-  move to the WebSocket option before running any real session. A misaligned display would make
-  the whole experiment read as null regardless of the truth.
+- **Zero missed windows over a full loop** (`focus_seq` gap counter stays 0). A sub-100 ms
+  offset is fine and needs no measurement; a skipped or straddling window is the failure that
+  would credit an effect to the wrong combination.
 - Measured run durations within ±10 % of 1000 ms / 500 ms; calibrated segment counts recorded.
 - One measurement loop ≤ 10 min.
 - **`loop_sigma` ≈ 1 and `pair_r` ≈ 0 at the new run lengths** — the retune must not disturb the
