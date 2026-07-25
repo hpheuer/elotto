@@ -397,15 +397,36 @@ The `Runs` cap already stride-samples across the whole combination space (slot i
 ⌊i·full/total⌋), so 1000 of 5005 stays spread rather than taking a lexicographic prefix, and
 cumulative mode re-measures the same 1000 slots each loop — Stouffer accumulation is unaffected.
 
+### Experimental design — what makes a result mean anything
+
+- **A control condition is required, not optional.** Focus sessions on their own cannot
+  distinguish "attention did something" from "the retuned run length did something" or from
+  ordinary noise. Run **matched no-focus sessions** — identical mode, `Runs`, segment counts,
+  source and loop count, with the panel off (or nobody watching) — and compare. Without a
+  control the whole phase produces an uninterpretable number, however good the plumbing is.
+- **Attention is the scarce resource here, not bits.** A measurement loop is ~850 targets at
+  ~1.4 Hz for ten minutes, and loop 0 adds ~10 min of scoring before it — twenty minutes of
+  continuous noticing. Expect attention to fade within a loop; that is a property of the
+  observer, not a defect. Keep loop counts modest at first and treat "how long can this actually
+  be sustained" as one of the things being learned.
+- **The existing per-loop permutation already protects against that fade.** Fisher–Yates was
+  introduced for drift immunity, but it does the same job here: because each loop measures the
+  combinations in a fresh random order, a decline in attention over a loop spreads evenly across
+  combinations instead of always penalising the ones measured late. No new machinery needed —
+  worth knowing it is already covered.
+
 ### Implementation notes
 
+- **Start master-only.** The slave currently runs the updater and has no GCP firmware
+  (`PLAN_NETWORK.md` Phase C), so the master measures solo — Focus can be built, gated and tried
+  today at ×1 SNR, with no dependency on the network work.
 - **Segments per run become phase-dependent**, not just source-dependent: `SCORE_SEGMENTS` and
   `MEAS_SEGMENTS` alongside the existing `CAM_SEGMENTS`/`TRNG_SEGMENTS`. z stays N(0,1) because
-  it is normalised by √segments — but the two nodes must use the **same** count for the same
-  run, so the slave has to be told the length rather than assuming it. Today `M` implies one
-  fixed length; extend it to carry the segment count. **Coordinate with `PLAN_NETWORK.md`
-  Phase C**, which is rewriting that exchange onto UDP anyway — doing both at once avoids
-  changing the protocol twice.
+  it is normalised by √segments — but when the slave returns, both nodes must use the **same**
+  count for the same run, so the slave has to be *told* the length rather than assume it. Today
+  `M` implies one fixed length; extend it to carry the segment count. **Coordinate with
+  `PLAN_NETWORK.md` Phase C**, which rewrites that exchange onto UDP anyway — doing Phase C
+  first means changing the protocol once instead of twice.
 - **Serve the focus separately from `/status`.** `/status` is ~2.5 KB and polled at 1 Hz — far
   too fat and too slow for this. Add a small `GET /focus` (~60 bytes) carrying the current
   target plus a monotonic `focus_seq`; `/status` stays at 1 Hz for everything else.
@@ -461,6 +482,9 @@ corrupts the data rather than the one that merely blurs it.
 - One measurement loop ≤ 10 min.
 - **`loop_sigma` ≈ 1 and `pair_r` ≈ 0 at the new run lengths** — the retune must not disturb the
   statistics, which is the one way this change could do real damage.
+
+- One **matched no-focus control session** recorded alongside the first Focus session, so the
+  pair can be compared at all.
 
 Note what this gate deliberately does *not* test: whether the focus has any effect. That is the
 experiment, not the acceptance criterion. The gate only establishes that the instrument does
