@@ -11,10 +11,30 @@
 - main/elotto.c   – app_main, Ethernet, webserver, HTML/JS UI, /diag + /loops endpoints
 - main/sensor.c   – noise source, GCP analysis, baseline calibration, slave UART, lottery extraction
 - main/sensor.h   – types and declarations
+- partitions.csv  – **shared** partition table (factory 1 MB + ota_0/ota_1 3 MB on 32 MB flash).
+  Referenced by all three projects; a board flashed by one must be updatable by the others.
+- ota_firmware/   – the network updater ("OTA-Firmware"), its own IDF project. Ethernet + HTTP
+  + esp_ota only; no camera, no GCP (68 KB RAM vs the app's 421 KB static).
 - components/elotto_camera/ – OV5647 dark-frame entropy (camera.c, include/camera.h, Kconfig).
-  **Shared with the slave repo** via `EXTRA_COMPONENT_DIRS=../elotto/components` in
-  elotto_slave/CMakeLists.txt — the two repos must stay siblings on disk, and a change here
-  affects both nodes, so commit both repos together.
+- components/elotto_ota/ – update endpoint + boot-safety logic (rollback, boot counter,
+  mark-valid, /update /boot /reboot /poison /otainfo).
+  Both components are **shared**: the slave repo pulls them via
+  `EXTRA_COMPONENT_DIRS=../elotto/components` (elotto_slave/CMakeLists.txt) and ota_firmware
+  pulls *only* elotto_ota by pointing at that single component directory — IDF compiles every
+  component it discovers, so pointing at `components/` would drag the camera into the recovery
+  image. The repos must stay siblings on disk; a change here affects several nodes, so build,
+  flash and commit them together.
+
+## Nodes (2026-07-25)
+| node | IP | MAC | flash contents |
+|------|----|-----|----------------|
+| master | 192.168.178.100 | 80:f1:b2:d2:e3:1d | factory = updater, ota_0 = elotto app (running) |
+| slave  | 192.168.178.103 (static lease) | 80:f1:b2:d2:e3:e5 | factory = updater, ota_0 = updater |
+
+Two more ESP32-P4-ETH boards + a 4-port PoE switch exist for the 4-node array (Phase D).
+**The slave currently has no GCP firmware** — with rollback armed, an app that cannot be
+reached over the network is rolled back by design, so the slave rejoins measurements only once
+it gains Ethernet in Phase C. `slave_connected` is therefore false and the master runs solo.
 
 ## Concept
 Dual-ESP32-P4 system. Master (COM4) scores lottery numbers via GCP methodology. An optional
@@ -84,23 +104,46 @@ frequency published after every loop so /status shows intermediate results. Opti
 Modes: Eurojackpot (5 of 50 + 2 of 12, 7920 combinations) and 6 of 49 (5005 combinations).
 
 ## Build, Flash, Monitor
+
+**Build** — always through `build.ps1`, which sets the environment and forwards its arguments.
+Shell state does not survive between tool calls, so bare `idf.py` needs the env re-exported
+every time; and the script must use the **VS Code extension's** venv
+(`C:\Espressif\tools\python\v6.0.1\venv`), not `export.ps1`'s, or the build dir gets pinned to
+the wrong interpreter and fails with "run 'idf.py fullclean'".
+
+```powershell
+.\build.ps1 build                        # master
+.\build.ps1 -C ota_firmware build        # updater  (-C selects another project)
+.\build.ps1 -C ../elotto_slave build     # slave
+```
+
+**Flash — over Ethernet, not USB.** Firmware is pushed to the running node:
+
+```powershell
+curl http://192.168.178.100/update --data-binary @build/elotto.bin
+```
+
+~750 KB in ~3 s. The node writes the *inactive* slot, reboots, and marks itself valid only
+once its webserver answers, so a failed transfer or a dead image cannot strand it.
+`/update` returns **409** while a measurement runs — no need to check `/status` first, though
+`/status` still shows `fw_version`, `fw_sha` and `fw_slot` to confirm what is actually running.
+
+**USB (COM4 master, COM6 slave) is now only for:** the partition table, the bootloader, or a
+node whose recovery updater is gone. Those are the cases OTA cannot repair — the P4 has no
+`SOC_RECOVERY_BOOTLOADER_SUPPORTED`. Installing the updater on a fresh board:
+`.\build.ps1 -C ota_firmware -p COM6 erase-flash` then `... -p COM6 flash`.
+
 | Action                  | VS Code shortcut |
 |-------------------------|------------------|
 | Build + Flash + Monitor | F3               |
 | Build only              | Ctrl+Shift+B     |
 | Menuconfig              | Ctrl+E G         |
 
-Claude builds and flashes **both** boards itself (master COM4, slave COM6) — see the
-build/flash memory note for the exact invocation. Use the VS Code extension's Python venv
-(`C:\Espressif\tools\python\v6.0.1\venv`), **not** `export.ps1`, or the build dir gets pinned
-to a different interpreter and fails with "run 'idf.py fullclean'".
-
-Check `http://192.168.178.100/status` before flashing the master — a flash resets it and
-kills any running measurement session.
-
 ## Rules
 - Never edit sdkconfig manually. To change a default, edit `sdkconfig.defaults`, delete
-  `sdkconfig`, and let the build regenerate it (verify the diff afterwards).
+  `sdkconfig`, and let the build regenerate it (verify the diff afterwards). Every project has
+  a `sdkconfig.defaults` and sets `IDF_TARGET` in its CMakeLists — without both, a regenerate
+  loses settings or fails with "CMAKE_C_COMPILER not set".
 - Target is always esp32p4
 - The slave's `sdkconfig.defaults` must keep `CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y` **before**
   `ESP32P4_REV_MIN_0=y` — the latter depends on it, and without it the choice silently falls
