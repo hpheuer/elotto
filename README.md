@@ -85,10 +85,30 @@ ranking, so in Peak-Z mode the coverage tables are empty.
 <td><img src="docs/ui_done.png" width="390"></td>
 </tr>
 <tr>
-<td>Inputs: <b>Baseline runs</b>, <b>Loops</b>, <b>Runs</b> (0 = all) and the
-<b>Ranking</b> mode, then the Euro-Lotto / 6-of-49 buttons.</td>
-<td>The three phases — calibration, number scoring, measurement — each fill to 100&nbsp;% with
-a ✔, plus runs / progress / time / ETA.</td>
+<td>Inputs: <b>Baseline runs</b>, <b>Loops</b>, <b>Runs</b> (0 = all), the
+<b>Ranking</b> mode, the <b>Entropy</b> source and the <b>Focus display</b> checkbox, then the
+Euro-Lotto / 6-of-49 buttons.</td>
+<td>The stats line records the session's condition (<i>attended (focus)</i> vs
+<i>unattended (control)</i>), per-run σ, the worst of the six pairwise correlations, the
+per-node health table and UDP link health.</td>
+</tr>
+</table>
+
+### Focus display
+
+<table>
+<tr><td align="center"><b>What is being measured, while it is being measured</b></td></tr>
+<tr><td><img src="docs/ui_focus.png" width="620"></td></tr>
+<tr>
+<td>The current target is held for exactly the window its bits are collected in — a single
+candidate number during scoring, the whole draw during measurement — so the observer is present
+while the noise is sampled (the original GCP/PEAR protocol). Eurojackpot's 1–12 bonus numbers
+are <b>stars</b> rather than circles: the two pools overlap in value, so shape is what separates
+them at a glance. The line underneath is the instrument's own check —
+<code>window · gap · windows · missed</code> — where <b>missed</b> counts windows the UI never
+saw, the failure that would credit an effect to the wrong combination. <b>Pause</b> holds
+between runs without losing the loop; paused time is excluded from the elapsed clock.
+See <a href="docs/PLAN_4NODE.md">PLAN_4NODE.md</a> Phase 5.</td>
 </tr>
 </table>
 
@@ -873,8 +893,9 @@ partitions.csv — shared partition table: factory (updater) + ota_0/ota_1, used
 docs/
   PLAN_4NODE.md      — the camera-entropy design contract: phases, gates, decisions
   PLAN_NETWORK.md    — the transport/provisioning contract: UDP sync, Ethernet OTA
-  ui_start.png       — start screen (inputs + mode buttons)
-  ui_done.png        — a finished run (three phase bars complete)
+  ui_start.png       — start screen (inputs, entropy source, Focus checkbox, mode buttons)
+  ui_focus.png       — Focus panel mid-measurement: draw on screen, euro numbers as stars
+  ui_done.png        — a finished run: condition tag, per-node health, UDP link health
   coverage_high.png  — Coverage highest-Z table + significance + most-frequent
   coverage_low.png   — Coverage lowest-Z table
 build.ps1     — build helper script for standard PowerShell

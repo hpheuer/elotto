@@ -70,7 +70,15 @@ static const char HTML[] =
 ".num{display:inline-flex;align-items:center;justify-content:center;"
 "background:#2e7d32;border-radius:50%;width:30px;height:30px;margin:2px;"
 "font-weight:700;font-size:.88em;flex-shrink:0}"
-".euro{background:#7b6e00}"
+// Bonus numbers are stars in the result tables too, not only in the Focus
+// panel — same reason (1-12 overlaps 1-50, so shape carries the distinction),
+// and a draw that reads one way live should read the same way afterwards.
+// Slightly wider than a main circle with smaller type: a star's readable area
+// is its inner pentagon, so a two-digit bonus needs the extra room.
+".num.euro{background:linear-gradient(160deg,#ffdc6a,#dda200);color:#241c00;"
+"border-radius:0;width:44px;height:42px;font-size:.82em;padding-top:7px;"
+"clip-path:polygon(50% 0%,61% 35%,98% 35%,68% 57%,79% 91%,50% 70%,21% 91%,"
+"32% 57%,2% 35%,39% 35%)}"
 // Focus panel (PLAN_4NODE Phase 5). Salience over legibility: the observer is
 // not meant to decode six numbers in half a second, they are meant to be
 // present while those numbers are on screen and the noise is sampled. So the

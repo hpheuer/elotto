@@ -311,9 +311,13 @@ Being explicit, so this is not mistaken for a passed gate:
    expect `src_stalled`, session ABORTED, UI "⚠ camera stalled – aborted", and — with the slave
    unplugged instead — the same via its `T` tag. Minutes of work, and it is the difference
    between a policy that is implemented and one that is known to fire.
-2. **Refresh `docs/ui_done.png` and `docs/coverage_*.png`** from any real session — the current
-   images predate the entropy and drift rows in the stats line. `docs/ui_start.png` is already
-   updated (Entropy selector).
+2. ~~**Refresh `docs/ui_done.png` and `docs/coverage_*.png`**~~ — **DONE (2026-07-26)**. All
+   four regenerated from a real Eurojackpot session (200 runs, 4 nodes, camera, `focus=1`), plus
+   a new `docs/ui_focus.png` of the Focus panel mid-measurement. Captured headless
+   (`chrome --headless=new --screenshot --virtual-time-budget=…` against the live node), so this
+   is repeatable rather than a one-off manual grab — note the master must **not** be reflashed
+   between running the session and taking the shot, since an OTA reboot clears `g_status` and
+   with it the results.
 3. **Optional, open since Phase 0: attack the residual LSB bias at the source** rather than
    masking it with the XOR-fold — RAW10 instead of RAW8, or bypassing ISP digital gain. A/B it
    by turning `CONFIG_ELOTTO_CAM_XOR_FOLD` off; success would double the honest bit rate as a
@@ -629,11 +633,15 @@ It was left at 200 ms because the cost is real rather than nominal: 850 × 150 m
 taking a measurement loop from 10.5 to ~12.6 min against a 10 min budget. Open decision, not an
 oversight.
 
-**4. ⚠ The window is not stable across a day, and this is unresolved.** Under otherwise
-identical settings the achievable window moved by up to **1.75×** over an afternoon of
-back-to-back sessions (11600 segments → 588 ms early, 11950 segments → 1026 ms hours later, with
-a *longer* gap, which should have made it faster). Each session began after an OTA reboot, so
-cumulative camera state is ruled out; thermal or SoC-level load is the remaining suspect. Note
+**4. ⚠ The window is not stable, and this is unresolved.** Under otherwise identical settings
+the achievable window moved by up to **1.75×** over an afternoon of back-to-back sessions
+(11600 segments → 588 ms early, 11950 segments → 1026 ms hours later, with a *longer* gap, which
+should have made it faster). It is not only a slow drift: at the **final** configuration
+(11950 segments, 350 ms gap, unchanged binary) three consecutive sessions measured **1045 ms,
+679 ms and 1046 ms** — a 1.54× swing inside an hour, with the short one immediately following an
+OTA reboot. So the spread is roughly ±35 % around the target, which is why ±10 % is not a
+tolerance this hardware can hold and ±30 % is the honest one. Each session began after a reboot,
+so cumulative camera state is ruled out; thermal or SoC-level load is the remaining suspect. Note
 also that `camera_get_stats()`'s `mbit_per_sec` and `bias` are **lifetime averages since stream
 start**, not instantaneous — do not read a falling `mbit_s` as live degradation, which is a trap
 worth knowing about. The consequence is that **a fixed segment count does not pin the window**;
