@@ -44,8 +44,9 @@ result and design decision):
 
 Phase 1: baseline calibration (master + slave in parallel; informational — ranking uses
 studentization instead).
-Phase 0: score individual numbers 1..N, SCORE_REPS slave-combined runs each (currently **10**,
-per-number SE = 1/√(2·REPS) ≈ 0.22; 40 → 0.11 when the pool choice must be trusted)
+Phase 0: score individual numbers 1..N, SCORE_REPS slave-combined runs each (**10**, per-number
+SE = 1/√(2·REPS) ≈ 0.22; raise to 40 → 0.11 when the pool choice must be trusted — it changes
+only which numbers enter the pool, not the Phase-2 statistics)
 (score_one_run(), Stouffer), to build the pool.
 Phase 2: measure all pool combinations in a fresh Fisher–Yates random order per loop
 (s_perm[], drift immunity); results[] stays slot-indexed. A Runs cap stride-samples the full

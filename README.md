@@ -211,9 +211,10 @@ Five guards keep systematic hardware effects from masquerading as GCP signal:
 
 The number-scoring phase also runs **`SCORE_REPS` dual-ESP GCP runs per candidate number**
 (Stouffer, slave-combined ÷√2 → per-number SE = 1/√(2·REPS)), so the pool choice — locked for
-the whole cumulative session — doesn't ride on single-run noise. `SCORE_REPS` is currently
-**10** (SE ≈ 0.22, ~7 min of scoring for 6-of-49); **40** (SE ≈ 0.11) is the setting for a
-session whose pool choice has to be trusted. The UI shows the effective reps per number.
+the whole cumulative session — doesn't ride on single-run noise. `SCORE_REPS` is **10**
+(SE ≈ 0.22, ~5 min of scoring for 6-of-49); raise it to **40** (SE ≈ 0.11) for a session whose
+pool choice has to be trusted. It affects only *which* numbers enter the pool, not the
+measurement statistics. The UI shows the effective reps per number.
 
 ## Camera Entropy (OV5647 dark frame)
 

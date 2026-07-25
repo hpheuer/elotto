@@ -104,9 +104,11 @@ Three findings worth carrying forward:
 - **Residual bias propagates to a per-run z offset of ≈ −0.33** (1.29e-4 bias × 200
   bits/segment × √8000 segments). It is a 19σ deviation at this sample size, not noise.
   Harmless here only because `studentize()` removes a constant per-loop offset exactly
-  and the per-loop permutation prevents coherent accumulation. **Re-verify in Phase 3**:
-  a 20 h session gives drift far more room than three loops, and drift is the one form
-  this correction does not fully absorb.
+  and the per-loop permutation prevents coherent accumulation. Drift is the one form this
+  correction does not fully absorb — Phase 3 therefore made the offset *measurable* per loop
+  (`/loops`, `drift_slope`/`drift_t`). The long session that would have exercised it was
+  cancelled, so this remains measured-but-not-yet-observed; any future multi-loop run settles
+  it automatically.
 
 ## Phase 2 — Camera on slave (2-node parity)
 
@@ -203,19 +205,22 @@ path was verified not to false-positive (a camera session starts and runs normal
 abort path itself has only been reasoned about, not observed. Unplugging a CSI ribbon
 mid-session would test it.
 
-## Phase 3 — Long-run validation + docs
+## Phase 3 — Drift instrumentation + docs
 
-- 20 h Eurojackpot cumulative session on the 2-node camera system; verify significance line
-  behaves (corrected p honest), σ stable across loops, no camera stalls.
+- ~~20 h Eurojackpot cumulative session~~ — **cancelled** (2026-07-25, user decision). Occupying
+  both nodes for a day is not worth it at this stage. What the long session was *for* — being
+  able to see drift at all — is delivered by the instrumentation below; running it is now an
+  option, not a prerequisite. See "What the cancellation costs" below for what stays unproven.
 - README: new "Camera entropy" section (physics, extraction, gates), updated wiring
   diagram/screenshots; CLAUDE.md concept sync; version bump.
 
-**Status: instrumentation + docs DONE (2026-07-25, v2.1); 20 h gate session pending.**
+**Status: DONE (2026-07-25, v2.1)** — instrumentation, docs, and a functional verification of
+both on hardware.
 
-A 20 h session cannot be *judged* with what Phase 1/2 published — `loop_sigma` held only the
-last loop, and nothing recorded the offset studentization removed. Phase 1 explicitly deferred
-the drift question here ("drift is the one form this correction does not fully absorb"), so
-Phase 3 first built the instrument to answer it:
+Drift could not be *judged* with what Phase 1/2 published — `loop_sigma` held only the last
+loop, and nothing recorded the offset studentization removed. Phase 1 explicitly deferred the
+question here ("drift is the one form this correction does not fully absorb"), so Phase 3 built
+the instrument to answer it:
 
 - **`record_loop()`** stores one `LoopStat` per completed loop: raw (pre-studentize) per-run
   offset `base` + `raw_m`, combined and per-node means and σ, and camera health at that moment
@@ -234,23 +239,24 @@ Phase 3 first built the instrument to answer it:
   default) instead of inheriting whatever the previous session used. The source decides what
   physics is being measured; it must never carry over silently.
 
-Sizing the gate session: measured ~0.66 s per slave-combined camera run → Eurojackpot loop ≈
-7920 runs + 100 baseline ≈ 88 min, plus one-time scoring. **Loops = 12 ≈ 20 h.**
+**`SCORE_REPS` stays at 10** (lowered from 40; user decision 2026-07-25). Scoring is a
+one-time phase costing ~27 min at 40 reps for Eurojackpot, which blocked every test run from
+reaching the loops it was supposed to exercise. Consequence, stated plainly: the pool is
+selected with per-number SE = 1/√(2·10) ≈ 0.22 instead of 0.11, and in cumulative mode that
+pool is locked for the whole session. This changes *which* numbers enter the pool (more
+selection noise), **not** the Phase-2 z statistics — studentization, the permuted order and the
+Stouffer accumulation are untouched, and the significance line stays honest either way. Raise
+it to 40 for any session whose pool choice is meant to be trusted.
 
-`SCORE_REPS` was lowered 40 → **10** while this instrumentation is being iterated on: scoring
-is a one-time phase that costs ~27 min at 40 reps for Eurojackpot and blocks every test run
-from reaching the loops it is supposed to exercise. It only affects pool *selection*
-confidence (per-number SE 0.11 → 0.22), not the Phase-2 statistics. **Raise it back to 40
-before the 20 h gate session** — the pool is locked for the whole session, so that is exactly
-the run where selection noise matters.
-
-What the gate must show: `loop_sigma` stable near 1 across all 12 loops (not just the last),
-|drift_t| < 3 on the raw offset, `cam_stalls` = 0 on both nodes, `pair_r` ≈ 0 at n ≈ 95k pairs,
-and a corrected p that stays honest over 7920 comparisons.
+Whenever a multi-loop session is run, these are the numbers to read (they are published
+continuously, so any session serves as evidence — no dedicated gate run needed):
+`loop_sigma` near 1 in **every** loop of `/loops`, not just the last; |drift_t| < 3 on the raw
+offset; `cam_stalls` = 0 on both nodes; `pair_r` ≈ 0; and a corrected p consistent with chance
+under the null.
 
 **Instrument verified** (2026-07-25, 6/49, Loops=3, Runs=20, both `src=cam`, 7 min — a
-functional check of the new plumbing, *not* the gate, whose n is far too small to conclude
-anything about drift):
+functional check of the new plumbing; n is far too small to conclude anything about drift
+itself):
 
 | loop | base | raw_m | σ | σm / σs | cam Mbit/s M/S | stalls M/S |
 |------|------|-------|---|---------|----------------|------------|
@@ -267,11 +273,38 @@ anything about drift):
 - The results line renders `offset −0.223 → −0.118 z/run · drift +0.0520 z/loop (t = 0.2 ok)
   · σ 0.979–1.162 over 3 loops · table`.
 
-Open for the gate run itself:
-- **Raise `SCORE_REPS` back to 40** (see above).
-- Refresh `docs/ui_done.png` / `coverage_*.png` from the 20 h session — the current images
-  predate the entropy + drift rows in the stats line. `docs/ui_start.png` is already updated
-  (Entropy selector).
+### What the cancellation costs
+
+Being explicit, so this is not mistaken for a passed gate:
+
+- **Drift over many hours is measured but not yet observed.** Three loops over 7 minutes say
+  nothing about a thermal ramp or a slow sensor trend; `drift_t = 0.24` there is a plumbing
+  check, not evidence of stability. The claim "studentization handles the camera's residual
+  bias" therefore remains *argued* (it removes a constant offset exactly) rather than
+  *demonstrated* over a long run. Any future multi-loop session closes this for free — the
+  numbers accumulate automatically and `/loops` keeps the record.
+- **σ stability across many loops is likewise unproven.** Phase 2 already flagged loop 3 at
+  1.0992 as worth re-checking; `sigma_lo`/`sigma_hi` now make that visible in any session.
+- Everything else the long session would have exercised — stall-free operation, `pair_r ≈ 0`,
+  honest corrected p — is already covered by Phase 1/2 at n = 600 pairs each.
+
+### Remaining work in this plan
+
+1. **The abort-on-stall path is still unverified** (carried over from Phase 2, and the only
+   *safety* claim in this document that has never been observed). Unplug a CSI ribbon mid-run:
+   expect `src_stalled`, session ABORTED, UI "⚠ camera stalled – aborted", and — with the slave
+   unplugged instead — the same via its `T` tag. Minutes of work, and it is the difference
+   between a policy that is implemented and one that is known to fire.
+2. **Refresh `docs/ui_done.png` and `docs/coverage_*.png`** from any real session — the current
+   images predate the entropy and drift rows in the stats line. `docs/ui_start.png` is already
+   updated (Entropy selector).
+3. **Optional, open since Phase 0: attack the residual LSB bias at the source** rather than
+   masking it with the XOR-fold — RAW10 instead of RAW8, or bypassing ISP digital gain. A/B it
+   by turning `CONFIG_ELOTTO_CAM_XOR_FOLD` off; success would double the honest bit rate as a
+   side effect.
+4. **Optional: even out the two cameras.** The slave is the dimmer, dirtier one (Phase 2:
+   `mean_px` 2.8 vs 6.8, bias deviation ~20× larger). More light on the slave, not less.
+5. **Phase 4 stays blocked on hardware** (2 boards + 3 cameras).
 
 ## Phase 4 — 4-node scale-out (future, blocked on hardware)
 
