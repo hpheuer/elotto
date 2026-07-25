@@ -66,6 +66,9 @@ typedef struct {
     int              noise_source;        // NoiseSource requested for this session
     volatile bool    noise_fallback;      // camera requested but TRNG in use (stall
                                           // or camera not ready) — runs are mixed
+    volatile int     slave_source;        // NoiseSource the slave reported on its last
+                                          // measurement (it chooses its own, and can
+                                          // fall back independently of the master)
     RunResult        results[NUM_RUNS];   // live per-loop measurement scratch
 } ElottoStatus;
 

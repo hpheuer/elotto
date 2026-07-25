@@ -251,7 +251,7 @@ static void slave_baseline_wait(void)
 
 static double slave_measure(void)
 {
-    char resp[32];
+    char resp[40];
     if (!slave_readline(resp, sizeof(resp), 10000)) {
         s_slave_ok = g_status.slave_connected = false;
         return 0.0;
@@ -260,6 +260,10 @@ static double slave_measure(void)
         s_slave_ok = g_status.slave_connected = false;
         return 0.0;
     }
+    // "Z:<float>,<C|T>" — the trailing source tag is optional so a pre-camera
+    // slave still parses. atof() stops at the comma either way.
+    const char *tag = strchr(resp, ',');
+    g_status.slave_source = (tag && tag[1] == 'C') ? NOISE_CAMERA : NOISE_TRNG;
     return atof(resp + 2);
 }
 

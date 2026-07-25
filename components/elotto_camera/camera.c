@@ -89,6 +89,43 @@ static esp_err_t cam_reg_write(uint32_t regaddr, uint32_t value)
     return ESP_OK;
 }
 
+static esp_err_t cam_reg_read(uint32_t regaddr, uint32_t *value)
+{
+    esp_cam_sensor_reg_val_t regval = { .regaddr = regaddr, .value = 0 };
+    struct v4l2_ext_control ctrl = {
+        .id   = ESP_CAM_SENSOR_IOC_G_REG,
+        .p_u8 = (uint8_t *)&regval,
+        .size = sizeof(regval),
+    };
+    struct v4l2_ext_controls ctrls = {
+        .ctrl_class = V4L2_CTRL_CLASS_ESP_CAM_IOCTL,
+        .count      = 1,
+        .controls   = &ctrl,
+    };
+    if (ioctl(s_fd, VIDIOC_G_EXT_CTRLS, &ctrls) != 0) return ESP_FAIL;
+    *value = regval.value;
+    return ESP_OK;
+}
+
+// Read back what the sensor actually holds. Writing these registers is not
+// proof they stuck: the driver rewrites the whole format array on S_FMT, and
+// some OV5647 revisions latch exposure only via group-hold. Without this, a
+// silently ignored exposure/gain setting looks identical to a working one.
+static void cam_verify_regs(const char *when)
+{
+    uint32_t aec = 0, e0 = 0, e1 = 0, e2 = 0, g0 = 0, g1 = 0;
+    cam_reg_read(0x3503, &aec);
+    cam_reg_read(0x3500, &e0); cam_reg_read(0x3501, &e1); cam_reg_read(0x3502, &e2);
+    cam_reg_read(0x350a, &g0); cam_reg_read(0x350b, &g1);
+    uint32_t exposure = ((e0 & 0x0F) << 12) | ((e1 & 0xFF) << 4) | ((e2 & 0xF0) >> 4);
+    uint32_t gain     = ((g0 & 0x03) << 8) | (g1 & 0xFF);
+    ESP_LOGI(TAG_CAM, "regs[%s] 0x3503=0x%02x (AEC/AGC manual=%s) exposure=%lu (want %d) "
+             "gain=%lu (want %d)",
+             when, (unsigned)aec, ((aec & 0x03) == 0x03) ? "yes" : "NO",
+             (unsigned long)exposure, CONFIG_ELOTTO_CAM_REG_EXPOSURE,
+             (unsigned long)gain, CONFIG_ELOTTO_CAM_REG_GAIN);
+}
+
 // Pack one LSB-diff word: update ring buffer, bias, per-mini-run sigma and
 // lag-1..4 bit autocorrelation across the word stream (see PLAN Phase 0 gate).
 static void process_word(uint32_t w)
@@ -375,6 +412,7 @@ esp_err_t camera_init(void)
     cam_reg_write(0x3500, ((uint32_t)CONFIG_ELOTTO_CAM_REG_EXPOSURE >> 12) & 0x0F);
     cam_reg_write(0x3501, ((uint32_t)CONFIG_ELOTTO_CAM_REG_EXPOSURE >> 4) & 0xFF);
     cam_reg_write(0x3502, ((uint32_t)CONFIG_ELOTTO_CAM_REG_EXPOSURE << 4) & 0xF0);
+    cam_verify_regs("after-write");
 
     struct v4l2_requestbuffers req = {
         .count  = CAM_BUF_COUNT,
@@ -413,7 +451,8 @@ esp_err_t camera_init(void)
         goto fail;
     }
 
-    xTaskCreate(camera_task, "cam_task", 8192, NULL, 4, NULL);
+    cam_verify_regs("after-streamon");   // STREAMON rewrites sensor regs; confirm ours survived
+    xTaskCreate(camera_task, "cam_task", 8192, NULL, ELOTTO_CAM_TASK_PRIO, NULL);
     ESP_LOGI(TAG_CAM, "streaming, extraction task started");
     return ESP_OK;
 

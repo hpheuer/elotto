@@ -324,6 +324,13 @@ static const char HTML[] =
 "+(rz>3?' \\u26a0 correlated':' (ok)')"
 "+' \\u00b7 \\u03c3m = '+d.sigma_m.toFixed(2)+' \\u03c3s = '+d.sigma_s.toFixed(2);}"
 "if(s2)sl.innerHTML+=(sl.innerHTML?'<br>':'')+s2;"
+// Per-node entropy source. Camera = raw quantum-origin noise, TRNG = whitened
+// on-chip fallback; a node that silently degraded must be visible here.
+"var srcM=d.src==='cam'?'\\uD83D\\uDCF7 cam':'TRNG';"
+"var srcS=d.slave_src==='cam'?'\\uD83D\\uDCF7 cam':'TRNG';"
+"var s3='entropy: master '+srcM+(d.src_fallback?' \\u26a0 fell back':'')"
+"+(d.slave?' \\u00b7 slave '+srcS:'');"
+"sl.innerHTML+=(sl.innerHTML?'<br>':'')+s3;"
 "document.getElementById('resCard').style.display='block';"
 "if(!res||res.length===0){"
 "document.getElementById('resTitle').innerHTML='\\uD83E\\uDDE9 Coverage';"
@@ -440,7 +447,7 @@ static esp_err_t status_handler(httpd_req_t *req)
     pos += snprintf(buf+pos, sizeof(buf)-pos,
         "{\"state\":\"%s\",\"mode\":\"%s\",\"phase\":\"%s\","
         "\"slave\":%s,\"rank\":\"%s\","
-        "\"src\":\"%s\",\"src_fallback\":%s,"
+        "\"src\":\"%s\",\"src_fallback\":%s,\"slave_src\":\"%s\","
         "\"best_z\":%.4f,\"p_corr\":%.6g,\"comparisons\":%d,"
         "\"loop_sigma\":%.4f,\"pair_r\":%.4f,\"pair_n\":%d,"
         "\"sigma_m\":%.4f,\"sigma_s\":%.4f,"
@@ -452,6 +459,7 @@ static esp_err_t status_handler(httpd_req_t *req)
         g_status.slave_connected ? "true" : "false", rank_str,
         (g_status.noise_source == NOISE_CAMERA) ? "cam" : "trng",
         g_status.noise_fallback ? "true" : "false",
+        (g_status.slave_source == NOISE_CAMERA) ? "cam" : "trng",
         g_status.best_z, g_status.p_corrected, g_status.comparisons,
         g_status.loop_sigma, g_status.pair_r, g_status.pair_n,
         g_status.sigma_m, g_status.sigma_s,

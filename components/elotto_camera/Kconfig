@@ -1,10 +1,13 @@
-menu "Elotto Camera (OV5647, Phase 0 entropy bring-up)"
+menu "Elotto Camera (OV5647 dark-frame entropy)"
 
     config ELOTTO_CAM_ENABLE
-        bool "Enable OV5647 camera entropy bring-up"
+        bool "Enable OV5647 camera entropy"
         default n
         help
-            Phase 0 of docs/PLAN_4NODE.md. Also requires, under Component config:
+            Shared by the master (elotto) and slave (elotto_slave) firmwares --
+            the slave reaches this component through
+            EXTRA_COMPONENT_DIRS=../elotto/components, so both nodes run byte
+            identical extraction code. Also requires, under Component config:
             - Espressif Camera Sensors Configurations -> OV5647 (CAMERA_OV5647=y)
             - Espressif Video Configuration -> Enable MIPI-CSI based Video Device
               (on by default for esp32p4)

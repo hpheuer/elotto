@@ -36,6 +36,18 @@ esp_err_t camera_init(void);
 bool camera_is_ready(void);
 void camera_get_stats(camera_stats_t *out);
 
+// Priority of the extraction task created by camera_init().
+#define ELOTTO_CAM_TASK_PRIO 4
+
+// IMPORTANT — task priority: the extraction task is CPU-hungry (~7.6M pixel
+// ops/s). The task calling camera_read_word() MUST run ABOVE
+// ELOTTO_CAM_TASK_PRIO, or the producer starves the consumer and measurement
+// slows by an order of magnitude while the ring sits permanently full
+// (symptom: drops huge, waits == 0, runs 10x too long).
+// The master's elotto_task is created at priority 5. The slave's command loop
+// is app_main, whose priority IDF hardcodes to 1, so it calls
+// vTaskPrioritySet(NULL, ELOTTO_CAM_TASK_PRIO + 1) at startup.
+//
 // Phase 1 consumer API: pop one 32-bit word of extracted entropy.
 // Blocks (vTaskDelay) while the ring is empty -- bits are never reused or
 // fabricated to cover an underrun. Returns false only if the camera is not

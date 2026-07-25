@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -sL https://raw.githubusercontent.com/*)",
+      "Bash(curl -sL https://api.github.com/*)",
+      "Bash(curl -s http://192.168.178.100/*)",
+      "Bash(curl -s --max-time 20 http://192.168.178.100/*)"
+    ]
+  }
+}

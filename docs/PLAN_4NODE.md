@@ -123,6 +123,69 @@ Three findings worth carrying forward:
 - **Gate:** 2-node quick session, both nodes on camera; pair_r ≈ 0; combined σ ≈ 1; either
   side falling back to TRNG (camera stall) degrades gracefully with a UI flag, not a crash.
 
+**Status: PASSED with two caveats** (2026-07-25, 6/49, Loops=3, Runs=200, both `src=cam`,
+35.4 min):
+
+| pair_r (n=600) | σm / σs | loop_sigma (3 loops) | stalls | fallback |
+|----------------|---------|----------------------|--------|----------|
+| −0.0201 (\|r\|·√n = 0.49) | 1.0141 / 1.0356 | 0.9721 / 0.9668 / 1.0992 | 0 | none |
+
+1. **Combined σ is looser than Phase 1** (which gave 0.998/0.998/0.992). Loop 3 at 1.0992 is
+   ~2σ high for n=200 (SE ≈ 0.05) — consistent with sampling noise, but the drift direction
+   matches the slave's dirtier camera (σs > σm). Re-check in Phase 3.
+2. **The graceful-fallback criterion is UNTESTED.** No camera ever stalled, so the
+   degradation path has never been observed under a real stall. See "Fallback policy" below.
+
+Implementation notes:
+- Camera extraction now lives in `components/elotto_camera/`, shared with the slave via
+  `EXTRA_COMPONENT_DIRS=../elotto/components` — one source of truth, byte-identical
+  extraction on both nodes.
+- **Producer/consumer priority is load-bearing.** The extraction task (priority
+  `ELOTTO_CAM_TASK_PRIO` = 4) is CPU-hungry; a consumer running *below* it gets starved and
+  a run takes 5.1 s instead of 0.47 s. The slave's command loop is `app_main`, whose
+  priority IDF hardcodes to 1, so it calls `vTaskPrioritySet(NULL, ELOTTO_CAM_TASK_PRIO+1)`.
+  Diagnostic signature of the bug: `drops` huge with `waits == 0` (consumer never waited,
+  so it is the bottleneck).
+- Protocol extended: `M` replies `Z:<float>,<C|T>`; the tag is after the float so `atof()`
+  still parses and a pre-camera slave stays compatible. New `D` command returns slave camera
+  diagnostics.
+- Sensor register writes are verified by read-back (`cam_verify_regs`): exposure, gain and
+  AEC/AGC-manual all confirmed applied and surviving STREAMON on both nodes.
+
+**The two cameras are not equally clean, and it is not configuration.** Identical settings
+(exposure 16, gain 1023, verified by read-back) yet:
+
+| | master | slave (14.6 Gbit) |
+|---|--------|-------------------|
+| mean_px | 6.80 | 2.84 |
+| zero_diff | 9.4% | 16.2% |
+| bias deviation | 3.7e-5 | 8.6e-4 (208σ, stable) |
+
+Bias tracks `mean_px` → `zero_diff`: more photons → more shot noise → wider noise
+distribution → more uniform LSB. Two hypotheses were tested and **refuted**: sub-ADU
+quantization starvation (zero_diff is only ~10-16%, not the 40-70% required) and sensor
+warming (82 min under load moved slave mean_px 2.67 → 2.84, i.e. not at all). Remaining
+explanation is a per-unit difference in light reaching the sensor — meaning the *master* is
+likely the less light-tight of the two, and that is why its bits are better. Flicker is
+ruled out (autocorrelation 0.0000 on both). If tuning this: give the slave *more* light, not
+less. Photon shot noise is Poisson arrival statistics — quantum-origin, and arguably a
+better source than dark current.
+
+### Fallback policy — open design question
+
+Current behaviour: a camera stall latches the node to TRNG for the rest of the session and
+sets one session-level boolean (`noise_fallback` / slave reports `T` per measurement).
+
+This is questionable for a GCP experiment. The premise of this plan is *replacing* the
+opaque whitened TRNG with raw quantum noise; silently substituting it back mid-session
+changes the physics of what is being measured, and one boolean cannot say which runs were
+affected. A stall at run 3 of 2560 leaves 2557 TRNG-sourced runs in a session still labelled
+"camera". Options, none yet implemented:
+- (a) abort the session on stall — purest, loses the run;
+- (b) drop the stalled node from the combine (n → n−1, no ÷√2) — preserves source purity,
+  keeps the session alive; **preferred for a multi-node array**;
+- (c) keep the fallback but tag every affected run so analysis can exclude them.
+
 ## Phase 3 — Long-run validation + docs
 
 - 20 h Eurojackpot cumulative session on the 2-node camera system; verify significance line

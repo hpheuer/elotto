@@ -166,6 +166,6 @@ dependencies:
 direct_dependencies:
 - espressif/esp_video
 - idf
-manifest_hash: 37fc19ceec071166fd42e0b67e06ba8316e2d98909d5b1c383610e6b1d790cf9
+manifest_hash: b26d4f3b17871214cedfdf9c90d6b03485ac031d2cebb4d558736a95fc763365
 target: esp32p4
 version: 3.0.0
