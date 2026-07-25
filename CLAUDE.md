@@ -9,13 +9,34 @@
 
 ## Project structure
 - main/elotto.c   – app_main, Ethernet, webserver, HTML/JS UI, /diag endpoint
-- main/sensor.c   – TRNG, GCP analysis, baseline calibration, slave UART, lottery extraction
+- main/sensor.c   – noise source, GCP analysis, baseline calibration, slave UART, lottery extraction
 - main/sensor.h   – types and declarations
+- components/elotto_camera/ – OV5647 dark-frame entropy (camera.c, include/camera.h, Kconfig).
+  **Shared with the slave repo** via `EXTRA_COMPONENT_DIRS=../elotto/components` in
+  elotto_slave/CMakeLists.txt — the two repos must stay siblings on disk, and a change here
+  affects both nodes, so commit both repos together.
 
 ## Concept
-Dual-ESP32-P4 system. Master (COM4) scores lottery numbers via GCP methodology using the
-hardware TRNG (register 0x501101A4). An optional slave ESP32-P4 (COM6) measures in parallel
-via UART1 (GPIO14/15, 460800 baud); combined z-score = (z_master + z_slave) / sqrt(2) (SNR x sqrt(2)).
+Dual-ESP32-P4 system. Master (COM4) scores lottery numbers via GCP methodology. An optional
+slave ESP32-P4 (COM6) measures in parallel via UART1 (GPIO14/15, 460800 baud); combined
+z-score = (z_master + z_slave) / sqrt(2) (SNR x sqrt(2)).
+
+**Noise source** (see docs/PLAN_4NODE.md — that file is the contract, and records every gate
+result and design decision):
+- Each node has its **own** OV5647 camera (never shared — sharing one would break
+  independence by construction). Entropy = non-overlapping frame pairs, diff = f[2k+1]−f[2k]
+  per pixel (cancels FPN exactly), LSB packed, XOR-folded. ~3 Mbit/s per node.
+- `noise_word()` in sensor.c selects the source at runtime: `POST /start?src=1` = camera,
+  `src=0` = on-chip TRNG (register 0x501101A4, still available for A/B).
+- Segments per run are source-dependent: TRNG 32000 (6.4 Mbit), camera 8000 (1.6 Mbit ≈
+  0.5 s). z stays N(0,1) either way — normalised by √segments.
+- **A camera stall ABORTS the session** (`src_stalled`), never silently substitutes the
+  TRNG: mixing sources mid-session would change the measured physics with no record of which
+  runs were affected. Applies to a slave stall too (slave reports `T` in its `Z:` reply).
+- **PSRAM is mandatory** with the camera (capture buffers + extraction ring).
+- **Task priority is load-bearing**: the extraction task (`ELOTTO_CAM_TASK_PRIO` = 4) is
+  CPU-hungry, so any task calling `camera_read_word()` must run *above* it or the producer
+  starves the consumer (~10x slowdown; signature is ring `drops` huge with `waits == 0`).
 
 Phase 1: baseline calibration (master + slave in parallel; informational — ranking uses
 studentization instead).
@@ -52,6 +73,18 @@ Modes: Eurojackpot (5 of 50 + 2 of 12, 7920 combinations) and 6 of 49 (5005 comb
 | Build only              | Ctrl+Shift+B     |
 | Menuconfig              | Ctrl+E G         |
 
+Claude builds and flashes **both** boards itself (master COM4, slave COM6) — see the
+build/flash memory note for the exact invocation. Use the VS Code extension's Python venv
+(`C:\Espressif\tools\python\v6.0.1\venv`), **not** `export.ps1`, or the build dir gets pinned
+to a different interpreter and fails with "run 'idf.py fullclean'".
+
+Check `http://192.168.178.100/status` before flashing the master — a flash resets it and
+kills any running measurement session.
+
 ## Rules
-- Never edit sdkconfig manually
+- Never edit sdkconfig manually. To change a default, edit `sdkconfig.defaults`, delete
+  `sdkconfig`, and let the build regenerate it (verify the diff afterwards).
 - Target is always esp32p4
+- The slave's `sdkconfig.defaults` must keep `CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y` **before**
+  `ESP32P4_REV_MIN_0=y` — the latter depends on it, and without it the choice silently falls
+  back to rev v3.1 and the binary refuses to boot on these v1.3 boards.
