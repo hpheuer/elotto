@@ -325,7 +325,16 @@ static const char HTML[] =
 "document.getElementById('pfScore').style.width='0%';"
 "document.getElementById('sScoreDone').textContent='0';"
 "document.getElementById('measArea').style.display='none';"
-"fetch('/start?mode='+mode+'&baseline='+base+'&loops='+loops+'&runs='+runs+'&rank='+rank+'&src='+src+'&focus='+foc,{method:'POST'});"
+// A refused start must not leave the UI pretending a session began with the
+// settings just typed in — that is how ignored parameters stay invisible.
+"fetch('/start?mode='+mode+'&baseline='+base+'&loops='+loops+'&runs='+runs+'&rank='+rank+'&src='+src+'&focus='+foc,{method:'POST'})"
+".then(function(r){if(!r.ok){"
+"document.getElementById('runsErr').textContent="
+"'\\u26a0 a session is already running \\u2014 abort it first';"
+"document.getElementById('runsRow').style.display='grid';"
+"document.getElementById('runBtns').style.display='none';"
+"document.getElementById('progArea').style.display='none';"
+"if(timer)clearInterval(timer);stopFocus();}}).catch(function(){});"
 "document.getElementById('runsRow').style.display='none';"
 "document.getElementById('startBtns').style.display='none';"
 "document.getElementById('runBtns').style.display='flex';"
@@ -876,9 +885,19 @@ static esp_err_t pause_handler(httpd_req_t *req)
 }
 
 /* ── /start POST ──────────────────────────────────────────────────── */
+/* Refuses with 409 while a session runs, rather than answering "ok" and doing
+ * nothing. The silent version was a trap: the caller got a success reply and a
+ * session still carrying the PREVIOUS run's parameters, so a /start whose
+ * loops= or runs= were quietly ignored looked identical to one that worked.
+ * Same contract as /update, which has refused mid-measurement since Phase B. */
 static esp_err_t start_handler(httpd_req_t *req)
 {
-    if (g_status.state != ELOTTO_RUNNING) {
+    if (g_status.state == ELOTTO_RUNNING) {
+        httpd_resp_set_status(req, "409 Conflict");
+        httpd_resp_sendstr(req, "session already running -- abort it first");
+        return ESP_OK;
+    }
+    {
         // read mode from query string (?mode=0 or ?mode=1). Sized for the full
         // set the UI sends — a truncated query silently drops trailing keys.
         char qry[128] = "";

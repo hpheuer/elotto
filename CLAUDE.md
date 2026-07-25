@@ -194,6 +194,10 @@ curl http://192.168.178.103/update --data-binary @../elotto_slave/build/elotto_s
 
 ~750 KB in ~3 s. The node writes the *inactive* slot, reboots, and marks itself valid only
 once its webserver answers, so a failed transfer or a dead image cannot strand it.
+`POST /start` also returns **409** while a session runs (it used to answer "ok" and silently do
+nothing, leaving the *previous* run's `loops`/`runs` in force — an ignored parameter that looked
+exactly like a working one). Abort first, then start.
+
 `/update` returns **409** while a measurement runs — no need to check `/status` first, though
 `/status` still shows `fw_version`, `fw_sha` and `fw_slot` to confirm what is actually running.
 
