@@ -1,14 +1,16 @@
 # PLAN: 4-Node GCP Array with OV5647 Camera Entropy
 
-Status: **rescoped for actual hardware**. Only 2 ESP32-P4 boards exist today — master
-(COM4) and slave (COM6), the same pair already running the TRNG-based system. An OV5647
-camera is wired to the master's CSI connector and ready to bring up. The 2 additional
-ESP32-P4-ETH boards + 3 more OV5647 cameras needed for the 4-node array have **not**
-arrived. Phases 0–3 below target the 2-node system end-to-end (camera entropy on both
-master and slave); the original 4-node scale-out is preserved as **Phase 4 (future,
-blocked on hardware)** and stays unimplemented until those boards show up. Implementation
-is phased; each phase is one focused coding session with clear acceptance criteria. Do not
-start a phase before the previous one's gate passes.
+Status: **Phases 0–3 DONE** (2-node system, camera entropy on both nodes, v2.1). This document
+is the contract for the **noise source and the statistics** and stays authoritative for those.
+
+**Scale-out moved out of this document.** It was written when only 2 boards existed and the
+4-node array was blocked on hardware; that hardware has since arrived (4× ESP32-P4-ETH, one
+OV5647 each, 4-port PoE switch), which reopened the transport decision. Scaling, transport,
+provisioning and firmware delivery now live in [`PLAN_NETWORK.md`](PLAN_NETWORK.md) — Phase 4
+below is superseded and kept only as a record.
+
+Implementation is phased; each phase is one focused coding session with clear acceptance
+criteria. Do not start a phase before the previous one's gate passes.
 
 ## Goal
 
@@ -304,13 +306,22 @@ Being explicit, so this is not mistaken for a passed gate:
    side effect.
 4. **Optional: even out the two cameras.** The slave is the dimmer, dirtier one (Phase 2:
    `mean_px` 2.8 vs 6.8, bias deviation ~20× larger). More light on the slave, not less.
-5. **Phase 4 stays blocked on hardware** (2 boards + 3 cameras).
+5. **Scale-out is no longer blocked** — the boards and cameras arrived. It moved to
+   [`PLAN_NETWORK.md`](PLAN_NETWORK.md) and is now a UDP/Ethernet job, not a UART one.
 
-## Phase 4 — 4-node scale-out (future, blocked on hardware)
+## Phase 4 — 4-node scale-out — **SUPERSEDED by `PLAN_NETWORK.md`**
 
-Not started. Requires 2 more ESP32-P4-ETH boards and 3 more OV5647 cameras (see hardware
-checklist below). Preserved here as the original design so it can be picked up without
-re-deriving the architecture.
+**Do not implement the UART-star design below.** The hardware it assumed (2 boards, one
+crossover cable already wired) no longer describes the setup: there are now 4× ESP32-P4-ETH,
+each with its own OV5647, plus a 4-port PoE switch. With Ethernet on every node the transport
+decision was reopened deliberately and settled on **UDP broadcast sync + Ethernet OTA** — see
+[`PLAN_NETWORK.md`](PLAN_NETWORK.md), which also covers firmware delivery and retiring USB.
+
+This document remains the contract for the **noise source and the statistics** (Phases 0–3).
+`PLAN_NETWORK.md` owns transport, provisioning and firmware delivery, and changes neither what
+is measured nor how a z-score is computed.
+
+The original UART-star design is kept below as a record of the reasoning, not as work to do.
 
 - Master: `slaves[]` array {uart_num, tx, rx, ok}; UART2/3 pins chosen from free header
   GPIOs (verify against Waveshare pinout; avoid 14/15 UART1, 31/51/52 ETH MDC/MDIO/RST,

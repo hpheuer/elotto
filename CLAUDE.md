@@ -21,8 +21,12 @@ Dual-ESP32-P4 system. Master (COM4) scores lottery numbers via GCP methodology. 
 slave ESP32-P4 (COM6) measures in parallel via UART1 (GPIO14/15, 460800 baud); combined
 z-score = (z_master + z_slave) / sqrt(2) (SNR x sqrt(2)).
 
-**Noise source** (see docs/PLAN_4NODE.md — that file is the contract, and records every gate
-result and design decision):
+**Plans**: `docs/PLAN_4NODE.md` is the contract for the *noise source and statistics* (Phases
+0–3 done, v2.1). `docs/PLAN_NETWORK.md` is the contract for *transport, provisioning and
+firmware delivery* — 4-node UDP sync + Ethernet OTA, superseding PLAN_4NODE's UART-star
+Phase 4. Both record every gate result and design decision.
+
+**Noise source** (see docs/PLAN_4NODE.md):
 - Each node has its **own** OV5647 camera (never shared — sharing one would break
   independence by construction). Entropy = non-overlapping frame pairs, diff = f[2k+1]−f[2k]
   per pixel (cancels FPN exactly), LSB packed, XOR-folded. ~3 Mbit/s per node.
