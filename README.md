@@ -110,16 +110,20 @@ exports both coverage sets.</td>
 
 ## Hardware
 
-- **Master (COM4):** Waveshare ESP32-P4-ETH — webserver, GCP, Eurojackpot/6-of-49
-- **Slave (COM6):** second Waveshare ESP32-P4-ETH — GCP + UART1 handler only
+- **Master (192.168.178.100):** Waveshare ESP32-P4-ETH — webserver, GCP, Eurojackpot/6-of-49
+- **Slave (192.168.178.103):** second Waveshare ESP32-P4-ETH — GCP + UDP command loop, plus a
+  small webserver so it can be updated over the wire like any other node
 - **Cameras:** one OV5647 per node on its own MIPI-CSI connector (SCCB on GPIO8/7, XCLK
   unwired — the RPi-style module clocks itself), lens capped and taped, in the dark.
   **Never shared between nodes** — a shared source would break independence by construction.
 - **PSRAM:** mandatory when the camera source is used (capture buffers + extraction ring)
-- **PHY:** IP101GRI via RMII (Ethernet RJ45, DHCP) — master only
+- **PHY:** IP101GRI via RMII (Ethernet RJ45, DHCP) — on **every** node
 - **CPU:** ESP32-P4 @ 360 MHz, 768 KB SRAM
 - **Chip revision:** v1.3 (sdkconfig adjusted: `CONFIG_ESP32P4_REV_MIN_0=y`)
-- **UART1 connection:** Master GPIO14 → Slave GPIO15 (TX→RX), Master GPIO15 ← Slave GPIO14 (RX←TX), GND↔GND, 460800 baud
+- **Node link:** UDP on the shared switch — broadcast trigger to port 5000, unicast replies.
+  The UART1 crossover this used before is gone; see [docs/PLAN_NETWORK.md](docs/PLAN_NETWORK.md)
+- **USB (COM4 / COM6):** recovery only — bootloader, partition table, or a board whose
+  factory updater is gone. Firmware ships over Ethernet
 
 ## Concept
 
@@ -303,10 +307,14 @@ The slave ([hpheuer/elotto_slave](https://github.com/hpheuer/elotto_slave),
 `main/slave.c`) is a second ESP32-P4 running the **identical GCP engine** (same
 `gcp_zscore_raw()`, same segment math, and the *same camera extraction code* — the
 `elotto_camera` component is shared from this repo, see [Project Structure](#project-structure))
-but **nothing else** — no Ethernet, no webserver, no lottery logic. It boots, configures UART1,
-and sits in a blocking command loop waiting for the master. Its only job: when told to, run a
-GCP measurement on its **own independent noise source** — its own camera, never the master's —
-and report the Z-score back.
+and no lottery logic. It boots, brings up Ethernet, starts a small webserver (`/diag`,
+`/otainfo`, `/update`) and sits in a blocking UDP command loop waiting for the master. Its only
+measurement job: when told to, run a GCP measurement on its **own independent noise source** —
+its own camera, never the master's — and report the Z-score back.
+
+The webserver is not a convenience. With bootloader rollback armed, an image that cannot be
+reached over the network is reverted on the next boot *by design*, so a slave without one could
+not be installed at all.
 
 Because the two sources are physically separate, their measurements are statistically
 independent. Averaging two independent Z-scores of equal variance halves the variance, i.e.
@@ -319,85 +327,104 @@ z_combined = (z_master + z_slave) / √2        // = (z_m + z_s) × 0.70710678
 Each device subtracts **its own** baseline mean first, so the two hardware biases are removed
 independently before the two Z-scores are combined.
 
-### Wiring (UART1 crossover)
+### Wiring (Ethernet only)
 
-| Master | | Slave |
-|---|:---:|---|
-| GPIO14 (TX) | → | GPIO15 (RX) |
-| GPIO15 (RX) | ← | GPIO14 (TX) |
-| GND | ↔ | GND |
+Both nodes plug into the same switch. There is no link cable between them — the trigger is a
+**broadcast datagram**, which is the whole reason for the change: at n nodes, one packet starts
+them all within microseconds, where n sequential UART writes would skew them. The premise is
+that every node integrates the *same* window, so simultaneity is the property that matters.
+Latency and jitter (sub-ms either way) are irrelevant against a ~470 ms run.
 
-460800 baud, 8N1, no flow control. `SLAVE_BAUD` in `sensor.c` must equal `UART_BAUD` in `slave.c`.
+### Sync protocol (ASCII over UDP)
 
-### Sync protocol (ASCII, line-based)
+The master is always the initiator; the slave only ever answers. Every datagram is one frame:
 
-The master is always the initiator; the slave only ever answers. Every command and reply ends
-with `\n`.
+```
+EL1 <seq> <payload>
+```
 
-| Command (master → slave) | Reply (slave → master) | Meaning |
+The payload is unchanged from the UART era — the transport swap was deliberately kept separate
+from any change to what is measured, so the statistics could be compared like with like.
+
+| Command (master → slaves, broadcast :5000) | Reply (unicast) | Meaning |
 |---|---|---|
-| `P\n` | `OK\n` | Ping — detect the slave at startup |
-| `B<n>\n` | `OK\n` (after n runs) | Run n baseline runs, store own baseline mean; **re-arm the camera** (a session start) |
-| `M\n` | `Z:<float>,<C\|T>\n` | Run one measurement, return baseline-corrected Z + the source it used (**C**amera / **T**RNG) |
-| `D\n` | `D:<ready>,<bias>,<σ>,<Mbit/s>,<stalls>,<stuck>,<C\|T>\n` | Slave camera health; the master asks once per loop for the `/loops` table |
-| `A\n` | `OK\n` | Abort the current/next operation |
+| `P` | `OK` | Discovery — find the nodes at startup, no static IP table |
+| `B<n>` | `OK` (after n runs) | Run n baseline runs, store own baseline mean; **re-arm the camera** (a session start) |
+| `M` | `Z:<float>,<C\|T>` | Run one measurement, return baseline-corrected Z + the source it used (**C**amera / **T**RNG) |
+| `D` | `D:<ready>,<bias>,<σ>,<Mbit/s>,<stalls>,<stuck>,<C\|T>` | Slave camera health; the master asks once per loop for the `/loops` table |
+| `A` | `OK` | Abort the current/next operation |
 
 The source tag sits **after** the float so `atof()` still parses the number and a pre-camera
 slave stays compatible. A `T` tag during a camera session aborts the master too — see
 [stall policy](#a-stall-aborts-the-session--it-does-not-fall-back).
 
-The slave discards boot noise and UART break bytes (`0x00` and bytes ≥ `0x80`), so a master
-reset cannot desync its line parser.
+**Why every frame carries a sequence number.** UART was effectively lossless and strictly
+ordered, so a reply could only belong to the command just sent. UDP guarantees neither. A late
+reply, accepted blindly, would pair `z_slave` of run *k* with `z_master` of run *k+1* — a
+correlation bug that looks exactly like physics, and precisely the quantity `pair_r` exists to
+detect. So mismatched frames are dropped and counted (`net_stale`), never used. The master
+resends a timed-out command under the **same** sequence number and the slave answers a repeat of
+something it has already completed from a one-entry cache, so a lost *reply* costs a round trip
+while a lost *command* is re-executed exactly once. `/status` publishes `net_retries`,
+`net_lost` and `net_stale` per session; the gate for the transport swap was `net_lost == 0`.
 
 ### How they run in parallel
 
 The trick is that the master **triggers the slave first, then does its own work while the
 slave works** — so the two measurements overlap in wall-clock time instead of running
-back-to-back. Net cost of the slave per measurement is only the UART round-trip, not a second
+back-to-back. Net cost of the slave per measurement is only the round-trip, not a second
 full GCP run.
 
 **Startup**
 ```
-master  slave_init() ──── "P\n" ───►  slave
-master  slave_connected = true ◄─ "OK\n" ── slave
+master  slave_init() ─── "EL1 <seq> P" ──►  broadcast 255.255.255.255:5000
+master  slave_connected = true ◄─ "EL1 <seq> OK" ── slave (source addr = its IP)
 ```
 
 **Phase 1 — baseline (parallel)**
 ```
-master  slave_baseline_start(n) ── "B<n>\n" ─►  slave    (fire-and-forget)
+master  slave_baseline_start(n) ── "B<n>" ─►  slave    (send now, collect later)
 master  ── runs its own n baseline runs ──┐  both calibrate
 slave   ── runs its own n baseline runs ──┘  simultaneously
-master  slave_baseline_wait() ◄──── "OK\n" ──── slave    (resync at the end)
+master  slave_baseline_wait() ◄──── "OK" ──── slave    (resync at the end)
 ```
 
 **Phase 2 — every combination (parallel)**
 ```
 for each combination:
-  master  "M\n" ──────────────►  slave starts measuring
-  master  gcp_zscore_raw() ─────  both measure the same time window
-  master  slave_measure() ◄─ "Z:<float>\n" ── slave
+  master  "M" ────────────────►  every node starts measuring (one datagram)
+  master  gcp_zscore_raw() ─────  all measure the same time window
+  master  slave_measure() ◄─ "Z:<float>,C" ── slave   (seq must match)
   master  z = (z_master + z_slave) / √2
 ```
 
 **Abort**
 ```
-master  "A\n" ─►  slave sets g_abort and returns from its run at the next
-        4000-segment checkpoint (a non-blocking UART poll inside gcp_zscore_raw)
+master  "A" ─►  slave sets g_abort and returns from its run at the next
+        2000-segment checkpoint. The slave PEEKs the socket there and consumes
+        only an 'A' — anything else (typically the master resending the command
+        being executed right now) must stay queued for the command loop.
 ```
 
 ### Robustness
 
-- **Optional / auto-detected** — `slave_init()` pings once; on timeout the master clears
-  `slave_connected` and runs solo. A `static bool installed` guard makes re-pings safe.
-- **Self-healing disconnect** — if the slave ever misses its reply window
-  (`slave_baseline_wait` / `slave_measure`), the master sets `s_slave_ok = false` and finishes
-  the job master-only instead of hanging.
+- **Optional / auto-discovered** — `slave_init()` broadcasts a `P` up to four times; if nothing
+  answers, the master clears `slave_connected` and runs solo. No IP has to be configured.
+- **One resend, then drop** — a command with no reply is resent once under the same sequence
+  number; if that also goes unanswered the master sets `s_slave_ok = false`, counts a
+  `net_lost`, and finishes the job master-only instead of hanging.
 - **Proportional baseline timeout** — `slave_baseline_wait()` waits `baseline_total × 800 ms +
   15 s`, so a large baseline (minutes of slave work) never trips a false timeout.
-- **Cooperative abort** — the slave polls for an `A` byte every 4000 segments, so even a long
+- **Cooperative abort** — the slave polls the socket every 2000 segments, so even a long
   in-flight run stops within ~½ second.
-- **Per-loop** — in multi-loop runs every loop re-issues `B<n>\n` and the per-combination
-  `M\n`/`Z:` exchange, so master and slave stay in lock-step across all loops.
+- **Session-start drain** — both ends discard queued datagrams when a session begins (`B`), the
+  way the UART path flushed its input: a leftover `A` from the session that was just aborted
+  must not abort the first baseline run of the next one.
+- **A lost `D` is not a disconnect** — the per-loop camera-health query is diagnostics. Dropping
+  the slave over it would cost the session half its SNR, so a missing answer only leaves the
+  slave columns of `/loops` at zero.
+- **Per-loop** — in multi-loop runs every loop re-issues `B<n>` and the per-combination `M`/`Z:`
+  exchange, so master and slave stay in lock-step across all loops.
 
 ## Web Interface
 
@@ -477,7 +504,7 @@ Both ESPs measure simultaneously. The combined Z-score increases SNR by factor �
 
 ```c
 // sensor.c — elotto_task() measurement loop
-if (use_slave) uart_write_bytes(SLAVE_UART, "M\n", 2);  // start slave
+if (use_slave) slave_trigger();                         // one broadcast datagram
 double z = gcp_zscore_raw() - g_status.baseline_mean;   // master measures in parallel
 if (use_slave) {
     double zs = slave_measure();                          // read slave Z
@@ -748,15 +775,21 @@ main/
   elotto.c    — app_main, Ethernet, webserver, HTML/JS incl. /diag + /loops, CSV save, loop UI
   sensor.c    — GCP analysis, noise_word() source select, baseline, number scoring,
                 combination enumeration, multi-loop accumulation + drift record,
-                coverage selection, slave UART
-  sensor.h    — types, ElottoStatus (phase/baseline/loop/ranking/coverage/drift fields)
+                coverage selection, slave link (UDP)
+  sensor.h    — types, ElottoStatus (phase/baseline/loop/ranking/coverage/drift/link fields)
 components/
-  elotto_camera/  — OV5647 dark-frame entropy: camera.c, include/camera.h, Kconfig.
-                    SHARED with the slave repo via EXTRA_COMPONENT_DIRS=../elotto/components,
-                    so the two repos must stay siblings on disk and a change here affects
-                    both nodes — commit both repos together.
+  elotto_camera/  — OV5647 dark-frame entropy: camera.c, include/camera.h, Kconfig
+  elotto_link/    — the master↔slave UDP wire format (EL1 <seq> <payload>, ports 5000/5001)
+  elotto_ota/     — /update endpoint + boot safety (rollback, boot counter, mark-valid)
+                    All three are SHARED with the slave repo via
+                    EXTRA_COMPONENT_DIRS=../elotto/components, so the two repos must stay
+                    siblings on disk and a change here affects both nodes — build, flash
+                    and commit them together.
+ota_firmware/ — the recovery updater, its own IDF project (Ethernet + HTTP + esp_ota only)
+partitions.csv — shared partition table: factory (updater) + ota_0/ota_1, used by all three
 docs/
   PLAN_4NODE.md      — the camera-entropy design contract: phases, gates, decisions
+  PLAN_NETWORK.md    — the transport/provisioning contract: UDP sync, Ethernet OTA
   ui_start.png       — start screen (inputs + mode buttons)
   ui_done.png        — a finished run (three phase bars complete)
   coverage_high.png  — Coverage highest-Z table + significance + most-frequent
@@ -766,8 +799,8 @@ sdkconfig     — ESP-IDF configuration
 
 elotto_slave/  — separate repo: https://github.com/hpheuer/elotto_slave  (must sit NEXT TO
                  this one on disk — it pulls components/ from here)
-  main/slave.c — slave GCP handler, own camera source, UART1 protocol (P/B/M/D/A commands),
-                 timestamps in log
+  main/slave.c — slave GCP handler, own camera source, Ethernet + /diag + OTA, UDP command
+                 loop (P/B/M/D/A), timestamps in log
 ```
 
 ## Version History
@@ -786,3 +819,4 @@ elotto_slave/  — separate repo: https://github.com/hpheuer/elotto_slave  (must
 | v1.9 | Diversified **Coverage** selection (greedy max-spread over the top-/bottom-Z pool) for highest- and lowest-Z; results view is now coverage-only (raw Top/Bottom tables removed, kept internally only for significance); slimmer `/status`; removed inert CSV-load path; plain-language "What is Coverage Mode?" section |
 | v2.0 | GCP methodology upgrade: per-loop **studentization** (`(z−m)/σ`, TRNG health σ published), **random measurement order** per loop (drift immunity), **master–slave independence check** (Pearson r, per-loop centered, per-device σ), 5× number scoring, **stride sampling** for capped runs, fewer yields (~15% faster). ⚠ Z-scores not comparable with pre-v2.0 sessions |
 | v2.1 | **Camera entropy**: OV5647 dark-frame noise (photon shot + read noise) replaces the TRNG as the default source — one camera per node, frame-pair diff → LSB → XOR-fold → ring buffer, ~3.4 Mbit/s, run length 8000 segments (~0.5 s). Shared `elotto_camera` component across both repos; **Entropy** selector in the UI (`?src=1` camera / `?src=0` TRNG); a camera stall **aborts** the session on either node instead of silently substituting the TRNG; **cross-loop drift check** (raw offset regression, `drift_slope`/`drift_t`) with the per-loop table at `/loops`; camera health in `/diag`; slave `D` (diagnostics) command |
+| v2.2 | **UDP node link** replaces the UART1 crossover (docs/PLAN_NETWORK.md Phase C): broadcast trigger on port 5000 so every node starts on one datagram, unicast replies, discovery by broadcast (no IP table). Same `P`/`B`/`M`/`D`/`A` semantics, so the statistics layer is untouched — verified by an A/B at identical settings (n=600 pairs: `pair_r` +0.065, σm/σs 1.05/1.00, zero lost triggers). Every frame carries the sequence number it answers; late replies are dropped and counted (`net_retries`/`net_lost`/`net_stale` in `/status`). The slave gains Ethernet, its own `/diag` and OTA — required, not optional, since rollback reverts any image that cannot be reached over the network |

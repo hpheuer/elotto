@@ -16,9 +16,12 @@
 - ota_firmware/   – the network updater ("OTA-Firmware"), its own IDF project. Ethernet + HTTP
   + esp_ota only; no camera, no GCP (68 KB RAM vs the app's 421 KB static).
 - components/elotto_camera/ – OV5647 dark-frame entropy (camera.c, include/camera.h, Kconfig).
+- components/elotto_link/ – the UDP wire format between master and slaves
+  (`EL1 <seq> <payload>`, ports 5000/5001). One definition compiled into both ends, so the
+  two cannot disagree about framing.
 - components/elotto_ota/ – update endpoint + boot-safety logic (rollback, boot counter,
   mark-valid, /update /boot /reboot /poison /otainfo).
-  Both components are **shared**: the slave repo pulls them via
+  All three components are **shared**: the slave repo pulls them via
   `EXTRA_COMPONENT_DIRS=../elotto/components` (elotto_slave/CMakeLists.txt) and ota_firmware
   pulls *only* elotto_ota by pointing at that single component directory — IDF compiles every
   component it discovers, so pointing at `components/` would drag the camera into the recovery
@@ -28,18 +31,22 @@
 ## Nodes (2026-07-25)
 | node | IP | MAC | flash contents |
 |------|----|-----|----------------|
-| master | 192.168.178.100 | 80:f1:b2:d2:e3:1d | factory = updater, ota_0 = elotto app (running) |
-| slave  | 192.168.178.103 (static lease) | 80:f1:b2:d2:e3:e5 | factory = updater, ota_0 = updater |
+| master | 192.168.178.100 | 80:f1:b2:d2:e3:1d | factory = updater, ota_0/ota_1 = elotto app |
+| slave  | 192.168.178.103 (static lease) | 80:f1:b2:d2:e3:e5 | factory = updater, ota_1 = slave app (running) |
 
 Two more ESP32-P4-ETH boards + a 4-port PoE switch exist for the 4-node array (Phase D).
-**The slave currently has no GCP firmware** — with rollback armed, an app that cannot be
-reached over the network is rolled back by design, so the slave rejoins measurements only once
-it gains Ethernet in Phase C. `slave_connected` is therefore false and the master runs solo.
+Both nodes are on Ethernet and OTA-updatable; the slave has run the full GCP firmware again
+since Phase C, so `slave_connected` is true and sessions are dual-node.
 
 ## Concept
 Dual-ESP32-P4 system. Master (COM4) scores lottery numbers via GCP methodology. An optional
-slave ESP32-P4 (COM6) measures in parallel via UART1 (GPIO14/15, 460800 baud); combined
-z-score = (z_master + z_slave) / sqrt(2) (SNR x sqrt(2)).
+slave ESP32-P4 (COM6) measures in parallel, triggered by **UDP broadcast** on the switch
+(port 5000, discovery by broadcast — no static IP table); combined
+z-score = (z_master + z_slave) / sqrt(2) (SNR x sqrt(2)). The UART1 crossover it used before
+Phase C is gone: one datagram starts every node at once, where N sequential UART writes would
+skew them. UDP loss is handled explicitly — every frame carries the sequence number it answers,
+mismatches are dropped and counted (`net_stale`), and a timed-out command is resent under the
+same sequence so the slave replies from a one-entry cache instead of measuring twice.
 
 **Plans**: `docs/PLAN_4NODE.md` is the contract for the *noise source and statistics* (Phases
 0–3 done, v2.1). `docs/PLAN_NETWORK.md` is the contract for *transport, provisioning and
@@ -120,7 +127,8 @@ the wrong interpreter and fails with "run 'idf.py fullclean'".
 **Flash — over Ethernet, not USB.** Firmware is pushed to the running node:
 
 ```powershell
-curl http://192.168.178.100/update --data-binary @build/elotto.bin
+curl http://192.168.178.100/update --data-binary @build/elotto.bin                       # master
+curl http://192.168.178.103/update --data-binary @../elotto_slave/build/elotto_slave.bin  # slave
 ```
 
 ~750 KB in ~3 s. The node writes the *inactive* slot, reboots, and marks itself valid only

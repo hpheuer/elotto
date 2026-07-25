@@ -77,7 +77,7 @@ static const char HTML[] =
 " target='_blank' style='color:inherit;text-decoration:none;border-bottom:1px dashed #90ee90'>GCP</a></h1>"
 "<div id='subtitle'>ESP32-P4 &bull; Camera dark-frame entropy &bull; GCP Analysis</div>"
 "<div id='slaveBadge' style='display:none;text-align:center;color:#a0e8ff;"
-"font-size:.88em;margin:-18px 0 12px'>&#128279; Dual-ESP connected &bull; SNR &times;&radic;2</div>"
+"font-size:.88em;margin:-18px 0 12px'></div>"
 "<div class='card'>"
 "<div id='runsRow' style='display:grid;grid-template-columns:1fr 1fr;gap:8px 14px;justify-items:center;margin-bottom:10px'>"
 "<div style='grid-column:span 2;display:flex;align-items:center;gap:6px'>"
@@ -226,8 +226,18 @@ static const char HTML[] =
 ":'⚠️ Aborted after '+d.completed+' runs — partial results:';"
 "showResults(d);"
 "}"
-"if(d.slave)document.getElementById('slaveBadge').style.display='';"
+"showSlaveBadge(d);"
 "}).catch(function(){});};"
+// The badge names the transport and the peer address: after Phase C the slave is
+// discovered by UDP broadcast rather than wired to a known UART, so "connected"
+// alone no longer says which box answered.
+"function showSlaveBadge(d){"
+"var b=document.getElementById('slaveBadge');"
+"if(!d.slave){b.style.display='none';return;}"
+"b.style.display='';"
+"b.innerHTML='\\uD83D\\uDD17 Dual-ESP connected \\u00b7 UDP '+(d.slave_ip||'?')"
+"+' \\u00b7 SNR \\u00d7\\u221a2';"
+"}"
 "function updateLoopBadge(cur,total){"
 "var b=document.getElementById('loopBadge');"
 "if(total>1){b.style.display='';b.textContent='\\uD83D\\uDD01 Loop '+cur+' / '+total;}"
@@ -296,7 +306,7 @@ static const char HTML[] =
 "var lc=d.loop_current||1,lt=d.loops_total||1;"
 "var gDone=(lc-1)*perLoop+(d.baseline_done||0)+(d.scoring_done||0)+d.completed;"
 "var gTotal=lt*perLoop;"
-"if(d.slave)document.getElementById('slaveBadge').style.display='';"
+"showSlaveBadge(d);"
 "if(gDone>0&&d.elapsed_ms>0&&gTotal>gDone){"
 "var msPer=d.elapsed_ms/gDone;"
 "var eta=Math.round(msPer*(gTotal-gDone));"
@@ -350,6 +360,15 @@ static const char HTML[] =
 "var s3='entropy: master '+srcM+(d.src_stalled?' \\u26a0 camera stalled \\u2013 aborted':'')"
 "+(d.slave?' \\u00b7 slave '+srcS:'');"
 "sl.innerHTML+=(sl.innerHTML?'<br>':'')+s3;"
+// Transport health (PLAN_NETWORK Phase C). UDP can drop where the UART could
+// not, so the gate is a counted "zero lost triggers", not an impression that it
+// felt reliable. Stale replies are answers that arrived after we stopped
+// waiting — dropped by sequence number, never folded into a z.
+"if(d.slave){"
+"var nl=d.net_lost||0;"
+"var s5='link: UDP \\u00b7 lost triggers '+nl+(nl?' \\u26a0':' \\u2713')"
+"+' \\u00b7 resends '+(d.net_retries||0)+' \\u00b7 stale replies '+(d.net_stale||0);"
+"sl.innerHTML+='<br>'+s5;}"
 // Cross-loop drift. studentize() removes each loop's own offset exactly, so a
 // constant bias is harmless — a trend across loops is not, and only a long
 // session gives it room to show. |t| > 3 means the slope is real, not noise.
@@ -483,6 +502,7 @@ static esp_err_t status_handler(httpd_req_t *req)
         "\"best_z\":%.4f,\"p_corr\":%.6g,\"comparisons\":%d,"
         "\"loop_sigma\":%.4f,\"pair_r\":%.4f,\"pair_n\":%d,"
         "\"sigma_m\":%.4f,\"sigma_s\":%.4f,"
+        "\"slave_ip\":\"%s\",\"net_retries\":%lu,\"net_lost\":%lu,\"net_stale\":%lu,"
         "\"loops_done\":%d,\"drift_slope\":%.5f,\"drift_t\":%.2f,"
         "\"off_first\":%.4f,\"off_last\":%.4f,"
         "\"sigma_lo\":%.4f,\"sigma_hi\":%.4f,"
@@ -498,6 +518,9 @@ static esp_err_t status_handler(httpd_req_t *req)
         g_status.best_z, g_status.p_corrected, g_status.comparisons,
         g_status.loop_sigma, g_status.pair_r, g_status.pair_n,
         g_status.sigma_m, g_status.sigma_s,
+        g_status.slave_ip,
+        (unsigned long)g_status.net_retries, (unsigned long)g_status.net_lost,
+        (unsigned long)g_status.net_stale,
         g_status.loops_done, g_status.drift_slope, g_status.drift_t,
         g_status.off_first, g_status.off_last,
         g_status.sigma_lo, g_status.sigma_hi,
@@ -821,15 +844,16 @@ static void webserver_task(void *arg)
 {
     EventBits_t bits = xEventGroupWaitBits(eth_event_group, ETH_GOT_IP_BIT,
                                            pdFALSE, pdTRUE, pdMS_TO_TICKS(30000));
-    if (bits & ETH_GOT_IP_BIT) start_webserver();
-    else ESP_LOGE(TAG, "No Ethernet after 30s");
-    vTaskDelete(NULL);
-}
-
-static void slave_probe_task(void *arg)
-{
-    vTaskDelay(pdMS_TO_TICKS(500));   // let UART/boot settle
-    slave_probe();
+    if (bits & ETH_GOT_IP_BIT) {
+        start_webserver();
+        /* The slave now lives on the same Ethernet as the browser, so the probe
+         * cannot run before there is an IP the way the UART one did. It follows
+         * the webserver rather than preceding it: mark-valid must not wait on a
+         * peer that may be offline. */
+        slave_probe();
+    } else {
+        ESP_LOGE(TAG, "No Ethernet after 30s");
+    }
     vTaskDelete(NULL);
 }
 
@@ -855,7 +879,6 @@ void app_main(void)
 
     eth_event_group = xEventGroupCreate();
     ethernet_init();
-    xTaskCreate(slave_probe_task, "slave_probe", 4096, NULL, 3, NULL);
     xTaskCreate(webserver_task, "ws_task", 8192, NULL, 5, NULL);
 
     // Camera bring-up (docs/PLAN_4NODE.md), non-fatal here: the rest of the

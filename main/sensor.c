@@ -8,9 +8,11 @@
 #include "esp_timer.h"
 #include "esp_err.h"
 #include "esp_heap_caps.h"
-#include "driver/uart.h"
+#include "lwip/sockets.h"
+#include "lwip/inet.h"
 #include "sensor.h"
 #include "camera.h"
+#include "elotto_link.h"
 
 ElottoStatus g_status = { .state = ELOTTO_IDLE };
 
@@ -197,83 +199,209 @@ static int cmp_asc(const void *a, const void *b)
     return -cmp_desc(a, b);
 }
 
-/* ── Slave UART (UART1, TX=GPIO14, RX=GPIO15) ────────────────────────
- * Wiring: Master-GPIO14 → Slave-GPIO15
- *         Slave-GPIO14  → Master-GPIO15
- *         GND           ←→ GND
+/* ── Slave link — UDP broadcast (docs/PLAN_NETWORK.md §4, Phase C) ────
+ * Replaces the UART1 point-to-point pair (was TX=GPIO14 / RX=GPIO15,
+ * 460800 baud). A command leaves as ONE broadcast datagram, so every node
+ * starts within microseconds of the others instead of N sequential UART
+ * writes — the one difference that matters physically, since the premise is
+ * that all nodes integrate the *same* window.
+ *
+ * The command semantics are byte-for-byte the ones the UART link carried
+ * ('P'/'B'/'M'/'D'/'A' and their 'OK' / 'Z:' / 'D:' answers). Nothing above
+ * this block changed, which is what makes Phase C a controlled A/B: if pair_r
+ * or sigma move against the UART-era numbers, the transport moved them.
+ *
+ * Loss is handled explicitly, never assumed away (Risk 3). See elotto_link.h
+ * for why every frame carries the sequence number it answers.
  * ─────────────────────────────────────────────────────────────────── */
-#define SLAVE_UART    UART_NUM_1
-#define SLAVE_TX_PIN  14
-#define SLAVE_RX_PIN  15
-#define SLAVE_BAUD    460800   // must match UART_BAUD in elotto_slave/main/slave.c
+#define LINK_PROBE_TRIES   4      // discovery broadcasts before declaring solo
+#define LINK_PROBE_MS    600
+#define LINK_MEAS_MS    4000      // a run is ~0.5 s (camera) / ~1 s (TRNG)
+#define LINK_DIAG_MS    1500
 
-static bool s_slave_ok = false;
+static bool     s_slave_ok = false;
+static int      s_sock     = -1;
+static uint32_t s_seq;
+static struct sockaddr_in s_bcast;
+static struct { uint32_t seq; char cmd[24]; } s_pending;
 
-static bool slave_readline(char *buf, int maxlen, int timeout_ms)
+static bool link_open(void)
 {
-    int        pos = 0;
-    TickType_t end = xTaskGetTickCount() + pdMS_TO_TICKS(timeout_ms);
-    while (xTaskGetTickCount() < end && pos < maxlen - 1) {
-        uint8_t ch;
-        if (uart_read_bytes(SLAVE_UART, &ch, 1, pdMS_TO_TICKS(10)) > 0) {
-            if (ch == '\n') { buf[pos] = '\0'; return true; }
-            if (ch != '\r') buf[pos++] = (char)ch;
-        }
+    if (s_sock >= 0) return true;
+    s_sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (s_sock < 0) { printf("link: socket() failed\n"); return false; }
+
+    int on = 1;
+    setsockopt(s_sock, SOL_SOCKET, SO_BROADCAST, &on, sizeof(on));
+    struct sockaddr_in me = {
+        .sin_family      = AF_INET,
+        .sin_port        = htons(ELOTTO_LINK_MASTER_PORT),
+        .sin_addr.s_addr = htonl(INADDR_ANY),
+    };
+    if (bind(s_sock, (struct sockaddr *)&me, sizeof(me)) < 0) {
+        printf("link: bind(%d) failed\n", ELOTTO_LINK_MASTER_PORT);
+        close(s_sock);
+        s_sock = -1;
+        return false;
     }
-    buf[pos] = '\0';
+    s_bcast.sin_family      = AF_INET;
+    s_bcast.sin_port        = htons(ELOTTO_LINK_CMD_PORT);
+    s_bcast.sin_addr.s_addr = htonl(INADDR_BROADCAST);
+
+    // Seeded, not started at zero: after a master reboot a slave must not
+    // mistake a fresh command for a repeat of one it already answered and
+    // serve a cached reply instead of measuring.
+    s_seq = fast_rng();
+    return true;
+}
+
+/* Discard whatever is queued. Called when a session starts, for the reason the
+ * UART path called uart_flush_input(): the OK to the abort that ended the
+ * previous session must not be waiting when this one begins. The sequence check
+ * would drop it anyway — draining keeps net_stale meaningful as a live
+ * indicator rather than a tally of last session's leftovers. */
+static void link_drain(void)
+{
+    if (s_sock < 0) return;
+    char buf[ELOTTO_LINK_MAX];
+    struct sockaddr_in from;
+    socklen_t fl;
+    for (;;) {
+        fl = sizeof(from);
+        if (recvfrom(s_sock, buf, sizeof(buf) - 1, MSG_DONTWAIT,
+                     (struct sockaddr *)&from, &fl) <= 0) return;
+    }
+}
+
+static void link_send(uint32_t seq, const char *cmd)
+{
+    char msg[ELOTTO_LINK_MAX];
+    int  n = elotto_link_pack(msg, sizeof(msg), seq, cmd);
+    if (n > 0)
+        sendto(s_sock, msg, n, 0, (struct sockaddr *)&s_bcast, sizeof(s_bcast));
+}
+
+/* Wait for the reply to `seq`. A frame carrying any other sequence number is a
+ * late answer to a command already given up on — counted and dropped, never
+ * attributed to the run in flight. */
+static bool link_recv(uint32_t seq, char *out, int cap, int timeout_ms)
+{
+    int64_t deadline = esp_timer_get_time() + (int64_t)timeout_ms * 1000;
+    for (;;) {
+        int64_t left = deadline - esp_timer_get_time();
+        if (left <= 0) return false;
+        struct timeval tv = { .tv_sec  = (time_t)(left / 1000000),
+                              .tv_usec = (suseconds_t)(left % 1000000) };
+        setsockopt(s_sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+        char buf[ELOTTO_LINK_MAX];
+        struct sockaddr_in from;
+        socklen_t fl = sizeof(from);
+        int n = recvfrom(s_sock, buf, sizeof(buf) - 1, 0,
+                         (struct sockaddr *)&from, &fl);
+        if (n <= 0) continue;             // timeout — the deadline decides
+        buf[n] = '\0';
+
+        uint32_t rseq;
+        char    *payload;
+        if (!elotto_link_parse(buf, &rseq, &payload)) continue;   // foreign traffic
+        if (rseq != seq) { g_status.net_stale++; continue; }
+
+        inet_ntoa_r(from.sin_addr, g_status.slave_ip, sizeof(g_status.slave_ip));
+        snprintf(out, cap, "%s", payload);
+        return true;
+    }
+}
+
+/* Send a command; the caller measures locally in parallel and collects the
+ * reply with link_wait(). Split exactly like the UART version so the trigger
+ * still goes out *before* the master's own run starts. */
+static void link_begin(const char *cmd)
+{
+    s_pending.seq = ++s_seq;
+    snprintf(s_pending.cmd, sizeof(s_pending.cmd), "%s", cmd);
+    link_send(s_pending.seq, s_pending.cmd);
+}
+
+/* Collect the pending reply, resending once under the SAME sequence number: the
+ * slave answers a repeat of a completed command from its reply cache, so a lost
+ * reply costs a round trip while a lost command is re-executed exactly once.
+ * `critical` separates a lost trigger (the gate wants zero) from a lost 'D',
+ * which is diagnostics and must never cost the session half its SNR. */
+static bool link_wait(char *out, int cap, int timeout_ms, bool critical)
+{
+    if (link_recv(s_pending.seq, out, cap, timeout_ms)) return true;
+    g_status.net_retries++;
+    link_send(s_pending.seq, s_pending.cmd);
+    if (link_recv(s_pending.seq, out, cap, timeout_ms)) return true;
+    if (critical) g_status.net_lost++;
     return false;
 }
 
+static bool link_xact(const char *cmd, char *out, int cap, int timeout_ms, bool critical)
+{
+    link_begin(cmd);
+    return link_wait(out, cap, timeout_ms, critical);
+}
+
+/* Discovery by broadcast, replacing the wired 'P' probe: no static IP table to
+ * maintain, and at Phase D the same call collects every node that answers. */
 static void slave_init(void)
 {
-    static bool installed = false;
-    if (!installed) {
-        uart_config_t cfg = {
-            .baud_rate  = SLAVE_BAUD,
-            .data_bits  = UART_DATA_8_BITS,
-            .parity     = UART_PARITY_DISABLE,
-            .stop_bits  = UART_STOP_BITS_1,
-            .flow_ctrl  = UART_HW_FLOWCTRL_DISABLE,
-            .source_clk = UART_SCLK_DEFAULT,
-        };
-        esp_err_t e = uart_driver_install(SLAVE_UART, 512, 256, 0, NULL, 0);
-        if (e != ESP_OK) { g_status.slave_connected = s_slave_ok = false; return; }
-        uart_param_config(SLAVE_UART, &cfg);
-        uart_set_pin(SLAVE_UART, SLAVE_TX_PIN, SLAVE_RX_PIN,
-                     UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
-        installed = true;
+    g_status.slave_ip[0] = '\0';
+    if (!link_open()) { g_status.slave_connected = s_slave_ok = false; return; }
+    link_drain();
+
+    char resp[32];
+    s_slave_ok = false;
+    for (int i = 0; i < LINK_PROBE_TRIES && !s_slave_ok; i++) {
+        link_begin("P");
+        // Not link_wait(): a probe that goes unanswered is the normal
+        // "running solo" case, not a fault, so it must not count as loss.
+        if (link_recv(s_pending.seq, resp, sizeof(resp), LINK_PROBE_MS))
+            s_slave_ok = (resp[0] == 'O');
     }
-    uart_flush_input(SLAVE_UART);
-    uart_write_bytes(SLAVE_UART, "P\n", 2);
-    char resp[16];
-    bool ok = slave_readline(resp, sizeof(resp), 2000);
-    s_slave_ok = ok && resp[0] == 'O';
     g_status.slave_connected = s_slave_ok;
-    printf("Slave: %s\n", s_slave_ok ? "connected" : "not reachable");
+    printf("Slave: %s%s%s\n", s_slave_ok ? "connected at " : "not reachable",
+           s_slave_ok ? g_status.slave_ip : "", s_slave_ok ? " (UDP)" : "");
 }
 
 static void slave_baseline_start(int n)
 {
     if (!s_slave_ok) return;
     char cmd[16];
-    int  len = snprintf(cmd, sizeof(cmd), "B%d\n", n);
-    uart_flush_input(SLAVE_UART);
-    uart_write_bytes(SLAVE_UART, cmd, len);
+    snprintf(cmd, sizeof(cmd), "B%d", n);
+    link_begin(cmd);
 }
 
 static void slave_baseline_wait(void)
 {
     if (!s_slave_ok) return;
-    char resp[16];
+    char resp[32];
     int timeout_ms = g_status.baseline_total * 800 + 15000;
-    if (!slave_readline(resp, sizeof(resp), timeout_ms))
+    if (!link_wait(resp, sizeof(resp), timeout_ms, true))
         s_slave_ok = g_status.slave_connected = false;
+}
+
+static void slave_trigger(void)
+{
+    link_begin("M");
+}
+
+static void slave_abort(void)
+{
+    if (!s_slave_ok) return;
+    // Fire and forget, twice: nothing waits for the answer (the caller is on its
+    // way out), and a single dropped datagram would otherwise leave the slave
+    // grinding through a run whose result no one will read.
+    link_begin("A");
+    link_send(s_pending.seq, s_pending.cmd);
 }
 
 static double slave_measure(void)
 {
-    char resp[40];
-    if (!slave_readline(resp, sizeof(resp), 10000)) {
+    char resp[48];
+    if (!link_wait(resp, sizeof(resp), LINK_MEAS_MS, true)) {
         s_slave_ok = g_status.slave_connected = false;
         return 0.0;
     }
@@ -300,13 +428,10 @@ static double slave_measure(void)
 static bool slave_diag(float *mbit, uint32_t *stalls)
 {
     if (!s_slave_ok) return false;
-    uart_flush_input(SLAVE_UART);
-    uart_write_bytes(SLAVE_UART, "D\n", 2);
-    char resp[128];
-    if (!slave_readline(resp, sizeof(resp), 1500) || resp[0] != 'D' || resp[1] != ':') {
-        uart_flush_input(SLAVE_UART);   // drop a late/partial reply so the next
-        return false;                   // slave_measure() does not read it
-    }
+    char resp[ELOTTO_LINK_MAX];
+    if (!link_xact("D", resp, sizeof(resp), LINK_DIAG_MS, false) ||
+        resp[0] != 'D' || resp[1] != ':')
+        return false;
     // "D:<ready>,<bias>,<sigma>,<mbit_s>,<stalls>,<stuck>,<C|T>"
     int   ready = 0, n;
     float bias = 0, sigma = 0, mb = 0;
@@ -326,7 +451,7 @@ void slave_probe(void) { slave_init(); }
 static double score_one_run(void)
 {
     bool use_slave = s_slave_ok;
-    if (use_slave) uart_write_bytes(SLAVE_UART, "M\n", 2);
+    if (use_slave) slave_trigger();
     double z = gcp_zscore_raw();
     if (use_slave) {
         double zs = slave_measure();
@@ -756,6 +881,11 @@ void elotto_task(void *pvParam)
     g_status.pair_n          = 0;
     g_status.sigma_m         = 0.0;
     g_status.sigma_s         = 0.0;
+    // Per-session transport health. "Zero lost triggers" is the Phase C gate,
+    // so it has to be a counted number rather than an impression.
+    g_status.net_retries     = 0;
+    g_status.net_lost        = 0;
+    g_status.net_stale       = 0;
     if (g_status.baseline_total <= 0 || g_status.baseline_total > 5000)
         g_status.baseline_total = 100;
     if (g_status.loops_total <= 0 || g_status.loops_total > 500)
@@ -820,7 +950,7 @@ void elotto_task(void *pvParam)
             double bsum = 0.0;
             for (int i = 0; i < g_status.baseline_total; i++) {
                 if (g_status.abort_requested) {
-                    if (s_slave_ok) uart_write_bytes(SLAVE_UART, "A\n", 2);
+                    slave_abort();
                     goto done;
                 }
                 bsum += gcp_zscore_raw();
@@ -860,7 +990,7 @@ void elotto_task(void *pvParam)
         g_status.phase = PHASE_MEASURING;
         for (int j = 0; j < g_status.runs_total; j++) {
             if (g_status.abort_requested) {
-                if (s_slave_ok) uart_write_bytes(SLAVE_UART, "A\n", 2);
+                slave_abort();
                 goto done;
             }
             int i = s_perm[j];   // slot index; results[] stays slot-indexed
@@ -880,7 +1010,7 @@ void elotto_task(void *pvParam)
 
             // Trigger slave, then measure locally (both run simultaneously)
             bool use_slave = s_slave_ok;
-            if (use_slave) uart_write_bytes(SLAVE_UART, "M\n", 2);
+            if (use_slave) slave_trigger();
             double zm = gcp_zscore_raw() - g_status.baseline_mean;
             double z  = zm;
             if (use_slave) {

@@ -46,9 +46,9 @@ void camera_get_stats(camera_stats_t *out);
 // ELOTTO_CAM_TASK_PRIO, or the producer starves the consumer and measurement
 // slows by an order of magnitude while the ring sits permanently full
 // (symptom: drops huge, waits == 0, runs 10x too long).
-// The master's elotto_task is created at priority 5. The slave's command loop
-// is app_main, whose priority IDF hardcodes to 1, so it calls
-// vTaskPrioritySet(NULL, ELOTTO_CAM_TASK_PRIO + 1) at startup.
+// The master's elotto_task is created at priority 5; the slave's UDP command
+// loop runs in its own "link" task created at ELOTTO_CAM_TASK_PRIO + 1. Neither
+// may live in app_main, whose priority IDF hardcodes to 1 — below this one.
 //
 // Phase 1 consumer API: pop one 32-bit word of extracted entropy.
 // Blocks (vTaskDelay) while the ring is empty -- bits are never reused or

@@ -340,6 +340,69 @@ the entire argument for having it.
   comparable n, σm/σs ≈ 1, `loop_sigma` ≈ 1, zero lost triggers. If the statistics move, the
   transport changed something it should not have.
 
+**Status: PASSED** (2026-07-25). Same configuration as the UART-era session it is compared
+against — 6/49, Loops=3, Runs=200, both nodes `src=cam`, n = 600 pairs — so this is a like-for-
+like A/B, not a fresh measurement that happens to look reasonable.
+
+| | **UDP (this phase)** | UART (PLAN_4NODE Phase 2) |
+|---|---|---|
+| `pair_r` (n=600) | **+0.0650** (\|r\|·√n = 1.59) | −0.0201 (\|r\|·√n = 0.49) |
+| σm / σs | **1.0512 / 1.0027** | 1.0141 / 1.0356 |
+| `loop_sigma` per loop | **1.0760 / 1.0695 / 1.0342** | 0.9721 / 0.9668 / 1.0992 |
+| camera stalls M/S | **0 / 0** | 0 |
+| lost triggers | **0** (`net_retries` 0, `net_stale` 0) | — |
+| session wall time | 12.1 min | 35.4 min |
+
+- **Zero lost datagrams across ~1390 command round trips** (300 baseline + 490 scoring + 600
+  measurement, plus discovery and three per-loop `D` queries). Not "it felt reliable": the
+  master counts `net_retries` / `net_lost` / `net_stale` per session and publishes them in
+  `/status`, because Risk 3 says loss must be handled explicitly rather than assumed away.
+- **`pair_r` is consistent with chance.** \|r\|·√n = 1.59 sits well under the project's own flag
+  threshold of 3 (two-sided p ≈ 0.11). Worth recording how it got there: after loop 1 it read
+  +0.147 at n=200 (\|r\|·√n = 2.1), then fell to +0.102 at n=400 and +0.065 at n=600 — the
+  regression toward zero that a sampling fluctuation produces and a real coupling does not.
+  Judging it at n=200 would have raised a false alarm; that is exactly why the gate specifies
+  "comparable n".
+- **Per-node σ ≈ 1 on both**, and every loop's combined σ lands inside the UART era's own spread
+  (0.967–1.099). The transport did not touch the statistics, which is the whole claim.
+- **The run is ~3× faster** than the UART session at identical settings. That is not the
+  transport: `SCORE_REPS` was lowered from 40 to 10 in the meantime (PLAN_4NODE Phase 0), so the
+  one-time scoring phase is a quarter as long. Per measurement the pace is ~0.53 s, i.e. the
+  camera run length — the UDP round trip is not measurable against it.
+
+**Abort was proved, not argued** (PLAN_4NODE already carries one untested safety claim; that is
+one too many). Aborting mid-baseline stopped the slave inside its run (`measuring` went false on
+its own `/diag`), and a fresh session started afterwards ran its full baseline and entered
+scoring with `net_stale` still 0 — i.e. neither the master's queued abort-acknowledgements nor a
+leftover `A` on the slave leaked into the next session. Both ends drain their socket when a
+session starts, for the reason the UART path called `uart_flush_input()`.
+
+Two implementation notes worth keeping:
+
+- **The sequence number is the load-bearing part, not the port number.** UART was lossless and
+  ordered, so a reply could only belong to the command just sent. UDP guarantees neither, and a
+  late reply accepted blindly would pair `z_slave` of run *k* with `z_master` of run *k+1* —
+  a correlation bug that looks exactly like physics, in the very quantity `pair_r` exists to
+  detect. Mismatched frames are therefore dropped and counted, never used. A timed-out command
+  is resent under the *same* sequence number and the slave answers a repeat of a completed
+  command from a one-entry cache, so a lost reply costs a round trip while a lost command is
+  re-executed exactly once.
+- **The slave needed a webserver before it could be installed at all.** With rollback armed, an
+  image that cannot be reached over the network is reverted by design — so the Ethernet + httpd
+  work was not a bonus feature of Phase C but its precondition. The slave has run the recovery
+  updater since Phase A for exactly this reason, and now serves its own `/diag` (PLAN_NETWORK §5
+  anticipated this) alongside the shared `/update`.
+
+**One number to watch, deliberately not smoothed over:** `drift_t` came out at 3.15 with a slope
+of +0.021 z/loop, nominally over the |t| > 3 flag. It should not be read as drift. The
+regression has three points (df = 1), where any monotone sequence yields a large t almost by
+construction, and the underlying offsets (−0.084 → −0.051 → −0.041 z/run) move by less than the
+per-loop noise. PLAN_4NODE makes the same caveat about its own 3-loop check. A long session is
+what would settle it.
+
+**The slave's UART firmware is gone**, and with it the crossover link. `SLAVE_BAUD` /
+`UART_BAUD` and the GPIO14/15 wiring no longer exist in either repo.
+
 ### Phase D — Scale to four nodes
 
 - `slaves[]` (ip, last_seen, ok); broadcast `B`/`M`/`A`; per-node timeout.

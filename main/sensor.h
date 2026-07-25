@@ -92,6 +92,19 @@ typedef struct {
     RunResult        cover_low[TOP_N];    // low-Z but diversified (max-spread) picks
     volatile bool    abort_requested;
     bool             slave_connected;
+    char             slave_ip[16];        // discovered by UDP broadcast ("" = solo)
+    // UDP transport health (PLAN_NETWORK Phase C / Risk 3: "UDP loss must be
+    // handled explicitly, not assumed away"). Per session.
+    uint32_t         net_retries;         // commands resent because no reply came
+    uint32_t         net_lost;            // triggers with no reply even after the
+                                          // resend — the gate wants 0
+    uint32_t         net_stale;           // replies dropped for a mismatched
+                                          // sequence number, i.e. answers that
+                                          // arrived after we stopped waiting.
+                                          // Silently accepting one would pair
+                                          // z_slave of run k with z_master of
+                                          // run k+1 — correlation dressed as
+                                          // physics, so they are counted, not used
     int              noise_source;        // NoiseSource requested for this session
     volatile bool    noise_stalled;       // camera requested but unavailable/stalled →
                                           // session ABORTED rather than silently
