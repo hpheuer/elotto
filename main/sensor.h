@@ -40,7 +40,12 @@ typedef struct {
 typedef struct {
     char     ip[16];        // discovered by broadcast; "" for the master
     bool     ok;            // still contributing to the combined z
-    int      src;           // NoiseSource it last reported
+    int      src;           // NoiseSource it last reported, or -1 = not yet.
+                            // A slave only reports its source on a measurement
+                            // reply, so between discovery and the first 'M' the
+                            // honest answer is "unknown" — defaulting to TRNG
+                            // would show every node as fallen back during the
+                            // whole baseline phase and invite a phantom hunt
     double   sigma;         // per-run σ over the session (ideal 1.0)
     uint32_t lost;          // runs this node failed to answer in time
     float    cam_mbit;      // camera rate at the last per-loop 'D' query
@@ -107,6 +112,12 @@ typedef struct {
     int              pair_r_i, pair_r_j;  // which two nodes produced it
     int              pair_n;              // runs behind that worst pair
     int              pair_count;          // pairs actually evaluated
+    // The FULL matrix, not only the worst pair. The measurement topology is the
+    // Risk 1 control — master on isolated power, slaves on one PoE rail — so
+    // which pairs correlate is the whole question: slaves-only implicates the
+    // shared rail, everything-with-everything implicates the room. Publishing a
+    // maximum answers neither. Upper triangle used; index 0 is the master.
+    double           pair_r[MAX_NODES][MAX_NODES];
     int              result_count;       // valid entries in top[] (published)
     RunResult        top[TOP_N];          // cumulative highest-Z across loops so far
     int              low_count;           // valid entries in low[] (published)

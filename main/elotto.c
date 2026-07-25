@@ -369,7 +369,7 @@ static const char HTML[] =
 "var nm=(i===0?'master':'slave'+i)+(N.ip&&N.ip!=='self'?' '+N.ip:'');"
 "var st=N.ok?'':' \\u26a0 dropped';"
 "s3+='<tr style=\"opacity:'+(N.ok?1:.55)+'\"><td>'+nm+st+'</td>'"
-"+'<td>'+(N.src==='cam'?'\\uD83D\\uDCF7':'TRNG')+'</td>'"
+"+'<td>'+(N.src==='cam'?'\\uD83D\\uDCF7':N.src==='trng'?'TRNG':'\\u2013')+'</td>'"
 "+'<td>'+(N.sigma>0?N.sigma.toFixed(3):'\\u2013')+'</td>'"
 "+'<td>'+(N.cam_mbit>0?N.cam_mbit.toFixed(2):'\\u2013')+'</td>'"
 "+'<td>'+(N.cam_stalls>0?'\\u26a0 '+N.cam_stalls:'0')+'</td>'"
@@ -564,9 +564,24 @@ static esp_err_t status_handler(httpd_req_t *req)
             "%s{\"id\":%d,\"ip\":\"%s\",\"ok\":%s,\"src\":\"%s\",\"sigma\":%.4f,"
             "\"lost\":%lu,\"cam_mbit\":%.3f,\"cam_stalls\":%lu}",
             i ? "," : "", i, i ? N->ip : "self", N->ok ? "true" : "false",
-            (N->src == NOISE_CAMERA) ? "cam" : "trng", N->sigma,
+            (N->src == NOISE_CAMERA) ? "cam" : (N->src == NOISE_TRNG) ? "trng" : "?",
+            N->sigma,
             (unsigned long)N->lost, N->cam_mbit, (unsigned long)N->cam_stalls);
     }
+    pos += snprintf(buf + pos, sizeof(buf) - pos, "],");
+
+    /* Every pair, not just the worst. The array is wired as PLAN_NETWORK's
+     * Risk 1 control (master on isolated power, slaves on one PoE rail), so
+     * WHICH pairs correlate is the question a maximum cannot answer. */
+    pos += snprintf(buf + pos, sizeof(buf) - pos, "\"pairs\":[");
+    bool first_pair = true;
+    for (int i = 0; i < g_status.node_count; i++)
+        for (int j = i + 1; j < g_status.node_count; j++) {
+            pos += snprintf(buf + pos, sizeof(buf) - pos,
+                "%s{\"i\":%d,\"j\":%d,\"r\":%.4f}",
+                first_pair ? "" : ",", i, j, g_status.pair_r[i][j]);
+            first_pair = false;
+        }
     pos += snprintf(buf + pos, sizeof(buf) - pos, "],");
 
     // Cumulative top-N is published continuously, so intermediate results

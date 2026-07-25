@@ -465,6 +465,7 @@ static void nodes_discover(void)
     g_status.node_ok     = 1;
     memset(s_link, 0, sizeof(s_link));
     memset(g_status.nodes, 0, sizeof(g_status.nodes));
+    for (int i = 0; i < MAX_NODES; i++) g_status.nodes[i].src = -1;   // not yet reported
     g_status.nodes[0].ok = true;
 
     if (!link_open()) { g_status.slave_connected = s_slave_ok = false; return; }
@@ -813,6 +814,7 @@ static void publish_pair_stats(void)
         g_status.nodes[i].sigma = v > 0.0 ? sqrt(v) : 0.0;
     }
 
+    memset(g_status.pair_r, 0, sizeof(g_status.pair_r));
     double best = 0.0;
     int    bi = 0, bj = 0, bn = 0, count = 0;
     for (int i = 0; i < g_status.node_count; i++)
@@ -821,6 +823,7 @@ static void publish_pair_stats(void)
             if (p->cn - p->cloops < 1 || p->cxx <= 0.0 || p->cyy <= 0.0) continue;
             count++;
             double r = p->cxy / sqrt(p->cxx * p->cyy);
+            g_status.pair_r[i][j] = r;
             // |r| decides, but the signed value is what gets published — the
             // sign says whether nodes move together or against each other, and
             // that is the first clue to a mechanism if one ever shows up.

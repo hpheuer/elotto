@@ -195,8 +195,9 @@ assumed.
    exactly what invalidates the ×√n gain. The detector already exists (6 pairwise r, flag
    |r|·√n > 3). **Run one node on separate USB power during bring-up as a control**: if the
    three PoE nodes correlate with each other but not with the isolated one, that is unambiguous.
-2. **Do the boards actually accept PoE?** A PoE switch supplies power, but each board needs an
-   onboard PD or a splitter. Verify before ordering anything.
+2. ~~**Do the boards actually accept PoE?**~~ **RESOLVED (2026-07-25): they do, directly.**
+   The three slaves run from one PoE switch with no splitters; the master stays on USB power.
+   That arrangement is also the Risk 1 control below, so it is the configuration to keep.
 3. **UDP loss must be handled explicitly**, not assumed away, even on a quiet dedicated switch.
 4. **The partition migration is a one-way door**: full erase + serial flash on all four boards,
    losing NVS. Do it deliberately, not next to a session worth keeping.
@@ -402,6 +403,41 @@ what would settle it.
 
 **The slave's UART firmware is gone**, and with it the crossover link. `SLAVE_BAUD` /
 `UART_BAUD` and the GPIO14/15 wiring no longer exist in either repo.
+
+### Finding — inter-node correlation grows during a session (2026-07-25, OPEN)
+
+Recorded when found, deliberately deferred, **not** resolved. The first 4-node session (6/49,
+Loops=3, Runs=200, all four on camera, n=600) had a clean transport — zero lost triggers, zero
+retries, zero stale replies — and a worst pairwise `r` of only +0.0639 (|r|·√n = 1.57). It
+would have passed a check that looked at `pair_r` alone. It should not have.
+
+Combined σ rose monotonically: **1.0383 → 1.0829 → 1.1819**. Working back the average pairwise
+correlation each loop needs to explain its own σ, given that loop's per-node σ:
+
+| loop | per-node σ | σ if independent | σ observed | implied mean r |
+|---|---|---|---|---|
+| 1 | 1.108 / 1.041 / 0.968 / 1.118 | 1.060 | 1.0383 | −0.017 |
+| 2 | 1.055 / 0.970 / 1.007 / 1.095 | 1.033 | 1.0829 | +0.032 |
+| 3 | 1.032 / 1.078 / 0.993 / 1.051 | 1.039 | **1.1819** | **+0.10** |
+
+The correlation **grows over the ~30 min session**, which is why pooling three loops averages it
+away to a harmless-looking aggregate. Alongside it, `drift_t` = −52.4 (slope −0.082 z/loop) and
+every camera's bias degraded under sustained load — `.103` from 0.499307 idle to 0.497884, i.e.
+outside PLAN_4NODE Phase 0's 1e-3 bias gate. The −2.9 z/run baselines are the same phenomenon:
+a bias of ~0.4979 predicts an offset of that scale.
+
+The session also reported a "significant" corrected p (0.0034 at best_z 4.30). **That is an
+artifact of the drift and over-dispersion, not a result**, and must not be quoted as one.
+
+Two consequences for how this gets judged:
+
+- **A maximum over 6 pairs, pooled across loops, is not a sufficient detector.** The combined σ
+  caught what the pairwise check missed. Both are needed, and per-loop.
+- The measurement topology is already the Risk 1 control (master on isolated USB power, three
+  slaves on one PoE rail), so the full pairwise matrix — not just the worst pair — is published
+  from now on. If the three PoE nodes correlate with each other but not with the master, the
+  shared rail is the mechanism; if the master tracks them too, it is ambient (thermal), since
+  the boards otherwise share nothing but the room.
 
 ### Phase D — Scale to four nodes
 
