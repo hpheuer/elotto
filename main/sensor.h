@@ -27,6 +27,27 @@ typedef struct {
     uint8_t    euro[2];
 } RunResult;
 
+// Focus display (docs/PLAN_4NODE.md Phase 5): what is on screen right now, for
+// exactly the window its bits are collected in. The observer is meant to be
+// present while the noise is sampled — the original GCP/PEAR protocol — so the
+// one property that must hold is `active` ⟺ a run is sampling.
+typedef enum { FOCUS_NONE = 0, FOCUS_NUMBER = 1, FOCUS_DRAW = 2 } FocusKind;
+
+// Written by elotto_task, read by the /focus handler on the HTTP task. Not
+// locked: `seq` is bumped AFTER the numbers are stored and the reader re-reads
+// it, so a torn read is detected rather than served (see focus_publish()).
+typedef struct {
+    volatile uint32_t seq;      // monotonic; +1 per window. A gap seen by the UI
+                                // means a window was missed entirely — the one
+                                // failure that credits an effect to the wrong
+                                // combination, so it is counted, not smoothed
+    volatile uint8_t  active;   // 1 = numbers on screen AND bits being collected
+    uint8_t  kind;              // FocusKind
+    uint8_t  n, ne;             // numbers in nums[] / euro[]
+    uint8_t  nums[6];
+    uint8_t  euro[2];
+} FocusState;
+
 // Nodes in the array, master included as index 0 (docs/PLAN_NETWORK.md Phase D).
 // 4 nodes → C(4,2) = 6 pairwise correlations, which is what the gate checks.
 #define MAX_NODES   4
@@ -127,6 +148,25 @@ typedef struct {
     int              cover_low_count;     // valid entries in cover_low[] (cumulative only)
     RunResult        cover_low[TOP_N];    // low-Z but diversified (max-spread) picks
     volatile bool    abort_requested;
+    // ── Focus display (PLAN_4NODE Phase 5) ─────────────────────────────
+    bool             focus_mode;          // this session is ATTENDED: the panel is
+                                          // live and the session is tagged as such.
+                                          // A focus session is not equivalent to an
+                                          // unattended one, so the two must never be
+                                          // pooled later — hence a recorded flag
+                                          // rather than "whether someone was watching"
+    volatile bool    paused;              // hold BETWEEN runs (never inside one):
+                                          // attention is the scarce resource here, and
+                                          // without a pause the only way to stop
+                                          // attending is to abort and lose the loop
+    int64_t          paused_ms;           // total time held, excluded from elapsed_ms
+                                          // so a session with a 40-min break is not
+                                          // later read as continuous
+    float            focus_win_ms;        // measured mean lit window (the run)
+    float            focus_gap_ms;        // measured mean dark gap between runs —
+                                          // the gate asks whether the ~200 ms was
+                                          // free (existing overhead) or paid for
+    FocusState       focus;
     bool             slave_connected;     // at least one slave answered discovery
     int              node_count;          // nodes discovered, master included (>= 1)
     int              node_ok;             // of those, still contributing

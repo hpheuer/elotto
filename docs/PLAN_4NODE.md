@@ -12,10 +12,10 @@ below is superseded and kept only as a record.
 Implementation is phased; each phase is one focused coding session with clear acceptance
 criteria. Do not start a phase before the previous one's gate passes.
 
-**Phase 5 (Focus display)** is new and not yet started — it changes the measurement protocol
-and the UI, so it lives here rather than in `PLAN_NETWORK.md` (whose "Phase D" is the 4-node
-scale-out). It touches the master/slave run-length exchange, so read its "coordinate with
-Phase C" note before implementing either.
+**Phase 5 (Focus display)** is **IMPLEMENTED** (2026-07-25) — it changes the measurement
+protocol and the UI, so it lives here rather than in `PLAN_NETWORK.md` (whose "Phase D" is the
+4-node scale-out). Phase C landed first, as its "coordinate with Phase C" note asked, so the
+run-length exchange was changed once rather than twice.
 
 ## Goal
 
@@ -351,6 +351,10 @@ first time — every duration is a constant, and a Focus session is tagged as su
 | Between targets | a dim fixation mark, no numbers | **~200 ms** | — |
 | Baseline / idle | nothing (panel hidden) | — | — |
 
+> **As built**, the between-targets gap is 200 ms after a measurement or baseline run and
+> **350 ms after a scoring run** — see finding 3 below. It is a real delay, not existing
+> overhead, because the natural gap turned out to be 2.3 ms (finding 1).
+
 - The hold time **is the run**, not a pause around it: size segments-per-run so the measurement
   occupies the window. Padding with a delay would halve the bit rate for nothing.
 - The panel updates **before** the run starts and stays put until it ends, so display and bits
@@ -388,7 +392,11 @@ it has to be padded, budget the full cycle:
 | Measurement run | 500 ms | 700 ms | ~6–8k | `Runs` cap **850** | ~10 min |
 
 → every loop after the first ≈ **10 min**; loop 0 adds the one-time scoring. Eurojackpot scoring
-is 62 numbers ≈ 12 min. Suggested UI defaults: `Runs = 850`, `Baseline = 50`.
+is 62 numbers ≈ 12 min. Suggested UI defaults: `Runs = 850`, `Baseline = 50`. **Both defaults
+shipped.**
+
+As built (6/49, `SCORE_REPS` = 5, so scoring is 49 × 5 = 245 runs rather than the 490 assumed
+above): scoring ≈ 245 × 1.38 s ≈ **5.6 min**, measurement ≈ 850 × 0.70 s ≈ **9.9 min**.
 
 `Runs` drops from 1000 to 850 purely to absorb the gap — if the gap proves free (overhead
 already ~190 ms), put it back to 1000.
@@ -481,10 +489,112 @@ corrupts the data rather than the one that merely blurs it.
 - Hold times start at **1000 ms scoring / 500 ms draw** and are constants, ideally UI fields.
   500 ms for the draw is a deliberate choice, not a compromise — tune from experience, not from
   a readability argument.
+  → **Still constants, not UI fields.** Making them UI fields is not the trivial change it looks
+  like: the field a user would set is a *duration*, but what the firmware needs is a *segment
+  count*, and finding 4 shows the conversion between them is not stable. A duration field would
+  therefore need a closed loop (adjust segments per run from the measured window) — which is
+  feasible, since the count already travels to the slaves on the wire and z is normalised by
+  √segments so per-run counts may differ freely. Deferred as out of scope, and it is the obvious
+  next move if the drift proves annoying in practice.
 - Flag a Focus session in `/status` and in the CSV export, so attended and unattended runs are
-  never pooled later.
+  never pooled later. → **done** (`"focus":true|false`, `# focus=on|off` in the CSV, plus
+  `paused_ms` in both).
 - Whether the transition itself should be emphasised (brief scale or highlight at onset) to make
-  the change easier to notice peripherally. Try plain first.
+  the change easier to notice peripherally. Try plain first. → **still plain**; the circles do
+  carry a soft glow, but no onset animation. Untried, deliberately.
+
+### Implemented (2026-07-25) — what was built
+
+Master-side, on the 4-node array (the "start master-only" note above is obsolete: Phase C had
+landed, so all four nodes participate and the run-length exchange was changed once).
+
+- **Segments per run are now phase-dependent** — `CAM_SCORE_SEGMENTS` / `CAM_MEAS_SEGMENTS` and
+  the TRNG pair, selected by `segments_for(scoring)`. Baseline runs at *measurement* length: it
+  estimates the offset of the runs it is subtracted from, so it has to be the same instrument.
+- **The segment count travels on the wire**: `M<seg>` and `B<runs>,<seg>`. This retired the
+  duplicated-constant hazard CLAUDE.md warned about — a slave that is *told* the length cannot
+  disagree about it. `slave.c` keeps its own constants only as a fallback for a pre-Phase-5
+  master, and logs when it uses them. The yield/abort-poll cadence became `nseg/4` on both sides
+  for the same reason.
+- **`GET /focus`** (~60 B, polled at 10 Hz) carrying `seq`, `on`, `p`, `kind` and the numbers;
+  `POST /pause?on=1|0`; both separate from the 2.5 KB `/status`, which stays at 1 Hz.
+- **`focus_publish()` / `focus_off()`** bracket the *local* run — panel lit ⟺ this run's bits
+  are being collected. The reply wait and bookkeeping are dark.
+- **`pause_gate()`** is called where `abort_requested` is already tested, in the scoring and
+  measurement loops. Deliberately *not* in the baseline loop: one `B` command sets every slave
+  running its whole baseline autonomously, so a master-side hold would desynchronise them rather
+  than pause them.
+- **UI**: Focus card below the progress card (72 px circles, dim `+` fixation mark between
+  targets, unmistakable PAUSED state), a Focus checkbox, a Pause/Continue button, `Runs = 850`
+  and `Baseline = 50` defaults, and the session's condition in both the stats line and the CSV
+  header. `/start` without `?focus=` means **unattended** — a session started by curl has no
+  observer by definition.
+
+### What calibration actually found — the run window is not a free parameter
+
+The plan said to calibrate against a real run rather than derive on paper. That was the right
+instruction. The paper estimate for scoring was "~12–17k segments"; its top end (17000) actually
+produced a **1519 ms** window — 52 % over target — and the value that works is 11950, just under
+the bottom end. The measurement estimate ("~6–8k") landed better, at 6400. But the reason for
+the miss turned out to matter more than the numbers.
+
+**1. The natural inter-run gap is 2.3 ms, not ~190 ms.** The estimate above attributed the
+0.47 s → 0.66 s difference (master-only vs slave-combined) to the slave round trip. It is not:
+the slaves integrate the *same* window concurrently and are already answering by the time the
+master's own run returns, so `nodes_collect()` costs nothing. There is no existing dead time to
+align the blanking with, so the ~200 ms gap had to be **paid for with a real delay**
+(`RUN_GAP_MS`), which the plan anticipated ("then pay for it in the run budget") and which
+`Runs = 850` pays for.
+
+**2. The measurement loop starves its own entropy producer.** It runs one priority *above* the
+camera extraction task it consumes from, so sustained rate falls with duty cycle:
+
+| segments | run | gap | duty | sustained |
+|---|---|---|---|---|
+| 6350 | 277 ms | 205 ms | 57 % | 2.63 Mbit/s |
+| 11600 | 588 ms | 233 ms | 72 % | 2.82 Mbit/s |
+| 17000 | 1519 ms | 198 ms | 88 % | **1.98 Mbit/s** |
+
+Flat to ~72 %, then it falls off a cliff — and past the cliff longer runs feed back into a
+slower producer and get longer still. None of this is visible in Phase 0's 3.49 Mbit/s *idle*
+figure. The 200 ms blank is therefore not cosmetic: it is when the producer gets the CPU back,
+and it buys back most of what it costs.
+
+**3. A 1000 ms scoring window at a 200 ms gap is unreachable by construction** — that is 83 %
+duty, already past the cliff, so *every* candidate segment count lands in the collapsed regime
+and stretches to ~1500 ms instead (confirmed at 16700 and 17000). The fix was to widen the
+**scoring** gap to 350 ms (`SCORE_RUN_GAP_MS`), which puts the same 1000 ms window at 74 % duty
+where a count does solve. Shortening the window instead was rejected: the gap is the soft
+parameter this plan already marked adjustable, whereas the hold times are the spec, and buying a
+display number by running the entropy source in a starved regime trades physics for cosmetics —
+that regime is exactly where open item 3 (bias under sustained load) lives. Safe to differ per
+phase because scoring does not use the baseline at all.
+
+**4. ⚠ The window is not stable across a day, and this is unresolved.** Under otherwise
+identical settings the achievable window moved by up to **1.75×** over an afternoon of
+back-to-back sessions (11600 segments → 588 ms early, 11950 segments → 1026 ms hours later, with
+a *longer* gap, which should have made it faster). Each session began after an OTA reboot, so
+cumulative camera state is ruled out; thermal or SoC-level load is the remaining suspect. Note
+also that `camera_get_stats()`'s `mbit_per_sec` and `bias` are **lifetime averages since stream
+start**, not instantaneous — do not read a falling `mbit_s` as live degradation, which is a trap
+worth knowing about. The consequence is that **a fixed segment count does not pin the window**;
+`focus_win_ms` / `focus_gap_ms` in `/status` are the instrument that makes the drift visible per
+phase, which is the same choice Phase 3 made for z-drift: measure it rather than pretend it away.
+
+**5. The master is the slow node.** Its camera sustains ~2.5 Mbit/s against the slaves' 3.66–3.71
+because it also runs the webserver, the UDP link and the loop itself. Since the master paces
+every run, the array's window is set by its slowest member.
+
+**Calibrated constants (2026-07-25, 4 nodes, all camera, client polling at 10 Hz):**
+
+| | segments | gap | measured window | vs target | cycle |
+|---|---|---|---|---|---|
+| Scoring run | `CAM_SCORE_SEGMENTS` 11950 | 350 ms | **1027 ms** | +2.7 % | 1.375 s |
+| Measurement run | `CAM_MEAS_SEGMENTS` 6400 | 200 ms | **474.8 ms** | −5.0 % | 0.673 s |
+
+TRNG counts (32000 / 16000) are **extrapolated** from Phase 1's "~1 s at 32000 segments", not
+re-measured — the camera is the default source. Measure `focus_win_ms` before trusting a TRNG
+Focus session.
 
 ### Gate
 
@@ -512,6 +622,60 @@ Note what this gate deliberately does *not* test: whether the focus has any effe
 experiment, not the acceptance criterion. The gate only establishes that the instrument does
 what it claims — right target, right window, undisturbed statistics — so that a null result can
 be trusted as a null result.
+
+### Gate results — **PASSED**, with one criterion marginally missed
+
+Session: 2026-07-25, 6/49, cumulative, Loops = 2, Runs = 850, Baseline = 50, all four nodes on
+camera, `?focus=1`. 1700 measured runs, 27 min, no aborts, no drops.
+
+| criterion | result | |
+|---|---|---|
+| `focus_seq` strictly increasing, no skipped/repeated targets | monotonic over 249 consecutive windows sampled at 10 Hz | ✅ |
+| **Zero missed windows** over a full loop | **0** seq gaps; 249 distinct draws in 249 windows | ✅ |
+| Panel lit ⟺ sampling | duty 71.2 % measured client-side (474.8 ms lit / 672.6 ms cycle) | ✅ |
+| Report the natural inter-run gap | **2.3 ms** — the 200 ms was *not* free, see finding 1 | ✅ |
+| Run durations within ±10 % | scoring **1027 ms** (+2.7 %), measurement **474.8 → 514.4 ms** (−5.0 % → +2.9 %) | ✅ |
+| Calibrated segment counts recorded | 11950 / 6400, table above | ✅ |
+| One measurement loop ≤ 10 min | **10.5 min** (loop 2: 662 s total − 34 s baseline) | ⚠ |
+| `loop_sigma` ≈ 1 at the new run lengths | **1.0105** and **1.0356** (n = 850 each, SE ≈ 0.024) | ✅ |
+| `pair_r` ≈ 0 | worst of 6 pairs **+0.0431** (n1–n3, n = 1700) → \|r\|·√n = 1.78 | ✅ |
+| Pause/Continue holds and resumes cleanly | verified, see below | ✅ |
+| Matched no-focus control recorded | run immediately after, on the same binary | ✅ |
+
+Full pairwise matrix (master = n0, on isolated USB power; n1–n3 on the shared PoE rail):
+
+| | n0–n1 | n0–n2 | n0–n3 | n1–n2 | n1–n3 | n2–n3 |
+|---|---|---|---|---|---|---|
+| r | −0.0091 | −0.0234 | −0.0088 | +0.0124 | +0.0431 | −0.0064 |
+
+Per-node σ 1.0360 / 0.9777 / 1.0488 / 1.0237; 0 camera stalls, 0 lost replies, `net_lost` =
+`net_retries` = `net_stale` = 0. `best_z` 3.03 at corrected p = 1.0 over 850 comparisons —
+consistent with chance, which is what a working instrument should say.
+
+**The one miss is the 10 min loop budget: 10.5 min.** It is entirely finding 4 — the window
+drifted from 474.8 ms to a 514.4 ms mean over the 1700 runs, and 850 × 734 ms = 10.4 min. At the
+window it started at, the loop is 9.5 min. Dropping `Runs` to ~810, or the closed loop described
+under "Open", closes it; it is not worth a fixed-constant chase.
+
+**Pause/Continue** (tested mid-loop on a live session): `/pause?on=1` at run 370 → the in-flight
+run finished and was kept (`completed` 370 → **371**, then frozen), `state` stayed `running`,
+`/focus` reported `p:1, on:0`. Held **224 s**; `completed` and `elapsed_ms` both frozen
+throughout. On resume, `elapsed_ms` advanced 24 987 ms over 25 s of wall clock — the pause is
+excluded exactly — and runs continued 372 → 422 with none lost or duplicated. `paused_ms`
+recorded 223 999.
+
+**Slaves honour the wire segment count** — checked directly, because this failure is invisible
+in the statistics (each node normalises by its own √segments, so a node integrating the wrong
+window still reports a clean N(0,1) value and leaves `pair_r`/σ innocent). Sending `B1,<n>`
+straight to `.103`: 6400 → 292 ms, 12800 → 828 ms, 25600 → 1645 ms. Doubling the count doubles
+the time; a node ignoring it would have returned three identical latencies.
+
+**Worth watching (not a Phase 5 regression):** the master's raw per-run offset is **−2.69 z/run**
+at these run lengths, implying a camera bias deviation of ~1.2e-3 — outside Phase 0's 1e-3 gate,
+and ~9× the 1.29e-4 Phase 1 measured. `studentize()` removes it exactly per loop and both loops'
+σ came out ≈ 1, so nothing downstream is affected, but this is open item 3 showing up with a
+number attached. Note Phase 5 *lowered* the duty cycle (from ~99.5 % — the natural gap was
+2.3 ms — to 71 %), so it is not the cause.
 
 ## Phase 4 — 4-node scale-out — **SUPERSEDED by `PLAN_NETWORK.md`**
 

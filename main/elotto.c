@@ -71,6 +71,19 @@ static const char HTML[] =
 "background:#2e7d32;border-radius:50%;width:30px;height:30px;margin:2px;"
 "font-weight:700;font-size:.88em;flex-shrink:0}"
 ".euro{background:#7b6e00}"
+// Focus panel (PLAN_4NODE Phase 5). Salience over legibility: the observer is
+// not meant to decode six numbers in half a second, they are meant to be
+// present while those numbers are on screen and the noise is sampled. So the
+// type is large and high-contrast because it must REGISTER, not because it must
+// be parsed — and no attempt is made to shrink it to fit.
+".numBig{display:inline-flex;align-items:center;justify-content:center;"
+"background:#2e7d32;border-radius:50%;width:72px;height:72px;margin:4px;"
+"font-weight:700;font-size:1.9em;flex-shrink:0;"
+"box-shadow:0 0 18px rgba(144,238,144,.35)}"
+".numBig.euro{background:#7b6e00;box-shadow:0 0 18px rgba(240,192,64,.35)}"
+"#focusBox{min-height:104px;display:flex;align-items:center;justify-content:center;"
+"flex-wrap:wrap;gap:2px}"
+".fix{color:rgba(255,255,255,.18);font-size:3em;line-height:1;font-weight:300}"
 "</style></head><body>"
 "<div class='wrap'>"
 "<h1>&#9752; E-Lotto <a href='https://grokipedia.com/page/Global_Consciousness_Project'"
@@ -82,7 +95,9 @@ static const char HTML[] =
 "<div id='runsRow' style='display:grid;grid-template-columns:1fr 1fr;gap:8px 14px;justify-items:center;margin-bottom:10px'>"
 "<div style='grid-column:span 2;display:flex;align-items:center;gap:6px'>"
 "<label style='color:#f0c040;font-size:.9em'>Baseline runs:</label>"
-"<input id='numBaseline' type='number' value='100' min='10' max='5000' step='50'"
+// Defaults per the Phase 5 timing budget: one measurement loop ~10 min at
+// 850 runs x ~0.7 s, plus ~35 s of baseline. `Runs = 0` (all) still works.
+"<input id='numBaseline' type='number' value='50' min='10' max='5000' step='50'"
 " style='width:70px;padding:5px 8px;border-radius:6px;border:1px solid #a08030;"
 "background:#0a2e0a;color:#fff;font-size:1em;text-align:center'>"
 "</div>"
@@ -94,7 +109,7 @@ static const char HTML[] =
 "</div>"
 "<div style='grid-column:span 2;display:flex;align-items:center;gap:6px'>"
 "<label style='color:#f0c040;font-size:.9em'>Runs (0=all):</label>"
-"<input id='numRuns' type='number' value='0' min='0' max='8000' step='1'"
+"<input id='numRuns' type='number' value='850' min='0' max='8000' step='1'"
 " style='width:70px;padding:5px 8px;border-radius:6px;border:1px solid #a08030;"
 "background:#0a2e0a;color:#fff;font-size:1em;text-align:center'>"
 "</div>"
@@ -114,6 +129,15 @@ static const char HTML[] =
 "<option value='0'>On-chip TRNG</option>"
 "</select>"
 "</div>"
+// An attended session is a different experiment from an unattended one, so the
+// choice is explicit and the answer is recorded with the results. Unchecking it
+// gives the matched control the comparison needs — same mode, runs, segment
+// counts, source and loops, panel off.
+"<div style='grid-column:span 2;display:flex;align-items:center;gap:6px'>"
+"<input id='chkFocus' type='checkbox' checked style='width:16px;height:16px'>"
+"<label for='chkFocus' style='color:#f0c040;font-size:.9em'>"
+"&#127919; Focus display (attended session)</label>"
+"</div>"
 "<button class='btn btn-euro' style='width:100%' onclick='doStart(0)'>&#127808; Euro-Lotto</button>"
 "<button class='btn btn-649' style='width:100%' onclick='doStart(1)'>&#127808; 6 of 49</button>"
 "</div>"
@@ -121,8 +145,14 @@ static const char HTML[] =
 "<span id='runsErr' style='color:#ff6b6b;font-size:.9em'></span>"
 "</div>"
 "<div id='startBtns' style='display:none'></div>"
-"<button class='btn btn-abort' id='btnAbort' onclick='doAbort()' style='display:none;margin:0 auto'>"
-"&#9632; Abort</button>"
+"<div class='btns' id='runBtns' style='display:none'>"
+// Pause is required, not a nicety: without it the only way to stop attending is
+// to abort and throw the loop away, which guarantees that tired-observer data
+// gets measured rather than skipped.
+"<button class='btn' id='btnPause' onclick='doPause()' "
+"style='background:#a08030;color:#fff'>&#9208; Pause</button>"
+"<button class='btn btn-abort' id='btnAbort' onclick='doAbort()'>&#9632; Abort</button>"
+"</div>"
 "<div id='progArea' style='display:none'>"
 "<div id='loopBadge' style='display:none;text-align:center;color:#f0c040;"
 "font-weight:700;font-size:1.05em;margin-bottom:10px'></div>"
@@ -159,6 +189,12 @@ static const char HTML[] =
 "</div>"
 "<div id='msg'></div>"
 "</div>"
+"<div class='card' id='focusCard' style='display:none;text-align:center'>"
+"<div style='color:#f0c040;font-size:.88em;margin-bottom:8px;text-align:left'>"
+"&#127919; Focus:</div>"
+"<div id='focusBox'><span class='fix'>+</span></div>"
+"<div id='focusInfo' style='color:#a0c0a0;font-size:.78em;margin-top:10px'></div>"
+"</div>"
 "<div class='card' id='resCard' style='display:none'>"
 "<h3 id='resTitle' style='color:#6ab0e8;margin-bottom:4px'></h3>"
 "<div id='sigLine' style='color:#a0c0a0;font-size:.82em;margin-bottom:4px'></div>"
@@ -182,6 +218,7 @@ static const char HTML[] =
 "</div>"
 "<script>"
 "var timer=null,curMode=0,lastData=null,lastDisplayed=null;"
+"var ftimer=null,lastSeq=-1,winSeen=0,winMissed=0,paused=false;"
 "function fmt(ms){"
 "var m=Math.floor(ms/60000),h=Math.floor(m/60);m=m%60;"
 "return h>0?h+':'+('0'+m).slice(-2)+' h':m+' min';}"
@@ -205,8 +242,10 @@ static const char HTML[] =
 "curMode=d.mode==='euro'?0:1;setMode(curMode);"
 "document.getElementById('runsRow').style.display='none';"
 "document.getElementById('startBtns').style.display='none';"
-"document.getElementById('btnAbort').style.display='block';"
+"document.getElementById('runBtns').style.display='flex';"
 "document.getElementById('progArea').style.display='block';"
+"if(d.focus)startFocus();"
+"setPauseBtn(d.paused);"
 "updateLoopBadge(d.loop_current||1,d.loops_total||1);"
 "document.getElementById('sCalTotal').textContent=d.baseline_total;"
 "setScoreTotal(d);"
@@ -254,16 +293,19 @@ static const char HTML[] =
 "if(runs<0)runs=0;if(runs>8000)runs=8000;"
 "var rank=document.getElementById('selRank').value;"
 "var src=document.getElementById('selSrc').value;"
+"var foc=document.getElementById('chkFocus').checked?1:0;"
 "document.getElementById('runsErr').textContent='';"
 "document.getElementById('sCalTotal').textContent=base;"
 "document.getElementById('pfScore').style.width='0%';"
 "document.getElementById('sScoreDone').textContent='0';"
 "document.getElementById('measArea').style.display='none';"
-"fetch('/start?mode='+mode+'&baseline='+base+'&loops='+loops+'&runs='+runs+'&rank='+rank+'&src='+src,{method:'POST'});"
+"fetch('/start?mode='+mode+'&baseline='+base+'&loops='+loops+'&runs='+runs+'&rank='+rank+'&src='+src+'&focus='+foc,{method:'POST'});"
 "document.getElementById('runsRow').style.display='none';"
 "document.getElementById('startBtns').style.display='none';"
-"document.getElementById('btnAbort').style.display='block';"
+"document.getElementById('runBtns').style.display='flex';"
 "document.getElementById('progArea').style.display='block';"
+"paused=false;setPauseBtn(false);"
+"if(foc)startFocus();else stopFocus();"
 "lastData=null;lastDisplayed=null;"
 "document.getElementById('btnSave').style.display='none';"
 "document.getElementById('resCard').style.display='none';"
@@ -278,9 +320,61 @@ static const char HTML[] =
 "fetch('/abort',{method:'POST'});"
 "document.getElementById('msg').textContent='Aborting...';"
 "}"
+"function setPauseBtn(p){"
+"paused=!!p;"
+"var b=document.getElementById('btnPause');"
+"b.innerHTML=paused?'\\u25b6 Continue':'\\u23f8 Pause';"
+"b.style.background=paused?'#4a9e4a':'#a08030';"
+"}"
+// Pause is device-side, so this only asks; /status and /focus report the truth.
+"function doPause(){"
+"var want=paused?0:1;"
+"fetch('/pause?on='+want,{method:'POST'});"
+"setPauseBtn(want);"
+"}"
+/* Focus polling at 10 Hz. A 50-100 ms offset is not a problem — at a 500 ms
+   window that is still 80-90% overlap, and conscious noticing is itself smeared
+   over ~100-300 ms, so tighter sync would be precision the experiment cannot
+   use. What DOES matter is a window missed entirely: the observer then attends
+   to combination N while N+1's bits are collected, and per-combination z feeds
+   the Stouffer accumulation, so the effect gets credited to an unrelated
+   combination. `seq` is monotonic, so a jump of more than 1 is exactly that
+   failure — counted here, which is a more honest diagnostic than a jitter
+   histogram because it detects corruption rather than blur. */
+"function startFocus(){"
+"lastSeq=-1;winSeen=0;winMissed=0;"
+"document.getElementById('focusCard').style.display='block';"
+"if(ftimer)clearInterval(ftimer);"
+"ftimer=setInterval(pollFocus,100);"
+"}"
+"function stopFocus(){"
+"if(ftimer)clearInterval(ftimer);ftimer=null;"
+"document.getElementById('focusBox').innerHTML=\"<span class='fix'>+</span>\";"
+"}"
+"function pollFocus(){"
+"fetch('/focus').then(function(r){return r.json();}).then(function(f){"
+"var box=document.getElementById('focusBox');"
+"if(f.p){"
+// Unmistakable, so "no numbers on screen" never has to be read as "maybe I
+// missed one".
+"box.innerHTML=\"<span style='color:#f0c040;font-size:1.6em;font-weight:700'>"
+"\\u23f8 PAUSED</span>\";"
+"lastSeq=f.seq;setPauseBtn(true);return;}"
+"if(paused)setPauseBtn(false);"
+"if(!f.on){box.innerHTML=\"<span class='fix'>+</span>\";return;}"
+"if(f.seq===lastSeq)return;"
+"if(lastSeq>=0&&f.seq>lastSeq+1)winMissed+=f.seq-lastSeq-1;"
+"lastSeq=f.seq;winSeen++;"
+"var h='';"
+"for(var i=0;i<f.n.length;i++)h+='<span class=\"numBig\">'+f.n[i]+'</span>';"
+"for(var i=0;i<f.e.length;i++)h+='<span class=\"numBig euro\">'+f.e[i]+'</span>';"
+"box.innerHTML=h;"
+"}).catch(function(){});"
+"}"
 "function poll(){"
 "fetch('/status').then(function(r){return r.json();}).then(function(d){"
 "updateLoopBadge(d.loop_current||1,d.loops_total||1);"
+"updateFocusInfo(d);"
 "var stDone=d.state==='done'||d.state==='aborted';"
 "var scorePct=d.scoring_total>0?Math.round(d.scoring_done*100/d.scoring_total):0;"
 "document.getElementById('pfScore').style.width=scorePct+'%';"
@@ -324,8 +418,8 @@ static const char HTML[] =
 "}"
 "if(d.state==='running'&&d.cover&&d.cover.length)showResults(d);"
 "if(d.state==='done'||d.state==='aborted'){"
-"clearInterval(timer);"
-"document.getElementById('btnAbort').style.display='none';"
+"clearInterval(timer);stopFocus();"
+"document.getElementById('runBtns').style.display='none';"
 "document.getElementById('measCheck').innerHTML=\" <span style='color:#90ee90;font-size:1.1em'>&#10004;</span>\";"
 "document.getElementById('runsRow').style.display='grid';"
 "var done=d.state==='done';"
@@ -335,6 +429,19 @@ static const char HTML[] =
 "showResults(d);"
 "}"
 "}).catch(function(){});"
+"}"
+/* The Phase 5 gate in one line: the measured lit window (must be within +-10%
+   of 1000 ms scoring / 500 ms draw), the measured natural inter-run gap (which
+   says whether the ~200 ms blanking was free or had to be paid for), and the
+   count of windows the UI missed entirely (must stay 0). */
+"function updateFocusInfo(d){"
+"if(!d.focus){document.getElementById('focusCard').style.display='none';return;}"
+"document.getElementById('focusCard').style.display='block';"
+"var s='window '+(d.focus_win_ms||0).toFixed(0)+' ms \\u00b7 gap '"
+"+(d.focus_gap_ms||0).toFixed(0)+' ms \\u00b7 windows '+winSeen"
+"+' \\u00b7 missed '+winMissed+(winMissed?' \\u26a0':' \\u2713');"
+"if(d.paused_ms>0)s+=' \\u00b7 paused '+fmt(d.paused_ms)+' (excluded)';"
+"document.getElementById('focusInfo').textContent=s;"
 "}"
 "function showResults(d){"
 "lastData=d;"
@@ -349,6 +456,10 @@ static const char HTML[] =
 "}else sl.innerHTML='';"
 "var s2='';"
 "if(d.loop_sigma>0)s2+='per-run \\u03c3 = '+d.loop_sigma.toFixed(3);"
+// Which condition produced these numbers. An attended session is not equivalent
+// to an unattended one, so the two must never be pooled later.
+"s2+=(s2?' \\u00b7 ':'')+(d.focus?'\\uD83C\\uDFAF attended (focus)':'unattended (control)');"
+"if(d.paused_ms>0)s2+=' \\u00b7 paused '+fmt(d.paused_ms)+' (excluded from elapsed)';"
 // The WORST pair, not an average: the sqrt(n) gain fails if ANY pair
 // correlates, so five clean pairs must not dilute one bad one.
 "if(d.pair_n>1){"
@@ -462,7 +573,11 @@ static const char HTML[] =
 "for(var j=0;j<nc;j++)cols.push(r.nums[j]);"
 "if(isEuro){cols.push(r.euro[0]);cols.push(r.euro[1]);}"
 "o.push(cols.join(','));}return o;}"
-"var lines=['# mode='+d.mode+',date='+new Date().toISOString().slice(0,10),'# coverage-10 (highest z, diversified)',hdr];"
+// The condition travels with the data: attended and unattended sessions are
+// different experiments and must not be pooled after the fact.
+"var lines=['# mode='+d.mode+',date='+new Date().toISOString().slice(0,10)"
+"+',focus='+(d.focus?'on':'off')+',paused_ms='+(d.paused_ms||0),"
+"'# coverage-10 (highest z, diversified)',hdr];"
 "lines=lines.concat(rows(lastDisplayed));"
 "if(d.cover_low&&d.cover_low.length){"
 "lines.push('# coverage-10 (lowest z, diversified)');"
@@ -521,6 +636,8 @@ static esp_err_t status_handler(httpd_req_t *req)
         "\"pair_i\":%d,\"pair_j\":%d,\"pair_count\":%d,"
         "\"nodes_total\":%d,\"nodes_ok\":%d,"
         "\"net_retries\":%lu,\"net_lost\":%lu,\"net_stale\":%lu,"
+        "\"focus\":%s,\"paused\":%s,\"paused_ms\":%lld,"
+        "\"focus_win_ms\":%.1f,\"focus_gap_ms\":%.1f,"
         "\"loops_done\":%d,\"drift_slope\":%.5f,\"drift_t\":%.2f,"
         "\"off_first\":%.4f,\"off_last\":%.4f,"
         "\"sigma_lo\":%.4f,\"sigma_hi\":%.4f,"
@@ -538,6 +655,9 @@ static esp_err_t status_handler(httpd_req_t *req)
         g_status.node_count, g_status.node_ok,
         (unsigned long)g_status.net_retries, (unsigned long)g_status.net_lost,
         (unsigned long)g_status.net_stale,
+        g_status.focus_mode ? "true" : "false",
+        g_status.paused ? "true" : "false", (long long)g_status.paused_ms,
+        g_status.focus_win_ms, g_status.focus_gap_ms,
         g_status.loops_done, g_status.drift_slope, g_status.drift_t,
         g_status.off_first, g_status.off_last,
         g_status.sigma_lo, g_status.sigma_hi,
@@ -667,12 +787,75 @@ static esp_err_t loops_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* ── /focus GET – the current target (PLAN_4NODE Phase 5) ─────────────
+ * Deliberately NOT part of /status. That response is ~2.5 KB and polled at
+ * 1 Hz: far too fat and far too slow to track a 500 ms window. This one is
+ * ~60 bytes and polled at 10 Hz (~600 B/s, five samples per window), which is
+ * finer than the 100–300 ms smear of conscious noticing itself — tight sync
+ * would be precision the experiment cannot use.
+ *
+ * `seq` is what tells the UI a NEW window started, including when two
+ * consecutive draws happen to look similar. A gap in it means a window was
+ * missed entirely, which is not blur but mislabeling — the observer attends to
+ * combination N while N+1's bits are collected — so the UI counts those.
+ *
+ * `on` is 0 during the inter-run gap, when no bits are being collected. */
+static esp_err_t focus_handler(httpd_req_t *req)
+{
+    /* Read the state twice around the copy: the measurement task bumps `seq`
+     * last, so an unchanged seq proves the numbers belong to it. Cheaper than
+     * putting a lock on the run loop for a diagnostic read. */
+    FocusState f;
+    for (int try = 0; try < 3; try++) {
+        uint32_t s0 = g_status.focus.seq;
+        f = g_status.focus;
+        if (g_status.focus.seq == s0) break;
+    }
+
+    char buf[160];
+    int  pos = snprintf(buf, sizeof(buf),
+        "{\"seq\":%lu,\"on\":%d,\"p\":%d,\"k\":%d,\"n\":[",
+        (unsigned long)f.seq, f.active ? 1 : 0, g_status.paused ? 1 : 0, f.kind);
+    for (int i = 0; i < f.n && i < 6; i++)
+        pos += snprintf(buf + pos, sizeof(buf) - pos, "%s%d", i ? "," : "", f.nums[i]);
+    pos += snprintf(buf + pos, sizeof(buf) - pos, "],\"e\":[");
+    for (int i = 0; i < f.ne && i < 2; i++)
+        pos += snprintf(buf + pos, sizeof(buf) - pos, "%s%d", i ? "," : "", f.euro[i]);
+    snprintf(buf + pos, sizeof(buf) - pos, "]}");
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_sendstr(req, buf);
+    return ESP_OK;
+}
+
+/* ── /pause POST ?on=1|0 ──────────────────────────────────────────────
+ * Not abort: the state stays `running`, nothing is published, and the
+ * permutation index and Σz accumulation continue where they left off. The flag
+ * is only *read* between runs (pause_gate() in sensor.c), so the run in flight
+ * always finishes and is kept — bits sampled while nobody was watching must
+ * never end up inside a run labelled as attended.
+ *
+ * Device-side, like the loop itself: closing the browser does not resume it. */
+static esp_err_t pause_handler(httpd_req_t *req)
+{
+    bool on = true;
+    char qry[32] = "", val[8] = "";
+    if (httpd_req_get_url_query_str(req, qry, sizeof(qry)) == ESP_OK &&
+        httpd_query_key_value(qry, "on", val, sizeof(val)) == ESP_OK)
+        on = (val[0] == '1');
+    g_status.paused = on;
+    httpd_resp_sendstr(req, on ? "paused" : "running");
+    return ESP_OK;
+}
+
 /* ── /start POST ──────────────────────────────────────────────────── */
 static esp_err_t start_handler(httpd_req_t *req)
 {
     if (g_status.state != ELOTTO_RUNNING) {
-        // read mode from query string (?mode=0 or ?mode=1)
-        char qry[64] = "";
+        // read mode from query string (?mode=0 or ?mode=1). Sized for the full
+        // set the UI sends — a truncated query silently drops trailing keys.
+        char qry[128] = "";
         g_status.mode           = MODE_EUROJACKPOT;
         g_status.runs_total     = 0;   // computed in elotto_task from combinatorics
         g_status.baseline_total = 100;
@@ -683,6 +866,12 @@ static esp_err_t start_handler(httpd_req_t *req)
         // source decides what physics is being measured, so it must never be
         // inherited silently. Camera matches the UI default; ?src=0 = TRNG.
         g_status.noise_source   = NOISE_CAMERA;
+        // Absent ?focus= means UNATTENDED. A session started by curl or a
+        // script has no observer by definition, so the control condition is
+        // what a missing flag has to mean; the UI always sends it explicitly.
+        // This flag is the session's record of which condition produced its
+        // numbers — attended and unattended runs must never be pooled later.
+        g_status.focus_mode     = false;
         if (httpd_req_get_url_query_str(req, qry, sizeof(qry)) == ESP_OK) {
             char val[16] = "";
             if (httpd_query_key_value(qry, "mode", val, sizeof(val)) == ESP_OK)
@@ -706,6 +895,11 @@ static esp_err_t start_handler(httpd_req_t *req)
             // instead of substituting the TRNG -- see PLAN_4NODE "Fallback policy".
             if (httpd_query_key_value(qry, "src", val, sizeof(val)) == ESP_OK)
                 g_status.noise_source = (val[0] == '1') ? NOISE_CAMERA : NOISE_TRNG;
+            // ?focus=1 -> attended session: the Focus panel is live and the
+            // session is tagged. Run lengths do NOT depend on this — a matched
+            // no-focus control must be identical in every other respect.
+            if (httpd_query_key_value(qry, "focus", val, sizeof(val)) == ESP_OK)
+                g_status.focus_mode = (val[0] == '1');
         }
         xTaskCreate(elotto_task, "elotto", 8192, NULL, 5, NULL);
     }
@@ -830,7 +1024,7 @@ static bool session_running(void) { return g_status.state == ELOTTO_RUNNING; }
 static void start_webserver(void)
 {
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
-    cfg.max_uri_handlers  = 16;   /* 6 here + 5 registered by elotto_ota */
+    cfg.max_uri_handlers  = 16;   /* 8 here + 5 registered by elotto_ota */
     cfg.stack_size        = 8192;
     cfg.recv_wait_timeout = 20;   /* /update streams a ~700 KB body */
     cfg.send_wait_timeout = 20;
@@ -844,6 +1038,8 @@ static void start_webserver(void)
         {"/abort",  HTTP_POST, abort_handler,  NULL},
         {"/diag",   HTTP_GET,  diag_handler,   NULL},
         {"/loops",  HTTP_GET,  loops_handler,  NULL},
+        {"/focus",  HTTP_GET,  focus_handler,  NULL},
+        {"/pause",  HTTP_POST, pause_handler,  NULL},
     };
     for (int i = 0; i < (int)(sizeof(uris) / sizeof(uris[0])); i++)
         httpd_register_uri_handler(srv, &uris[i]);

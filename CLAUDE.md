@@ -8,7 +8,7 @@
 - Build system: idf.py via ESP-IDF Extension
 
 ## Project structure
-- main/elotto.c   – app_main, Ethernet, webserver, HTML/JS UI, /diag + /loops endpoints
+- main/elotto.c   – app_main, Ethernet, webserver, HTML/JS UI, /diag + /loops + /focus + /pause
 - main/sensor.c   – noise source, GCP analysis, baseline calibration, node link (UDP), lottery extraction
 - main/sensor.h   – types and declarations
 - partitions.csv  – **shared** partition table (factory 1 MB + ota_0/ota_1 3 MB on 32 MB flash).
@@ -82,14 +82,16 @@ Phase 4. Both record every gate result and design decision.
   `src=0` = on-chip TRNG (register 0x501101A4, still available for A/B). The UI has an
   **Entropy** dropdown; `/start` defaults to camera explicitly rather than inheriting the
   previous session's source.
-- Segments per run are source-dependent: TRNG 32000 (6.4 Mbit), camera 8000 (1.6 Mbit ≈
-  0.5 s). z stays N(0,1) either way — normalised by √segments.
-- ⚠ **`CAM_SEGMENTS` / `TRNG_SEGMENTS` are duplicated** in `main/sensor.c` and
-  `../elotto_slave/main/slave.c` and **must match**, or the nodes integrate different windows
-  and the whole premise (all nodes measure the *same* interval) fails silently — the numbers
-  stay plausible. Change both, rebuild both, reflash **all four** nodes. Same for the
-  yield/abort-poll cadence in `gcp_zscore_raw()`: per-run wall time is max over nodes, so a
-  mismatch slows every measurement to the slowest device.
+- Segments per run are source- **and phase**-dependent (Phase 5): a scoring run holds its
+  candidate number ~1000 ms, a measurement run holds a draw ~500 ms. z stays N(0,1) either
+  way — normalised by √segments.
+- ✅ **The segment count travels on the wire** (`M<seg>`, `B<runs>,<seg>`), so the constants
+  live in `main/sensor.c` only. This retired the old "duplicated in both repos and must match"
+  hazard: a slave that is *told* the length cannot disagree about it. `slave.c` keeps
+  `CAM_SEGMENTS`/`TRNG_SEGMENTS` **only** as the fallback for a pre-Phase-5 master, and logs
+  loudly when it uses them. The yield/abort-poll cadence is now `nseg/4` on both sides for the
+  same reason — per-run wall time is max over nodes, so a mismatch slows every measurement to
+  the slowest device.
 - **A node whose camera stalls is DROPPED**, never silently switched to the TRNG: mixing
   sources mid-session would change the measured physics with no record of which runs were
   affected. Dropping keeps the remaining nodes source-clean by construction; the session only
@@ -130,6 +132,27 @@ max-spread (≤ nm/2 shared numbers per pick) — plus most-frequent from Z>2 ru
 Bonferroni-corrected significance line (compute_significance()). The raw top[]/low[] rankings
 are still computed (for significance) but no longer displayed or serialized. Coverage is
 cumulative-mode only.
+
+**Focus display (Phase 5, docs/PLAN_4NODE.md)**: a "Focus:" card shows the current target in
+large type for exactly the window its bits are collected in — the candidate number while
+scoring, the whole draw while measuring — so the observer is present *while* the noise is
+sampled (the original GCP/PEAR protocol). It changes nothing statistically, so a session is
+merely **tagged**: `/start?focus=1`, `"focus"` in /status and `# focus=on|off` in the CSV.
+An absent `?focus=` means unattended — a curl-started session has no observer. **Attended and
+unattended sessions must never be pooled**; run matched no-focus controls.
+- `GET /focus` (~60 B) is polled at **10 Hz** and is deliberately separate from the 2.5 KB
+  /status: `seq` is monotonic per window, so the UI counts *missed* windows (a skipped window
+  credits an effect to the wrong combination — mislabeling, not blur). `POST /pause?on=1|0`
+  holds **between** runs only; state stays `running`, Σz and the permutation resume where they
+  left off, and paused time is excluded from `elapsed_ms` (`paused_ms` records it).
+- ⚠ **The run window is set by a segment count, and the conversion is not stable** — the
+  achievable window moved 1.75× across one afternoon under identical settings. Every run is
+  followed by a real delay (`RUN_GAP_MS` 200, `SCORE_RUN_GAP_MS` 350); the longer scoring gap is
+  forced, since 1000 ms at a 200 ms gap is 83% duty, past the point where the measurement loop
+  starves the camera extraction task it consumes from and the rate collapses. Check
+  `focus_win_ms`/`focus_gap_ms` in /status rather than assuming the constants still hold.
+- ⚠ `camera_get_stats()`'s `mbit_per_sec` and `bias` are **lifetime averages since stream
+  start**, not instantaneous — a falling `mbit_s` is not evidence of live degradation.
 
 Loops: the whole experiment repeats N times (device-side, in elotto_task). Two ranking modes
 (g_status.rank_mode): RANK_PEAK keeps the best single-run z across loops via absorb_loop();
@@ -202,6 +225,25 @@ is gone. Those are the cases OTA cannot repair — the P4 has no
 3. **Camera bias degrades under sustained load** — `.103` went from 0.499307 idle to 0.497884
    after a session, outside PLAN_4NODE Phase 0's 1e-3 gate. Likely the same cause as (1).
 
+4. **The Focus run window drifts (Phase 5, new).** The window is set by a fixed segment count,
+   but the count→duration conversion moved by up to **1.75×** across one afternoon under
+   identical settings, and within the gate session the measurement window crept 474.8 → 514.4 ms
+   over 1700 runs (pushing the loop to 10.5 min against a 10 min budget). Cause not established;
+   thermal or SoC-level load is the suspect, cumulative camera state is ruled out (each session
+   began after a reboot). Watch `focus_win_ms`/`focus_gap_ms` rather than trusting the
+   constants. The fix, if it becomes annoying, is a closed loop — adjust segments per run from
+   the measured window — which is safe because the count already travels to the slaves on the
+   wire and z is normalised by √segments, so per-run counts may differ freely.
+5. **The master's camera bias is ~1.2e-3, outside Phase 0's 1e-3 gate** and ~9× the Phase 1
+   figure — visible as a raw per-run offset of −2.69 z/run. `studentize()` removes it exactly
+   and σ stayed ≈1 in both loops, so nothing downstream is affected. Related to item 3, now with
+   a number. Phase 5 is not the cause: it *lowered* duty cycle from ~99.5% to 71%.
+
 Also long-open: the **camera-stall abort has never been observed firing** (PLAN_4NODE's
 "Remaining work" item 1) — the only safety claim in these documents that has only been reasoned
 about. Phase C proved the UDP abort path; this is the *source-loss* path.
+
+**Phase 5 (Focus display) is DONE** (2026-07-25), gate passed except the 10 min loop budget
+(10.5 min, item 4 above). A matched no-focus control session was recorded alongside it; the
+comparison itself — whether attention shows up in the statistics — is the experiment, not a
+gate, and has not been analysed.

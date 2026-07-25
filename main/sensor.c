@@ -33,14 +33,50 @@ static inline uint32_t fast_rng(void) { return RNG_REG; }
 #define SEGMENT_BITS   200
 #define NUM_SEGMENTS   ((TRNG_PER_RUN * 32) / SEGMENT_BITS)   // 32000
 
-// Segments per run is source-dependent (PLAN_4NODE Phase 1). The TRNG is
-// oversampled and effectively free, so it keeps the historical 6.4 Mbit/run.
-// Camera bits are honest and rate-limited (~3.4 Mbit/s measured), so a run is
-// sized for ~0.5 s instead. Run length only sets granularity — statistical
-// power per second is rate-limited either way, and z stays N(0,1) because it
-// is normalised by √segments.
-#define TRNG_SEGMENTS  NUM_SEGMENTS      // 6.4 Mbit/run
-#define CAM_SEGMENTS   8000              // 1.6 Mbit/run ≈ 0.47 s at 3.4 Mbit/s
+/* Segments per run is source- AND phase-dependent (PLAN_4NODE Phase 1 + 5).
+ *
+ * Phase 5 made the run length the *display* window: the Focus panel holds a
+ * target for exactly as long as its bits are collected, so "1000 ms per
+ * candidate number, 500 ms per draw" is not a delay bolted onto a run — it IS
+ * the run. Padding with a vTaskDelay would halve the bit rate for nothing.
+ *
+ * The camera counts are CALIBRATED ON HARDWARE, not derived on paper — the
+ * Phase 5 gate insists on that, and the paper answer was wrong by 60 %.
+ *
+ * What makes the paper answer wrong is that the sustained rate is not a
+ * constant: the measurement loop runs one priority ABOVE the camera extraction
+ * task it consumes from, so the harder it consumes the more it starves its own
+ * producer. Measured on the live 4-node array (2026-07-25, all four on camera,
+ * a client polling /focus at 10 Hz), per-cycle sustained rate against duty
+ * cycle (run / (run + gap)):
+ *
+ *      n=6350   run  277 ms   duty 57 %   2.63 Mbit/s
+ *      n=11600  run  588 ms   duty 72 %   2.82 Mbit/s
+ *      n=17000  run 1519 ms   duty 88 %   1.98 Mbit/s   <- collapsed
+ *
+ * So it is flat near 2.7 Mbit/s and falls off a cliff somewhere past ~72 %, at
+ * which point longer runs feed back into a slower producer and get longer
+ * still. None of this is visible in Phase 0's 3.49 Mbit/s idle figure. The
+ * counts below are solved from the flat part — n = rate × (window + gap) —
+ * which also keeps the source out of the starved regime, where PLAN_4NODE's
+ * open item 3 (camera bias degrading under sustained load) lives.
+ *
+ * This is the other reason RUN_GAP_MS is not merely cosmetic: the gap is when
+ * the producer gets the CPU back, so it buys back most of what it costs.
+ *
+ * The TRNG counts are NOT re-measured; they are carried from Phase 1's "a run
+ * is ~1 s at 32000 segments" and halved for the 500 ms window. The camera is
+ * the default source, and the TRNG path exists for A/B — if a TRNG Focus
+ * session is ever run for real, measure focus_win_ms and correct these.
+ *
+ * z stays N(0,1) at any of these because it is normalised by √segments; run
+ * length only sets granularity, and statistical power per second is
+ * rate-limited either way. */
+#define TRNG_SCORE_SEGMENTS  NUM_SEGMENTS   // 6.4 Mbit/run ≈ 1000 ms (extrapolated)
+#define TRNG_MEAS_SEGMENTS   16000          // 3.2 Mbit/run ≈  500 ms (extrapolated)
+#define CAM_SCORE_SEGMENTS   11950          // 2.4 Mbit/run ~ 1000 ms measured,
+                                            // at the 350 ms scoring gap
+#define CAM_MEAS_SEGMENTS     6400          // 1.3 Mbit/run ~  500 ms measured
 
 // Which source the running session is actually drawing measurement bits from.
 // Distinct from g_status.noise_source (what was *requested*).
@@ -121,9 +157,17 @@ static const char *p_label(double absZ)
     return "n.s.";
 }
 
-static double gcp_zscore_raw(void)
+/* Segments for one run of the given phase. Scoring holds a single candidate
+ * number twice as long as a draw, because that is the Focus spec's window. */
+static int segments_for(bool scoring)
 {
-    const int nseg = (s_active_source == NOISE_CAMERA) ? CAM_SEGMENTS : TRNG_SEGMENTS;
+    if (s_active_source == NOISE_CAMERA)
+        return scoring ? CAM_SCORE_SEGMENTS : CAM_MEAS_SEGMENTS;
+    return scoring ? TRNG_SCORE_SEGMENTS : TRNG_MEAS_SEGMENTS;
+}
+
+static double gcp_zscore_raw(int nseg)
+{
     double z_sum = 0.0;
     for (int seg = 0; seg < nseg; seg++) {
         int ones = __builtin_popcount(noise_word())
@@ -134,12 +178,178 @@ static double gcp_zscore_raw(void)
                  + __builtin_popcount(noise_word())
                  + __builtin_popcount(noise_word() & 0xFF);
         z_sum += (ones - 100.0) / 7.07106781;
-        // TRNG path needs explicit yields (4/run, ~40 ms); the camera path
-        // already yields inside camera_read_word() whenever it waits on the
-        // producer, which is most of the time.
-        if (seg % 8000 == 0) vTaskDelay(1);
+        // TRNG path needs explicit yields (4/run); the camera path already
+        // yields inside camera_read_word() whenever it waits on the producer,
+        // which is most of the time. Kept as a fraction of the run rather than
+        // a fixed count so it stays matched to the slave's cadence at every
+        // run length — per-run wall time is the max over nodes, so a mismatch
+        // would slow every measurement to the slowest device.
+        if (seg % (nseg / 4 + 1) == 0) vTaskDelay(1);
     }
     return z_sum / sqrt((double)nseg);
+}
+
+/* ── Focus display + pause (docs/PLAN_4NODE.md Phase 5) ───────────────────
+ *
+ * The panel shows what is being measured, WHILE it is being measured. That is
+ * the whole content of the experiment: it makes the observer part of the
+ * measurement window, as in the original GCP/PEAR protocol. Statistically it
+ * changes nothing (z is normalised by √segments at any run length), which is
+ * why the session is merely *tagged* rather than analysed differently.
+ *
+ * The invariant that has to hold is: panel lit ⟺ this run's bits are being
+ * collected. So focus_publish() runs immediately before the trigger goes out
+ * and focus_off() immediately after the local run returns — the reply wait and
+ * the per-run bookkeeping are dark time, and the observer should not spend them
+ * attending to a target whose measurement has already finished. */
+/* Dark time between targets. Phase 5 asked for this to be *aligned* with
+ * overhead that already existed rather than added on top — the estimate was
+ * ~190 ms per run spent on the slave round-trip and bookkeeping. Measured on
+ * the 4-node array, that overhead is **2.3 ms**: the slaves integrate the same
+ * window concurrently and are already answering by the time the master's own
+ * run returns, so nodes_collect() costs nothing. The gap therefore has to be
+ * paid for, which the plan anticipated ("then pay for it in the run budget"),
+ * and `Runs = 850` is what pays for it.
+ *
+ * It is not only a display concern. At ~100 % duty cycle the measurement loop
+ * starves the camera extraction task it consumes from (it runs one priority
+ * above it), and the sustained rate collapses from 3.49 to 2.68 Mbit/s —
+ * measured, with ring `waits` climbing. The blank period is when the producer
+ * gets the CPU back, so the gap buys back most of the throughput it costs.
+ *
+ * Applied to EVERY run — baseline, scoring and measurement — and independently
+ * of focus_mode. Two reasons: a matched no-focus control must differ from an
+ * attended session in the display and nothing else, and the baseline has to be
+ * the same instrument as the runs it is subtracted from, down to duty cycle.
+ *
+ * SCORING GETS A LONGER GAP, and this is forced, not a preference. The spec's
+ * 1000 ms scoring window at a 200 ms gap is 83 % duty *by construction* —
+ * already past the ~72 % cliff above — so no segment count reaches 1000 ms
+ * there: every candidate value lands in the collapsed regime and stretches to
+ * ~1500 ms instead (measured at both 16700 and 17000 segments). Widening the
+ * scoring gap to 350 ms puts the same 1000 ms window at 74 % duty, back on the
+ * flat part, where a segment count *does* solve.
+ *
+ * The alternative was to shorten the scoring window until it fitted a 200 ms
+ * gap. That was rejected: the gap is the soft parameter the plan already
+ * marked as adjustable ("then pay for it in the run budget"), whereas the hold
+ * times are the spec, and buying a display number by running the entropy
+ * source in a starved regime trades physics for cosmetics — that regime is
+ * where PLAN_4NODE's open item 3 lives. Scoring is loop-0 only, so the extra
+ * 150 ms costs one session ~37 s (245 runs at 6/49).
+ *
+ * Safe to differ per phase because scoring does not use the baseline at all
+ * (score_one_run() subtracts nothing — the offset is common to every number
+ * and scoring only ranks them). Measurement and its baseline both stay at
+ * 200 ms, which is the pairing that has to match. */
+#define RUN_GAP_MS        200
+#define SCORE_RUN_GAP_MS  350
+
+static void run_gap(bool scoring)
+{
+    vTaskDelay(pdMS_TO_TICKS(scoring ? SCORE_RUN_GAP_MS : RUN_GAP_MS));
+}
+
+static int64_t s_t0;               // session start
+static int64_t s_paused_us;        // total time held by pause, excluded from elapsed
+static int64_t s_focus_on_us, s_focus_off_us;
+static double  s_win_sum, s_gap_sum;
+static uint32_t s_win_n, s_gap_n;
+
+static int64_t elapsed_ms_now(void)
+{
+    return (esp_timer_get_time() - s_t0 - s_paused_us) / 1000;
+}
+
+static void focus_reset(void)
+{
+    memset(&g_status.focus, 0, sizeof(g_status.focus));
+    s_focus_on_us = s_focus_off_us = 0;
+    s_win_sum = s_gap_sum = 0.0;
+    s_win_n = s_gap_n = 0;
+    g_status.focus_win_ms = g_status.focus_gap_ms = 0.0f;
+    g_status.paused    = false;
+    g_status.paused_ms = 0;
+    s_paused_us = 0;
+}
+
+/* Put a target on screen. `seq` is bumped LAST and `active` with it, so a
+ * reader that sees a given seq sees the numbers that belong to it (the /focus
+ * handler re-reads seq to detect the race rather than taking a lock on the
+ * measurement path). */
+static void focus_publish(FocusKind kind, const uint8_t *nums, int n,
+                          const uint8_t *euro, int ne)
+{
+    if (!g_status.focus_mode) return;      // unattended session: panel stays dark
+    FocusState *F = &g_status.focus;
+    // Scoring and measurement have different windows by design (1000 ms vs
+    // 500 ms), so the timing means are per phase — pooled they would describe
+    // neither, and the gate is stated separately for each.
+    if (F->kind != (uint8_t)kind) {
+        s_win_sum = s_gap_sum = 0.0;
+        s_win_n = s_gap_n = 0;
+        s_focus_off_us = 0;
+    }
+    F->active = 0;
+    __sync_synchronize();
+    F->kind = (uint8_t)kind;
+    F->n    = (uint8_t)n;
+    F->ne   = (uint8_t)ne;
+    for (int i = 0; i < n  && i < 6; i++) F->nums[i] = nums[i];
+    for (int i = 0; i < ne && i < 2; i++) F->euro[i] = euro[i];
+    __sync_synchronize();
+    F->seq++;
+    F->active = 1;
+
+    int64_t now = esp_timer_get_time();
+    if (s_focus_off_us) { s_gap_sum += (double)(now - s_focus_off_us); s_gap_n++; }
+    s_focus_on_us = now;
+}
+
+static void focus_show_number(int value, bool is_euro)
+{
+    uint8_t v = (uint8_t)value;
+    if (is_euro) focus_publish(FOCUS_NUMBER, NULL, 0, &v, 1);
+    else         focus_publish(FOCUS_NUMBER, &v, 1, NULL, 0);
+}
+
+/* Blank to the fixation mark. Not "nothing": the gaze stays anchored where the
+ * next target will appear, and onset is the payload. */
+static void focus_off(void)
+{
+    FocusState *F = &g_status.focus;
+    if (!F->active) return;
+    F->active = 0;
+    int64_t now = esp_timer_get_time();
+    if (s_focus_on_us) { s_win_sum += (double)(now - s_focus_on_us); s_win_n++; }
+    s_focus_off_us = now;
+    if (s_win_n) g_status.focus_win_ms = (float)(s_win_sum / s_win_n / 1000.0);
+    if (s_gap_n) g_status.focus_gap_ms = (float)(s_gap_sum / s_gap_n / 1000.0);
+}
+
+/* Hold BETWEEN runs. Called where abort_requested is already tested, so the
+ * current run always finishes and is kept: stopping mid-run would leave bits
+ * sampled while nobody was watching inside a run labelled as attended, which is
+ * the one contamination this phase exists to avoid.
+ *
+ * This is not abort — state stays running, nothing is published, and the
+ * permutation index and Σz accumulation resume exactly where they left off.
+ * The held time is subtracted from elapsed_ms so the ETA does not absorb the
+ * break and the session is not later read as continuous. */
+static void pause_gate(void)
+{
+    if (!g_status.paused) return;
+    focus_off();                       // panel switches to its paused state
+    int64_t p0 = esp_timer_get_time();
+    while (g_status.paused && !g_status.abort_requested) {
+        vTaskDelay(pdMS_TO_TICKS(100));
+        g_status.paused_ms = (s_paused_us + esp_timer_get_time() - p0) / 1000;
+    }
+    s_paused_us += esp_timer_get_time() - p0;
+    g_status.paused_ms  = s_paused_us / 1000;
+    // The gap timer would otherwise charge the whole break to the inter-run gap
+    // and make focus_gap_ms meaningless.
+    s_focus_off_us = esp_timer_get_time();
 }
 
 // Binomial coefficient C(n, r) for small values (max n=15, r=6)
@@ -184,17 +394,31 @@ static void nth_combination(const uint8_t *pool, int n, int r, int k, uint8_t *o
 // WHICH numbers enter the pool, never the Phase-2 statistics measured on them —
 // raise it for a session whose pool choice has to be trusted on its own.
 #define SCORE_REPS 5
-static double score_one_run(void);   // forward (defined after the slave UART block)
+static double score_one_run(void);   // forward (defined after the slave link block)
 
-static void score_and_build_pool(int max_val, int pool_size, uint8_t *pool)
+// `euro_pool` selects the bonus-number pool; it only reaches the Focus panel,
+// which styles a euro candidate differently from a main one.
+static void score_and_build_pool(int max_val, int pool_size, uint8_t *pool,
+                                 bool euro_pool)
 {
     double scores[51] = {0};
     for (int k = 1; k <= max_val; k++) {
         double sum = 0.0;
         for (int r = 0; r < SCORE_REPS; r++) {
             if (g_status.abort_requested) return;
+            pause_gate();
+            if (g_status.abort_requested) return;
+            // On screen before the run starts and until it ends — display and
+            // bits cover the same interval, or the panel is decoration.
+            focus_show_number(k, euro_pool);
             sum += score_one_run();
             g_status.scoring_done++;
+            // Scoring never updated the clock, so elapsed_ms (and with it the
+            // ETA) froze for the whole phase. That was survivable when scoring
+            // was a preamble; Phase 5 makes it ~5.6 min of attended screen time
+            // with a pause button, so the clock has to run here too.
+            g_status.elapsed_ms = elapsed_ms_now();
+            run_gap(true);
         }
         scores[k] = sum;   // ranking by Σz ≡ ranking by Stouffer Σz/√R
     }
@@ -515,11 +739,17 @@ static void nodes_discover(void)
     printf(")\n");
 }
 
-static void slave_baseline_start(int n)
+/* The segment count now travels ON THE WIRE (PLAN_4NODE Phase 5): it is no
+ * longer a constant each side keeps its own copy of. With run length made
+ * phase-dependent, a duplicated constant would let master and slave integrate
+ * different windows while every published number stayed plausible — the exact
+ * silent failure CLAUDE.md warned about. A slave told the length cannot
+ * disagree about it. */
+static void slave_baseline_start(int n, int nseg)
 {
     if (!s_slave_ok) return;
-    char cmd[16];
-    snprintf(cmd, sizeof(cmd), "B%d", n);
+    char cmd[24];
+    snprintf(cmd, sizeof(cmd), "B%d,%d", n, nseg);
     nodes_send(cmd);
 }
 
@@ -529,9 +759,12 @@ static void slave_baseline_wait(void)
     nodes_collect(g_status.baseline_total * 800 + 15000, true);
 }
 
-static void slave_trigger(void)
+static void slave_trigger(int nseg)
 {
-    if (s_slave_ok) nodes_send("M");
+    if (!s_slave_ok) return;
+    char cmd[16];
+    snprintf(cmd, sizeof(cmd), "M%d", nseg);
+    nodes_send(cmd);
 }
 
 static void slave_abort(void)
@@ -616,8 +849,12 @@ static double combine_z(double z_master, int *n_used)
  * common to every number and scoring only ranks them. */
 static double score_one_run(void)
 {
-    slave_trigger();
-    double zm = gcp_zscore_raw();
+    int nseg = segments_for(true);
+    slave_trigger(nseg);
+    double zm = gcp_zscore_raw(nseg);
+    // Sampling is over the moment the local run returns; the reply wait below
+    // is dark time. The caller lit the panel — see focus_publish().
+    focus_off();
     if (s_slave_ok) nodes_collect(LINK_MEAS_MS, true);
     return combine_z(zm, NULL);
 }
@@ -1109,6 +1346,10 @@ void elotto_task(void *pvParam)
     g_status.sigma_lo        = 0.0;
     g_status.sigma_hi        = 0.0;
     memset(&s_drift, 0, sizeof(s_drift));
+    // focus_mode is set by /start and NOT reset here — it is the session's tag.
+    // Everything else about the panel starts clean, including a pause left over
+    // from a session that was aborted while held.
+    focus_reset();
     // Loop history lives in PSRAM: results[] already fills internal RAM. Kept
     // for the lifetime of the app (allocated once, never freed) so the table of
     // a finished session survives for inspection.
@@ -1167,7 +1408,7 @@ void elotto_task(void *pvParam)
     pairs_reset();
 
     int comparisons = 0;
-    int64_t t0 = esp_timer_get_time();
+    s_t0 = esp_timer_get_time();
 
     for (int loop = 0; loop < g_status.loops_total; loop++) {
         g_status.loop_current   = loop + 1;
@@ -1183,8 +1424,14 @@ void elotto_task(void *pvParam)
         }
 
         /* ── Phase 1: Baseline calibration (every node in parallel) ────── */
+        // Baseline runs at MEASUREMENT length: it estimates the offset of the
+        // runs it will be subtracted from, so it has to be the same instrument.
+        // Nothing is displayed — the panel is hidden during baseline — and
+        // pause is deliberately not offered here: one 'B' command sets every
+        // slave running its whole baseline autonomously, so a master-side hold
+        // would desynchronise them rather than pause them.
         g_status.phase = PHASE_BASELINE;
-        slave_baseline_start(g_status.baseline_total);
+        slave_baseline_start(g_status.baseline_total, segments_for(false));
         {
             double bsum = 0.0;
             for (int i = 0; i < g_status.baseline_total; i++) {
@@ -1192,9 +1439,10 @@ void elotto_task(void *pvParam)
                     slave_abort();
                     goto done;
                 }
-                bsum += gcp_zscore_raw();
+                bsum += gcp_zscore_raw(segments_for(false));
+                run_gap(false);     // same duty cycle as the runs this calibrates
                 g_status.baseline_done = i + 1;
-                g_status.elapsed_ms = (esp_timer_get_time() - t0) / 1000;
+                g_status.elapsed_ms = elapsed_ms_now();
             }
             g_status.baseline_mean = bsum / g_status.baseline_total;
         }
@@ -1204,10 +1452,11 @@ void elotto_task(void *pvParam)
         /* ── Phase 0: Individual number scoring (cumulative: loop 0 only) ── */
         g_status.phase = PHASE_SCORING;
         if (do_score) {
-            score_and_build_pool(mx, pool_nm, pool_main);
+            score_and_build_pool(mx, pool_nm, pool_main, false);
             if (g_status.abort_requested) goto done;
-            if (euro) score_and_build_pool(12, POOL_EURO_12, pool_euro);
+            if (euro) score_and_build_pool(12, POOL_EURO_12, pool_euro, true);
             if (g_status.abort_requested) goto done;
+            focus_off();
         } else {
             g_status.scoring_done = g_status.scoring_total;   // pool already locked
         }
@@ -1232,6 +1481,13 @@ void elotto_task(void *pvParam)
                 slave_abort();
                 goto done;
             }
+            // Between runs, never inside one: the run just finished is kept and
+            // j does not advance, so nothing is lost or duplicated.
+            pause_gate();
+            if (g_status.abort_requested) {
+                slave_abort();
+                goto done;
+            }
             int i = s_perm[j];   // slot index; results[] stays slot-indexed
 
             // Slot → combination: spread slots evenly over the full space so a
@@ -1247,11 +1503,18 @@ void elotto_task(void *pvParam)
             else
                 g_status.results[i].euro[0] = g_status.results[i].euro[1] = 0;
 
+            // The draw goes on screen BEFORE the trigger, so the observer is
+            // already attending when the first bit is sampled.
+            focus_publish(FOCUS_DRAW, g_status.results[i].nums, nm,
+                          g_status.results[i].euro, euro ? 2 : 0);
+
             // One broadcast starts every node, then measure locally — all of
             // them integrate the same window, which is the premise the √n
             // combine rests on.
-            slave_trigger();
-            double zm = gcp_zscore_raw() - g_status.baseline_mean;
+            int nseg = segments_for(false);
+            slave_trigger(nseg);
+            double zm = gcp_zscore_raw(nseg) - g_status.baseline_mean;
+            focus_off();          // sampling done; the reply wait is dark time
             if (s_slave_ok) nodes_collect(LINK_MEAS_MS, true);
 
             // Per-node values for the independence check, gathered before the
@@ -1276,7 +1539,8 @@ void elotto_task(void *pvParam)
             g_status.results[i].chi_sq  = z * z;
             g_status.results[i].p_value = p_label(fabs(z));
             g_status.runs_completed     = j + 1;
-            g_status.elapsed_ms         = (esp_timer_get_time() - t0) / 1000;
+            g_status.elapsed_ms         = elapsed_ms_now();
+            run_gap(false);
         }
 
         // Loop finished cleanly: studentize on the loop's own mean/σ, then
@@ -1334,7 +1598,9 @@ done:
     compute_significance(comparisons);
 
 finalize:
-    g_status.elapsed_ms = (esp_timer_get_time() - t0) / 1000;
+    focus_off();
+    g_status.paused     = false;
+    g_status.elapsed_ms = elapsed_ms_now();
     g_status.state = g_status.abort_requested ? ELOTTO_ABORTED : ELOTTO_DONE;
     vTaskDelete(NULL);
 }
