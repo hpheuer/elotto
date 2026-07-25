@@ -2,6 +2,7 @@ idf_component_register(
     SRCS
         "elotto.c"
         "sensor.c"
+        "camera.c"
     INCLUDE_DIRS
         "."
     REQUIRES
@@ -15,4 +16,5 @@ idf_component_register(
         esp_http_server
         esp_hw_support
         esp_driver_uart
+        esp_video
 )

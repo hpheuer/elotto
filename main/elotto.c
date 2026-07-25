@@ -12,6 +12,7 @@
 #include "esp_timer.h"
 #include "esp_random.h"
 #include "sensor.h"
+#include "camera.h"
 
 static const char *TAG = "ELOTTO";
 
@@ -545,7 +546,7 @@ static esp_err_t abort_handler(httpd_req_t *req)
 
 static esp_err_t diag_handler(httpd_req_t *req)
 {
-    static char buf[2048];
+    static char buf[3072];
     int pos = 0;
 
     // --- Test 1: Direktes TRNG-Register ---
@@ -594,16 +595,32 @@ static esp_err_t diag_handler(httpd_req_t *req)
     double bias_esp  = (double)ones_esp / (DIAG_SEGS * 200.0);
     double z_std_esp = z_sum_esp / DIAG_SEGS;
 
+    // --- Test 3: OV5647 camera dark-frame noise (Phase 0, docs/PLAN_4NODE.md) ---
+    camera_stats_t cam;
+    camera_get_stats(&cam);
+
     pos += snprintf(buf+pos, sizeof(buf)-pos,
         "{"
         "\"reg_ms\":%lld,\"reg_bias\":%.6f,\"reg_stuck\":%lu,\"reg_z_mean\":%.4f,"
         "\"esp_ms\":%lld,\"esp_bias\":%.6f,\"esp_stuck\":%lu,\"esp_z_mean\":%.4f,"
-        "\"speedup\":%.2f,\"segs\":%d"
+        "\"speedup\":%.2f,\"segs\":%d,"
+        "\"cam\":{"
+        "\"ready\":%s,\"frame_pairs\":%llu,\"bits\":%llu,\"stuck_frames\":%lu,"
+        "\"bias\":%.6f,\"sigma\":%.4f,\"sigma_n\":%d,"
+        "\"autocorr\":[%.4f,%.4f,%.4f,%.4f],"
+        "\"mean_pixel\":%.2f,\"mbit_s\":%.3f,\"zero_diff\":%.4f"
+        "}"
         "}",
         (long long)dt_reg, bias_reg, (unsigned long)stuck_reg, z_std_reg,
         (long long)dt_esp, bias_esp, (unsigned long)stuck_esp, z_std_esp,
         dt_esp > 0 ? (double)dt_esp / dt_reg : 0.0,
-        DIAG_SEGS);
+        DIAG_SEGS,
+        cam.ready ? "true" : "false",
+        (unsigned long long)cam.frame_pairs, (unsigned long long)cam.bits_extracted,
+        (unsigned long)cam.stuck_frame_count,
+        cam.bias, cam.sigma, cam.sigma_samples,
+        cam.autocorr_lag[0], cam.autocorr_lag[1], cam.autocorr_lag[2], cam.autocorr_lag[3],
+        cam.mean_pixel_level, cam.mbit_per_sec, cam.zero_diff_frac);
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, buf);
@@ -701,6 +718,14 @@ void app_main(void)
     ethernet_init();
     xTaskCreate(slave_probe_task, "slave_probe", 4096, NULL, 3, NULL);
     xTaskCreate(webserver_task, "ws_task", 8192, NULL, 5, NULL);
+
+    // Phase 0 (docs/PLAN_4NODE.md): camera bring-up, non-fatal -- the rest of
+    // the system (Ethernet/webserver/TRNG scoring) must keep working while
+    // this is still being tuned. Not wired into gcp_zscore_raw() yet.
+    esp_err_t cam_ret = camera_init();
+    if (cam_ret != ESP_OK) {
+        ESP_LOGW(TAG, "camera_init: %s", esp_err_to_name(cam_ret));
+    }
 
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(30000));
