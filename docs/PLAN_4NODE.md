@@ -348,6 +348,7 @@ first time — every duration is a constant, and a Focus session is tagged as su
 |-------|-------------|----------|--------|
 | Number scoring | the single candidate number | **1000 ms** | `score_and_build_pool()` current `k` |
 | Combination measurement | the whole draw (6, or 5 + 2 euro) | **500 ms** | `results[i].nums` / `.euro` |
+| Between targets | a dim fixation mark, no numbers | **~200 ms** | — |
 | Baseline / idle | nothing (panel hidden) | — | — |
 
 - The hold time **is the run**, not a pause around it: size segments-per-run so the measurement
@@ -357,20 +358,40 @@ first time — every duration is a constant, and a Focus session is tagged as su
 - Order stays the per-loop Fisher–Yates permutation, so the observer cannot anticipate the
   next target — and drift immunity is unchanged.
 
+**The 200 ms gap between targets should be aligned with the sampling gap that already exists,
+not added on top of it.** Measured per-run wall time is ≈ 0.66 s slave-combined against ≈ 0.47 s
+of actual sampling, so ~190 ms per run is already spent on the slave round-trip and bookkeeping
+— time when no bits are being collected. Two reasons this matters:
+
+- **It makes the coincidence honest.** Panel lit ⟺ bits being collected. If the numbers stay up
+  through the inter-run overhead, the observer spends ~30 % of each cycle attending to a target
+  whose measurement has already finished.
+- **It is free.** Blanking during dead time costs no throughput. Only pad with real delay if the
+  natural gap turns out shorter than intended — and then pay for it in the run budget below.
+
+Blank to a **dim fixation mark** rather than nothing, so the gaze stays anchored and the next
+target appears where the observer is already looking — the onset is what has to be noticed.
+
 ### Timing budget — one loop ≤ ~10 min
 
 Measured: a camera run of 8000 segments takes ≈ 0.47 s master-only, ≈ 0.66 s slave-combined.
 Segment counts must therefore be **calibrated against a real run**, not derived on paper, and
 the chosen values recorded here.
 
-| | target | ≈ segments | count | ≈ time |
-|---|---|---|---|---|
-| Scoring run | 1000 ms | ~12–17k | 49 × `SCORE_REPS` (10) = 490 | ~8 min, **loop 0 only** |
-| Baseline run | (not shown) | measurement length | 50 | ~25 s |
-| Measurement run | 500 ms | ~6–8k | `Runs` cap **1000** | ~8.3 min |
+Cycle = display window + gap. If the gap lands entirely inside existing overhead it is free; if
+it has to be padded, budget the full cycle:
 
-→ loop 0 ≈ 17 min (scoring is one-time), every later loop ≈ **9 min**. Eurojackpot scoring is
-62 numbers ≈ 10 min. Suggested UI defaults change to `Runs = 1000`, `Baseline = 50`.
+| | window | + gap | ≈ segments | count | ≈ time |
+|---|---|---|---|---|---|
+| Scoring run | 1000 ms | 1200 ms | ~12–17k | 49 × `SCORE_REPS` (10) = 490 | ~10 min, **loop 0 only** |
+| Baseline run | (not shown) | — | measurement length | 50 | ~35 s |
+| Measurement run | 500 ms | 700 ms | ~6–8k | `Runs` cap **850** | ~10 min |
+
+→ every loop after the first ≈ **10 min**; loop 0 adds the one-time scoring. Eurojackpot scoring
+is 62 numbers ≈ 12 min. Suggested UI defaults: `Runs = 850`, `Baseline = 50`.
+
+`Runs` drops from 1000 to 850 purely to absorb the gap — if the gap proves free (overhead
+already ~190 ms), put it back to 1000.
 
 The `Runs` cap already stride-samples across the whole combination space (slot i → combo
 ⌊i·full/total⌋), so 1000 of 5005 stays spread rather than taking a lexicographic prefix, and
@@ -433,6 +454,9 @@ corrupts the data rather than the one that merely blurs it.
 - **Zero missed windows over a full loop** (`focus_seq` gap counter stays 0). A sub-100 ms
   offset is fine and needs no measurement; a skipped or straddling window is the failure that
   would credit an effect to the wrong combination.
+- **Panel lit ⟺ sampling.** Numbers are on screen only while that run's bits are being
+  collected; the gap shows the fixation mark. Report the measured natural inter-run gap, so it
+  is known whether the 200 ms was free or paid for.
 - Measured run durations within ±10 % of 1000 ms / 500 ms; calibrated segment counts recorded.
 - One measurement loop ≤ 10 min.
 - **`loop_sigma` ≈ 1 and `pair_r` ≈ 0 at the new run lengths** — the retune must not disturb the
