@@ -156,6 +156,37 @@ Two configuration details for Phase A:
 - **Each node serves its own `/diag`**, so the `D`-command marshalling added in Phase 3 retires.
 - The per-loop slave camera columns in `/loops` get their data from HTTP instead of UART.
 
+## Reuse map — what already exists, so nothing is reinvented
+
+Everything needed ships with ESP-IDF v6.0.1 locally. Verified present at
+`C:\esp\v6.0.1\esp-idf\examples\`:
+
+| Need | Take from | Notes |
+|---|---|---|
+| `esp_ota_begin/write/end/set_boot_partition` sequence | `system/ota/native_ota_example` (345 lines) | Also carries the exact rollback pattern: read `ESP_OTA_IMG_PENDING_VERIFY` at boot, run a `diagnostic()`, then `esp_ota_mark_app_valid_cancel_rollback()`. Its HTTP **client** is what we drop |
+| Receiving a pushed image over HTTP | `protocols/http_server/file_serving` → `upload_post_handler()` | `req->content_len` + loop on `httpd_req_recv()` into a scratch buffer. Swap `fwrite` for `esp_ota_write` and that *is* `/update` |
+| Version check, partial download, richer rollback | `system/ota/advanced_https_ota` | Worth reading even though we are not using HTTPS pull |
+| Partition table shape | `system/ota/partitions_ota/*.csv` | Copy the layout, resize for 32 MB |
+| Host-side partition inspection | `system/ota/otatool` | Useful for scripted verification |
+| Ethernet bring-up | **our own `ethernet_init()` in `main/elotto.c`** | Already proven on this exact board (IP101GRI/RMII, GPIO 31/52/51). Better than `examples/ethernet/basic`, which is generic |
+
+**Push, not pull.** Every IDF OTA example is *pull* — the device fetches from an HTTPS URL. Ours
+is *push*: `curl --data-binary @app.bin http://<node>/update`. That needs no HTTP server on the
+PC, reuses the webserver already running, and fits the existing permission rules. The cost is
+that the two halves come from two different examples instead of one.
+
+Genuinely new code is therefore small: the httpd→`esp_ota` glue (~80–100 lines), the boot-loop
+counter (~30), and the factory-app scaffolding (`ethernet_init` + httpd + handlers). Call it
+~300 lines, most of it adapted rather than written.
+
+Third-party alternatives (ElegantOTA and similar) are Arduino-framework and would mean pulling
+Arduino in as a component — not worth it against two first-party examples.
+
+**Recovery bootloader is not available on this chip.** IDF v6 supports a
+`bootloader, recovery` partition type, but `SOC_RECOVERY_BOOTLOADER_SUPPORTED` is absent from
+`soc/esp32p4/include/soc/soc_caps.h`, so failure case 5 in §3a stays USB-only. Verified, not
+assumed.
+
 ## Risks
 
 1. **Shared PoE rail is a new correlation path.** Until now each board had its own USB supply
@@ -187,6 +218,10 @@ passes.
 - Build the factory updater as its own project/app: Ethernet + HTTP + `esp_ota_ops` + the
   capability table above. Target ≤ 130 KB RAM in use.
 - Install on **one** board via USB (erase + flash bootloader, partition table, factory, app).
+  **Do the slave (COM6) first, not the master.** A bricked slave costs a reflash; a bricked
+  master takes down the web UI and the whole measurement path. The slave is already cabled to
+  the LAN, and since the updater brings up Ethernet by definition, installing it is also what
+  first puts that node on the network.
 - **Gate:** with the board on Ethernet only, push an app image over the network **twice in a
   row**, then prove each recovery path from §3a without a cable:
   1. flash an app that panics before validating → expect rollback to the previous app;
