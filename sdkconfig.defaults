@@ -1,0 +1,67 @@
+# Master (elotto) build configuration.
+#
+# This file did not exist before Phase B — the master's sdkconfig had been built
+# up interactively, which meant the documented rule ("edit sdkconfig.defaults,
+# delete sdkconfig, regenerate") could not actually be followed without losing
+# settings. Everything below was extracted from the working sdkconfig so the
+# configuration is now reproducible from source.
+
+# The boards are ESP32-P4 rev v1.3. ESP32P4_REV_MIN_0 *depends on*
+# ESP32P4_SELECTS_REV_LESS_V3, which defaults to n — without the line below the
+# choice silently falls back to rev v3.1 and the binary refuses to boot on this
+# hardware. Support for <3.0 and >=3.0 is mutually exclusive, so this comes first.
+CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y
+CONFIG_ESP32P4_REV_MIN_0=y
+CONFIG_ESP32P4_REV_MIN_FULL=0
+CONFIG_ESP_REV_MIN_FULL=0
+CONFIG_ESP32P4_REV_MAX_FULL=199
+CONFIG_ESP_REV_MAX_FULL=199
+
+# --- Flash and partitions (docs/PLAN_NETWORK.md Phase A/B) ------------------
+# 32 MB measured on both boards; the project shipped configured for 2 MB, which
+# wasted 30 MB and left no room for OTA slots.
+CONFIG_ESPTOOLPY_FLASHSIZE_32MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="32MB"
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# Rollback defaults to n. Without it a broken OTA image simply boots again on
+# reset and the reset button does nothing for you.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+
+# --- PSRAM ------------------------------------------------------------------
+# Mandatory with the camera: capture buffers (4 x 640 KB) and the extraction
+# ring cannot fit in internal SRAM, which is already full with results[].
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_HEX=y
+CONFIG_SPIRAM_SPEED_200M=y
+CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
+
+# --- OV5647 camera entropy (docs/PLAN_4NODE.md) -----------------------------
+# The sensor mode is load-bearing: every gate in PLAN_4NODE was measured at
+# RAW8 800x800 @ 50 fps, exposure 16, gain 1023.
+CONFIG_CAMERA_OV5647=y
+CONFIG_CAMERA_OV5647_MIPI_RAW8_800X800_50FPS=y
+CONFIG_CAMERA_OV5647_MIPI_DEFAULT_FMT_RAW8_800X800_50FPS=y
+
+# Shared elotto_camera component. XCLK stays unwired because RPi-style OV5647
+# modules clock themselves; SCCB on GPIO8/7.
+CONFIG_ELOTTO_CAM_ENABLE=y
+CONFIG_ELOTTO_CAM_SCL_PIN=8
+CONFIG_ELOTTO_CAM_SDA_PIN=7
+CONFIG_ELOTTO_CAM_XCLK_PIN=-1
+CONFIG_ELOTTO_CAM_RESET_PIN=-1
+CONFIG_ELOTTO_CAM_PWDN_PIN=-1
+CONFIG_ELOTTO_CAM_XOR_FOLD=y
+CONFIG_ELOTTO_CAM_REG_EXPOSURE=16
+CONFIG_ELOTTO_CAM_REG_GAIN=1023
+
+# No DVP camera on these boards — MIPI-CSI only. Off by default in the previous
+# hand-tuned sdkconfig; keeping it off avoids linking a device we never open.
+CONFIG_ESP_VIDEO_ENABLE_DVP_VIDEO_DEVICE=n
+
+# --- HTTP server ------------------------------------------------------------
+# /update streams a multi-hundred-KB body through the same server that serves
+# the UI.
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
+CONFIG_HTTPD_MAX_URI_LEN=512

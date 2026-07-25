@@ -289,6 +289,47 @@ few minutes' work if the 2-node system is needed sooner.
 - **Gate:** update the master over Ethernet during idle; verify the refusal path during a
   running session; confirm `/status` reports the new build id.
 
+**Status: PASSED** (2026-07-25, master, 192.168.178.100).
+
+- **752 528 bytes pushed over Ethernet in ~3.1 s**, four full cycles: `factory` → `ota_0` →
+  `ota_1` → `factory` → `ota_0`, each image validating itself once the webserver answered.
+  The master's own application now reaches the board without a cable.
+- **`/status` carries firmware identity** — `fw_version`, `fw_built`, `fw_sha` (elf sha256),
+  `fw_slot`, `fw_state`, `fw_boot_fails`. Without it, an update that answered `ok` could not be
+  told apart from one that silently rolled back; that is not a hypothetical, see below.
+- **Refusal during a session works and is machine-readable**: `HTTP 409 Conflict`,
+  `busy: a session is running — abort it first`. IDF has no `HTTPD_409_CONFLICT`, so the status
+  is set by hand rather than reusing 400/403 — a push script must be able to tell "refused, try
+  later" from "your image is bad". The image was untouched afterwards (same `fw_sha`).
+  **This is a real gain over USB**, where nothing but discipline stopped a flash from
+  destroying a running measurement.
+
+Implementation note: the update endpoint and all boot-safety logic moved into the shared
+**`components/elotto_ota`**, used by the updater, the master and (Phase C) the slave. Three
+copies of the code that decides whether a node is still reachable would be three chances to get
+a recovery path subtly wrong on one node only. `ota_firmware` therefore points
+`EXTRA_COMPONENT_DIRS` at that *single component*, not at `components/` — IDF compiles every
+component it discovers, and pulling `elotto_camera` into the recovery image would drag in PSRAM
+and the sensor driver, which is the opposite of the point.
+
+Two pre-existing problems surfaced and were fixed on the way:
+
+- **The master had no `sdkconfig.defaults`.** Its configuration had been built up interactively,
+  so the documented rule ("edit `sdkconfig.defaults`, delete `sdkconfig`, regenerate") could not
+  be followed without losing settings. One now exists, extracted from the working config and
+  verified by diffing the regenerated `sdkconfig` against the old one — 18 keys changed, all
+  either intended or IDF's own consequences of 32 MB flash (`BOOTLOADER_FLASH_32BIT_ADDR`).
+- **The master's `CMakeLists.txt` never set `IDF_TARGET`**, so a clean checkout — or exactly the
+  regenerate the config rule demands — failed with "CMAKE_C_COMPILER not set".
+
+**One unexplained event, recorded rather than smoothed over:** the very first `factory` → `ota_0`
+push booted the app and ended up back on `factory` with `boot_fails = 1`, i.e. the image failed
+before validating and the bootloader recovered it. No console was attached at that moment, so
+the cause is unknown. It did **not** reproduce: the identical transition, with the same binary
+and console attached, has since run cleanly three times. Worth watching for on the remaining
+nodes — and note that the safety net turned an unexplained failure into a non-event, which is
+the entire argument for having it.
+
 ### Phase C — UDP transport at n=2 (the A/B)
 
 - Slave gains Ethernet + a UDP command loop; master replaces the UART calls with broadcast

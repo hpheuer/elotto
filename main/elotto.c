@@ -13,6 +13,7 @@
 #include "esp_random.h"
 #include "sensor.h"
 #include "camera.h"
+#include "elotto_ota.h"
 
 static const char *TAG = "ELOTTO";
 
@@ -506,6 +507,12 @@ static esp_err_t status_handler(httpd_req_t *req)
         g_status.runs_completed, g_status.runs_total,
         (long long)g_status.elapsed_ms);
 
+    /* Firmware identity: version, build time, elf sha256, running slot, OTA
+     * state. Without it an update that answered "ok" cannot be distinguished
+     * from one that silently rolled back. */
+    pos += elotto_ota_status_json(buf + pos, sizeof(buf) - pos);
+    pos += snprintf(buf + pos, sizeof(buf) - pos, ",");
+
     // Cumulative top-N is published continuously, so intermediate results
     // (after each loop) are shown too — not only when the whole job is done.
     bool euro = (g_status.mode == MODE_EUROJACKPOT);
@@ -739,11 +746,20 @@ static esp_err_t root_handler(httpd_req_t *req)
 }
 
 /* ── Webserver ────────────────────────────────────────────────────── */
+/* An update must never destroy a measurement: flashing mid-session silently
+ * discards however many hours it had accumulated. /update answers 409 while
+ * this returns true. The USB path had no such guard — only discipline and a
+ * note in CLAUDE.md to check /status first. */
+static bool session_running(void) { return g_status.state == ELOTTO_RUNNING; }
+
 static void start_webserver(void)
 {
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
-    cfg.max_uri_handlers = 8;
-    cfg.stack_size = 8192;
+    cfg.max_uri_handlers  = 16;   /* 6 here + 5 registered by elotto_ota */
+    cfg.stack_size        = 8192;
+    cfg.recv_wait_timeout = 20;   /* /update streams a ~700 KB body */
+    cfg.send_wait_timeout = 20;
+    cfg.lru_purge_enable  = true;
     httpd_handle_t srv = NULL;
     ESP_ERROR_CHECK(httpd_start(&srv, &cfg));
     static const httpd_uri_t uris[] = {
@@ -756,6 +772,17 @@ static void start_webserver(void)
     };
     for (int i = 0; i < (int)(sizeof(uris) / sizeof(uris[0])); i++)
         httpd_register_uri_handler(srv, &uris[i]);
+
+    /* /update, /boot, /reboot, /poison, /otainfo — the same shared code the
+     * factory updater runs (docs/PLAN_NETWORK.md). */
+    elotto_ota_register(srv, session_running);
+
+    /* Only now is this image proven reachable, which is the criterion that
+     * matters: an app that answers here can always be replaced over the wire,
+     * however broken its measurement logic. Marking valid any earlier would
+     * hand rollback's protection away for nothing. */
+    elotto_ota_mark_valid();
+
     ESP_LOGI(TAG, "Webserver running");
 }
 
@@ -815,6 +842,14 @@ void app_main(void)
         ret = nvs_flash_init();
     }
     ESP_ERROR_CHECK(ret);
+
+    /* Before anything that can itself crash: counts boots that never reached a
+     * healthy uptime and falls back to the factory updater. This is the only
+     * escape from a *validated* image that crash-loops — rollback is disarmed
+     * once an image is marked valid, so the bootloader would relaunch it
+     * forever and the reset button would not help. */
+    elotto_ota_boot_check();
+
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 

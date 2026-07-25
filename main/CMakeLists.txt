@@ -16,4 +16,5 @@ idf_component_register(
         esp_hw_support
         esp_driver_uart
         elotto_camera
+        elotto_ota
 )
