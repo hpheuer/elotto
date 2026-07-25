@@ -98,6 +98,46 @@ It contains **no camera, no GCP, no statistics** — that is the whole reason it
 - The application must therefore **only mark itself valid after Ethernet is up and the
   webserver answers** — validating at `app_main` entry would defeat rollback entirely.
 
+### 3a. Failure modes and recovery — what actually saves the board
+
+Worth being precise, because the intuition "if it crashes I just press reset" is **only
+conditionally true**. Reset does nothing but restart: the bootloader then boots whatever
+`otadata` points at. If that is a broken app, reset boots the broken app again, forever. What
+recovers the board is *rollback*, and `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE` **defaults to
+`n`** — it must be switched on deliberately in Phase A or none of this holds.
+
+With rollback on, a freshly OTA'd app boots in state `ESP_OTA_IMG_PENDING_VERIFY`, which (per
+the IDF Kconfig help) *"prevents the re-run of this app"*: unless the app confirms itself, the
+next boot rolls back to the previous working app. Crash, panic reboot, watchdog, power cut or a
+manual reset all trigger it equally.
+
+Layered, weakest failure first:
+
+| # | Failure | What recovers it | Needs |
+|---|---|---|---|
+| 1 | New app crashes/hangs **on first boot** | Rollback: it never confirmed → next boot reverts to the previous app | `BOOTLOADER_APP_ROLLBACK_ENABLE=y`. This is the case the reset button covers |
+| 2 | New app "works" but cannot be updated | Never validate on liveness — see the criterion below | discipline in the app |
+| 3 | App validated, then crash-loops later (breaks only when a session starts, Ethernet dies overnight) | Boot-loop counter in RTC/NVS: after N unhealthy boots, `esp_ota_set_boot_partition(factory)` + restart | app code, ~30 lines |
+| 4 | App validated, then **hangs** without rebooting | GPIO factory reset: bootloader erases `otadata` → boots `factory` updater | `BOOTLOADER_FACTORY_RESET=y` + `BOOTLOADER_OTA_DATA_ERASE=y` + a pin |
+| 5 | Corrupt bootloader or wrong partition table | **USB. Irreducible** — OTA cannot rewrite what loads OTA | one cable, kept |
+
+**Case 3 is the one that breaks the naive model.** Once an image is marked valid, rollback is
+disarmed permanently; reset just reboots into it. That is why the factory updater exists, and
+why cases 3 and 4 need their own mechanisms rather than trusting the button.
+
+**The validation criterion is therefore "can I still be updated?", not "is the app correct?"**
+Mark valid only once Ethernet is up *and* the HTTP server is answering. An app that validates
+is by construction remotely updatable, however broken its measurement logic — and a broken
+measurement path is a nuisance, while a broken update path is a trip to the bench.
+
+Two configuration details for Phase A:
+
+- `BOOTLOADER_DATA_FACTORY_RESET` defaults to `"nvs"` — decide explicitly whether the recovery
+  button should also wipe NVS, or set it empty to keep settings.
+- **Do not put the factory-reset GPIO on the BOOT strapping pin.** Holding BOOT at reset enters
+  the ROM download mode (i.e. the USB path) before the second-stage bootloader ever runs, so
+  the two would collide. Pick a free pin with its own button or jumper (P4 allows GPIO 0–54).
+
 ### 4. UDP replaces UART for measurement sync
 
 - **Broadcast trigger**, unicast replies carrying an epoch/sequence number.
@@ -148,9 +188,15 @@ passes.
   capability table above. Target ≤ 130 KB RAM in use.
 - Install on **one** board via USB (erase + flash bootloader, partition table, factory, app).
 - **Gate:** with the board on Ethernet only, push an app image over the network **twice in a
-  row**; then deliberately flash a broken app (e.g. one that never brings up Ethernet) and show
-  it recovers to a usable updater **without a cable**. Report the measured RAM figure against
-  the 130 KB budget.
+  row**, then prove each recovery path from §3a without a cable:
+  1. flash an app that panics before validating → expect rollback to the previous app;
+  2. flash an app that validates and *then* crash-loops → expect the boot-counter fallback to
+     `factory`;
+  3. hold the recovery GPIO at power-up → expect `otadata` erased and the updater booted.
+
+  Report the measured RAM figure against the 130 KB budget. Recovery paths that have only been
+  reasoned about do not count as passing — `PLAN_4NODE.md` already carries one such untested
+  safety claim (the camera-stall abort), and that is one too many.
 
 ### Phase B — OTA endpoint in the application
 
