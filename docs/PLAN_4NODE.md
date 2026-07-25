@@ -246,6 +246,15 @@ the instrument to answer it:
   default) instead of inheriting whatever the previous session used. The source decides what
   physics is being measured; it must never carry over silently.
 
+> **Superseded by Phase 5 (2026-07-25): `SCORE_REPS` is gone — scoring is now exactly one run
+> per number, in a fresh random order.** Repeats *in place* are incompatible with the Focus
+> panel (the display would not change for seconds at a time), and the pool phase became
+> attended screen time rather than a preamble. The cost is stated there: per-number SE
+> 1/√k = 0.50 at four nodes, against 0.22 at 5 reps. It still changes only *which* numbers
+> enter the pool, never the Phase-2 statistics. If a pool choice must be trusted on its own,
+> run several full random passes — never repeats in place. The paragraph below is kept as the
+> record of the earlier reasoning.
+
 **`SCORE_REPS` stays at 10** (lowered from 40; user decision 2026-07-25). Scoring is a
 one-time phase costing ~27 min at 40 reps for Eurojackpot, which blocked every test run from
 reaching the loops it was supposed to exercise. Consequence, stated plainly: the pool is
@@ -347,13 +356,23 @@ first time — every duration is a constant, and a Focus session is tagged as su
 | Phase | Panel shows | Held for | Source |
 |-------|-------------|----------|--------|
 | Number scoring | the single candidate number | **1000 ms** | `score_and_build_pool()` current `k` |
-| Combination measurement | the whole draw (6, or 5 + 2 euro) | **500 ms** | `results[i].nums` / `.euro` |
-| Between targets | a dim fixation mark, no numbers | **~200 ms** | — |
+| Combination measurement | the whole draw (6, or 5 + 2 euro) | ~~500 ms~~ **1000 ms** | `results[i].nums` / `.euro` |
+| Between targets | ~~a dim fixation mark~~ **empty**, no numbers | ~~~200 ms~~ **350 ms** | — |
 | Baseline / idle | nothing (panel hidden) | — | — |
 
-> **As built**, the between-targets gap is 200 ms after a measurement or baseline run and
-> **350 ms after a scoring run** — see finding 3 below. It is a real delay, not existing
-> overhead, because the natural gap turned out to be 2.3 ms (finding 1).
+> **As built (user decisions, 2026-07-25):**
+> - **The 500 ms draw window was dropped — every focus display is 1000 ms.** Anything the
+>   observer is asked to attend to gets the same, longer look. This collapses the briefly
+>   phase-dependent segment count back to one constant per source.
+> - **The gap is a uniform 350 ms**, and it is a real delay, not existing overhead: the natural
+>   gap turned out to be 2.3 ms (finding 1). 350 rather than 200 because conscious noticing is
+>   smeared over ~100–300 ms, so a 200 ms blank leaves the tail of attending to target N
+>   overlapping the start of N+1's sampling — the mislabeling this phase exists to avoid.
+>   Finding 3 shows the hardware forces the same choice independently.
+> - **Scoring is now ONE run per number, swept in random order** (see below). Five consecutive
+>   runs of the same number would freeze the panel for ~6.9 s, and onset is the payload.
+> - Consequently `Runs` defaults to **430**, not 850: the cycle is ~1.38 s, so a ~10 min
+>   measurement loop is ~430 runs.
 
 - The hold time **is the run**, not a pause around it: size segments-per-run so the measurement
   occupies the window. Padding with a delay would halve the bit rate for nothing.
@@ -376,6 +395,11 @@ of actual sampling, so ~190 ms per run is already spent on the slave round-trip 
 Blank to a **dim fixation mark** rather than nothing, so the gaze stays anchored and the next
 target appears where the observer is already looking — the onset is what has to be noticed.
 
+> **Reversed (user decision, 2026-07-25): there is no fixation mark.** The dim `+` was built and
+> then removed on sight — it read as clutter in the panel rather than as an anchor. The gap is
+> now empty space. The gaze-anchoring argument above is untested either way; if a target ever
+> seems to appear "somewhere unexpected", this is the first thing to try again.
+
 ### Timing budget — one loop ≤ ~10 min
 
 Measured: a camera run of 8000 segments takes ≈ 0.47 s master-only, ≈ 0.66 s slave-combined.
@@ -392,11 +416,19 @@ it has to be padded, budget the full cycle:
 | Measurement run | 500 ms | 700 ms | ~6–8k | `Runs` cap **850** | ~10 min |
 
 → every loop after the first ≈ **10 min**; loop 0 adds the one-time scoring. Eurojackpot scoring
-is 62 numbers ≈ 12 min. Suggested UI defaults: `Runs = 850`, `Baseline = 50`. **Both defaults
-shipped.**
+is 62 numbers ≈ 12 min. Suggested UI defaults: `Runs = 850`, `Baseline = 50`.
 
-As built (6/49, `SCORE_REPS` = 5, so scoring is 49 × 5 = 245 runs rather than the 490 assumed
-above): scoring ≈ 245 × 1.38 s ≈ **5.6 min**, measurement ≈ 850 × 0.70 s ≈ **9.9 min**.
+**As built**, with one 1000 ms window everywhere, a 350 ms gap and one run per number, the
+cycle is ~1.40 s and the budget works out very differently — scoring got ~6× cheaper, the
+measurement loop absorbed it:
+
+| | count | cycle | time |
+|---|---|---|---|
+| Scoring (loop 0 only) | 49 (6/49) or 62 (euro) | 1.372 s | **67 s** / 85 s |
+| Baseline | 50 | 1.40 s | 70 s |
+| Measurement | `Runs` **430** | 1.397 s | **10.0 min** |
+
+So `Runs = 430` ships instead of 850, and loop 0 costs ~2.3 min of preamble instead of ~6.3.
 
 `Runs` drops from 1000 to 850 purely to absorb the gap — if the gap proves free (overhead
 already ~190 ms), put it back to 1000.
@@ -524,11 +556,20 @@ landed, so all four nodes participate and the run-length exchange was changed on
   measurement loops. Deliberately *not* in the baseline loop: one `B` command sets every slave
   running its whole baseline autonomously, so a master-side hold would desynchronise them rather
   than pause them.
-- **UI**: Focus card below the progress card (72 px circles, dim `+` fixation mark between
-  targets, unmistakable PAUSED state), a Focus checkbox, a Pause/Continue button, `Runs = 850`
+- **Scoring sweeps every number once, in random order** — no repeats, no adjacent duplicates by
+  construction. Fisher–Yates on `fast_rng()`, like the Phase-2 permutation, so it never spends
+  rate-limited camera entropy on administrative randomness. Also stops the observer
+  anticipating the next candidate.
+- **UI**: Focus card below the progress card (72 px circles, empty between targets,
+  unmistakable PAUSED state), a Focus checkbox, a Pause/Continue button, `Runs = 430`
   and `Baseline = 50` defaults, and the session's condition in both the stats line and the CSV
   header. `/start` without `?focus=` means **unattended** — a session started by curl has no
   observer by definition.
+- **Eurojackpot's 1–12 bonus numbers render as gold stars**, not circles (CSS `clip-path`, so
+  the page stays self-contained). A draw shows 5 main + 2 euro side by side and the two pools
+  overlap in value — `{"n":[1,6,9,19,22],"e":[1,8]}` puts a **1** in both — so shape, not just
+  colour, is what separates them at a glance. Type is 1.5em rather than the circles' 1.9em
+  because a star's readable area is its inner pentagon, not its bounding box.
 
 ### What calibration actually found — the run window is not a free parameter
 
@@ -560,15 +601,33 @@ slower producer and get longer still. None of this is visible in Phase 0's 3.49 
 figure. The 200 ms blank is therefore not cosmetic: it is when the producer gets the CPU back,
 and it buys back most of what it costs.
 
-**3. A 1000 ms scoring window at a 200 ms gap is unreachable by construction** — that is 83 %
-duty, already past the cliff, so *every* candidate segment count lands in the collapsed regime
-and stretches to ~1500 ms instead (confirmed at 16700 and 17000). The fix was to widen the
-**scoring** gap to 350 ms (`SCORE_RUN_GAP_MS`), which puts the same 1000 ms window at 74 % duty
-where a count does solve. Shortening the window instead was rejected: the gap is the soft
-parameter this plan already marked adjustable, whereas the hold times are the spec, and buying a
-display number by running the entropy source in a starved regime trades physics for cosmetics —
-that regime is exactly where open item 3 (bias under sustained load) lives. Safe to differ per
-phase because scoring does not use the baseline at all.
+**3. The scoring gap is 350 ms, for two independent reasons.**
+
+*Experimental (user decision, 2026-07-25, and the primary one):* a wider blank guarantees the
+measurement is coincident with the **right** target. Conscious noticing is smeared over
+~100–300 ms — comparable to the gap itself — so at 200 ms the tail of attending to target N can
+still overlap the start of N+1's sampling, which is the mislabeling this phase exists to avoid.
+Better safe than sorry, and scoring is the cheap place to pay for it (loop 0 only, ~37 s).
+
+*Technical:* a 1000 ms window at a 200 ms gap is **unreachable by construction** anyway — that
+is 83 % duty, already past the cliff in finding 2, so *every* candidate segment count lands in
+the collapsed regime and stretches to ~1500 ms instead. Measured at the 200 ms gap the window
+jumps straight from 588 ms (11600 segments) to 1494 ms (16700) — nothing in between was
+reachable, not even within ±30 %. At 350 ms the same 1000 ms window sits at 74 % duty, where a
+count does solve (11950 → 1027 ms).
+
+Shortening the window instead was rejected: the gap is the soft parameter this plan already
+marked adjustable, whereas the hold times are the spec, and buying a display number by running
+the entropy source in a starved regime trades physics for cosmetics — that regime is exactly
+where open item 3 (bias under sustained load) lives. Safe to differ per phase because scoring
+does not use the baseline at all.
+
+**⚠ The same argument applies to the 200 ms MEASUREMENT gap, and it has not been acted on.**
+If ~100–300 ms of perceptual smear is the reason scoring needs 350 ms, then a 500 ms window
+separated by only 200 ms has the same exposure — and that is where 850 of the runs are, not 245.
+It was left at 200 ms because the cost is real rather than nominal: 850 × 150 ms adds ~2.1 min,
+taking a measurement loop from 10.5 to ~12.6 min against a 10 min budget. Open decision, not an
+oversight.
 
 **4. ⚠ The window is not stable across a day, and this is unresolved.** Under otherwise
 identical settings the achievable window moved by up to **1.75×** over an afternoon of
@@ -587,10 +646,19 @@ every run, the array's window is set by its slowest member.
 
 **Calibrated constants (2026-07-25, 4 nodes, all camera, client polling at 10 Hz):**
 
-| | segments | gap | measured window | vs target | cycle |
+One window, one count, one gap — every phase (scoring, measurement, baseline) runs the same
+length, so `CAM_SEGMENTS` / `TRNG_SEGMENTS` are single constants again:
+
+| | segments | gap | measured window | vs 1000 ms | cycle |
 |---|---|---|---|---|---|
-| Scoring run | `CAM_SCORE_SEGMENTS` 11950 | 350 ms | **1027 ms** | +2.7 % | 1.375 s |
-| Measurement run | `CAM_MEAS_SEGMENTS` 6400 | 200 ms | **474.8 ms** | −5.0 % | 0.673 s |
+| Scoring run | `CAM_SEGMENTS` 11950 | 350 ms | **1024 ms** | +2.4 % | 1.372 s |
+| Measurement run | `CAM_SEGMENTS` 11950 | 350 ms | **1053 ms** | +5.3 % | 1.400 s |
+
+→ a measurement loop at `Runs = 430` is **10.0 min**, back inside the budget.
+
+*Superseded, kept because the numbers were measured:* the earlier split configuration was
+`CAM_SCORE_SEGMENTS` 11950 @ 350 ms gap → 1027 ms, and `CAM_MEAS_SEGMENTS` 6400 @ 200 ms gap →
+474.8 ms (drifting to 514.4 ms over 1700 runs, which is what pushed that loop to 10.5 min).
 
 TRNG counts (32000 / 16000) are **extrapolated** from Phase 1's "~1 s at 32000 segments", not
 re-measured — the camera is the default source. Measure `focus_win_ms` before trusting a TRNG
@@ -624,6 +692,12 @@ what it claims — right target, right window, undisturbed statistics — so tha
 be trusted as a null result.
 
 ### Gate results — **PASSED**, with one criterion marginally missed
+
+⚠ **Run on the earlier split configuration** (1000 ms scoring / 500 ms draw, 350/200 ms gaps,
+`Runs` 850, 5 reps per number). The uniform-1000 ms retune came after, and the criteria it can
+move — window durations and loop time — are re-measured in "Re-verified after the retune"
+below. Everything else here (seq continuity, panel-lit⟺sampling, pause, transport) is
+unaffected by run length and stands.
 
 Session: 2026-07-25, 6/49, cumulative, Loops = 2, Runs = 850, Baseline = 50, all four nodes on
 camera, `?focus=1`. 1700 measured runs, 27 min, no aborts, no drops.

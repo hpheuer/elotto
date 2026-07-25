@@ -80,10 +80,23 @@ static const char HTML[] =
 "background:#2e7d32;border-radius:50%;width:72px;height:72px;margin:4px;"
 "font-weight:700;font-size:1.9em;flex-shrink:0;"
 "box-shadow:0 0 18px rgba(144,238,144,.35)}"
-".numBig.euro{background:#7b6e00;box-shadow:0 0 18px rgba(240,192,64,.35)}"
+// Eurojackpot's 1-12 bonus numbers are STARS, not circles. In a draw the panel
+// shows 5 main + 2 euro side by side, so shape (not just colour) is what tells
+// them apart at a glance — and glancing is the whole interaction here.
+// clip-path rather than a glyph or an image: the page must stay self-contained,
+// and a clipped element still centres its text normally. box-shadow would be
+// clipped away with the corners, so the glow moves to a drop-shadow filter.
+".numBig.euro{background:linear-gradient(160deg,#ffdc6a,#dda200);color:#2b2000;"
+// Smaller type than a main circle on purpose: the readable area of a star is
+// its inner pentagon (~36 px across here), not its bounding box, so 1.9em would
+// leave a two-digit number touching the points.
+"border-radius:0;box-shadow:none;width:100px;height:95px;padding-top:10px;"
+"font-size:1.5em;"
+"clip-path:polygon(50% 0%,61% 35%,98% 35%,68% 57%,79% 91%,50% 70%,21% 91%,"
+"32% 57%,2% 35%,39% 35%);"
+"filter:drop-shadow(0 0 10px rgba(240,192,64,.5))}"
 "#focusBox{min-height:104px;display:flex;align-items:center;justify-content:center;"
 "flex-wrap:wrap;gap:2px}"
-".fix{color:rgba(255,255,255,.18);font-size:3em;line-height:1;font-weight:300}"
 "</style></head><body>"
 "<div class='wrap'>"
 "<h1>&#9752; E-Lotto <a href='https://grokipedia.com/page/Global_Consciousness_Project'"
@@ -95,8 +108,11 @@ static const char HTML[] =
 "<div id='runsRow' style='display:grid;grid-template-columns:1fr 1fr;gap:8px 14px;justify-items:center;margin-bottom:10px'>"
 "<div style='grid-column:span 2;display:flex;align-items:center;gap:6px'>"
 "<label style='color:#f0c040;font-size:.9em'>Baseline runs:</label>"
-// Defaults per the Phase 5 timing budget: one measurement loop ~10 min at
-// 850 runs x ~0.7 s, plus ~35 s of baseline. `Runs = 0` (all) still works.
+// Defaults per the Phase 5 timing budget, restated for the uniform 1000 ms
+// window: the cycle is ~1.38 s (1027 ms lit + 350 ms blank), so a ~10 min
+// measurement loop is ~430 runs, not the 850 the 500 ms draw allowed.
+// `Runs = 0` (all) still works, and 430 of 5005 is still stride-sampled across
+// the whole combination space rather than a lexicographic prefix.
 "<input id='numBaseline' type='number' value='50' min='10' max='5000' step='50'"
 " style='width:70px;padding:5px 8px;border-radius:6px;border:1px solid #a08030;"
 "background:#0a2e0a;color:#fff;font-size:1em;text-align:center'>"
@@ -109,7 +125,7 @@ static const char HTML[] =
 "</div>"
 "<div style='grid-column:span 2;display:flex;align-items:center;gap:6px'>"
 "<label style='color:#f0c040;font-size:.9em'>Runs (0=all):</label>"
-"<input id='numRuns' type='number' value='850' min='0' max='8000' step='1'"
+"<input id='numRuns' type='number' value='430' min='0' max='8000' step='1'"
 " style='width:70px;padding:5px 8px;border-radius:6px;border:1px solid #a08030;"
 "background:#0a2e0a;color:#fff;font-size:1em;text-align:center'>"
 "</div>"
@@ -173,7 +189,7 @@ static const char HTML[] =
 "height:100%;border-radius:20px;width:0%;transition:width .5s'></div></div>"
 "<div style='color:#6ab0e8;font-size:.9em;text-align:center;margin-top:4px'>"
 "<span id='sScoreDone'>0</span> / <span id='sScoreTotal'>-</span> Runs "
-"(<span id='sScoreReps'>-</span>/number, dual)</div>"
+"(<span id='sScoreReps'>-</span>&times; per number, random order)</div>"
 "</div>"
 "<div id='measArea' style='display:none;margin-top:14px'>"
 "<div style='color:#90ee90;font-size:.88em;margin-bottom:4px'>&#128202; Measurement"
@@ -192,7 +208,7 @@ static const char HTML[] =
 "<div class='card' id='focusCard' style='display:none;text-align:center'>"
 "<div style='color:#f0c040;font-size:.88em;margin-bottom:8px;text-align:left'>"
 "&#127919; Focus:</div>"
-"<div id='focusBox'><span class='fix'>+</span></div>"
+"<div id='focusBox'></div>"
 "<div id='focusInfo' style='color:#a0c0a0;font-size:.78em;margin-top:10px'></div>"
 "</div>"
 "<div class='card' id='resCard' style='display:none'>"
@@ -225,8 +241,10 @@ static const char HTML[] =
 "function fmtEta(ms){"
 "if(ms<90000)return Math.ceil(ms/1000)+' s';"
 "return fmt(ms);}"
-// Reps per number are derived from scoring_total, not hardcoded, so the label
-// cannot drift away from SCORE_REPS in sensor.c the way it did before.
+// Passes per number are derived from scoring_total, not hardcoded, so the label
+// cannot drift away from sensor.c the way it did before. It reads 1 now that
+// scoring is a single random sweep, and would still read true if full extra
+// passes were ever added.
 "function setScoreTotal(d){"
 "document.getElementById('sScoreTotal').textContent=d.scoring_total||0;"
 "var nn=(d.mode==='euro')?62:49;"
@@ -349,7 +367,7 @@ static const char HTML[] =
 "}"
 "function stopFocus(){"
 "if(ftimer)clearInterval(ftimer);ftimer=null;"
-"document.getElementById('focusBox').innerHTML=\"<span class='fix'>+</span>\";"
+"document.getElementById('focusBox').innerHTML='';"
 "}"
 "function pollFocus(){"
 "fetch('/focus').then(function(r){return r.json();}).then(function(f){"
@@ -361,7 +379,7 @@ static const char HTML[] =
 "\\u23f8 PAUSED</span>\";"
 "lastSeq=f.seq;setPauseBtn(true);return;}"
 "if(paused)setPauseBtn(false);"
-"if(!f.on){box.innerHTML=\"<span class='fix'>+</span>\";return;}"
+"if(!f.on){box.innerHTML='';return;}"
 "if(f.seq===lastSeq)return;"
 "if(lastSeq>=0&&f.seq>lastSeq+1)winMissed+=f.seq-lastSeq-1;"
 "lastSeq=f.seq;winSeen++;"

@@ -33,12 +33,22 @@ static inline uint32_t fast_rng(void) { return RNG_REG; }
 #define SEGMENT_BITS   200
 #define NUM_SEGMENTS   ((TRNG_PER_RUN * 32) / SEGMENT_BITS)   // 32000
 
-/* Segments per run is source- AND phase-dependent (PLAN_4NODE Phase 1 + 5).
+/* Segments per run (PLAN_4NODE Phase 1 + 5).
  *
  * Phase 5 made the run length the *display* window: the Focus panel holds a
- * target for exactly as long as its bits are collected, so "1000 ms per
- * candidate number, 500 ms per draw" is not a delay bolted onto a run — it IS
- * the run. Padding with a vTaskDelay would halve the bit rate for nothing.
+ * target for exactly as long as its bits are collected, so the hold time is not
+ * a delay bolted onto a run — it IS the run. Padding with a vTaskDelay would
+ * cut the bit rate for nothing.
+ *
+ * **ONE window for every focus display: 1000 ms** (user decision, 2026-07-25).
+ * The spec originally asked for 1000 ms per candidate number and 500 ms per
+ * draw; the 500 ms was dropped so that anything the observer is asked to attend
+ * to gets the same, longer look. That collapses what was briefly a
+ * phase-dependent count back to one constant per source — scoring, measurement
+ * and baseline all run the same length — and the two "SCORE/MEAS" pairs are
+ * gone with it. The *wire* still carries the count (see slave_trigger), which
+ * stays worthwhile: it is what makes the length impossible for a node to get
+ * wrong, whether or not it currently varies.
  *
  * The camera counts are CALIBRATED ON HARDWARE, not derived on paper — the
  * Phase 5 gate insists on that, and the paper answer was wrong by 60 %.
@@ -64,19 +74,17 @@ static inline uint32_t fast_rng(void) { return RNG_REG; }
  * This is the other reason RUN_GAP_MS is not merely cosmetic: the gap is when
  * the producer gets the CPU back, so it buys back most of what it costs.
  *
- * The TRNG counts are NOT re-measured; they are carried from Phase 1's "a run
- * is ~1 s at 32000 segments" and halved for the 500 ms window. The camera is
- * the default source, and the TRNG path exists for A/B — if a TRNG Focus
- * session is ever run for real, measure focus_win_ms and correct these.
+ * The TRNG count is NOT re-measured; it is carried from Phase 1's "a run is
+ * ~1 s at 32000 segments", which happens to be the 1000 ms window already. The
+ * camera is the default source and the TRNG path exists for A/B — if a TRNG
+ * Focus session is ever run for real, read focus_win_ms and correct this.
  *
  * z stays N(0,1) at any of these because it is normalised by √segments; run
  * length only sets granularity, and statistical power per second is
  * rate-limited either way. */
-#define TRNG_SCORE_SEGMENTS  NUM_SEGMENTS   // 6.4 Mbit/run ≈ 1000 ms (extrapolated)
-#define TRNG_MEAS_SEGMENTS   16000          // 3.2 Mbit/run ≈  500 ms (extrapolated)
-#define CAM_SCORE_SEGMENTS   11950          // 2.4 Mbit/run ~ 1000 ms measured,
-                                            // at the 350 ms scoring gap
-#define CAM_MEAS_SEGMENTS     6400          // 1.3 Mbit/run ~  500 ms measured
+#define TRNG_SEGMENTS  NUM_SEGMENTS   // 6.4 Mbit/run ≈ 1000 ms (extrapolated)
+#define CAM_SEGMENTS   11950          // 2.4 Mbit/run ≈ 1000 ms (measured: 1027 ms
+                                      // at the 350 ms gap, +2.7 % of target)
 
 // Which source the running session is actually drawing measurement bits from.
 // Distinct from g_status.noise_source (what was *requested*).
@@ -157,13 +165,10 @@ static const char *p_label(double absZ)
     return "n.s.";
 }
 
-/* Segments for one run of the given phase. Scoring holds a single candidate
- * number twice as long as a draw, because that is the Focus spec's window. */
-static int segments_for(bool scoring)
+/* Segments for one run — the same 1000 ms window in every phase. */
+static int segments_for(void)
 {
-    if (s_active_source == NOISE_CAMERA)
-        return scoring ? CAM_SCORE_SEGMENTS : CAM_MEAS_SEGMENTS;
-    return scoring ? TRNG_SCORE_SEGMENTS : TRNG_MEAS_SEGMENTS;
+    return (s_active_source == NOISE_CAMERA) ? CAM_SEGMENTS : TRNG_SEGMENTS;
 }
 
 static double gcp_zscore_raw(int nseg)
@@ -222,32 +227,33 @@ static double gcp_zscore_raw(int nseg)
  * attended session in the display and nothing else, and the baseline has to be
  * the same instrument as the runs it is subtracted from, down to duty cycle.
  *
- * SCORING GETS A LONGER GAP, and this is forced, not a preference. The spec's
- * 1000 ms scoring window at a 200 ms gap is 83 % duty *by construction* —
- * already past the ~72 % cliff above — so no segment count reaches 1000 ms
- * there: every candidate value lands in the collapsed regime and stretches to
- * ~1500 ms instead (measured at both 16700 and 17000 segments). Widening the
- * scoring gap to 350 ms puts the same 1000 ms window at 74 % duty, back on the
- * flat part, where a segment count *does* solve.
+ * **350 ms, not 200** (user decision, 2026-07-25 — "better safe than sorry").
+ * The reason is experimental rather than technical: a wider blank guarantees
+ * the measurement is coincident with the *right* target. Conscious noticing is
+ * itself smeared over ~100–300 ms, comparable to a 200 ms gap, so at 200 ms the
+ * tail of attending to target N can still overlap the start of N+1's sampling —
+ * which is precisely the mislabeling this phase exists to avoid, and it is not
+ * blur: per-combination z feeds the Stouffer accumulation, so a straddled
+ * window credits an effect to an unrelated combination.
  *
- * The alternative was to shorten the scoring window until it fitted a 200 ms
- * gap. That was rejected: the gap is the soft parameter the plan already
- * marked as adjustable ("then pay for it in the run budget"), whereas the hold
- * times are the spec, and buying a display number by running the entropy
+ * It is forced by the hardware too. A 1000 ms window at a 200 ms gap is 83 %
+ * duty *by construction* — already past the ~72 % cliff above — so no segment
+ * count reaches 1000 ms there: every candidate lands in the collapsed regime
+ * and stretches to ~1500 ms instead (measured at 16700 and 17000). At the
+ * 200 ms gap the reachable window jumps straight from 588 ms to 1494 ms, with
+ * nothing in between — not even within ±30 %. 350 ms puts the same 1000 ms
+ * window at 74 % duty, back on the flat part, where a count does solve.
+ *
+ * Shortening the window instead was rejected: the gap is the soft parameter the
+ * plan already marked adjustable ("then pay for it in the run budget"), whereas
+ * the hold time is the spec, and buying a display number by running the entropy
  * source in a starved regime trades physics for cosmetics — that regime is
- * where PLAN_4NODE's open item 3 lives. Scoring is loop-0 only, so the extra
- * 150 ms costs one session ~37 s (245 runs at 6/49).
- *
- * Safe to differ per phase because scoring does not use the baseline at all
- * (score_one_run() subtracts nothing — the offset is common to every number
- * and scoring only ranks them). Measurement and its baseline both stay at
- * 200 ms, which is the pairing that has to match. */
-#define RUN_GAP_MS        200
-#define SCORE_RUN_GAP_MS  350
+ * where PLAN_4NODE's open item 3 lives. */
+#define RUN_GAP_MS  350
 
-static void run_gap(bool scoring)
+static void run_gap(void)
 {
-    vTaskDelay(pdMS_TO_TICKS(scoring ? SCORE_RUN_GAP_MS : RUN_GAP_MS));
+    vTaskDelay(pdMS_TO_TICKS(RUN_GAP_MS));
 }
 
 static int64_t s_t0;               // session start
@@ -381,19 +387,20 @@ static void nth_combination(const uint8_t *pool, int n, int r, int k, uint8_t *o
     }
 }
 
-// Scores each number 1..max_val with SCORE_REPS GCP runs (Stouffer per number),
-// node-combined like Phase 2 (÷√k), picks the top pool_size numbers (sorted
-// ascending). The pool is locked for the whole cumulative session, so this is
-// where selection confidence matters most: per-number SE = 1/√(REPS·k) over k
-// nodes, i.e. 0.32 at 5 reps on two nodes, 0.22 at 10, 0.11 at 40 — against 1.0
-// for a single master-only run. More nodes buy this back: 5 reps on four nodes
-// is 0.22, the same as 10 reps on two.
+// Scores each number 1..max_val with exactly ONE node-combined run (÷√k, like
+// Phase 2), sweeping the numbers in random order, then picks the top pool_size
+// (sorted ascending). The pool is locked for the whole cumulative session, so
+// this is where selection confidence matters most — and one run per number is
+// the weakest this has ever been: per-number SE = 1/√k over k nodes, i.e. 0.50
+// at four nodes, against 0.22 for the 5 reps it replaced and 1.0 for a single
+// master-only run.
 //
-// 5 keeps the one-time scoring phase short (~2 min for 6/49 at two nodes) while
-// the array is being brought up and sessions are started often. It changes only
-// WHICH numbers enter the pool, never the Phase-2 statistics measured on them —
-// raise it for a session whose pool choice has to be trusted on its own.
-#define SCORE_REPS 5
+// Stated as a consequence rather than buried, because it is a real cost. It
+// changes only WHICH numbers enter the pool, never the Phase-2 statistics
+// measured on them — the same caveat the old SCORE_REPS always carried. A
+// session whose pool choice must be trusted on its own wants several full
+// random passes; it must NOT go back to repeats in place, which is what broke
+// the Focus display (see score_and_build_pool).
 static double score_one_run(void);   // forward (defined after the slave link block)
 
 // `euro_pool` selects the bonus-number pool; it only reaches the Focus panel,
@@ -402,25 +409,43 @@ static void score_and_build_pool(int max_val, int pool_size, uint8_t *pool,
                                  bool euro_pool)
 {
     double scores[51] = {0};
-    for (int k = 1; k <= max_val; k++) {
-        double sum = 0.0;
-        for (int r = 0; r < SCORE_REPS; r++) {
-            if (g_status.abort_requested) return;
-            pause_gate();
-            if (g_status.abort_requested) return;
-            // On screen before the run starts and until it ends — display and
-            // bits cover the same interval, or the panel is decoration.
-            focus_show_number(k, euro_pool);
-            sum += score_one_run();
-            g_status.scoring_done++;
-            // Scoring never updated the clock, so elapsed_ms (and with it the
-            // ETA) froze for the whole phase. That was survivable when scoring
-            // was a preamble; Phase 5 makes it ~5.6 min of attended screen time
-            // with a pause button, so the clock has to run here too.
-            g_status.elapsed_ms = elapsed_ms_now();
-            run_gap(true);
-        }
-        scores[k] = sum;   // ranking by Σz ≡ ranking by Stouffer Σz/√R
+
+    /* One run per candidate number, in a fresh random order — every number
+     * exactly once, no repeats (user decision, 2026-07-25).
+     *
+     * This replaces SCORE_REPS consecutive runs of the *same* number, which the
+     * Focus panel made untenable: five reps meant the display did not change
+     * for ~6.9 s, and onset — the change — is the payload. A random sweep keeps
+     * every window a genuine onset and stops the observer anticipating the next
+     * target, for the same reason Phase 2 measures combinations in a permuted
+     * order.
+     *
+     * fast_rng() deliberately, not noise_word(): measurement order is
+     * administrative randomness, not measured data, and must not spend
+     * rate-limited camera entropy. */
+    uint8_t order[51];
+    for (int i = 0; i < max_val; i++) order[i] = (uint8_t)(i + 1);
+    for (int i = max_val - 1; i > 0; i--) {
+        int j = (int)(fast_rng() % (uint32_t)(i + 1));
+        uint8_t t = order[i]; order[i] = order[j]; order[j] = t;
+    }
+
+    for (int idx = 0; idx < max_val; idx++) {
+        if (g_status.abort_requested) return;
+        pause_gate();
+        if (g_status.abort_requested) return;
+        int k = order[idx];
+        // On screen before the run starts and until it ends — display and
+        // bits cover the same interval, or the panel is decoration.
+        focus_show_number(k, euro_pool);
+        scores[k] = score_one_run();
+        g_status.scoring_done++;
+        // Scoring never updated the clock, so elapsed_ms (and with it the ETA)
+        // froze for the whole phase. That was survivable when scoring was a
+        // preamble; Phase 5 makes it attended screen time with a pause button,
+        // so the clock has to run here too.
+        g_status.elapsed_ms = elapsed_ms_now();
+        run_gap();
     }
     bool used[51] = {false};
     for (int i = 0; i < pool_size; i++) {
@@ -849,7 +874,7 @@ static double combine_z(double z_master, int *n_used)
  * common to every number and scoring only ranks them. */
 static double score_one_run(void)
 {
-    int nseg = segments_for(true);
+    int nseg = segments_for();
     slave_trigger(nseg);
     double zm = gcp_zscore_raw(nseg);
     // Sampling is over the moment the local run returns; the reply wait below
@@ -1382,7 +1407,7 @@ void elotto_task(void *pvParam)
     int  mx      = euro ? 50 : 49;
     int  pool_nm = euro ? POOL_MAIN_50 : POOL_MAIN_49;
 
-    g_status.scoring_total = (mx + (euro ? 12 : 0)) * SCORE_REPS;
+    g_status.scoring_total = mx + (euro ? 12 : 0);   // one run per number
 
     uint8_t pool_main[POOL_MAIN_49] = {0};   // 15 slots, enough for both modes
     uint8_t pool_euro[POOL_EURO_12] = {0};
@@ -1431,7 +1456,7 @@ void elotto_task(void *pvParam)
         // slave running its whole baseline autonomously, so a master-side hold
         // would desynchronise them rather than pause them.
         g_status.phase = PHASE_BASELINE;
-        slave_baseline_start(g_status.baseline_total, segments_for(false));
+        slave_baseline_start(g_status.baseline_total, segments_for());
         {
             double bsum = 0.0;
             for (int i = 0; i < g_status.baseline_total; i++) {
@@ -1439,8 +1464,8 @@ void elotto_task(void *pvParam)
                     slave_abort();
                     goto done;
                 }
-                bsum += gcp_zscore_raw(segments_for(false));
-                run_gap(false);     // same duty cycle as the runs this calibrates
+                bsum += gcp_zscore_raw(segments_for());
+                run_gap();          // same duty cycle as the runs it calibrates
                 g_status.baseline_done = i + 1;
                 g_status.elapsed_ms = elapsed_ms_now();
             }
@@ -1511,7 +1536,7 @@ void elotto_task(void *pvParam)
             // One broadcast starts every node, then measure locally — all of
             // them integrate the same window, which is the premise the √n
             // combine rests on.
-            int nseg = segments_for(false);
+            int nseg = segments_for();
             slave_trigger(nseg);
             double zm = gcp_zscore_raw(nseg) - g_status.baseline_mean;
             focus_off();          // sampling done; the reply wait is dark time
@@ -1540,7 +1565,7 @@ void elotto_task(void *pvParam)
             g_status.results[i].p_value = p_label(fabs(z));
             g_status.runs_completed     = j + 1;
             g_status.elapsed_ms         = elapsed_ms_now();
-            run_gap(false);
+            run_gap();
         }
 
         // Loop finished cleanly: studentize on the loop's own mean/σ, then

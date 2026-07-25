@@ -106,10 +106,13 @@ Phase 4. Both record every gate result and design decision.
 
 Phase 1: baseline calibration (all nodes in parallel; informational — ranking uses
 studentization instead).
-Phase 0: score individual numbers 1..N, SCORE_REPS node-combined runs each (**5**, per-number
-SE = 1/√(k·REPS) ≈ 0.32 at two nodes, 0.22 at four; raise REPS when the pool choice must be
-trusted on its own — it changes only which numbers enter the pool, not the Phase-2 statistics)
-(score_one_run(), Stouffer), to build the pool.
+Phase 0: score individual numbers 1..N with **exactly one** node-combined run each, sweeping the
+numbers in a **fresh random order (Fisher–Yates, no repeats)** — `score_one_run()`. Repeats *in
+place* were removed in Phase 5: five consecutive runs of the same number froze the Focus panel
+for ~6.9 s, and onset is what the observer is meant to notice. Per-number SE = 1/√k ≈ 0.50 at
+four nodes (was 0.22 at 5 reps), which changes only *which* numbers enter the pool, never the
+Phase-2 statistics. If a pool choice must be trusted on its own, run several full random
+passes — **never** repeats in place.
 Phase 2: measure all pool combinations in a fresh Fisher–Yates random order per loop
 (s_perm[], drift immunity); results[] stays slot-indexed. A Runs cap stride-samples the full
 space (slot i → combo ⌊i·full/total⌋). After each loop, studentize() re-expresses every z as
@@ -145,11 +148,15 @@ unattended sessions must never be pooled**; run matched no-focus controls.
   credits an effect to the wrong combination — mislabeling, not blur). `POST /pause?on=1|0`
   holds **between** runs only; state stays `running`, Σz and the permutation resume where they
   left off, and paused time is excluded from `elapsed_ms` (`paused_ms` records it).
-- ⚠ **The run window is set by a segment count, and the conversion is not stable** — the
-  achievable window moved 1.75× across one afternoon under identical settings. Every run is
-  followed by a real delay (`RUN_GAP_MS` 200, `SCORE_RUN_GAP_MS` 350); the longer scoring gap is
-  forced, since 1000 ms at a 200 ms gap is 83% duty, past the point where the measurement loop
-  starves the camera extraction task it consumes from and the rate collapses. Check
+- **Every focus display is 1000 ms**, scoring and measurement alike, with a uniform **350 ms**
+  blank (`RUN_GAP_MS`) after every run including baseline. So `CAM_SEGMENTS` (11950) /
+  `TRNG_SEGMENTS` are single constants — no phase split. 350 ms not 200 because conscious
+  noticing smears over ~100–300 ms, so a 200 ms blank lets attention to target N overlap N+1's
+  sampling; the hardware forces it too (1000 ms at a 200 ms gap is 83% duty, past the point
+  where the loop starves the camera extraction task it consumes from and the rate collapses).
+  Cycle ≈ 1.4 s, so `Runs` defaults to **430** for a ~10 min loop.
+- ⚠ **The window is set by a segment count and the conversion is not stable** — the achievable
+  window moved 1.75× across one afternoon under identical settings. Check
   `focus_win_ms`/`focus_gap_ms` in /status rather than assuming the constants still hold.
 - ⚠ `camera_get_stats()`'s `mbit_per_sec` and `bias` are **lifetime averages since stream
   start**, not instantaneous — a falling `mbit_s` is not evidence of live degradation.
