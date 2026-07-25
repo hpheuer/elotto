@@ -321,11 +321,26 @@ card displays the current target in large type for exactly the window its bits a
 the candidate number during scoring, the full draw during combination measurement. Run lengths
 are retuned so those windows are the run, not a delay bolted onto it.
 
-This makes the observer part of the measurement window — which is the original GCP/PEAR
-protocol, where the point is precisely that a person attends to the target while the noise is
-sampled. It changes nothing statistically (z is normalised by √segments at any run length), but
-it does mean a session with the Focus panel is no longer equivalent to an unattended one, and
-results should record which mode produced them.
+**The point is conscious noticing, not reading.** The observer is not meant to decode 6 numbers
+in half a second — they are meant to *be present* while those numbers are on screen and the
+noise is sampled. That is the deliberate intent, and it flips the usual UI priorities:
+
+- **Salience over legibility.** Large and high-contrast because it must register, not because it
+  must be parsed. No need to shrink type to fit, wrap, or scroll.
+- **Onset is the payload.** What the observer notices is the *change*. The panel must visibly
+  transition at the start of each window — the failure mode is a panel that looks static and
+  slides past unnoticed, not one that is hard to read.
+- Legibility is therefore not a gate criterion, and 500 ms is not a compromise to be walked back.
+
+This makes the observer part of the measurement window — the original GCP/PEAR protocol, where
+the point is precisely that a person attends while the noise is sampled. It changes nothing
+statistically (z is normalised by √segments at any run length), but a session run with the Focus
+panel is no longer equivalent to an unattended one, so results must record which mode produced
+them rather than being pooled later.
+
+**This is explicitly experimental.** The value being tried is whether attention coincident with
+sampling shows up in the statistics at all. Build it to be tried and tuned, not to be right
+first time — every duration is a constant, and a Focus session is tagged as such.
 
 ### Spec
 
@@ -370,31 +385,62 @@ cumulative mode re-measures the same 1000 slots each loop — Stouffer accumulat
   fixed length; extend it to carry the segment count. **Coordinate with `PLAN_NETWORK.md`
   Phase C**, which is rewriting that exchange onto UDP anyway — doing both at once avoids
   changing the protocol twice.
-- **Serve the focus separately from `/status`.** `/status` is ~2.5 KB and polled at 1 Hz; the
-  panel needs ~4 Hz to land a 500 ms window. Add a small `GET /focus` returning just the
-  current target plus a monotonic `focus_seq`, and let the UI poll that fast while `/status`
-  stays at 1 Hz. `focus_seq` is what tells the UI a *new* target started, including when two
-  consecutive draws happen to look similar.
+- **Serve the focus separately from `/status`.** `/status` is ~2.5 KB and polled at 1 Hz — far
+  too fat and too slow for this. Add a small `GET /focus` (~60 bytes) carrying the current
+  target plus a monotonic `focus_seq`; `/status` stays at 1 Hz for everything else.
+  `focus_seq` is what tells the UI a *new* window started, including when two consecutive draws
+  happen to look similar.
+
+### Synchronisation — the part that can quietly invalidate the whole idea
+
+If the observer's attention is supposed to coincide with the sampled bits, then **display
+latency and jitter are not cosmetic**. Polling `/focus` at 4 Hz puts up to 250 ms of jitter on a
+500 ms window: the numbers could appear halfway through the run they belong to, or after it
+ended. The experiment would then be measuring attention against the *wrong* bits, and would look
+like a null result no matter what is true.
+
+Options, cheapest first:
+
+1. **Poll `/focus` at 10 Hz** — ~600 B/s, trivial for the ESP. Bounds jitter at ≤100 ms (20 % of
+   a 500 ms window). Good enough to start, and the simplest thing that could work.
+2. **WebSocket push** on run start (`esp_http_server` supports it —
+   `examples/protocols/http_server/ws_echo_server`). Sub-10 ms, no polling. The right answer if
+   step 1's jitter turns out to matter.
+3. **Scheduled targets**: device sends the *next* target plus a start timestamp, UI syncs a
+   local clock and renders on time. Most precise, most machinery — only if 1 and 2 disappoint.
+
+Start with (1), but **measure the jitter rather than assuming it** — see the gate.
 - UI: a card below the progress card, title "Focus:", reusing the existing `.num` circle styling
   at a larger size; hidden unless a target is active.
 
 ### Open
 
-- **500 ms is brief for reading 5–7 numbers.** It is what was asked for and it is the right
-  default to build, but expose both hold times as constants (ideally UI fields) so they can be
-  tuned after trying it — the useful value is whatever a person can actually attend to.
-- Whether a Focus session should be flagged in `/status` and in the CSV export, so attended and
-  unattended runs are not silently pooled later.
+- Hold times start at **1000 ms scoring / 500 ms draw** and are constants, ideally UI fields.
+  500 ms for the draw is a deliberate choice, not a compromise — tune from experience, not from
+  a readability argument.
+- Flag a Focus session in `/status` and in the CSV export, so attended and unattended runs are
+  never pooled later.
+- Whether the transition itself should be emphasised (brief scale or highlight at onset) to make
+  the change easier to notice peripherally. Try plain first.
 
 ### Gate
 
 - Panel updates in lockstep with the measurement: `focus_seq` strictly increasing, no skipped or
   repeated targets over a full loop.
-- Measured run durations within ±10 % of 1000 ms / 500 ms; the calibrated segment counts
-  recorded above.
+- **Display-to-measurement jitter bounded and actually measured** — not assumed. Log the
+  device-side run-start time and the browser-side render time for a few hundred windows and
+  report the distribution; ≤100 ms is acceptable at a 500 ms window, and if it is not achieved,
+  move to the WebSocket option before running any real session. A misaligned display would make
+  the whole experiment read as null regardless of the truth.
+- Measured run durations within ±10 % of 1000 ms / 500 ms; calibrated segment counts recorded.
 - One measurement loop ≤ 10 min.
 - **`loop_sigma` ≈ 1 and `pair_r` ≈ 0 at the new run lengths** — the retune must not disturb the
   statistics, which is the one way this change could do real damage.
+
+Note what this gate deliberately does *not* test: whether the focus has any effect. That is the
+experiment, not the acceptance criterion. The gate only establishes that the instrument does
+what it claims — right target, right window, undisturbed statistics — so that a null result can
+be trusted as a null result.
 
 ## Phase 4 — 4-node scale-out — **SUPERSEDED by `PLAN_NETWORK.md`**
 
