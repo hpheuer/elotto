@@ -409,6 +409,21 @@ cumulative mode re-measures the same 1000 slots each loop — Stouffer accumulat
   continuous noticing. Expect attention to fade within a loop; that is a property of the
   observer, not a defect. Keep loop counts modest at first and treat "how long can this actually
   be sustained" as one of the things being learned.
+- **Therefore a Pause / Continue button is required.** Without it the only way to stop attending
+  is to abort the session and throw the loop away, which guarantees that tired-observer data
+  gets measured rather than skipped. Requirements:
+  - **Pause takes effect between runs, never inside one.** The current run finishes and is kept;
+    the session then holds. Stopping mid-run would leave bits that were sampled while nobody was
+    watching inside a run labelled as attended — the one kind of contamination this whole phase
+    exists to avoid.
+  - It is **not abort**: state stays `running`, nothing is published, the permutation index and
+    `Σz` accumulation continue exactly where they left off on resume.
+  - The Focus panel must show an unmistakable **paused** state, so "no numbers on screen" never
+    has to be interpreted as "maybe I missed one".
+  - **Paused time must not count towards `elapsed_ms`**, or the ETA drifts by however long the
+    break was. Track it separately and record total paused duration in `/status` — a session
+    with a 40-minute break in the middle should not later be read as continuous.
+  - Pause is device-side like the loop itself, so closing the browser does not resume it.
 - **The existing per-loop permutation already protects against that fade.** Fisher–Yates was
   introduced for drift immunity, but it does the same job here: because each loop measures the
   combinations in a fresh random order, a decline in attention over a loop spreads evenly across
@@ -429,7 +444,10 @@ cumulative mode re-measures the same 1000 slots each loop — Stouffer accumulat
   first means changing the protocol once instead of twice.
 - **Serve the focus separately from `/status`.** `/status` is ~2.5 KB and polled at 1 Hz — far
   too fat and too slow for this. Add a small `GET /focus` (~60 bytes) carrying the current
-  target plus a monotonic `focus_seq`; `/status` stays at 1 Hz for everything else.
+  target, a monotonic `focus_seq` and the paused flag; `/status` stays at 1 Hz for everything
+  else. `POST /pause?on=1|0` alongside it, checked at the top of each run's loop iteration —
+  the same place `abort_requested` is already tested, so pausing between runs falls out of the
+  existing structure rather than needing new plumbing.
   `focus_seq` is what tells the UI a *new* window started, including when two consecutive draws
   happen to look similar.
 
@@ -485,6 +503,10 @@ corrupts the data rather than the one that merely blurs it.
 
 - One **matched no-focus control session** recorded alongside the first Focus session, so the
   pair can be compared at all.
+- **Pause/Continue holds and resumes cleanly**: paused mid-loop, the run count does not advance,
+  no run is lost or duplicated, `Σz` and the permutation continue correctly, and paused time is
+  excluded from `elapsed_ms`. Verify across a pause long enough to be obvious (minutes, not
+  seconds).
 
 Note what this gate deliberately does *not* test: whether the focus has any effect. That is the
 experiment, not the acceptance criterion. The gate only establishes that the instrument does
