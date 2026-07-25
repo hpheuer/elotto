@@ -328,7 +328,7 @@ static const char HTML[] =
 // on-chip fallback; a node that silently degraded must be visible here.
 "var srcM=d.src==='cam'?'\\uD83D\\uDCF7 cam':'TRNG';"
 "var srcS=d.slave_src==='cam'?'\\uD83D\\uDCF7 cam':'TRNG';"
-"var s3='entropy: master '+srcM+(d.src_fallback?' \\u26a0 fell back':'')"
+"var s3='entropy: master '+srcM+(d.src_stalled?' \\u26a0 camera stalled \\u2013 aborted':'')"
 "+(d.slave?' \\u00b7 slave '+srcS:'');"
 "sl.innerHTML+=(sl.innerHTML?'<br>':'')+s3;"
 "document.getElementById('resCard').style.display='block';"
@@ -447,7 +447,7 @@ static esp_err_t status_handler(httpd_req_t *req)
     pos += snprintf(buf+pos, sizeof(buf)-pos,
         "{\"state\":\"%s\",\"mode\":\"%s\",\"phase\":\"%s\","
         "\"slave\":%s,\"rank\":\"%s\","
-        "\"src\":\"%s\",\"src_fallback\":%s,\"slave_src\":\"%s\","
+        "\"src\":\"%s\",\"src_stalled\":%s,\"slave_src\":\"%s\","
         "\"best_z\":%.4f,\"p_corr\":%.6g,\"comparisons\":%d,"
         "\"loop_sigma\":%.4f,\"pair_r\":%.4f,\"pair_n\":%d,"
         "\"sigma_m\":%.4f,\"sigma_s\":%.4f,"
@@ -458,7 +458,7 @@ static esp_err_t status_handler(httpd_req_t *req)
         state_str, mode_str, phase_str,
         g_status.slave_connected ? "true" : "false", rank_str,
         (g_status.noise_source == NOISE_CAMERA) ? "cam" : "trng",
-        g_status.noise_fallback ? "true" : "false",
+        g_status.noise_stalled ? "true" : "false",
         (g_status.slave_source == NOISE_CAMERA) ? "cam" : "trng",
         g_status.best_z, g_status.p_corrected, g_status.comparisons,
         g_status.loop_sigma, g_status.pair_r, g_status.pair_n,
@@ -536,7 +536,8 @@ static esp_err_t start_handler(httpd_req_t *req)
             if (httpd_query_key_value(qry, "rank", val, sizeof(val)) == ESP_OK)
                 g_status.rank_mode = (val[0] == '0') ? RANK_PEAK : RANK_CUMULATIVE;
             // ?src=1 -> camera entropy, ?src=0 -> TRNG. Falls back to TRNG with
-            // g_status.noise_fallback set if the camera is not streaming.
+            // the session aborts (g_status.noise_stalled) if the camera is not streaming --
+            // a "camera" session is never silently run on TRNG bits.
             if (httpd_query_key_value(qry, "src", val, sizeof(val)) == ESP_OK)
                 g_status.noise_source = (val[0] == '1') ? NOISE_CAMERA : NOISE_TRNG;
         }

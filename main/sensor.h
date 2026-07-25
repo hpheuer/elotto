@@ -64,8 +64,12 @@ typedef struct {
     volatile bool    abort_requested;
     bool             slave_connected;
     int              noise_source;        // NoiseSource requested for this session
-    volatile bool    noise_fallback;      // camera requested but TRNG in use (stall
-                                          // or camera not ready) — runs are mixed
+    volatile bool    noise_stalled;       // camera requested but unavailable/stalled →
+                                          // session ABORTED rather than silently
+                                          // substituting the TRNG (see PLAN_4NODE
+                                          // "Fallback policy": mixing sources mid-session
+                                          // changes the measured physics and leaves no
+                                          // record of which runs were affected)
     volatile int     slave_source;        // NoiseSource the slave reported on its last
                                           // measurement (it chooses its own, and can
                                           // fall back independently of the master)

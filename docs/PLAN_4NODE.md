@@ -171,20 +171,37 @@ ruled out (autocorrelation 0.0000 on both). If tuning this: give the slave *more
 less. Photon shot noise is Poisson arrival statistics — quantum-origin, and arguably a
 better source than dark current.
 
-### Fallback policy — open design question
+### Fallback policy — DECIDED: (a) abort on stall
 
-Current behaviour: a camera stall latches the node to TRNG for the rest of the session and
-sets one session-level boolean (`noise_fallback` / slave reports `T` per measurement).
+**A camera stall aborts the session. The TRNG is never silently substituted.**
 
-This is questionable for a GCP experiment. The premise of this plan is *replacing* the
-opaque whitened TRNG with raw quantum noise; silently substituting it back mid-session
-changes the physics of what is being measured, and one boolean cannot say which runs were
-affected. A stall at run 3 of 2560 leaves 2557 TRNG-sourced runs in a session still labelled
-"camera". Options, none yet implemented:
-- (a) abort the session on stall — purest, loses the run;
-- (b) drop the stalled node from the combine (n → n−1, no ÷√2) — preserves source purity,
-  keeps the session alive; **preferred for a multi-node array**;
-- (c) keep the fallback but tag every affected run so analysis can exclude them.
+Rationale: the premise of this plan is *replacing* the opaque whitened TRNG with raw quantum
+noise. Substituting it back mid-session changes the physics being measured, and a
+session-level flag cannot say *which* runs were affected — a stall at run 3 of 2560 would
+leave 2557 TRNG-sourced runs inside a session still labelled "camera". Losing the run is
+cheaper than silently contaminating it.
+
+Implemented (`noise_camera_stalled()` in sensor.c):
+- local stall → `g_status.noise_stalled = true`, `abort_requested = true`;
+- camera requested but not streaming at session start → same, so a "camera" session never
+  starts on TRNG bits (`noise_source_begin()` runs *after* `abort_requested` is cleared,
+  or the reset would wipe the flag);
+- **slave stall** → the slave reports `T` in its `Z:` reply and the master aborts too,
+  since the combined z would otherwise mix sources;
+- the slave re-arms its camera on each `B` (session start), so one transient stall does not
+  latch it to TRNG until power-cycle and doom every later session to an instant abort;
+- UI shows "⚠ camera stalled – aborted"; `/status` exposes `src_stalled`.
+
+Note this differs from what a multi-node array will want. With n ≥ 3 nodes, option (b) —
+drop the stalled node and combine over n−1 (no ÷√n on the dead node) — keeps the session
+alive without mixing sources, and should be revisited in Phase 4. With 2 nodes there is no
+meaningful "degrade": losing one halves the array and changes the instrument, so aborting is
+the honest response.
+
+**Still untested against a real stall.** No camera has ever stalled in testing; the healthy
+path was verified not to false-positive (a camera session starts and runs normally), but the
+abort path itself has only been reasoned about, not observed. Unplugging a CSI ribbon
+mid-session would test it.
 
 ## Phase 3 — Long-run validation + docs
 

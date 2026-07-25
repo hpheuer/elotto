@@ -39,18 +39,30 @@ static inline uint32_t fast_rng(void) { return RNG_REG; }
 #define CAM_SEGMENTS   8000              // 1.6 Mbit/run ≈ 0.47 s at 3.4 Mbit/s
 
 // Which source the running session is actually drawing measurement bits from.
-// Distinct from g_status.noise_source (what was *requested*): a camera stall
-// latches this to TRNG so every subsequent word does not re-pay the stall
-// timeout, and raises g_status.noise_fallback so the mix is never silent.
+// Distinct from g_status.noise_source (what was *requested*).
 static volatile int s_active_source = NOISE_TRNG;
+
+// Camera stall policy: ABORT the session. Substituting the TRNG would swap the
+// measured physics — the whole point of camera entropy is replacing the opaque
+// whitened TRNG with raw quantum noise — and a session-level flag cannot say
+// *which* runs were affected. A stall at run 3 of 2560 would otherwise leave
+// 2557 TRNG-sourced runs inside a session still labelled "camera".
+static void noise_camera_stalled(void)
+{
+    g_status.noise_stalled    = true;
+    g_status.abort_requested  = true;
+    // The in-flight run is discarded by the abort, so the words that finish it
+    // do not enter any published result. Switching the local source stops each
+    // remaining word from re-paying the 2 s stall timeout while unwinding.
+    s_active_source = NOISE_TRNG;
+}
 
 static inline uint32_t noise_word(void)
 {
     if (s_active_source == NOISE_CAMERA) {
         uint32_t w;
         if (camera_read_word(&w)) return w;
-        s_active_source = NOISE_TRNG;
-        g_status.noise_fallback = true;
+        noise_camera_stalled();
     }
     return RNG_REG;
 }
@@ -58,11 +70,15 @@ static inline uint32_t noise_word(void)
 // Called once per session, before any measurement.
 static void noise_source_begin(void)
 {
-    g_status.noise_fallback = false;
-    if (g_status.noise_source == NOISE_CAMERA && camera_is_ready()) {
-        s_active_source = NOISE_CAMERA;
+    g_status.noise_stalled = false;
+    if (g_status.noise_source == NOISE_CAMERA) {
+        if (camera_is_ready()) {
+            s_active_source = NOISE_CAMERA;
+        } else {
+            // Refuse to run a "camera" session on TRNG bits.
+            noise_camera_stalled();
+        }
     } else {
-        if (g_status.noise_source == NOISE_CAMERA) g_status.noise_fallback = true;
         s_active_source = NOISE_TRNG;
     }
 }
@@ -264,6 +280,11 @@ static double slave_measure(void)
     // slave still parses. atof() stops at the comma either way.
     const char *tag = strchr(resp, ',');
     g_status.slave_source = (tag && tag[1] == 'C') ? NOISE_CAMERA : NOISE_TRNG;
+    // Same policy as a local stall: if this session asked for camera entropy and
+    // the slave says it measured on its TRNG, the combined z would mix sources.
+    // Abort rather than quietly average them.
+    if (g_status.noise_source == NOISE_CAMERA && g_status.slave_source == NOISE_TRNG)
+        noise_camera_stalled();
     return atof(resp + 2);
 }
 
@@ -588,7 +609,6 @@ static void absorb_loop(RunResult *carry, int *carry_n,
 void elotto_task(void *pvParam)
 {
     g_status.state           = ELOTTO_RUNNING;
-    noise_source_begin();
     g_status.runs_completed  = 0;
     g_status.baseline_done   = 0;
     g_status.scoring_done    = 0;
@@ -616,6 +636,10 @@ void elotto_task(void *pvParam)
         g_status.loops_total = 1;
 
     slave_init();
+
+    // After abort_requested is cleared, so a camera that is not ready can abort
+    // the session immediately instead of having the flag wiped by the reset above.
+    noise_source_begin();
 
     bool euro    = (g_status.mode == MODE_EUROJACKPOT);
     int  nm      = euro ? 5 : 6;
