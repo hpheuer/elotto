@@ -545,14 +545,18 @@ Done today: 2× ESP32-P4-ETH (master COM4, slave COM6), 1× OV5647 wired to mast
 Before Phase 2: 2nd OV5647 wired to the slave's CSI connector, light-tight capping for
 both cameras (cap + tape + opaque box).
 
-Before Phase 4 (not yet acquired):
-1. 2 more ESP32-P4-ETH boards + 2 more OV5647 modules.
-2. **CSI connector/cable match**: OV5647 modules usually ship RPi-style 15-pin 1.0 mm FFC;
-   many P4 boards use 22-pin 0.5 mm — verify, order 15↔22 adapter cables if needed.
-3. Confirm the ESP32-P4-ETH board exposes MIPI-CSI at all (else cameras go on whichever
-   boards do, roles reassigned — slaves don't need Ethernet).
-4. UART wiring: 2 more crossovers (masterTX→slaveRX, masterRX←slaveTX) + common GND star.
-5. Power for 4 boards + cameras (USB per board is fine; avoid one weak hub).
+**All acquired and in service (2026-07-25).** Four ESP32-P4-ETH boards, each with its own
+OV5647, all on one switch. Items 1–3 below are satisfied; 4 no longer applies (UART was replaced
+by UDP — `PLAN_NETWORK.md` Phase C); 5 is answered by PoE.
+
+1. ~~2 more ESP32-P4-ETH boards + 2 more OV5647 modules.~~ Present, all four cameras streaming
+   at ~3.45 Mbit/s with bias within 1e-3 of 0.5 at idle.
+2. ~~**CSI connector/cable match**~~ — fine as shipped.
+3. ~~Confirm the board exposes MIPI-CSI~~ — it does, on every unit.
+4. ~~UART wiring: 2 more crossovers + common GND star.~~ **Obsolete**: the transport is UDP
+   broadcast over the switch, so there is no inter-node wiring at all.
+5. ~~Power for 4 boards~~ — the boards take **PoE directly** (no splitters). The master is kept
+   on separate USB power on purpose, as the control for `PLAN_NETWORK` Risk 1.
 
 ## Workflow
 

@@ -9,7 +9,7 @@
 
 ## Project structure
 - main/elotto.c   – app_main, Ethernet, webserver, HTML/JS UI, /diag + /loops endpoints
-- main/sensor.c   – noise source, GCP analysis, baseline calibration, slave UART, lottery extraction
+- main/sensor.c   – noise source, GCP analysis, baseline calibration, node link (UDP), lottery extraction
 - main/sensor.h   – types and declarations
 - partitions.csv  – **shared** partition table (factory 1 MB + ota_0/ota_1 3 MB on 32 MB flash).
   Referenced by all three projects; a board flashed by one must be updatable by the others.
@@ -36,28 +36,38 @@
 | slave1 | 192.168.178.145 (static lease) | e8:f6:0a:e0:ce:a8 | — | factory = updater, ota_0 = slave app |
 | slave2 | 192.168.178.155 | e8:f6:0a:e0:c7:a1 | COM9 | factory = updater, ota_0 = slave app |
 
-All four boards are provisioned; each has its own OV5647 and every one of them is
-OTA-updatable. What the 4-node array still needs is **power for four at once** — the boards
-draw from USB, so one cable means one live node (PLAN_NETWORK Risk 2: whether the boards take
-PoE directly or need splitters is still unverified).
-**COM ports are not stable** — the slave enumerated as COM6 historically and as COM8 today, so
-always list the ports before an `erase-flash` rather than trusting a number written down here.
+All four boards are provisioned, each with its own OV5647, and all four run simultaneously:
+**the three slaves take PoE directly from one switch** (no splitters — PLAN_NETWORK Risk 2
+resolved), while the **master stays on separate USB power on purpose**. That split is not
+convenience, it is the Risk 1 control: if the three PoE nodes correlate with each other but not
+with the master, the shared rail is the mechanism. Keep it that way.
 
-**Boards are USB-powered**: pulling the cable powers the node down. slave0 is off whenever its
-cable is on another board, and the master then runs solo.
+**COM ports are not stable** — the same slave has enumerated as COM6, COM8 and COM9. Always
+list the ports before an `erase-flash` rather than trusting a number written down here; a wrong
+port wipes a working node.
 
 Node addresses are informational only — the master finds slaves by UDP broadcast, so a dynamic
-lease (slave1) works exactly like a static one and no IP table is maintained anywhere.
+lease works exactly like a static one and no IP table is maintained anywhere.
 
 ## Concept
-Dual-ESP32-P4 system. Master (COM4) scores lottery numbers via GCP methodology. An optional
-slave ESP32-P4 (COM6) measures in parallel, triggered by **UDP broadcast** on the switch
-(port 5000, discovery by broadcast — no static IP table); combined
-z-score = (z_master + z_slave) / sqrt(2) (SNR x sqrt(2)). The UART1 crossover it used before
-Phase C is gone: one datagram starts every node at once, where N sequential UART writes would
-skew them. UDP loss is handled explicitly — every frame carries the sequence number it answers,
-mismatches are dropped and counted (`net_stale`), and a timed-out command is resent under the
-same sequence so the slave replies from a one-entry cache instead of measuring twice.
+Four-node ESP32-P4 array. The master scores lottery numbers via GCP methodology; up to three
+slaves measure the same window in parallel, triggered by **one UDP broadcast** on the switch
+(port 5000). Slaves are discovered by broadcast at every session start — no IP table, no node
+count configured. Combined z = **Sum(z_node) / sqrt(k)** over the k nodes that answered *that
+run*, so a node missing one reply costs that run's gain, not the session.
+
+**The x sqrt(n) gain is NOT established** — it assumes the nodes are independent, and a 4-node
+session showed inter-node correlation growing over ~30 min (combined sigma 1.038 -> 1.083 ->
+1.182) that a pooled pairwise check missed. Open finding in docs/PLAN_NETWORK.md; judge
+sessions on per-loop combined sigma AND the full pairwise matrix, never `pair_r` alone.
+
+The UART1 crossover used before Phase C is gone: one datagram starts every node at once, where
+N sequential UART writes would skew them. UDP loss is handled explicitly — every frame carries
+the sequence number it answers, mismatches are dropped and counted (`net_stale`), and a
+timed-out command is resent under the same sequence so a node replies from a one-entry cache
+instead of measuring twice. **All receive timeouts go through `link_arm_timeout()`**: lwIP
+rounds `SO_RCVTIMEO` to whole ms and treats 0 as *wait forever*, so a sub-millisecond remainder
+would hang the session — this already happened once.
 
 **Plans**: `docs/PLAN_4NODE.md` is the contract for the *noise source and statistics* (Phases
 0–3 done, v2.1). `docs/PLAN_NETWORK.md` is the contract for *transport, provisioning and
@@ -74,9 +84,11 @@ Phase 4. Both record every gate result and design decision.
   previous session's source.
 - Segments per run are source-dependent: TRNG 32000 (6.4 Mbit), camera 8000 (1.6 Mbit ≈
   0.5 s). z stays N(0,1) either way — normalised by √segments.
-- **A camera stall ABORTS the session** (`src_stalled`), never silently substitutes the
-  TRNG: mixing sources mid-session would change the measured physics with no record of which
-  runs were affected. Applies to a slave stall too (slave reports `T` in its `Z:` reply).
+- **A node whose camera stalls is DROPPED**, never silently switched to the TRNG: mixing
+  sources mid-session would change the measured physics with no record of which runs were
+  affected. Dropping keeps the remaining nodes source-clean by construction; the session only
+  ABORTS (`src_stalled`) if that would leave fewer than two nodes. Applies to a slave the same
+  way (it reports `T` in its `Z:` reply).
 - **PSRAM is mandatory** with the camera (capture buffers + extraction ring). It also holds
   `g_status.loop_hist` — internal RAM is full with `results[]`, and adding a few KB of .bss
   fails the *link* (`--enable-non-contiguous-regions discards section …`), not the run.
@@ -84,7 +96,7 @@ Phase 4. Both record every gate result and design decision.
   CPU-hungry, so any task calling `camera_read_word()` must run *above* it or the producer
   starves the consumer (~10x slowdown; signature is ring `drops` huge with `waits == 0`).
 
-Phase 1: baseline calibration (master + slave in parallel; informational — ranking uses
+Phase 1: baseline calibration (all nodes in parallel; informational — ranking uses
 studentization instead).
 Phase 0: score individual numbers 1..N, SCORE_REPS node-combined runs each (**5**, per-number
 SE = 1/√(k·REPS) ≈ 0.32 at two nodes, 0.22 at four; raise REPS when the pool choice must be
@@ -94,9 +106,11 @@ Phase 2: measure all pool combinations in a fresh Fisher–Yates random order pe
 (s_perm[], drift immunity); results[] stays slot-indexed. A Runs cap stride-samples the full
 space (slot i → combo ⌊i·full/total⌋). After each loop, studentize() re-expresses every z as
 (z − loop mean)/loop σ (publishes loop_sigma, ideal ≈1) — bias correction + N(0,1) guarantee.
-Master–slave independence: PairStats accumulates per-loop-centered (z_m, z_s) moments →
-Pearson pair_r + sigma_m/sigma_s in /status (⚠ if |r|·√n > 3). Mid-loop aborts compact the
-scattered partial measurements (compact_partial()).
+Node independence: PairAcc[i][j] accumulates per-loop-centered moments for EVERY node pair
+(6 at n=4), only over runs where both nodes contributed → the full Pearson matrix plus per-node
+σ in /status (⚠ if |r|·√n > 3). **Check per-loop combined σ as well** — a pooled pairwise max
+missed a growing correlation that σ caught (see PLAN_NETWORK's open finding). Mid-loop aborts
+compact the scattered partial measurements (compact_partial()).
 Cross-loop drift (Phase 3): studentization removes each loop's own offset exactly, so only a
 *trend across loops* survives it. record_loop() stores per-loop raw offsets/σ per node + camera
 health (LoopStat, PSRAM, first LOOP_HIST=128 loops, served by **/loops**), and drift_add()
@@ -147,8 +161,8 @@ once its webserver answers, so a failed transfer or a dead image cannot strand i
 `/update` returns **409** while a measurement runs — no need to check `/status` first, though
 `/status` still shows `fw_version`, `fw_sha` and `fw_slot` to confirm what is actually running.
 
-**USB (COM4 master, COM6 slave) is now only for:** the partition table, the bootloader, or a
-node whose recovery updater is gone. Those are the cases OTA cannot repair — the P4 has no
+**USB is now only for:** the partition table, the bootloader, or a node whose recovery updater
+is gone. Those are the cases OTA cannot repair — the P4 has no
 `SOC_RECOVERY_BOOTLOADER_SUPPORTED`. Installing the updater on a fresh board:
 `.\build.ps1 -C ota_firmware -p COM6 erase-flash` then `... -p COM6 flash`.
 

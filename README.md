@@ -6,7 +6,8 @@ dark-frame noise** (or the on-chip TRNG) using
 
 ## In a Nutshell
 
-A hobby experiment that turns two ESP32 chips into a tiny "random-event detector" inspired by
+A hobby experiment that turns a small array of ESP32 chips into a tiny "random-event detector"
+inspired by
 the [Global Consciousness Project](https://grokipedia.com/page/Global_Consciousness_Project).
 The whole idea in plain language:
 
@@ -31,9 +32,9 @@ You watch it live in a web browser: a progress bar per phase, a loop counter, th
 **Top-10** (most positive Z) and **Bottom-10** (most negative Z), and the most-frequent
 numbers.
 
-Two chips instead of one? A second ESP measures the same instant on its own independent
-randomness — **its own camera**, never a shared one — and combining two independent
-measurements sharpens the signal (see [Dual-ESP](#dual-esp-master--slave)).
+Four chips instead of one? Three more ESPs measure the same instant, each on its own
+independent randomness — **its own camera**, never a shared one — and combining independent
+measurements sharpens the signal by √n (see [The node array](#the-node-array-master--slaves)).
 
 > **Reality check:** a real lottery draw is physically independent of these measurements, so
 > this **cannot predict winning numbers**. The interest is in measuring tiny statistical
@@ -110,20 +111,32 @@ exports both coverage sets.</td>
 
 ## Hardware
 
-- **Master (192.168.178.100):** Waveshare ESP32-P4-ETH — webserver, GCP, Eurojackpot/6-of-49
-- **Slave (192.168.178.103):** second Waveshare ESP32-P4-ETH — GCP + UDP command loop, plus a
-  small webserver so it can be updated over the wire like any other node
+Four Waveshare ESP32-P4-ETH boards on one switch. All four run the same measurement engine; the
+master additionally serves the web UI and drives the session.
+
+| node | address | power | role |
+|---|---|---|---|
+| master | 192.168.178.100 | USB (isolated) | web UI, GCP, session control |
+| slave0 | 192.168.178.103 | PoE | GCP + UDP command loop |
+| slave1 | 192.168.178.145 | PoE | GCP + UDP command loop |
+| slave2 | 192.168.178.155 | PoE | GCP + UDP command loop |
+
 - **Cameras:** one OV5647 per node on its own MIPI-CSI connector (SCCB on GPIO8/7, XCLK
   unwired — the RPi-style module clocks itself), lens capped and taped, in the dark.
   **Never shared between nodes** — a shared source would break independence by construction.
+- **Power:** the boards accept PoE directly, no splitters. The master is deliberately kept on
+  separate USB power — that is the control for whether a shared rail correlates the nodes
+  (`PLAN_NETWORK` Risk 1), so it is a measurement choice, not a convenience.
 - **PSRAM:** mandatory when the camera source is used (capture buffers + extraction ring)
 - **PHY:** IP101GRI via RMII (Ethernet RJ45, DHCP) — on **every** node
 - **CPU:** ESP32-P4 @ 360 MHz, 768 KB SRAM
 - **Chip revision:** v1.3 (sdkconfig adjusted: `CONFIG_ESP32P4_REV_MIN_0=y`)
 - **Node link:** UDP on the shared switch — broadcast trigger to port 5000, unicast replies.
   The UART1 crossover this used before is gone; see [docs/PLAN_NETWORK.md](docs/PLAN_NETWORK.md)
-- **USB (COM4 / COM6):** recovery only — bootloader, partition table, or a board whose
-  factory updater is gone. Firmware ships over Ethernet
+- **USB:** recovery only — bootloader, partition table, or a board whose factory updater is
+  gone. Firmware ships over Ethernet. Every node carries its own updater in `factory`.
+  Addresses above are informational: the master finds nodes by broadcast, so nothing depends
+  on them
 
 ## Concept
 
@@ -295,13 +308,18 @@ camera on each session start, so one transient stall does not doom every later s
 *(With ≥ 3 nodes the better answer is to drop the stalled node and combine over n−1; with 2
 nodes there is no meaningful "degrade" — losing one halves the array.)*
 
-## Dual-ESP: Master & Slave
+## The node array: master + slaves
 
-The system runs on **one** ESP32-P4 (master only) or **two** (master + slave) for a higher
-signal-to-noise ratio. The slave is fully **optional** — if it is not detected at startup the
-master runs standalone with identical results, just without the √2 SNR boost.
+The system runs on **one** ESP32-P4 (master alone) up to **four** (master + three slaves), for
+a √n improvement in signal-to-noise. Slaves are entirely **optional and self-announcing**: the
+master broadcasts a discovery datagram at every session start and combines over whoever
+answers. Nothing is configured — no IP list, no node count. One node produces identical
+results, just without the gain.
 
-### What the slave does
+Current array: master on isolated USB power, three slaves on one PoE switch (the boards take
+PoE directly, no splitters).
+
+### What a slave does
 
 The slave ([hpheuer/elotto_slave](https://github.com/hpheuer/elotto_slave),
 `main/slave.c`) is a second ESP32-P4 running the **identical GCP engine** (same
@@ -316,20 +334,30 @@ The webserver is not a convenience. With bootloader rollback armed, an image tha
 reached over the network is reverted on the next boot *by design*, so a slave without one could
 not be installed at all.
 
-Because the two sources are physically separate, their measurements are statistically
-independent. Averaging two independent Z-scores of equal variance halves the variance, i.e.
-improves SNR by √2:
+Because the sources are physically separate, their measurements should be statistically
+independent. Summing k independent Z-scores of unit variance and dividing by √k leaves unit
+variance, so the combined score stays N(0,1) while the signal adds coherently — SNR ×√k:
 
 ```
-z_combined = (z_master + z_slave) / √2        // = (z_m + z_s) × 0.70710678
+z_combined = Σ z_node / √k        // k = nodes that actually answered THIS run
 ```
 
-Each device subtracts **its own** baseline mean first, so the two hardware biases are removed
-independently before the two Z-scores are combined.
+`k` is per-run, not per-session: a node that misses its reply, or whose camera falls back to
+the TRNG, simply is not in that sum. The combined z stays unit-variance either way, which is
+the only property the statistics above depend on.
+
+Each node subtracts **its own** baseline mean first, so each hardware bias is removed
+independently before the scores are combined.
+
+⚠ **Independence is an assumption, and it is currently violated.** The √n gain is only real if
+the nodes do not correlate. A 4-node session showed inter-node correlation *growing* over ~30
+minutes (combined σ 1.038 → 1.083 → 1.182), which a pooled pairwise check missed entirely. See
+the open finding in [docs/PLAN_NETWORK.md](docs/PLAN_NETWORK.md). `/status` publishes every
+pairwise r and per-node σ so this is visible rather than assumed.
 
 ### Wiring (Ethernet only)
 
-Both nodes plug into the same switch. There is no link cable between them — the trigger is a
+Every node plugs into the same switch. There is no link cable between them — the trigger is a
 **broadcast datagram**, which is the whole reason for the change: at n nodes, one packet starts
 them all within microseconds, where n sequential UART writes would skew them. The premise is
 that every node integrates the *same* window, so simultaneity is the property that matters.
@@ -408,11 +436,18 @@ master  "A" ─►  slave sets g_abort and returns from its run at the next
 
 ### Robustness
 
-- **Optional / auto-discovered** — `slave_init()` broadcasts a `P` up to four times; if nothing
-  answers, the master clears `slave_connected` and runs solo. No IP has to be configured.
-- **One resend, then drop** — a command with no reply is resent once under the same sequence
-  number; if that also goes unanswered the master sets `s_slave_ok = false`, counts a
-  `net_lost`, and finishes the job master-only instead of hanging.
+- **Optional / auto-discovered** — `nodes_discover()` broadcasts a `P` up to four times and
+  collects *every* responder, re-running at each session start so a node powered on since last
+  time joins and one that vanished is not left as a phantom. No IP is configured anywhere.
+- **One resend, then drop for that run** — a command with no reply is resent once under the same
+  sequence number (nodes that already answered serve it from cache, so only the node that
+  actually missed it pays). Still silent → that node is out of *that run* and the rest combine
+  over √(k−1). After `NODE_MISS_LIMIT` consecutive misses it leaves the session entirely, so an
+  unplugged node degrades the array instead of taxing every later run with the full retry budget.
+- **Drop-and-continue on a degraded source** — a node reporting TRNG during a camera session is
+  dropped rather than averaged in, which keeps the session source-clean by construction. The
+  session only aborts if that would leave fewer than two nodes — the same rule as the old n=2
+  abort, with the floor made explicit.
 - **Proportional baseline timeout** — `slave_baseline_wait()` waits `baseline_total × 800 ms +
   15 s`, so a large baseline (minutes of slave work) never trips a false timeout.
 - **Cooperative abort** — the slave polls the socket every 2000 segments, so even a long
@@ -421,10 +456,14 @@ master  "A" ─►  slave sets g_abort and returns from its run at the next
   way the UART path flushed its input: a leftover `A` from the session that was just aborted
   must not abort the first baseline run of the next one.
 - **A lost `D` is not a disconnect** — the per-loop camera-health query is diagnostics. Dropping
-  the slave over it would cost the session half its SNR, so a missing answer only leaves the
-  slave columns of `/loops` at zero.
+  a node over it would cost the session part of its SNR, so a missing answer only leaves that
+  node's `/loops` columns at zero, and a missed `D` never counts toward the drop rule.
 - **Per-loop** — in multi-loop runs every loop re-issues `B<n>` and the per-combination `M`/`Z:`
-  exchange, so master and slave stay in lock-step across all loops.
+  exchange, so all nodes stay in lock-step across all loops.
+- **Bounded waits stay bounded** — lwIP rounds `SO_RCVTIMEO` to whole milliseconds and treats
+  the resulting 0 as *wait forever*, so a receive window with under ~500 µs left would hang the
+  session permanently. Every timeout goes through one clamp (`link_arm_timeout()`). This is not
+  hypothetical: it hung a session, and it had been latent since the UDP transport shipped.
 
 ## Web Interface
 
@@ -498,9 +537,10 @@ for (int seg = 0; seg < nseg; seg++) {
 return z_sum / sqrt((double)nseg);   // N(0,1) at either run length
 ```
 
-### 3 — Dual-ESP: Combined Z-Score (SNR ×√2)
+### 3 — The node array: Combined Z-Score (SNR ×√n)
 
-Both ESPs measure simultaneously. The combined Z-score increases SNR by factor √2:
+Every node measures the same window simultaneously. The combined Z-score increases SNR by √n
+over the n nodes that actually contributed to that run:
 
 ```c
 // sensor.c — elotto_task() measurement loop
@@ -512,7 +552,7 @@ if (use_slave) {
 }
 ```
 
-Baseline calibration also runs in parallel. See **[Dual-ESP: Master & Slave](#dual-esp-master--slave)**
+Baseline calibration also runs in parallel. See **[The node array](#the-node-array-master--slaves)**
 for the full protocol, timing and robustness details.
 
 ### 4 — Bias Correction: Studentization per Loop
@@ -720,13 +760,56 @@ Minimum Supported ESP32-P4 Revision → v0.0
 
 ## Build & Flash
 
+**Firmware ships over Ethernet. USB is a recovery tool, not a workflow.**
+
 ```powershell
-# IDF terminal (desktop shortcut "IDF_v6.0.1_Powershell")
 cd D:\E-Lotto\elotto
-idf.py build
-idf.py flash -p COM4
-idf.py monitor -p COM4
+.\build.ps1 build                        # master
+.\build.ps1 -C ../elotto_slave build     # slave
+.\build.ps1 -C ota_firmware build        # recovery updater
+
+curl http://192.168.178.100/update --data-binary @build/elotto.bin
+curl http://192.168.178.145/update --data-binary @../elotto_slave/build/elotto_slave.bin
 ```
+
+~730 KB in ~3 s. The node writes the **inactive** slot, reboots, and marks itself valid only
+once its own webserver answers — so a failed transfer or a dead image cannot strand it.
+`/update` answers **409** while a measurement is running, which is a real gain over USB, where
+nothing but discipline stopped a flash from destroying a session in progress.
+
+Always build through `build.ps1`: it pins the VS Code extension's Python venv. Mixing it with
+`export.ps1`'s interpreter pins the build directory to the wrong one and fails with
+"run `idf.py fullclean`".
+
+### Bringing up a fresh board (the only time USB is needed)
+
+```powershell
+.\build.ps1 -C ota_firmware -p COMx erase-flash
+.\build.ps1 -C ota_firmware -p COMx flash monitor   # console prints its DHCP address
+curl http://<that-address>/update --data-binary @../elotto_slave/build/elotto_slave.bin
+```
+
+That writes the bootloader, the shared partition table and the recovery updater into `factory`.
+From then on the board is reachable over Ethernet forever. **COM numbers are not stable** —
+list the ports before an `erase-flash` rather than trusting one written down.
+
+### Recovery — what saves a board, and what does not
+
+Reset does *nothing* but restart: the bootloader boots whatever `otadata` points at, so a reset
+on a broken app boots the broken app again. What recovers a node is layered, weakest failure
+first (see [docs/PLAN_NETWORK.md](docs/PLAN_NETWORK.md) §3a, all three proven on hardware):
+
+| failure | what recovers it |
+|---|---|
+| new app crashes **before** validating | bootloader rollback to the previous app — automatic |
+| new app validates, then crash-loops | boot-failure counter → falls back to the `factory` updater after 3 |
+| app hangs without rebooting | GPIO factory reset — **not enabled**, needs a free pin picked deliberately |
+| corrupt bootloader / changed partition table | **USB. Irreducible** — keep one cable |
+
+The `factory` updater is never an OTA target, so no application image can destroy it. Push an
+image at it explicitly with `POST /update?slot=0|1`, choose what boots with
+`POST /boot?slot=factory|0|1`, and re-prove the recovery paths on any node with
+`POST /poison?on=1|2`.
 
 ## Diagnostics
 
@@ -820,3 +903,4 @@ elotto_slave/  — separate repo: https://github.com/hpheuer/elotto_slave  (must
 | v2.0 | GCP methodology upgrade: per-loop **studentization** (`(z−m)/σ`, TRNG health σ published), **random measurement order** per loop (drift immunity), **master–slave independence check** (Pearson r, per-loop centered, per-device σ), 5× number scoring, **stride sampling** for capped runs, fewer yields (~15% faster). ⚠ Z-scores not comparable with pre-v2.0 sessions |
 | v2.1 | **Camera entropy**: OV5647 dark-frame noise (photon shot + read noise) replaces the TRNG as the default source — one camera per node, frame-pair diff → LSB → XOR-fold → ring buffer, ~3.4 Mbit/s, run length 8000 segments (~0.5 s). Shared `elotto_camera` component across both repos; **Entropy** selector in the UI (`?src=1` camera / `?src=0` TRNG); a camera stall **aborts** the session on either node instead of silently substituting the TRNG; **cross-loop drift check** (raw offset regression, `drift_slope`/`drift_t`) with the per-loop table at `/loops`; camera health in `/diag`; slave `D` (diagnostics) command |
 | v2.2 | **UDP node link** replaces the UART1 crossover (docs/PLAN_NETWORK.md Phase C): broadcast trigger on port 5000 so every node starts on one datagram, unicast replies, discovery by broadcast (no IP table). Same `P`/`B`/`M`/`D`/`A` semantics, so the statistics layer is untouched — verified by an A/B at identical settings (n=600 pairs: `pair_r` +0.065, σm/σs 1.05/1.00, zero lost triggers). Every frame carries the sequence number it answers; late replies are dropped and counted (`net_retries`/`net_lost`/`net_stale` in `/status`). The slave gains Ethernet, its own `/diag` and OTA — required, not optional, since rollback reverts any image that cannot be reached over the network |
+| v2.3 | **4-node array** (docs/PLAN_NETWORK.md Phase D): `slaves[]` discovered by broadcast — no IP list, no node count configured; combine is `Σz/√k` over the nodes that answered *that run*; independence checked across **all** node pairs with the full matrix in `/status`; a node whose source degrades or that stops answering is dropped and the rest continue over √(k−1), aborting only below two nodes; per-node health row (src, σ, Mbit/s, stalls, lost) and an "N-node array · SNR ×…" badge. `SCORE_REPS` 10 → 5. Fixed a latent hang: a sub-millisecond `SO_RCVTIMEO` rounds to 0, which lwIP means as *wait forever*. ⚠ **Open**: inter-node correlation grows during a session (combined σ 1.038 → 1.083 → 1.182 over 3 loops) — the √n gain is not yet established |

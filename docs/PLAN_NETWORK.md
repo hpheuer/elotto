@@ -449,6 +449,32 @@ Two consequences for how this gets judged:
   see it degrade to √3 with a UI flag, not a crash. Plus the PoE correlation control from
   Risk 1.
 
+**Status: IMPLEMENTED, GATE NOT MET** (2026-07-25). The code is on hardware and a full 4-node
+session ran end to end in 10 min; what the gate asks for is only partly demonstrated.
+
+| gate criterion | result |
+|---|---|
+| 4-node session runs | ✔ all four discovered by one broadcast, 10.0 min, 1145 runs |
+| transport | ✔ **zero** lost triggers, retries and stale replies |
+| all 6 pairwise r ≈ 0 | ✔ *as measured* — worst +0.0639 at n=600 (\|r\|·√n = 1.57)… |
+| combined σ ≈ 1 | ✘ **1.0383 → 1.0829 → 1.1819**, rising monotonically |
+| unplug → degrade to √3 | ✘ **not run** (deferred by decision) |
+| Risk 1 PoE control | ✘ **not run** (deferred by decision) |
+
+The third and fourth rows are the same finding seen two ways, and the pairwise ✔ is why it is
+recorded as a failure rather than a pass: **the pooled pairwise check missed what the combined
+σ caught.** See the open finding above — inter-node correlation grows over a session, so
+pooling loops averages it into something that looks fine. Judging future sessions on `pair_r`
+alone would repeat the mistake.
+
+What *is* demonstrated and can be relied on: discovery of every node by broadcast with no
+configuration, `Σz/√k` over whoever answered each run, per-node σ and the full pairwise matrix
+in `/status`, drop-and-continue with an explicit two-node floor, and a transport that lost
+nothing across ~1145 command round trips at n=4.
+
+Not demonstrated, and not to be claimed: the ×2 SNR gain. That claim rests on independence, and
+independence is exactly what is currently in question.
+
 ### Phase E — Retire USB, and the docs
 
 - README: 4-node topology, switch wiring, OTA workflow, recovery procedure.
@@ -456,6 +482,26 @@ Two consequences for how this gets judged:
   documented for bootloader/partition changes.
 - `PLAN_4NODE.md`: mark Phase 4 superseded, pointing here.
 - Version bump.
+
+**Status: DONE** (2026-07-25).
+
+- **USB is retired as a workflow.** All four boards carry the recovery updater in `factory` and
+  are updated over Ethernet; each was touched by USB exactly once, to install that updater.
+  The README now documents the fresh-board bring-up and the layered recovery table (rollback →
+  boot counter → GPIO reset → USB) rather than `idf.py flash`.
+- README carries the 4-node topology and power arrangement, the `Σz/√k` combine, and the
+  robustness rules that actually govern a session (per-run drop, source-degradation drop with
+  a two-node floor, the `SO_RCVTIMEO` clamp).
+- `PLAN_4NODE.md` Phase 4 was already superseded; its hardware checklist is now closed out —
+  the UART-star wiring item is obsolete, and power is answered by PoE.
+- Version bumped to **v2.3**.
+
+**USB is retired as a workflow, not removed as a recovery option** — a corrupt bootloader or a
+changed partition table still needs a cable, and that is irreducible (Risk 5). One cable stays.
+
+The README states the ×√n gain as an assumption with the open correlation finding attached,
+rather than as a feature. Documenting a gain that has not been established would be the one
+failure this project's records have avoided so far.
 
 ## Hardware checklist
 
