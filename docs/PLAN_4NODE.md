@@ -12,6 +12,11 @@ below is superseded and kept only as a record.
 Implementation is phased; each phase is one focused coding session with clear acceptance
 criteria. Do not start a phase before the previous one's gate passes.
 
+**Phase 5 (Focus display)** is new and not yet started — it changes the measurement protocol
+and the UI, so it lives here rather than in `PLAN_NETWORK.md` (whose "Phase D" is the 4-node
+scale-out). It touches the master/slave run-length exchange, so read its "coordinate with
+Phase C" note before implementing either.
+
 ## Goal
 
 Replace the on-chip TRNG (~0.5 Mbit/s effective entropy, whitened, opaque) with **OV5647
@@ -308,6 +313,88 @@ Being explicit, so this is not mistaken for a passed gate:
    `mean_px` 2.8 vs 6.8, bias deviation ~20× larger). More light on the slave, not less.
 5. **Scale-out is no longer blocked** — the boards and cameras arrived. It moved to
    [`PLAN_NETWORK.md`](PLAN_NETWORK.md) and is now a UDP/Ethernet job, not a UART one.
+
+## Phase 5 — Focus display
+
+Show *what is being measured, while it is being measured*. A "Focus:" panel under the progress
+card displays the current target in large type for exactly the window its bits are collected in:
+the candidate number during scoring, the full draw during combination measurement. Run lengths
+are retuned so those windows are the run, not a delay bolted onto it.
+
+This makes the observer part of the measurement window — which is the original GCP/PEAR
+protocol, where the point is precisely that a person attends to the target while the noise is
+sampled. It changes nothing statistically (z is normalised by √segments at any run length), but
+it does mean a session with the Focus panel is no longer equivalent to an unattended one, and
+results should record which mode produced them.
+
+### Spec
+
+| Phase | Panel shows | Held for | Source |
+|-------|-------------|----------|--------|
+| Number scoring | the single candidate number | **1000 ms** | `score_and_build_pool()` current `k` |
+| Combination measurement | the whole draw (6, or 5 + 2 euro) | **500 ms** | `results[i].nums` / `.euro` |
+| Baseline / idle | nothing (panel hidden) | — | — |
+
+- The hold time **is the run**, not a pause around it: size segments-per-run so the measurement
+  occupies the window. Padding with a delay would halve the bit rate for nothing.
+- The panel updates **before** the run starts and stays put until it ends, so display and bits
+  cover the same interval. Anything else defeats the purpose.
+- Order stays the per-loop Fisher–Yates permutation, so the observer cannot anticipate the
+  next target — and drift immunity is unchanged.
+
+### Timing budget — one loop ≤ ~10 min
+
+Measured: a camera run of 8000 segments takes ≈ 0.47 s master-only, ≈ 0.66 s slave-combined.
+Segment counts must therefore be **calibrated against a real run**, not derived on paper, and
+the chosen values recorded here.
+
+| | target | ≈ segments | count | ≈ time |
+|---|---|---|---|---|
+| Scoring run | 1000 ms | ~12–17k | 49 × `SCORE_REPS` (10) = 490 | ~8 min, **loop 0 only** |
+| Baseline run | (not shown) | measurement length | 50 | ~25 s |
+| Measurement run | 500 ms | ~6–8k | `Runs` cap **1000** | ~8.3 min |
+
+→ loop 0 ≈ 17 min (scoring is one-time), every later loop ≈ **9 min**. Eurojackpot scoring is
+62 numbers ≈ 10 min. Suggested UI defaults change to `Runs = 1000`, `Baseline = 50`.
+
+The `Runs` cap already stride-samples across the whole combination space (slot i → combo
+⌊i·full/total⌋), so 1000 of 5005 stays spread rather than taking a lexicographic prefix, and
+cumulative mode re-measures the same 1000 slots each loop — Stouffer accumulation is unaffected.
+
+### Implementation notes
+
+- **Segments per run become phase-dependent**, not just source-dependent: `SCORE_SEGMENTS` and
+  `MEAS_SEGMENTS` alongside the existing `CAM_SEGMENTS`/`TRNG_SEGMENTS`. z stays N(0,1) because
+  it is normalised by √segments — but the two nodes must use the **same** count for the same
+  run, so the slave has to be told the length rather than assuming it. Today `M` implies one
+  fixed length; extend it to carry the segment count. **Coordinate with `PLAN_NETWORK.md`
+  Phase C**, which is rewriting that exchange onto UDP anyway — doing both at once avoids
+  changing the protocol twice.
+- **Serve the focus separately from `/status`.** `/status` is ~2.5 KB and polled at 1 Hz; the
+  panel needs ~4 Hz to land a 500 ms window. Add a small `GET /focus` returning just the
+  current target plus a monotonic `focus_seq`, and let the UI poll that fast while `/status`
+  stays at 1 Hz. `focus_seq` is what tells the UI a *new* target started, including when two
+  consecutive draws happen to look similar.
+- UI: a card below the progress card, title "Focus:", reusing the existing `.num` circle styling
+  at a larger size; hidden unless a target is active.
+
+### Open
+
+- **500 ms is brief for reading 5–7 numbers.** It is what was asked for and it is the right
+  default to build, but expose both hold times as constants (ideally UI fields) so they can be
+  tuned after trying it — the useful value is whatever a person can actually attend to.
+- Whether a Focus session should be flagged in `/status` and in the CSV export, so attended and
+  unattended runs are not silently pooled later.
+
+### Gate
+
+- Panel updates in lockstep with the measurement: `focus_seq` strictly increasing, no skipped or
+  repeated targets over a full loop.
+- Measured run durations within ±10 % of 1000 ms / 500 ms; the calibrated segment counts
+  recorded above.
+- One measurement loop ≤ 10 min.
+- **`loop_sigma` ≈ 1 and `pair_r` ≈ 0 at the new run lengths** — the retune must not disturb the
+  statistics, which is the one way this change could do real damage.
 
 ## Phase 4 — 4-node scale-out — **SUPERSEDED by `PLAN_NETWORK.md`**
 
