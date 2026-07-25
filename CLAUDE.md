@@ -33,9 +33,13 @@
 |------|----|-----|-----|----------------|
 | master | 192.168.178.100 | 80:f1:b2:d2:e3:1d | COM4 | factory = updater, ota_0/ota_1 = elotto app |
 | slave0 | 192.168.178.103 (static lease) | 80:f1:b2:d2:e3:e5 | — | factory = updater, ota_1 = slave app |
-| slave1 | 192.168.178.145 (static lease) | e8:f6:0a:e0:ce:a8 | COM8 | factory = updater, ota_0 = slave app |
+| slave1 | 192.168.178.145 (static lease) | e8:f6:0a:e0:ce:a8 | — | factory = updater, ota_0 = slave app |
+| slave2 | 192.168.178.155 | e8:f6:0a:e0:c7:a1 | COM9 | factory = updater, ota_0 = slave app |
 
-One more ESP32-P4-ETH board + a 4-port PoE switch exist for the full 4-node array (Phase D).
+All four boards are provisioned; each has its own OV5647 and every one of them is
+OTA-updatable. What the 4-node array still needs is **power for four at once** — the boards
+draw from USB, so one cable means one live node (PLAN_NETWORK Risk 2: whether the boards take
+PoE directly or need splitters is still unverified).
 **COM ports are not stable** — the slave enumerated as COM6 historically and as COM8 today, so
 always list the ports before an `erase-flash` rather than trusting a number written down here.
 
