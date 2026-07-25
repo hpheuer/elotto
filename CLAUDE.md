@@ -84,6 +84,12 @@ Phase 4. Both record every gate result and design decision.
   previous session's source.
 - Segments per run are source-dependent: TRNG 32000 (6.4 Mbit), camera 8000 (1.6 Mbit ≈
   0.5 s). z stays N(0,1) either way — normalised by √segments.
+- ⚠ **`CAM_SEGMENTS` / `TRNG_SEGMENTS` are duplicated** in `main/sensor.c` and
+  `../elotto_slave/main/slave.c` and **must match**, or the nodes integrate different windows
+  and the whole premise (all nodes measure the *same* interval) fails silently — the numbers
+  stay plausible. Change both, rebuild both, reflash **all four** nodes. Same for the
+  yield/abort-poll cadence in `gcp_zscore_raw()`: per-run wall time is max over nodes, so a
+  mismatch slows every measurement to the slowest device.
 - **A node whose camera stalls is DROPPED**, never silently switched to the TRNG: mixing
   sources mid-session would change the measured physics with no record of which runs were
   affected. Dropping keeps the remaining nodes source-clean by construction; the session only
@@ -181,3 +187,21 @@ is gone. Those are the cases OTA cannot repair — the P4 has no
 - The slave's `sdkconfig.defaults` must keep `CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y` **before**
   `ESP32P4_REV_MIN_0=y` — the latter depends on it, and without it the choice silently falls
   back to rev v3.1 and the binary refuses to boot on these v1.3 boards.
+
+## Open items (2026-07-25) — deferred by decision, not forgotten
+
+1. **Inter-node correlation grows during a session.** Combined σ rose 1.038 → 1.083 → 1.182
+   over three loops while the pooled worst pairwise r stayed a harmless-looking +0.064. The
+   ×√n gain rests on independence, so this decides whether four nodes beat one. The array is
+   already wired as the control (master isolated on USB, three slaves on one PoE rail) and
+   `/status` publishes the full pairwise matrix, so one 3-loop session answers it: slaves
+   correlating only with each other ⇒ the rail; the master tracking them too ⇒ the room.
+   Full record in docs/PLAN_NETWORK.md.
+2. **Node-drop test never run** (PLAN_NETWORK Phase D gate): unplug a node mid-run, expect
+   degrade to √3 with a UI flag and no crash. The code path exists and is untested.
+3. **Camera bias degrades under sustained load** — `.103` went from 0.499307 idle to 0.497884
+   after a session, outside PLAN_4NODE Phase 0's 1e-3 gate. Likely the same cause as (1).
+
+Also long-open: the **camera-stall abort has never been observed firing** (PLAN_4NODE's
+"Remaining work" item 1) — the only safety claim in these documents that has only been reasoned
+about. Phase C proved the UDP abort path; this is the *source-loss* path.
