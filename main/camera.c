@@ -33,7 +33,9 @@ static const char *TAG_CAM = "cam";
 static int      s_fd = -1;
 static uint32_t s_frame_size = 0;
 static uint8_t *s_bufs[CAM_BUF_COUNT];
+#if CONFIG_ELOTTO_CAM_XCLK_PIN > 0
 static esp_cam_sensor_xclk_handle_t s_xclk_handle;
+#endif
 
 static SemaphoreHandle_t s_mutex;
 static camera_stats_t    s_stats = { 0 };
@@ -43,7 +45,16 @@ static camera_stats_t    s_stats = { 0 };
 // s_ring lives in PSRAM: 64 KB of static internal DRAM would not fit alongside
 // the existing sensor.c tables (g_status.results[], s_zsum[]) on this P4.
 static uint32_t *s_ring;
-static uint32_t s_ring_head = 0;
+// Single-producer (camera_task) / single-consumer (GCP task) ring. head is
+// written only by the producer, tail only by the consumer, so no lock is
+// needed -- but both must be volatile so neither side caches the other's index.
+static volatile uint32_t s_ring_head = 0;
+static volatile uint32_t s_ring_tail = 0;
+static volatile uint32_t s_ring_drops = 0;
+static volatile uint32_t s_consumer_waits = 0;
+static volatile uint32_t s_stalls = 0;
+
+#define CAM_STALL_TIMEOUT_MS  2000
 static uint64_t s_bits_extracted = 0, s_ones_count = 0;
 static uint64_t s_run_ones = 0, s_run_bits = 0;
 static double   s_z_mean = 0.0, s_z_m2 = 0.0;
@@ -82,9 +93,19 @@ static esp_err_t cam_reg_write(uint32_t regaddr, uint32_t value)
 // lag-1..4 bit autocorrelation across the word stream (see PLAN Phase 0 gate).
 static void process_word(uint32_t w)
 {
-    s_ring[s_ring_head] = w;
-    s_ring_head = (s_ring_head + 1) % RING_WORDS;
+    // Publish to the consumer first. Never overwrite an unread slot: dropping
+    // fresh bits when the consumer is behind is fine (excess entropy), reusing
+    // or clobbering them is not.
+    uint32_t next = (s_ring_head + 1) % RING_WORDS;
+    if (next == s_ring_tail) {
+        s_ring_drops++;
+    } else {
+        s_ring[s_ring_head] = w;
+        s_ring_head = next;
+    }
 
+    // Statistics cover every extracted word, including dropped ones: /diag must
+    // characterise the source itself, not whichever subset got consumed.
     int ones = __builtin_popcount(w);
     s_bits_extracted += 32;
     s_ones_count += ones;
@@ -185,6 +206,9 @@ static void publish_stats(void)
     s_stats.mean_pixel_level  = mean_px;
     s_stats.mbit_per_sec      = mbps;
     s_stats.zero_diff_frac    = s_diff_n ? (double)s_zero_diffs / (double)s_diff_n : 0.0;
+    s_stats.ring_drops        = s_ring_drops;
+    s_stats.consumer_waits    = s_consumer_waits;
+    s_stats.stalls            = s_stalls;
     // Pearson r for two Bernoulli(p) variables: (E[xy] - p^2) / (p(1-p))
     double var = bias * (1.0 - bias);
     for (int L = 0; L < 4; L++) {
@@ -408,6 +432,28 @@ bool camera_is_ready(void)
     ready = s_stats.ready;
     xSemaphoreGive(s_mutex);
     return ready;
+}
+
+bool camera_read_word(uint32_t *out)
+{
+    if (!s_ring || !camera_is_ready()) return false;
+
+    TickType_t waited = 0;
+    const TickType_t limit = pdMS_TO_TICKS(CAM_STALL_TIMEOUT_MS);
+
+    while (s_ring_tail == s_ring_head) {
+        if (waited == 0) s_consumer_waits++;
+        if (waited >= limit) {
+            s_stalls++;
+            return false;       // caller degrades to TRNG rather than hanging
+        }
+        vTaskDelay(1);          // wait for real bits; never invent them
+        waited++;
+    }
+
+    *out = s_ring[s_ring_tail];
+    s_ring_tail = (s_ring_tail + 1) % RING_WORDS;
+    return true;
 }
 
 void camera_get_stats(camera_stats_t *out)

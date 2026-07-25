@@ -21,6 +21,10 @@ typedef struct {
     double   zero_diff_frac;      // fraction of pixels with diff==0 (noise below 1 ADU).
                                   // Diagnostic: diff==0 has LSB 0, so a high value here
                                   // directly explains a deficit-of-ones bias.
+    uint32_t ring_drops;          // words discarded: consumer behind, ring full
+    uint32_t consumer_waits;      // times a read had to wait for the producer (normal
+                                  // backpressure -- the GCP task outruns the sensor)
+    uint32_t stalls;              // reads that gave up and forced a TRNG fallback
 } camera_stats_t;
 
 // Bring up MIPI-CSI + OV5647, disable AEC/AGC, apply fixed exposure/gain from
@@ -31,3 +35,10 @@ esp_err_t camera_init(void);
 
 bool camera_is_ready(void);
 void camera_get_stats(camera_stats_t *out);
+
+// Phase 1 consumer API: pop one 32-bit word of extracted entropy.
+// Blocks (vTaskDelay) while the ring is empty -- bits are never reused or
+// fabricated to cover an underrun. Returns false only if the camera is not
+// streaming or has produced nothing for CAM_STALL_TIMEOUT_MS, so the caller
+// can degrade to the TRNG instead of hanging the session.
+bool camera_read_word(uint32_t *out);

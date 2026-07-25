@@ -8,6 +8,7 @@
 #include "esp_err.h"
 #include "driver/uart.h"
 #include "sensor.h"
+#include "camera.h"
 
 ElottoStatus g_status = { .state = ELOTTO_IDLE };
 
@@ -28,6 +29,44 @@ static inline uint32_t fast_rng(void) { return RNG_REG; }
 #define SEGMENT_BITS   200
 #define NUM_SEGMENTS   ((TRNG_PER_RUN * 32) / SEGMENT_BITS)   // 32000
 
+// Segments per run is source-dependent (PLAN_4NODE Phase 1). The TRNG is
+// oversampled and effectively free, so it keeps the historical 6.4 Mbit/run.
+// Camera bits are honest and rate-limited (~3.4 Mbit/s measured), so a run is
+// sized for ~0.5 s instead. Run length only sets granularity — statistical
+// power per second is rate-limited either way, and z stays N(0,1) because it
+// is normalised by √segments.
+#define TRNG_SEGMENTS  NUM_SEGMENTS      // 6.4 Mbit/run
+#define CAM_SEGMENTS   8000              // 1.6 Mbit/run ≈ 0.47 s at 3.4 Mbit/s
+
+// Which source the running session is actually drawing measurement bits from.
+// Distinct from g_status.noise_source (what was *requested*): a camera stall
+// latches this to TRNG so every subsequent word does not re-pay the stall
+// timeout, and raises g_status.noise_fallback so the mix is never silent.
+static volatile int s_active_source = NOISE_TRNG;
+
+static inline uint32_t noise_word(void)
+{
+    if (s_active_source == NOISE_CAMERA) {
+        uint32_t w;
+        if (camera_read_word(&w)) return w;
+        s_active_source = NOISE_TRNG;
+        g_status.noise_fallback = true;
+    }
+    return RNG_REG;
+}
+
+// Called once per session, before any measurement.
+static void noise_source_begin(void)
+{
+    g_status.noise_fallback = false;
+    if (g_status.noise_source == NOISE_CAMERA && camera_is_ready()) {
+        s_active_source = NOISE_CAMERA;
+    } else {
+        if (g_status.noise_source == NOISE_CAMERA) g_status.noise_fallback = true;
+        s_active_source = NOISE_TRNG;
+    }
+}
+
 static const char *p_label(double absZ)
 {
     if (absZ > 3.29) return "p&lt;0.001";
@@ -39,19 +78,23 @@ static const char *p_label(double absZ)
 
 static double gcp_zscore_raw(void)
 {
+    const int nseg = (s_active_source == NOISE_CAMERA) ? CAM_SEGMENTS : TRNG_SEGMENTS;
     double z_sum = 0.0;
-    for (int seg = 0; seg < NUM_SEGMENTS; seg++) {
-        int ones = __builtin_popcount(fast_rng())
-                 + __builtin_popcount(fast_rng())
-                 + __builtin_popcount(fast_rng())
-                 + __builtin_popcount(fast_rng())
-                 + __builtin_popcount(fast_rng())
-                 + __builtin_popcount(fast_rng())
-                 + __builtin_popcount(fast_rng() & 0xFF);
+    for (int seg = 0; seg < nseg; seg++) {
+        int ones = __builtin_popcount(noise_word())
+                 + __builtin_popcount(noise_word())
+                 + __builtin_popcount(noise_word())
+                 + __builtin_popcount(noise_word())
+                 + __builtin_popcount(noise_word())
+                 + __builtin_popcount(noise_word())
+                 + __builtin_popcount(noise_word() & 0xFF);
         z_sum += (ones - 100.0) / 7.07106781;
-        if (seg % 8000 == 0) vTaskDelay(1);   // 4 yields/run (~40 ms) instead of 8
+        // TRNG path needs explicit yields (4/run, ~40 ms); the camera path
+        // already yields inside camera_read_word() whenever it waits on the
+        // producer, which is most of the time.
+        if (seg % 8000 == 0) vTaskDelay(1);
     }
-    return z_sum / sqrt((double)NUM_SEGMENTS);
+    return z_sum / sqrt((double)nseg);
 }
 
 // Binomial coefficient C(n, r) for small values (max n=15, r=6)
@@ -541,6 +584,7 @@ static void absorb_loop(RunResult *carry, int *carry_n,
 void elotto_task(void *pvParam)
 {
     g_status.state           = ELOTTO_RUNNING;
+    noise_source_begin();
     g_status.runs_completed  = 0;
     g_status.baseline_done   = 0;
     g_status.scoring_done    = 0;
@@ -651,6 +695,10 @@ void elotto_task(void *pvParam)
         // every loop and accumulate √k-coherently — exactly like a real signal.
         for (int i = 0; i < g_status.runs_total; i++) s_perm[i] = (uint16_t)i;
         for (int i = g_status.runs_total - 1; i > 0; i--) {
+            // Deliberately fast_rng(), not noise_word(): this is administrative
+            // randomness (measurement order), not measured data. Spending
+            // rate-limited camera entropy here would stall the session for
+            // bits that never enter a z-score.
             int j = (int)(fast_rng() % (uint32_t)(i + 1));
             uint16_t t = s_perm[i]; s_perm[i] = s_perm[j]; s_perm[j] = t;
         }

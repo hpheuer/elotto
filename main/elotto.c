@@ -440,6 +440,7 @@ static esp_err_t status_handler(httpd_req_t *req)
     pos += snprintf(buf+pos, sizeof(buf)-pos,
         "{\"state\":\"%s\",\"mode\":\"%s\",\"phase\":\"%s\","
         "\"slave\":%s,\"rank\":\"%s\","
+        "\"src\":\"%s\",\"src_fallback\":%s,"
         "\"best_z\":%.4f,\"p_corr\":%.6g,\"comparisons\":%d,"
         "\"loop_sigma\":%.4f,\"pair_r\":%.4f,\"pair_n\":%d,"
         "\"sigma_m\":%.4f,\"sigma_s\":%.4f,"
@@ -449,6 +450,8 @@ static esp_err_t status_handler(httpd_req_t *req)
         "\"completed\":%d,\"total\":%d,\"elapsed_ms\":%lld,",
         state_str, mode_str, phase_str,
         g_status.slave_connected ? "true" : "false", rank_str,
+        (g_status.noise_source == NOISE_CAMERA) ? "cam" : "trng",
+        g_status.noise_fallback ? "true" : "false",
         g_status.best_z, g_status.p_corrected, g_status.comparisons,
         g_status.loop_sigma, g_status.pair_r, g_status.pair_n,
         g_status.sigma_m, g_status.sigma_s,
@@ -524,6 +527,10 @@ static esp_err_t start_handler(httpd_req_t *req)
             }
             if (httpd_query_key_value(qry, "rank", val, sizeof(val)) == ESP_OK)
                 g_status.rank_mode = (val[0] == '0') ? RANK_PEAK : RANK_CUMULATIVE;
+            // ?src=1 -> camera entropy, ?src=0 -> TRNG. Falls back to TRNG with
+            // g_status.noise_fallback set if the camera is not streaming.
+            if (httpd_query_key_value(qry, "src", val, sizeof(val)) == ESP_OK)
+                g_status.noise_source = (val[0] == '1') ? NOISE_CAMERA : NOISE_TRNG;
         }
         xTaskCreate(elotto_task, "elotto", 8192, NULL, 5, NULL);
     }
@@ -608,7 +615,8 @@ static esp_err_t diag_handler(httpd_req_t *req)
         "\"ready\":%s,\"frame_pairs\":%llu,\"bits\":%llu,\"stuck_frames\":%lu,"
         "\"bias\":%.6f,\"sigma\":%.4f,\"sigma_n\":%d,"
         "\"autocorr\":[%.4f,%.4f,%.4f,%.4f],"
-        "\"mean_pixel\":%.2f,\"mbit_s\":%.3f,\"zero_diff\":%.4f"
+        "\"mean_pixel\":%.2f,\"mbit_s\":%.3f,\"zero_diff\":%.4f,"
+        "\"drops\":%lu,\"waits\":%lu,\"stalls\":%lu"
         "}"
         "}",
         (long long)dt_reg, bias_reg, (unsigned long)stuck_reg, z_std_reg,
@@ -620,7 +628,9 @@ static esp_err_t diag_handler(httpd_req_t *req)
         (unsigned long)cam.stuck_frame_count,
         cam.bias, cam.sigma, cam.sigma_samples,
         cam.autocorr_lag[0], cam.autocorr_lag[1], cam.autocorr_lag[2], cam.autocorr_lag[3],
-        cam.mean_pixel_level, cam.mbit_per_sec, cam.zero_diff_frac);
+        cam.mean_pixel_level, cam.mbit_per_sec, cam.zero_diff_frac,
+        (unsigned long)cam.ring_drops, (unsigned long)cam.consumer_waits,
+        (unsigned long)cam.stalls);
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, buf);

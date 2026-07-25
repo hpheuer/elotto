@@ -86,6 +86,28 @@ Three findings worth carrying forward:
 - **Gate:** full 6/49 quick session (Loops=3, Runs=200, camera source) with per-run
   σ ≈ 1, clean pair_r vs the TRNG-based slave, no underruns at sustained rate.
 
+**Status: PASSED** (2026-07-25, 6/49, Loops=3, Runs=200, `?src=1`, ~22 min, 5.34 Gbit):
+
+| loop_sigma (3 loops) | pair_r (n=600) | sigma_m / sigma_s | stalls | fallback |
+|----------------------|----------------|-------------------|--------|----------|
+| 0.9982 / 0.9983 / 0.9917 | −0.0191 (\|r\|·√n = 0.47) | 1.0178 / 0.9935 | 0 | no |
+
+- `?src=1` on /start selects camera, `?src=0` TRNG; /status reports `src` and
+  `src_fallback`, /diag adds ring `drops`/`waits`/`stalls`.
+- High `drops` (~6.6M words) are normal and not a defect: production (3.43 Mbit/s) and
+  consumption (~3.2 Mbit/s in-run) are near-balanced, so the ring fills during inter-run
+  gaps and surplus bits are discarded. Unread words are never clobbered, never reused.
+  `waits` is likewise normal backpressure. Only `stalls` indicates a real underrun.
+- The Fisher–Yates shuffle deliberately stays on the TRNG: measurement *order* is
+  administrative randomness, not measured data, and must not consume rate-limited
+  camera entropy.
+- **Residual bias propagates to a per-run z offset of ≈ −0.33** (1.29e-4 bias × 200
+  bits/segment × √8000 segments). It is a 19σ deviation at this sample size, not noise.
+  Harmless here only because `studentize()` removes a constant per-loop offset exactly
+  and the per-loop permutation prevents coherent accumulation. **Re-verify in Phase 3**:
+  a 20 h session gives drift far more room than three loops, and drift is the one form
+  this correction does not fully absorb.
+
 ## Phase 2 — Camera on slave (2-node parity)
 
 - Slave firmware (repo `elotto_slave`): integrate the same camera pipeline (component is

@@ -14,6 +14,9 @@ typedef enum { PHASE_SCORING, PHASE_BASELINE, PHASE_MEASURING } ElottoPhase;
 // Ranking across loops: PEAK = best single-run Z (noise extreme); CUMULATIVE =
 // Stouffer Z = Σz/√k per fixed combination (GCP cumulative-deviation method)
 typedef enum { RANK_PEAK = 0, RANK_CUMULATIVE = 1 } ElottoRank;
+// Measurement bit source. TRNG = on-chip hardware RNG (whitened, opaque);
+// CAMERA = OV5647 dark-frame noise (raw, quantum-origin). See docs/PLAN_4NODE.md.
+typedef enum { NOISE_TRNG = 0, NOISE_CAMERA = 1 } NoiseSource;
 
 typedef struct {
     int        index;
@@ -60,6 +63,9 @@ typedef struct {
     RunResult        cover_low[TOP_N];    // low-Z but diversified (max-spread) picks
     volatile bool    abort_requested;
     bool             slave_connected;
+    int              noise_source;        // NoiseSource requested for this session
+    volatile bool    noise_fallback;      // camera requested but TRNG in use (stall
+                                          // or camera not ready) — runs are mixed
     RunResult        results[NUM_RUNS];   // live per-loop measurement scratch
 } ElottoStatus;
 
