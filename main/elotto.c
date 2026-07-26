@@ -828,9 +828,11 @@ static esp_err_t loops_handler(httpd_req_t *req)
         if (nn > MAX_NODES) nn = MAX_NODES;
         len = snprintf(buf, sizeof(buf),
             "%s{\"loop\":%d,\"t_s\":%lu,\"base\":%.4f,\"raw_m\":%.4f,"
-            "\"mean\":%.4f,\"sigma\":%.4f,\"cal_ms\":%d,\"nodes\":%d,\"n\":[",
+            "\"mean\":%.4f,\"sigma\":%.4f,\"cal_ms\":%d,"
+            "\"win_ms\":%.1f,\"gap_ms\":%.1f,\"nodes\":%d,\"n\":[",
             i ? "," : "", i + 1, (unsigned long)L->t_s,
-            L->base, L->base + L->mean_n[0], L->mean, L->sigma, (int)L->cal_ms, nn);
+            L->base, L->base + L->mean_n[0], L->mean, L->sigma, (int)L->cal_ms,
+            L->win_ms, L->gap_ms, nn);
         httpd_resp_send_chunk(req, buf, len);
         for (int k = 0; k < nn; k++) {
             // cam_exp/gain/fold are the operating point this loop was MEASURED

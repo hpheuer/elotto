@@ -119,6 +119,12 @@ typedef struct {
     uint8_t  cam_cal_ok[MAX_NODES]; // 0 = kept its previous setting, no gate passed
     float    cam_bias[MAX_NODES];   // bias of the window that chose it
     uint16_t cal_ms;       // wall time the whole per-loop calibration cost
+    // The measured run window and inter-run gap OF THIS LOOP. Recorded per loop
+    // because the count→duration conversion is not stable (open item 4) and
+    // per-loop calibration moves the camera's rate on purpose (§1.5.3), so the
+    // series across loops is the only way to see the window drift rather than
+    // average it away. Measured in every session, attended or not.
+    float    win_ms, gap_ms;
 } LoopStat;
 
 typedef struct {

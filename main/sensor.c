@@ -261,6 +261,11 @@ static int64_t s_paused_us;        // total time held by pause, excluded from el
 static int64_t s_focus_on_us, s_focus_off_us;
 static double  s_win_sum, s_gap_sum;
 static uint32_t s_win_n, s_gap_n;
+// Which kind the TIMING accumulators are currently describing. Separate from
+// g_status.focus.kind, which only exists while the panel is live — the timing
+// runs in every session, so it cannot key off a field an unattended session
+// never writes. 0xFF = nothing measured yet.
+static uint8_t s_timing_kind = 0xFF;
 
 static int64_t elapsed_ms_now(void)
 {
@@ -273,6 +278,7 @@ static void focus_reset(void)
     s_focus_on_us = s_focus_off_us = 0;
     s_win_sum = s_gap_sum = 0.0;
     s_win_n = s_gap_n = 0;
+    s_timing_kind = 0xFF;
     g_status.focus_win_ms = g_status.focus_gap_ms = 0.0f;
     g_status.paused    = false;
     g_status.paused_ms = 0;
@@ -286,16 +292,34 @@ static void focus_reset(void)
 static void focus_publish(FocusKind kind, const uint8_t *nums, int n,
                           const uint8_t *euro, int ne)
 {
-    if (!g_status.focus_mode) return;      // unattended session: panel stays dark
-    FocusState *F = &g_status.focus;
-    // Scoring and measurement have different windows by design (1000 ms vs
-    // 500 ms), so the timing means are per phase — pooled they would describe
-    // neither, and the gate is stated separately for each.
-    if (F->kind != (uint8_t)kind) {
+    /* TIMING FIRST, AND UNCONDITIONALLY. The run window is a property of the
+     * INSTRUMENT, not of the display: it is set by a segment count whose
+     * conversion to milliseconds is not stable (open item 4 — the achievable
+     * window moved 1.75x across one afternoon), and per-loop calibration now
+     * changes the camera's rate deliberately, which moves it again (§1.5.3).
+     * So it has to be measured in every session, attended or not.
+     *
+     * It used to sit behind the focus_mode guard below, which made
+     * focus_win_ms/focus_gap_ms structurally zero in exactly the unattended
+     * control sessions the drift most needed watching in. */
+    int64_t now = esp_timer_get_time();
+    // Scoring and measurement are accumulated separately: they are the same
+    // 1000 ms window today, but they are different phases and a pooled mean
+    // would describe neither if that ever diverges again.
+    if (s_timing_kind != (uint8_t)kind) {
+        s_timing_kind  = (uint8_t)kind;
         s_win_sum = s_gap_sum = 0.0;
         s_win_n = s_gap_n = 0;
         s_focus_off_us = 0;
     }
+    // No gap is charged when s_focus_off_us is 0 — that is what keeps a loop's
+    // first window from billing the whole calibration + baseline phase, which
+    // no window was open for, as inter-run dark time.
+    if (s_focus_off_us) { s_gap_sum += (double)(now - s_focus_off_us); s_gap_n++; }
+    s_focus_on_us = now;
+
+    if (!g_status.focus_mode) return;      // unattended session: panel stays dark
+    FocusState *F = &g_status.focus;
     F->active = 0;
     __sync_synchronize();
     F->kind = (uint8_t)kind;
@@ -306,10 +330,6 @@ static void focus_publish(FocusKind kind, const uint8_t *nums, int n,
     __sync_synchronize();
     F->seq++;
     F->active = 1;
-
-    int64_t now = esp_timer_get_time();
-    if (s_focus_off_us) { s_gap_sum += (double)(now - s_focus_off_us); s_gap_n++; }
-    s_focus_on_us = now;
 }
 
 static void focus_show_number(int value, bool is_euro)
@@ -323,14 +343,41 @@ static void focus_show_number(int value, bool is_euro)
  * next target will appear, and onset is the payload. */
 static void focus_off(void)
 {
-    FocusState *F = &g_status.focus;
-    if (!F->active) return;
-    F->active = 0;
-    int64_t now = esp_timer_get_time();
-    if (s_focus_on_us) { s_win_sum += (double)(now - s_focus_on_us); s_win_n++; }
-    s_focus_off_us = now;
-    if (s_win_n) g_status.focus_win_ms = (float)(s_win_sum / s_win_n / 1000.0);
-    if (s_gap_n) g_status.focus_gap_ms = (float)(s_gap_sum / s_gap_n / 1000.0);
+    // Close the timing window unconditionally, for the reason in
+    // focus_publish(). `s_focus_on_us` is the open/closed flag — cleared here —
+    // so the several callers that blank an already-dark panel (end of scoring,
+    // finalize) cannot double-count a window that was never open.
+    if (s_focus_on_us) {
+        int64_t now = esp_timer_get_time();
+        s_win_sum += (double)(now - s_focus_on_us);
+        s_win_n++;
+        s_focus_on_us  = 0;
+        s_focus_off_us = now;
+        g_status.focus_win_ms = (float)(s_win_sum / s_win_n / 1000.0);
+        if (s_gap_n) g_status.focus_gap_ms = (float)(s_gap_sum / s_gap_n / 1000.0);
+    }
+    g_status.focus.active = 0;
+}
+
+/* Take this loop's window/gap means and start a fresh accumulation.
+ *
+ * Per loop, not per session, and that is the whole point: the window drifts
+ * (open item 4 — it crept 474.8 -> 514.4 ms over 1700 runs), and per-loop
+ * calibration now moves the camera's rate deliberately, so a session-long mean
+ * would average away exactly the effect worth seeing. /status keeps the loop in
+ * progress, /loops keeps the completed ones, and the series across loops is the
+ * drift record §1.5.3 asks for.
+ *
+ * Clearing s_focus_off_us also breaks the gap chain across the loop boundary,
+ * so the next loop's first window is not billed for the calibration and
+ * baseline phases it spent dark. */
+static void focus_timing_take(float *win_ms, float *gap_ms)
+{
+    *win_ms = s_win_n ? (float)(s_win_sum / s_win_n / 1000.0) : 0.0f;
+    *gap_ms = s_gap_n ? (float)(s_gap_sum / s_gap_n / 1000.0) : 0.0f;
+    s_win_sum = s_gap_sum = 0.0;
+    s_win_n   = s_gap_n   = 0;
+    s_focus_off_us = 0;
 }
 
 /* Hold BETWEEN runs. Called where abort_requested is already tested, so the
@@ -1265,6 +1312,10 @@ static void record_loop(double loop_mean, int loop_idx)
     camera_get_stats(&cs);
     slaves_diag();                    // nodes are idle between loops
 
+    // Close out this loop's window/gap means before the next loop reopens them.
+    float win_ms = 0.0f, gap_ms = 0.0f;
+    focus_timing_take(&win_ms, &gap_ms);
+
     if (g_status.loop_hist && g_status.loop_hist_n < LOOP_HIST) {
         LoopStat *L = &g_status.loop_hist[g_status.loop_hist_n++];
         memset(L, 0, sizeof(*L));
@@ -1274,6 +1325,8 @@ static void record_loop(double loop_mean, int loop_idx)
         L->nodes = (uint8_t)g_status.node_count;
         L->t_s   = (uint32_t)(g_status.elapsed_ms / 1000);
         L->cal_ms = (uint16_t)(g_status.cal_ms > 65535 ? 65535 : g_status.cal_ms);
+        L->win_ms = win_ms;
+        L->gap_ms = gap_ms;
         for (int i = 0; i < g_status.node_count && i < MAX_NODES; i++) {
             L->mean_n[i] = (float)mean_n[i];
             L->sig_n[i]  = (float)sig_n[i];
