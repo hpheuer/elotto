@@ -549,12 +549,16 @@ bench's 10.8 %). **This is the best sustained state the master has been in.**
   Note that dimming the light cannot recover this on its own — selection always sits at the dim
   end of the passing range, wherever that range is put.
 
-⚠ **Hardware state at the end of this session — both must be resolved before the control pair:**
-1. **Only the master is lit.** The three slaves are still sealed dark; the array is asymmetric.
-2. **All four nodes are now on PoE.** The master was moved off USB while the LED was fitted, so the
-   Risk 1 control described in CLAUDE.md **no longer exists** and inter-node correlation is
-   currently unattributable. Arm A's rail-vs-thermal finding above was only possible *because*
-   that split was intact. Put the master back on USB.
+⚠ **Hardware state at the end of this session:**
+1. **Master and slave1 (.145) are lit; slave0 (.103) and slave2 (.155) are still sealed dark**
+   (`mean_px` 2.6 and 3.5). The array is asymmetric and must be finished before the control pair.
+2. **All four nodes are on PoE, and this is now permanent (user decision, 2026-07-26).** The
+   master's separate USB supply — the PLAN_NETWORK Risk 1 control — came off when its LED was
+   fitted and **will not be restored; do not re-propose it.** Consequence: inter-node correlation
+   can no longer be attributed to the shared rail versus anything else, because there is no node
+   on an independent rail to contrast against. **Arm A above is the only measurement that can ever
+   separate them on this rig**, and it says the correlation is *not* rail-borne. It cannot be
+   repeated.
 
 ---
 

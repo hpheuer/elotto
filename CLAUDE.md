@@ -67,25 +67,29 @@ Two software policies now cost a factor of 7 in bias, and neither is physics —
   the bit rate is CPU-bound (2.4 % spread across exposure 4→512). It should select **lowest
   |bias − 0.5|**. Dimming cannot fix this: selection always sits at the dim end of the passing range.
 
-⚠ **Hardware state, unresolved:** only the **master** is lit — the three slaves are still sealed
-dark, so the array is asymmetric — and **all four nodes are now on PoE**, so the Risk 1 control
-below no longer exists and inter-node correlation is currently unattributable.
+⚠ **Hardware state, unresolved:** the **master and slave1 (.145)** are lit; **slave0 (.103) and
+slave2 (.155) are still sealed dark** (`mean_px` 2.6 and 3.5), so the array is asymmetric.
 
 **σ and the pairwise independence results are not affected by light *level*** — they concern the
 statistical behaviour of the combined z. They *were* affected by sealing the box: see §1.12, where
 the sealed-dark 5-loop arm ran σ = 1.0795 ± 0.0222 against the open bench's 1.015 ± 0.012.
 
 All four boards are provisioned, each with its own OV5647, and all four run simultaneously:
-**the three slaves take PoE directly from one switch** (no splitters — PLAN_NETWORK Risk 2
-resolved), while the **master stays on separate USB power on purpose**. That split is not
-convenience, it is the Risk 1 control: if the three PoE nodes correlate with each other but not
-with the master, the shared rail is the mechanism. Keep it that way.
+**all four take PoE directly from one switch** (no splitters — PLAN_NETWORK Risk 2 resolved).
 
-⚠ **BROKEN as of 2026-07-26 evening: all four nodes are on PoE.** The master came off USB while
-its LED was fitted. Until it goes back, there is no node on an independent rail and any inter-node
-correlation is **unattributable**. This is not academic — it is exactly the control that let §1.12
-show arm A's correlation was *not* rail-borne (master↔slave pairs mean +0.023 vs slave↔slave
-+0.024, with the largest single pair on the isolated node). Restore it before the next session.
+**Power topology is settled: all four on PoE, permanently (user decision, 2026-07-26).** The
+master previously ran on separate USB power as the PLAN_NETWORK **Risk 1 control** — the idea
+being that if the three PoE nodes correlated with each other but not with the master, the shared
+rail was the mechanism. That split came off when the master's LED was fitted and **will not be
+restored. Do not re-propose it.**
+
+The consequence, stated once so it is not rediscovered as a surprise: **inter-node correlation can
+no longer be attributed to the power rail versus anything else.** All four now share one rail, so
+a rail effect and a genuine or environmental effect look identical. The one measurement that could
+ever separate them is already in the bank — §1.12's arm A, which ran while the split was still
+intact and found master↔slave pairs at mean +0.023 against slave↔slave +0.024, with the largest
+single pair on the *isolated* node. That is the standing evidence that the correlation is **not
+rail-borne**, and it cannot be repeated on this rig. Treat it accordingly.
 
 **COM ports are not stable** — the same slave has enumerated as COM6, COM8 and COM9. Always
 list the ports before an `erase-flash` rather than trusting a number written down here; a wrong
