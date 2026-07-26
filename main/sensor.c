@@ -20,18 +20,37 @@ ElottoStatus g_status = { .state = ELOTTO_IDLE };
 static double s_zsum[NUM_RUNS];
 
 // Random measurement order for the current loop (Fisher–Yates, rebuilt per
-// loop) — decouples slow TRNG drift from fixed combination indices, so drift
+// loop) — decouples slow source drift from fixed combination indices, so drift
 // cannot accumulate coherently on specific combinations across loops
 static uint16_t s_perm[NUM_RUNS];
 
-// Direct TRNG register access (75× faster than esp_random)
-#define RNG_REG  (*((volatile uint32_t *)0x501101A4UL))
+/* Administrative randomness — measurement ORDER, never measured data.
+ *
+ * The Fisher–Yates shuffle needs thousands of values per loop and camera
+ * entropy is rate-limited, so drawing them from the camera would stall the
+ * session for bits that never enter a z-score. The generator is instead SEEDED
+ * from the camera once per session and run forward arithmetically. Nothing here
+ * touches the on-chip TRNG — it is not present in this firmware at all. */
+static uint32_t s_prng = 0x9E3779B9u;
 
-static inline uint32_t fast_rng(void) { return RNG_REG; }
+static inline uint32_t fast_rng(void)          /* xorshift32 */
+{
+    uint32_t x = s_prng;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    return (s_prng = x);
+}
 
-#define TRNG_PER_RUN   200000
-#define SEGMENT_BITS   200
-#define NUM_SEGMENTS   ((TRNG_PER_RUN * 32) / SEGMENT_BITS)   // 32000
+static void prng_seed(void)
+{
+    uint32_t w = 0;
+    if (!camera_read_word(&w)) w = 0;          // camera not streaming yet
+    s_prng = w ^ (uint32_t)esp_timer_get_time();
+    if (!s_prng) s_prng = 0x9E3779B9u;         // xorshift32 must never sit at 0
+}
+
+#define SEGMENT_BITS   200                     // 6 words + 8 bits, per z segment
 
 /* Segments per run (PLAN_4NODE Phase 1 + 5).
  *
@@ -74,86 +93,85 @@ static inline uint32_t fast_rng(void) { return RNG_REG; }
  * This is the other reason RUN_GAP_MS is not merely cosmetic: the gap is when
  * the producer gets the CPU back, so it buys back most of what it costs.
  *
- * The TRNG count is NOT re-measured; it is carried from Phase 1's "a run is
- * ~1 s at 32000 segments", which happens to be the 1000 ms window already. The
- * camera is the default source and the TRNG path exists for A/B — if a TRNG
- * Focus session is ever run for real, read focus_win_ms and correct this.
- *
- * z stays N(0,1) at any of these because it is normalised by √segments; run
+ * z stays N(0,1) at any run length because it is normalised by √segments; the
  * length only sets granularity, and statistical power per second is
  * rate-limited either way. */
-#define TRNG_SEGMENTS  NUM_SEGMENTS   // 6.4 Mbit/run ≈ 1000 ms (extrapolated)
 #define CAM_SEGMENTS   11950          // 2.4 Mbit/run ≈ 1000 ms (measured: 1027 ms
                                       // at the 350 ms gap, +2.7 % of target)
 
-// Which source the running session is actually drawing measurement bits from.
-// Distinct from g_status.noise_source (what was *requested*).
-static volatile int s_active_source = NOISE_TRNG;
+/* Camera failure policy — REPORT AND REBOOT, never substitute.
+ *
+ * There is no second source in this firmware, so "degrade gracefully" is not on
+ * the menu and that is deliberate (see sensor.h). A node whose camera stops
+ * delivering has stopped being an instrument, so it is:
+ *   1. named in g_status.fault, where the operator can actually see it,
+ *   2. dropped from the combine, and
+ *   3. rebooted — the camera is brought up in app_main, so a restart is the one
+ *      recovery available to software, and a node that comes back rejoins the
+ *      next session by discovery.
+ *
+ * Dropping suffices while enough nodes remain: at n>=3 the rest carry on over
+ * √(n−1). Below that floor the array has stopped being the instrument it
+ * started as, so the session aborts rather than quietly continuing at half
+ * strength. */
+static void slave_reboot(int node);            /* fwd: defined with the link */
 
-/* Camera stall policy (PLAN_4NODE "Fallback policy" + PLAN_NETWORK §5).
- *
- * Substituting the TRNG for a node's camera would swap the measured physics —
- * the whole point of camera entropy is replacing the opaque whitened TRNG with
- * raw quantum noise — and a session-level flag cannot say *which* runs were
- * affected. So a node whose source degrades is DROPPED from the combine rather
- * than averaged in; the nodes that remain are all still camera-sourced, which
- * keeps the session source-clean by construction.
- *
- * Aborting is the right response only while dropping would leave too few nodes.
- * At n=2 losing one halves the instrument, which is why Phase C aborted; at
- * n>=3 the rest carry on over √(n−1) and aborting would be needless. Both are
- * the same rule with a different floor. */
-static void node_source_lost(int node)
+static void node_camera_failed(int node, const char *why)
 {
-    if (node < 0 || node >= g_status.node_count || !g_status.nodes[node].ok) return;
-    g_status.nodes[node].ok = false;
-    g_status.node_ok--;
-    printf("node %d (%s): source fell back to TRNG -- dropped, %d node(s) left\n",
-           node, node ? g_status.nodes[node].ip : "master", g_status.node_ok);
+    if (node < 0 || node >= g_status.node_count) return;
+    bool first = !g_status.nodes[node].cam_fault;
+    g_status.nodes[node].cam_fault = 1;
 
-    // A solo master has nothing to fall back to, so its floor is 1; any array
-    // that drops below two nodes has stopped being the instrument it started as.
+    if (g_status.nodes[node].ok) {
+        g_status.nodes[node].ok = false;
+        g_status.node_ok--;
+    }
+    const char *name = node ? g_status.nodes[node].ip : "master";
+    printf("node %d (%s): CAMERA FAULT (%s) -- dropped, %d node(s) left\n",
+           node, name, why, g_status.node_ok);
+
+    // First failure wins the message: the operator needs the node that went
+    // first, not whichever happened to fail last.
+    if (first && !g_status.fault[0])
+        snprintf(g_status.fault, sizeof(g_status.fault),
+                 "camera fault on %s (%s) - node dropped and rebooted", name, why);
+
+    if (node > 0) {
+        g_status.nodes[node].reboots++;
+        slave_reboot(node - 1);
+    }
+
     int floor_n = (g_status.node_count >= 2) ? 2 : 1;
     if (g_status.node_ok < floor_n) {
         g_status.noise_stalled   = true;
         g_status.abort_requested = true;
+        snprintf(g_status.fault, sizeof(g_status.fault),
+                 "camera fault on %s (%s) - only %d node(s) left, session aborted",
+                 name, why, g_status.node_ok);
     }
 }
 
-static void noise_camera_stalled(void)
-{
-    node_source_lost(0);
-    // The master keeps running full-length runs either way (it paces the loop),
-    // but switching its local source stops every remaining word from re-paying
-    // the 2 s stall timeout. Its z is simply no longer folded into the combine.
-    s_active_source = NOISE_TRNG;
-}
+/* This node's own camera stopped mid-run. Latched, because gcp_zscore_raw()
+ * checks it per segment and must not re-pay the 2 s stall timeout thousands of
+ * times on the way out of a run that is already void. */
+static volatile bool s_cam_fault;
 
-static inline uint32_t noise_word(void)
+static inline bool noise_word(uint32_t *w)
 {
-    if (s_active_source == NOISE_CAMERA) {
-        uint32_t w;
-        if (camera_read_word(&w)) return w;
-        noise_camera_stalled();
-    }
-    return RNG_REG;
+    if (camera_read_word(w)) return true;
+    s_cam_fault = true;
+    return false;                              // bits are never invented
 }
 
 // Called once per session, after discovery, before any measurement.
-static void noise_source_begin(void)
+static void camera_source_begin(void)
 {
     g_status.noise_stalled = false;
-    g_status.nodes[0].src  = g_status.noise_source;
-    if (g_status.noise_source == NOISE_CAMERA) {
-        if (camera_is_ready()) {
-            s_active_source = NOISE_CAMERA;
-        } else {
-            // Refuse to run a "camera" session on TRNG bits.
-            noise_camera_stalled();
-        }
-    } else {
-        s_active_source = NOISE_TRNG;
-    }
+    g_status.fault[0]      = '\0';
+    s_cam_fault            = false;
+    prng_seed();
+    if (!camera_is_ready())
+        node_camera_failed(0, "not streaming at session start");
 }
 
 static const char *p_label(double absZ)
@@ -165,33 +183,37 @@ static const char *p_label(double absZ)
     return "n.s.";
 }
 
-/* Segments for one run — the same 1000 ms window in every phase. */
-static int segments_for(void)
-{
-    return (s_active_source == NOISE_CAMERA) ? CAM_SEGMENTS : TRNG_SEGMENTS;
-}
+/* Segments for one run — one source, so one count, and it travels on the wire
+ * so a slave cannot disagree about it. */
+static int segments_for(void) { return CAM_SEGMENTS; }
 
-static double gcp_zscore_raw(int nseg)
+/* One run. Returns false if the camera stopped delivering part-way through: the
+ * run produced no usable z and the caller must not score it, because a short
+ * run is not a small run — its z would be normalised by a √segments it never
+ * reached. */
+static bool gcp_zscore_raw(int nseg, double *out)
 {
     double z_sum = 0.0;
     for (int seg = 0; seg < nseg; seg++) {
-        int ones = __builtin_popcount(noise_word())
-                 + __builtin_popcount(noise_word())
-                 + __builtin_popcount(noise_word())
-                 + __builtin_popcount(noise_word())
-                 + __builtin_popcount(noise_word())
-                 + __builtin_popcount(noise_word())
-                 + __builtin_popcount(noise_word() & 0xFF);
+        uint32_t w;
+        int ones = 0;
+        for (int i = 0; i < 6; i++) {
+            if (!noise_word(&w)) return false;
+            ones += __builtin_popcount(w);
+        }
+        if (!noise_word(&w)) return false;
+        ones += __builtin_popcount(w & 0xFF);   // 200 bits = SEGMENT_BITS
+
         z_sum += (ones - 100.0) / 7.07106781;
-        // TRNG path needs explicit yields (4/run); the camera path already
-        // yields inside camera_read_word() whenever it waits on the producer,
-        // which is most of the time. Kept as a fraction of the run rather than
-        // a fixed count so it stays matched to the slave's cadence at every
-        // run length — per-run wall time is the max over nodes, so a mismatch
-        // would slow every measurement to the slowest device.
+        // The camera path already yields inside camera_read_word() whenever it
+        // waits on the producer, which is most of the time. This stays as a
+        // fraction of the run so it matches the slave's cadence at every run
+        // length — per-run wall time is the max over nodes, so a mismatch would
+        // slow every measurement to the slowest device.
         if (seg % (nseg / 4 + 1) == 0) vTaskDelay(1);
     }
-    return z_sum / sqrt((double)nseg);
+    *out = z_sum / sqrt((double)nseg);
+    return true;
 }
 
 /* ── Focus display + pause (docs/PLAN_4NODE.md Phase 5) ───────────────────
@@ -541,7 +563,7 @@ static int cmp_asc(const void *a, const void *b)
  * ─────────────────────────────────────────────────────────────────── */
 #define LINK_PROBE_TRIES   4      // discovery broadcasts before declaring solo
 #define LINK_PROBE_MS    600
-#define LINK_MEAS_MS    4000      // a run is ~0.5 s (camera) / ~1 s (TRNG)
+#define LINK_MEAS_MS    4000      // a run is ~1 s, so this is generous headroom
 #define LINK_DIAG_MS    1500
 
 // Consecutive missed replies before a node leaves the session. Without it an
@@ -761,7 +783,6 @@ static void nodes_discover(void)
     g_status.node_ok     = 1;
     memset(s_link, 0, sizeof(s_link));
     memset(g_status.nodes, 0, sizeof(g_status.nodes));
-    for (int i = 0; i < MAX_NODES; i++) g_status.nodes[i].src = -1;   // not yet reported
     g_status.nodes[0].ok = true;
 
     if (!link_open()) { g_status.slave_connected = s_slave_ok = false; return; }
@@ -931,13 +952,12 @@ static void calibrate_master(int budget_ms)
 }
 
 /* One calibration phase: broadcast, sweep locally in parallel, wait for acks.
- * Only meaningful for a camera session — the TRNG has no exposure — so a TRNG
- * session skips it entirely rather than spending a slice of every loop on a
- * sweep whose result nothing would read. */
+ * Skipped when the budget is 0 — that is the matched no-calibration control —
+ * and when nothing is left to calibrate. */
 static void calibrate_all(void)
 {
     if (g_status.cal_budget_ms <= 0) return;
-    if (s_active_source != NOISE_CAMERA) return;
+    if (g_status.node_ok == 0) return;
 
     g_status.phase = PHASE_CALIBRATE;
     int64_t t0 = esp_timer_get_time();
@@ -956,6 +976,26 @@ static void slave_trigger(int nseg)
     nodes_send(cmd);
 }
 
+/* Restart a node whose camera failed. Fire and forget, twice: the node reboots
+ * on receipt so there is no reply to wait for, and a single dropped datagram
+ * would leave a dead instrument sitting on the switch answering discovery.
+ *
+ * Rebooting is the only recovery software has here — the camera is brought up
+ * in app_main — and it is safe by construction: the node comes back running the
+ * recovery-validated image and rejoins the next session through discovery. It
+ * is NOT re-added to the running session; this session already lost it. */
+static void slave_reboot(int k)
+{
+    if (k < 0 || k >= s_nslaves || s_sock < 0) return;
+    char msg[ELOTTO_LINK_MAX];
+    int  n = elotto_link_pack(msg, sizeof(msg), ++s_seq, "R");
+    if (n <= 0) return;
+    for (int i = 0; i < 2; i++)
+        sendto(s_sock, msg, n, 0, (struct sockaddr *)&s_link[k].addr,
+               sizeof(s_link[k].addr));
+    printf("node %d (%s): reboot sent\n", k + 1, g_status.nodes[k + 1].ip);
+}
+
 static void slave_abort(void)
 {
     if (!s_slave_ok) return;
@@ -966,23 +1006,26 @@ static void slave_abort(void)
     link_send(s_pending.seq, s_pending.cmd);
 }
 
-/* Parse one node's "Z:<float>,<C|T>" reply into s_link[k].z. Returns false if
- * the node did not contribute a usable value this run. */
+/* Parse one node's reply into s_link[k].z. Returns false if the node did not
+ * contribute a usable value this run.
+ *
+ *   "Z:<float>"  the run completed on camera bits
+ *   "E:<reason>" the camera stopped delivering — the node is faulted and
+ *                rebooted, not silently omitted
+ *
+ * The old ",<C|T>" source tag is gone with the TRNG: there is only one source
+ * now, so a completed run cannot have come from anywhere else, and a run that
+ * could not complete says so explicitly instead of reporting a substituted z. */
 static bool node_take_z(int k)
 {
     if (!s_link[k].replied) return false;
     const char *resp = s_link[k].reply;
-    if (resp[0] != 'Z' || resp[1] != ':') return false;
 
-    // The trailing source tag is optional so a pre-camera slave still parses;
-    // atof() stops at the comma either way.
-    const char *tag = strchr(resp, ',');
-    int src = (tag && tag[1] == 'C') ? NOISE_CAMERA : NOISE_TRNG;
-    g_status.nodes[k + 1].src = src;
-    if (g_status.noise_source == NOISE_CAMERA && src == NOISE_TRNG) {
-        node_source_lost(k + 1);
-        return false;               // its bits came from the wrong physics
+    if (resp[0] == 'E' && resp[1] == ':') {
+        node_camera_failed(k + 1, resp + 2);
+        return false;
     }
+    if (resp[0] != 'Z' || resp[1] != ':') return false;
     s_link[k].z = atof(resp + 2);
     return true;
 }
@@ -1040,10 +1083,12 @@ static double score_one_run(void)
 {
     int nseg = segments_for();
     slave_trigger(nseg);
-    double zm = gcp_zscore_raw(nseg);
+    double zm = 0.0;
+    bool   ok = gcp_zscore_raw(nseg, &zm);
     // Sampling is over the moment the local run returns; the reply wait below
     // is dark time. The caller lit the panel — see focus_publish().
     focus_off();
+    if (!ok) node_camera_failed(0, "stalled mid-run");
     if (s_slave_ok) nodes_collect(LINK_MEAS_MS, true);
     return combine_z(zm, NULL);
 }
@@ -1580,7 +1625,7 @@ void elotto_task(void *pvParam)
 
     // After abort_requested is cleared, so a camera that is not ready can abort
     // the session immediately instead of having the flag wiped by the reset above.
-    noise_source_begin();
+    camera_source_begin();
 
     bool euro    = (g_status.mode == MODE_EUROJACKPOT);
     int  nm      = euro ? 5 : 6;
@@ -1650,17 +1695,26 @@ void elotto_task(void *pvParam)
         slave_baseline_start(g_status.baseline_total, segments_for());
         {
             double bsum = 0.0;
+            int    bn   = 0;
             for (int i = 0; i < g_status.baseline_total; i++) {
                 if (g_status.abort_requested) {
                     slave_abort();
                     goto done;
                 }
-                bsum += gcp_zscore_raw(segments_for());
+                double bz = 0.0;
+                if (gcp_zscore_raw(segments_for(), &bz)) { bsum += bz; bn++; }
+                else {
+                    // A void run must not be averaged in as a zero — that would
+                    // pull the offset toward 0 and quietly bias every run it is
+                    // later subtracted from.
+                    node_camera_failed(0, "stalled during baseline");
+                    break;
+                }
                 run_gap();          // same duty cycle as the runs it calibrates
                 g_status.baseline_done = i + 1;
                 g_status.elapsed_ms = elapsed_ms_now();
             }
-            g_status.baseline_mean = bsum / g_status.baseline_total;
+            g_status.baseline_mean = bn ? bsum / bn : 0.0;
         }
         if (s_slave_ok && !g_status.abort_requested)
             slave_baseline_wait();
@@ -1729,8 +1783,11 @@ void elotto_task(void *pvParam)
             // combine rests on.
             int nseg = segments_for();
             slave_trigger(nseg);
-            double zm = gcp_zscore_raw(nseg) - g_status.baseline_mean;
+            double zraw = 0.0;
+            bool   zok  = gcp_zscore_raw(nseg, &zraw);
+            double zm   = zraw - g_status.baseline_mean;
             focus_off();          // sampling done; the reply wait is dark time
+            if (!zok) node_camera_failed(0, "stalled mid-run");
             if (s_slave_ok) nodes_collect(LINK_MEAS_MS, true);
 
             // Per-node values for the independence check, gathered before the
@@ -1739,7 +1796,7 @@ void elotto_task(void *pvParam)
             bool   have[MAX_NODES]  = {false};
             double sum = 0.0;
             int    k   = 0;
-            if (g_status.nodes[0].ok) {
+            if (zok && g_status.nodes[0].ok) {
                 znode[0] = zm; have[0] = true; sum += zm; k++;
             }
             for (int s = 0; s < s_nslaves; s++) {

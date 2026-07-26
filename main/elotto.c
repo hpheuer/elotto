@@ -10,7 +10,6 @@
 #include "esp_http_server.h"
 #include "nvs_flash.h"
 #include "esp_timer.h"
-#include "esp_random.h"
 #include "sensor.h"
 #include "camera.h"
 #include "elotto_ota.h"
@@ -145,13 +144,13 @@ static const char HTML[] =
 "<option value='0'>Peak Z (best single run)</option>"
 "</select>"
 "</div>"
+// No entropy selector: photons or nothing. The on-chip TRNG was removed from
+// the firmware entirely (sensor.h) because an option to produce an
+// indistinguishable result from a digital source is a liability, not a feature.
 "<div style='grid-column:span 2;display:flex;align-items:center;gap:6px'>"
-"<label style='color:#f0c040;font-size:.9em'>Entropy:</label>"
-"<select id='selSrc' style='padding:5px 8px;border-radius:6px;border:1px solid #a08030;"
-"background:#0a2e0a;color:#fff;font-size:.92em'>"
-"<option value='1'>&#128247; Camera (OV5647 dark frame)</option>"
-"<option value='0'>On-chip TRNG</option>"
-"</select>"
+"<span style='color:#f0c040;font-size:.9em'>Entropy:</span>"
+"<span style='font-size:.92em'>&#128247; OV5647 dark-frame photons"
+"<span style='color:#8fae8f'> &middot; the only source</span></span>"
 "</div>"
 // An attended session is a different experiment from an unattended one, so the
 // choice is explicit and the answer is recorded with the results. Unchecking it
@@ -318,7 +317,6 @@ static const char HTML[] =
 "var runs=parseInt(document.getElementById('numRuns').value)||0;"
 "if(runs<0)runs=0;if(runs>8000)runs=8000;"
 "var rank=document.getElementById('selRank').value;"
-"var src=document.getElementById('selSrc').value;"
 "var foc=document.getElementById('chkFocus').checked?1:0;"
 "document.getElementById('runsErr').textContent='';"
 "document.getElementById('sCalTotal').textContent=base;"
@@ -327,7 +325,7 @@ static const char HTML[] =
 "document.getElementById('measArea').style.display='none';"
 // A refused start must not leave the UI pretending a session began with the
 // settings just typed in — that is how ignored parameters stay invisible.
-"fetch('/start?mode='+mode+'&baseline='+base+'&loops='+loops+'&runs='+runs+'&rank='+rank+'&src='+src+'&focus='+foc,{method:'POST'})"
+"fetch('/start?mode='+mode+'&baseline='+base+'&loops='+loops+'&runs='+runs+'&rank='+rank+'&focus='+foc,{method:'POST'})"
 ".then(function(r){if(!r.ok){"
 "document.getElementById('runsErr').textContent="
 "'\\u26a0 a session is already running \\u2014 abort it first';"
@@ -517,13 +515,16 @@ static const char HTML[] =
 // degraded is invisible anywhere else.
 "if(d.nodes&&d.nodes.length){"
 "var s3='<table style=\"width:100%;font-size:.82em;margin-top:6px\">'"
-"+'<tr style=\"color:#90ee90\"><th align=left>node</th><th align=left>src</th>'"
+"+'<tr style=\"color:#90ee90\"><th align=left>node</th>'"
 "+'<th align=left>\\u03c3</th><th align=left>Mbit/s</th><th align=left>exp</th>'"
 "+'<th align=left>stalls</th>'"
 "+'<th align=left>lost</th></tr>';"
 "for(var i=0;i<d.nodes.length;i++){var N=d.nodes[i];"
 "var nm=(i===0?'master':'slave'+i)+(N.ip&&N.ip!=='self'?' '+N.ip:'');"
-"var st=N.ok?'':' \\u26a0 dropped';"
+// A camera fault is named, not merely reflected in a shrunken node count: the
+// operator has to know WHICH node died and that it was rebooted.
+"var st=N.cam_fault?' \\u26a0 CAMERA FAULT \\u2013 rebooted'+(N.reboots>1?' x'+N.reboots:'')"
+":(N.ok?'':' \\u26a0 dropped');"
 // Each node calibrates its own camera and they WILL differ — different physical
 // sensors, which is why one measured cleaner than the other at identical
 // settings. So the setting is shown per node, with the fold state that goes with
@@ -531,14 +532,16 @@ static const char HTML[] =
 "var ex='\\u2013';"
 "if(N.cam_exp>0)ex=N.cam_exp+(N.cam_fold?'\\u2295':'')+(N.cam_cal?'':'!');"
 "s3+='<tr style=\"opacity:'+(N.ok?1:.55)+'\"><td>'+nm+st+'</td>'"
-"+'<td>'+(N.src==='cam'?'\\uD83D\\uDCF7':N.src==='trng'?'TRNG':'\\u2013')+'</td>'"
 "+'<td>'+(N.sigma>0?N.sigma.toFixed(3):'\\u2013')+'</td>'"
 "+'<td>'+(N.cam_mbit>0?N.cam_mbit.toFixed(2):'\\u2013')+'</td>'"
 "+'<td title=\"exposure chosen by this loop\\u2019s calibration\">'+ex+'</td>'"
 "+'<td>'+(N.cam_stalls>0?'\\u26a0 '+N.cam_stalls:'0')+'</td>'"
 "+'<td>'+(N.lost>0?'\\u26a0 '+N.lost:'0')+'</td></tr>';}"
 "s3+='</table>';"
-"if(d.src_stalled)s3='\\u26a0 source lost \\u2013 too few nodes left, aborted'+s3;"
+// The fault string is the primary channel: there is no substitute source, so a
+// camera failure ends that node's participation and the operator must see why.
+"if(d.fault)s3='<div style=\"color:#ff9c6e;font-weight:600;margin:4px 0\">"
+"\\u26a0 '+d.fault+'</div>'+s3;"
 "sl.innerHTML+=(sl.innerHTML?'<br>':'')+s3;}"
 // Transport health (PLAN_NETWORK Phase C). UDP can drop where the UART could
 // not, so the gate is a counted "zero lost triggers", not an impression that it
@@ -683,7 +686,7 @@ static esp_err_t status_handler(httpd_req_t *req)
     pos += snprintf(buf+pos, sizeof(buf)-pos,
         "{\"state\":\"%s\",\"mode\":\"%s\",\"phase\":\"%s\","
         "\"slave\":%s,\"rank\":\"%s\","
-        "\"src\":\"%s\",\"src_stalled\":%s,"
+        "\"src\":\"camera\",\"src_stalled\":%s,\"fault\":\"%s\","
         "\"best_z\":%.4f,\"p_corr\":%.6g,\"comparisons\":%d,"
         "\"loop_sigma\":%.4f,\"pair_r\":%.4f,\"pair_n\":%d,"
         "\"pair_i\":%d,\"pair_j\":%d,\"pair_count\":%d,"
@@ -701,8 +704,7 @@ static esp_err_t status_handler(httpd_req_t *req)
         "\"completed\":%d,\"total\":%d,\"elapsed_ms\":%lld,",
         state_str, mode_str, phase_str,
         g_status.slave_connected ? "true" : "false", rank_str,
-        (g_status.noise_source == NOISE_CAMERA) ? "cam" : "trng",
-        g_status.noise_stalled ? "true" : "false",
+        g_status.noise_stalled ? "true" : "false", g_status.fault,
         g_status.best_z, g_status.p_corrected, g_status.comparisons,
         g_status.loop_sigma, g_status.pair_r_max, g_status.pair_n,
         g_status.pair_r_i, g_status.pair_r_j, g_status.pair_count,
@@ -729,21 +731,24 @@ static esp_err_t status_handler(httpd_req_t *req)
     pos += snprintf(buf + pos, sizeof(buf) - pos, ",");
 
     /* Per-node health (PLAN_NETWORK Phase D). A node that quietly degraded —
-     * fell back to the TRNG, started missing replies, or drifted off σ = 1 —
-     * has to be visible individually; the combined z averages exactly that away.
-     * Index 0 is the master. */
+     * lost its camera, started missing replies, or drifted off σ = 1 — has to be
+     * visible individually; the combined z averages exactly that away.
+     * Index 0 is the master. There is no per-node "src" any more: one source
+     * exists, so a node either produced camera bits or it faulted and says so.
+     */
     pos += snprintf(buf + pos, sizeof(buf) - pos, "\"nodes\":[");
     for (int i = 0; i < g_status.node_count && i < MAX_NODES; i++) {
         const NodeStatus *N = &g_status.nodes[i];
         pos += snprintf(buf + pos, sizeof(buf) - pos,
-            "%s{\"id\":%d,\"ip\":\"%s\",\"ok\":%s,\"src\":\"%s\",\"sigma\":%.4f,"
+            "%s{\"id\":%d,\"ip\":\"%s\",\"ok\":%s,\"sigma\":%.4f,"
             "\"lost\":%lu,\"cam_mbit\":%.3f,\"cam_stalls\":%lu,"
+            "\"cam_fault\":%d,\"reboots\":%lu,"
             "\"cam_exp\":%lu,\"cam_gain\":%d,\"cam_fold\":%d,\"cam_cal\":%d,"
             "\"cam_bias\":%.6f,\"cam_cal_mbit\":%.3f}",
             i ? "," : "", i, i ? N->ip : "self", N->ok ? "true" : "false",
-            (N->src == NOISE_CAMERA) ? "cam" : (N->src == NOISE_TRNG) ? "trng" : "?",
             N->sigma,
             (unsigned long)N->lost, N->cam_mbit, (unsigned long)N->cam_stalls,
+            (int)N->cam_fault, (unsigned long)N->reboots,
             (unsigned long)N->cam_exp, (int)N->cam_gain, (int)N->cam_fold,
             (int)N->cam_cal_ok, N->cam_bias, N->cam_cal_mbit);
     }
@@ -1000,10 +1005,8 @@ static esp_err_t start_handler(httpd_req_t *req)
         g_status.loops_total    = 1;
         g_status.runs_limit     = 0;   // 0 = measure all combinations
         g_status.rank_mode      = RANK_CUMULATIVE;
-        // Explicit default, not "whatever the last session used": the entropy
-        // source decides what physics is being measured, so it must never be
-        // inherited silently. Camera matches the UI default; ?src=0 = TRNG.
-        g_status.noise_source   = NOISE_CAMERA;
+        // No ?src= any more: the camera is the only source this firmware has
+        // (sensor.h). A session that cannot run on photons does not run.
         // Per-loop camera calibration (PLAN.md Task 1). ~30 s buys the full
         // ladder at about 5 % of a ~10 min loop, which is the §1.5.1 budget.
         // ?cal=0 turns it off — the matched control a calibrated session has to
@@ -1033,11 +1036,6 @@ static esp_err_t start_handler(httpd_req_t *req)
             }
             if (httpd_query_key_value(qry, "rank", val, sizeof(val)) == ESP_OK)
                 g_status.rank_mode = (val[0] == '0') ? RANK_PEAK : RANK_CUMULATIVE;
-            // ?src=1 -> camera entropy, ?src=0 -> on-chip TRNG. A camera session
-            // whose camera is not streaming ABORTS (g_status.noise_stalled)
-            // instead of substituting the TRNG -- see PLAN_4NODE "Fallback policy".
-            if (httpd_query_key_value(qry, "src", val, sizeof(val)) == ESP_OK)
-                g_status.noise_source = (val[0] == '1') ? NOISE_CAMERA : NOISE_TRNG;
             // ?focus=1 -> attended session: the Focus panel is live and the
             // session is tagged. Run lengths do NOT depend on this — a matched
             // no-focus control must be identical in every other respect.
@@ -1063,83 +1061,35 @@ static esp_err_t abort_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* ── /diag GET – TRNG Register vs esp_random() Diagnose ──────────── */
-#define DIAG_REG   0x501101A4UL
-#define DIAG_N     100000   // words per test
-#define DIAG_SEGS  500      // mini-runs for Z-score distribution
-
+/* ── /diag GET – the camera, which is the only source there is ──────
+ *
+ * This used to A/B the on-chip TRNG register against esp_random() and report
+ * the camera alongside them. Both TRNG tests are gone with the TRNG itself
+ * (sensor.h): keeping a diagnostic that measures a source the firmware cannot
+ * use would only invite comparisons against a number this instrument is not
+ * allowed to produce. */
 static esp_err_t diag_handler(httpd_req_t *req)
 {
     static char buf[3072];
     int pos = 0;
 
-    // --- Test 1: Direktes TRNG-Register ---
-    int64_t t0 = esp_timer_get_time();
-    uint64_t ones_reg = 0;
-    uint32_t last = 0, stuck_reg = 0;
-    double   z_sum_reg = 0.0;
-
-    for (int s = 0; s < DIAG_SEGS; s++) {
-        int ones = 0;
-        for (int w = 0; w < 7; w++) {
-            uint32_t v = *((volatile uint32_t *)DIAG_REG);
-            if (w > 0 && v == last) stuck_reg++;
-            last = v;
-            ones += (w < 6) ? __builtin_popcount(v)
-                             : __builtin_popcount(v & 0xFF);
-        }
-        ones_reg += ones;
-        z_sum_reg += (ones - 100.0) / 7.07106781;
-    }
-    int64_t dt_reg = (esp_timer_get_time() - t0) / 1000;
-
-    double bias_reg  = (double)ones_reg / (DIAG_SEGS * 200.0);
-    double z_std_reg = z_sum_reg / DIAG_SEGS;
-
-    // --- Test 2: esp_random() ---
-    t0 = esp_timer_get_time();
-    uint64_t ones_esp = 0;
-    uint32_t stuck_esp = 0; last = 0;
-    double   z_sum_esp = 0.0;
-
-    for (int s = 0; s < DIAG_SEGS; s++) {
-        int ones = 0;
-        for (int w = 0; w < 7; w++) {
-            uint32_t v = esp_random();
-            if (w > 0 && v == last) stuck_esp++;
-            last = v;
-            ones += (w < 6) ? __builtin_popcount(v)
-                             : __builtin_popcount(v & 0xFF);
-        }
-        ones_esp += ones;
-        z_sum_esp += (ones - 100.0) / 7.07106781;
-    }
-    int64_t dt_esp = (esp_timer_get_time() - t0) / 1000;
-
-    double bias_esp  = (double)ones_esp / (DIAG_SEGS * 200.0);
-    double z_std_esp = z_sum_esp / DIAG_SEGS;
-
-    // --- Test 3: OV5647 camera dark-frame noise (Phase 0, docs/PLAN_4NODE.md) ---
     camera_stats_t cam;
     camera_get_stats(&cam);
+    uint32_t exp_now = 0, gain_now = 0;
+    camera_get_exposure(&exp_now, &gain_now);
 
     pos += snprintf(buf+pos, sizeof(buf)-pos,
         "{"
-        "\"reg_ms\":%lld,\"reg_bias\":%.6f,\"reg_stuck\":%lu,\"reg_z_mean\":%.4f,"
-        "\"esp_ms\":%lld,\"esp_bias\":%.6f,\"esp_stuck\":%lu,\"esp_z_mean\":%.4f,"
-        "\"speedup\":%.2f,\"segs\":%d,"
+        "\"src\":\"camera-only\","
         "\"cam\":{"
         "\"ready\":%s,\"frame_pairs\":%llu,\"bits\":%llu,\"stuck_frames\":%lu,"
         "\"bias\":%.6f,\"sigma\":%.4f,\"sigma_n\":%d,"
         "\"autocorr\":[%.4f,%.4f,%.4f,%.4f],"
         "\"mean_pixel\":%.2f,\"mbit_s\":%.3f,\"zero_diff\":%.4f,"
-        "\"drops\":%lu,\"waits\":%lu,\"stalls\":%lu"
+        "\"drops\":%lu,\"waits\":%lu,\"stalls\":%lu,"
+        "\"exposure\":%lu,\"gain\":%lu,\"fold\":%s"
         "}"
         "}",
-        (long long)dt_reg, bias_reg, (unsigned long)stuck_reg, z_std_reg,
-        (long long)dt_esp, bias_esp, (unsigned long)stuck_esp, z_std_esp,
-        dt_esp > 0 ? (double)dt_esp / dt_reg : 0.0,
-        DIAG_SEGS,
         cam.ready ? "true" : "false",
         (unsigned long long)cam.frame_pairs, (unsigned long long)cam.bits_extracted,
         (unsigned long)cam.stuck_frame_count,
@@ -1147,7 +1097,9 @@ static esp_err_t diag_handler(httpd_req_t *req)
         cam.autocorr_lag[0], cam.autocorr_lag[1], cam.autocorr_lag[2], cam.autocorr_lag[3],
         cam.mean_pixel_level, cam.mbit_per_sec, cam.zero_diff_frac,
         (unsigned long)cam.ring_drops, (unsigned long)cam.consumer_waits,
-        (unsigned long)cam.stalls);
+        (unsigned long)cam.stalls,
+        (unsigned long)exp_now, (unsigned long)gain_now,
+        camera_get_xor_fold() ? "true" : "false");
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, buf);
@@ -1278,13 +1230,15 @@ void app_main(void)
     ethernet_init();
     xTaskCreate(webserver_task, "ws_task", 8192, NULL, 5, NULL);
 
-    // Camera bring-up (docs/PLAN_4NODE.md), non-fatal here: the rest of the
-    // system (Ethernet/webserver/TRNG sessions) must keep working without it.
-    // A *camera* session that finds no camera aborts instead — see
-    // noise_source_begin() in sensor.c.
+    // Camera bring-up. Non-fatal HERE on purpose: Ethernet, the webserver and
+    // OTA must come up regardless, or a node with a dead camera could not be
+    // diagnosed, rebooted or reflashed over the wire. But it is the only source
+    // there is, so a session that finds no camera faults immediately — see
+    // camera_source_begin() in sensor.c.
     esp_err_t cam_ret = camera_init();
     if (cam_ret != ESP_OK) {
-        ESP_LOGW(TAG, "camera_init: %s", esp_err_to_name(cam_ret));
+        ESP_LOGE(TAG, "camera_init: %s -- THIS NODE CANNOT MEASURE",
+                 esp_err_to_name(cam_ret));
     }
 
     while (1) {

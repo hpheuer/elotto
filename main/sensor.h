@@ -18,9 +18,20 @@ typedef enum { PHASE_SCORING, PHASE_BASELINE, PHASE_MEASURING,
 // Ranking across loops: PEAK = best single-run Z (noise extreme); CUMULATIVE =
 // Stouffer Z = Σz/√k per fixed combination (GCP cumulative-deviation method)
 typedef enum { RANK_PEAK = 0, RANK_CUMULATIVE = 1 } ElottoRank;
-// Measurement bit source. TRNG = on-chip hardware RNG (whitened, opaque);
-// CAMERA = OV5647 dark-frame noise (raw, quantum-origin). See docs/PLAN_4NODE.md.
-typedef enum { NOISE_TRNG = 0, NOISE_CAMERA = 1 } NoiseSource;
+
+/* ENTROPY IS PHOTONS, AND ONLY PHOTONS (user decision, 2026-07-26).
+ *
+ * The on-chip TRNG is gone from this firmware — not deselected, removed. Every
+ * measured bit comes from OV5647 dark-frame shot noise. The reason is the GCP
+ * methodology itself: the claim under test is about a *physical* random source,
+ * and a whitened hardware RNG is an opaque digital post-process whose output
+ * would be indistinguishable from the real thing in every statistic this
+ * project computes. Keeping it available as an A/B option meant the codebase
+ * could always, in principle, produce a result nobody could attribute.
+ *
+ * There is therefore no fallback. A node whose camera stops delivering has
+ * stopped being an instrument: it is reported as a fault and REBOOTED, never
+ * quietly switched to another source. */
 
 typedef struct {
     int        index;
@@ -60,17 +71,18 @@ typedef struct {
 
 // Per-node health, published so a node that quietly degraded is visible rather
 // than merely averaged in. `ok` is session-scoped participation: a node whose
-// source fell back to the TRNG during a camera session is dropped from the
-// combine and stays dropped until the next baseline re-arms it.
+// camera failed is dropped from the combine and stays dropped for the rest of
+// the session — it is rebooted, and rejoins by discovery at the next one.
 typedef struct {
     char     ip[16];        // discovered by broadcast; "" for the master
     bool     ok;            // still contributing to the combined z
-    int      src;           // NoiseSource it last reported, or -1 = not yet.
-                            // A slave only reports its source on a measurement
-                            // reply, so between discovery and the first 'M' the
-                            // honest answer is "unknown" — defaulting to TRNG
-                            // would show every node as fallen back during the
-                            // whole baseline phase and invite a phantom hunt
+    uint8_t  cam_fault;     // this node's camera stopped delivering bits. It was
+                            // dropped and rebooted; the flag stays set for the
+                            // rest of the session so the UI can say WHICH node
+                            // failed rather than only that the array shrank
+    uint32_t reboots;       // times the master power-cycled this node's firmware
+                            // over the session. Repeated reboots mean the camera
+                            // is not coming back and the hardware needs a look
     double   sigma;         // per-run σ over the session (ideal 1.0)
     uint32_t lost;          // runs this node failed to answer in time
     float    cam_mbit;      // camera rate at the last per-loop 'D' query
@@ -224,17 +236,17 @@ typedef struct {
     int              cal_ms;              // what the last loop's calibration
                                           // actually cost, master + ack wait —
                                           // the §1.6 gate is a measured number
-    int              noise_source;        // NoiseSource requested for this session
-    volatile bool    noise_stalled;       // a camera session lost its source and could
-                                          // not continue: at n <= 2 losing one node
-                                          // halves the instrument, so the session
-                                          // ABORTS rather than silently substituting
-                                          // the TRNG (PLAN_4NODE "Fallback policy" —
-                                          // mixing sources mid-session changes the
-                                          // physics with no record of which runs were
-                                          // affected). At n >= 3 the stalled node is
-                                          // dropped instead and the rest continue over
-                                          // √(n−1) — PLAN_NETWORK §5.
+    volatile bool    noise_stalled;       // the array lost too many cameras to carry
+                                          // on. There is no substitute source to fall
+                                          // back to by design, so at n >= 3 a failed
+                                          // node is dropped and rebooted and the rest
+                                          // continue over √(n−1); below the floor the
+                                          // session ABORTS.
+    char             fault[112];          // human-readable reason, "" when healthy.
+                                          // A camera failure has to reach the operator
+                                          // as words — a node silently missing from
+                                          // the combine is the failure mode this whole
+                                          // policy exists to prevent
     LoopStat        *loop_hist;           // per-loop health table (LOOP_HIST entries,
                                           // PSRAM — internal RAM is full with results[];
                                           // NULL if the allocation failed, in which case

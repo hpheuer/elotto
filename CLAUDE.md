@@ -79,29 +79,41 @@ disk. They were left as-is on purpose — repointing them at `PLAN.md` would mak
 that document does not contain. Everything below is the standing summary of what they recorded,
 so a fresh session does not need them.
 
-**Noise source**:
+**Noise source — PHOTONS ONLY (user decision, 2026-07-26)**:
+- **The on-chip TRNG is REMOVED from both firmwares.** Not deselected — deleted. No
+  `RNG_REG`, no `esp_random()`, no `?src=`, no Entropy dropdown, no TRNG tests in `/diag`.
+  The reason is the GCP methodology: the claim under test is about a *physical* random
+  source, and a whitened hardware RNG is an opaque digital post-process that would be
+  indistinguishable from the real thing in every statistic this project computes. Keeping it
+  as an A/B option meant the codebase could always, in principle, produce a result nobody
+  could attribute. **Do not reintroduce it in any form.**
+- Administrative randomness (the Fisher–Yates measurement order) uses an **xorshift32 PRNG
+  seeded from the camera** once per session — `fast_rng()` / `prng_seed()` in sensor.c. It
+  never enters a z-score; drawing it from the camera word by word would stall the session for
+  bits that are never measured.
 - Each node has its **own** OV5647 camera (never shared — sharing one would break
   independence by construction). Entropy = non-overlapping frame pairs, diff = f[2k+1]−f[2k]
   per pixel (cancels FPN exactly), LSB packed, XOR-folded. ~3 Mbit/s per node.
-- `noise_word()` in sensor.c selects the source at runtime: `POST /start?src=1` = camera,
-  `src=0` = on-chip TRNG (register 0x501101A4, still available for A/B). The UI has an
-  **Entropy** dropdown; `/start` defaults to camera explicitly rather than inheriting the
-  previous session's source.
-- Segments per run are **source-dependent only** (`CAM_SEGMENTS` 11950 / `TRNG_SEGMENTS`):
-  every run — scoring, measurement and baseline alike — holds its target for the same ~1000 ms
-  window. z stays N(0,1) regardless, being normalised by √segments.
-- ✅ **The segment count travels on the wire** (`M<seg>`, `B<runs>,<seg>`), so the constants
-  live in `main/sensor.c` only. This retired the old "duplicated in both repos and must match"
-  hazard: a slave that is *told* the length cannot disagree about it. `slave.c` keeps
-  `CAM_SEGMENTS`/`TRNG_SEGMENTS` **only** as the fallback for a pre-Phase-5 master, and logs
-  loudly when it uses them. The yield/abort-poll cadence is now `nseg/4` on both sides for the
-  same reason — per-run wall time is max over nodes, so a mismatch slows every measurement to
-  the slowest device.
-- **A node whose camera stalls is DROPPED**, never silently switched to the TRNG: mixing
-  sources mid-session would change the measured physics with no record of which runs were
-  affected. Dropping keeps the remaining nodes source-clean by construction; the session only
-  ABORTS (`src_stalled`) if that would leave fewer than two nodes. Applies to a slave the same
-  way (it reports `T` in its `Z:` reply).
+- One source ⇒ one segment count: `CAM_SEGMENTS` = 11950, ~1000 ms for every run — scoring,
+  measurement and baseline alike. z stays N(0,1) regardless, being normalised by √segments.
+- ✅ **The segment count travels on the wire** (`M<seg>`, `B<runs>,<seg>`), so the constant
+  lives in `main/sensor.c` only. A slave that is *told* the length cannot disagree about it.
+  `slave.c` keeps `CAM_SEGMENTS` **only** as the fallback for a pre-Phase-5 master, and logs
+  loudly when it uses it. The yield/abort-poll cadence is `nseg/4` on both sides for the same
+  reason — per-run wall time is max over nodes, so a mismatch slows every measurement to the
+  slowest device.
+- **A node whose camera stalls is REPORTED, DROPPED and REBOOTED.** There is nothing to fall
+  back to by design. The node replies `E:<reason>` instead of `Z:<z>`; the master names it in
+  `g_status.fault` (shown in `/status` and the UI in orange), drops it from the combine,
+  bumps `nodes[].reboots` and sends `R` — the slave answers `OK` and calls `esp_restart()`.
+  The camera is brought up in `app_main`, so a restart is the one recovery software has, and
+  the node rejoins the *next* session by discovery, never the running one. The session only
+  ABORTS (`src_stalled`) if the drop would leave fewer than two nodes.
+  ⚠ **The master does not reboot itself** on its own camera failure — that would destroy the
+  `/loops` history and the results the operator needs to see. It faults, reports and aborts.
+- A run that dies part-way produces **no z at all**: `gcp_zscore_raw()` returns false rather
+  than a short run, because a short run's z would be normalised by a √segments it never
+  reached. A void baseline run is likewise not averaged in as a zero.
 - **PSRAM is mandatory** with the camera (capture buffers + extraction ring). It also holds
   `g_status.loop_hist` — internal RAM is full with `results[]`, and adding a few KB of .bss
   fails the *link* (`--enable-non-contiguous-regions discards section …`), not the run.

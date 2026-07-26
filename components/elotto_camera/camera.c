@@ -575,7 +575,7 @@ bool camera_read_word(uint32_t *out)
         if (waited == 0) s_consumer_waits++;
         if (waited >= limit) {
             s_stalls++;
-            return false;       // caller degrades to TRNG rather than hanging
+            return false;       // caller faults the node rather than hanging
         }
         vTaskDelay(1);          // wait for real bits; never invent them
         waited++;
@@ -786,8 +786,8 @@ bool camera_calibrate(int budget_ms, bool (*abort_cb)(void), camera_cal_t *out)
     bool fold0 = s_xor_fold;
 
     if (budget_ms < 2000) budget_ms = 2000;
-    // Steps: the entry setting, then the ladder, then one fold trial.
-    int planned = 1 + (int)CAL_LADDER_N + 1;
+    // Steps: the entry setting, then the ladder. No fold trial — see below.
+    int planned = 1 + (int)CAL_LADDER_N;
     if (planned > CAM_CAL_MAX_STEPS) planned = CAM_CAL_MAX_STEPS;
     int64_t slice_us = (int64_t)budget_ms * 1000 / planned;
 
@@ -808,36 +808,29 @@ bool camera_calibrate(int budget_ms, bool (*abort_cb)(void), camera_cal_t *out)
         n++;
     }
 
-    /* The fold trial (§1.3: the XOR fold is a processing parameter and is in
-     * scope). Only one extra window, and only when it could improve on what the
-     * ladder already found:
-     *   - fold currently ON and something passed → try it OFF at the winner's
-     *     exposure. Passing there doubles the stream for free, which is a larger
-     *     win than the exposure sweep alone produces.
-     *   - fold currently OFF and nothing passed → try it ON at the least-biased
-     *     exposure, the fold's actual job being to square away a raw LSB bias.
-     * Any other combination could only trade rate away or quality away, and the
-     * objective forbids both. */
-    if (n < planned) {
-        int best = -1;
-        for (int i = 0; i < n; i++)
-            if (!out->step[i].fail &&
-                (best < 0 || out->step[i].mbit_per_sec > out->step[best].mbit_per_sec))
-                best = i;
-        int ref = best;
-        if (ref < 0) {
-            for (int i = 0; i < n; i++)
-                if (out->step[i].bits >= CAL_MIN_BITS &&
-                    (ref < 0 || fabs(out->step[i].bias - 0.5) < fabs(out->step[ref].bias - 0.5)))
-                    ref = i;
-        }
-        bool worth = (ref >= 0) && ((best >= 0) ? fold0 : !fold0);
-        if (worth) {
-            if (!cal_step(&out->step[n], out->step[ref].exposure, out->step[ref].gain,
-                          !fold0, t0 + (int64_t)(n + 1) * slice_us, abort_cb)) goto aborted;
-            n++;
-        }
-    }
+    /* NO FOLD TRIAL. The XOR fold was in scope as a processing parameter
+     * (PLAN §1.7 decision 3) until the 10-loop session of 2026-07-26 measured
+     * what fold-off actually does, and the decision was WITHDRAWN.
+     *
+     * The trial worked exactly as designed and that was the problem: fold-off
+     * measured a bias of 0.500845 in its window, inside the 1e-3 gate, and won
+     * the rate tie-break at 5.57 vs 3.37 Mbit/s. The master then ran a whole
+     * loop on it and its per-run sigma went 1.043 -> 2.153, taking the combined
+     * sigma from 1.041 to 1.382. The three slaves, still folded, stayed at
+     * 0.97-0.99.
+     *
+     * The cause is that the unfolded LSB bias is NON-STATIONARY. Within that
+     * same loop it moved from +8.4e-4 at calibration to -1.3e-3 during the
+     * baseline minutes later — 2.1e-3 of travel against a 1e-3 gate. Neither
+     * gate could see it: the bias gate reads one window, and the sigma gate
+     * reads 3200-bit mini-runs *inside* that window, which are far too short to
+     * show drift over seconds. Run-to-run sigma over 2.39 Mbit runs spread
+     * across ten minutes is dominated by exactly that drift.
+     *
+     * So a 3 s window cannot certify fold-off; it can only get lucky. The fold
+     * squares the bias away and is left permanently on, as Kconfig sets it.
+     * camera_set_xor_fold() stays for deliberate experiments; calibration no
+     * longer touches it. */
     out->nsteps = n;
 
     // Selection: only gated candidates are eligible, fastest among them wins.
