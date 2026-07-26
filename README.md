@@ -1,8 +1,74 @@
 # E-Lotto — GCP Analysis on ESP32-P4
 
-ESP32-P4 project that generates Eurojackpot and 6-of-49 lottery numbers from **camera
-dark-frame noise** (or the on-chip TRNG) using
+ESP32-P4 project that scores Eurojackpot and 6-of-49 number combinations from **camera sensor
+noise** using
 [GCP methodology (Global Consciousness Project)](https://grokipedia.com/page/Global_Consciousness_Project).
+
+## Abstract
+
+A four-node ESP32-P4 array that measures whether a physical random process deviates from chance
+while a human observer attends to a specific target. It is a home-built version of the instrument
+used by the [Global Consciousness Project](https://grokipedia.com/page/Global_Consciousness_Project)
+and, before it, Princeton's PEAR lab. The lottery framing supplies the *target* — something
+concrete for an observer to hold in mind — and is **not** a prediction claim.
+
+The design follows eight principles, and most of the engineering exists to serve them:
+
+1. **Randomness has to come from physics, not from a chip's opinion of physics.** Every node draws
+   bits from its **own** image sensor — never a shared one, which would make the nodes correlated
+   by construction. The on-chip hardware RNG was **deleted** from the firmware, not merely
+   deselected: a whitened digital RNG is indistinguishable from a real effect in every statistic
+   computed here, so keeping it as an option meant the instrument could always produce a result
+   nobody could attribute.
+
+2. **Subtract two frames, not one frame from zero.** Each bit comes from the difference between
+   two consecutive frames, `f[2k+1] − f[2k]`, taking the lowest bit of each pixel's difference.
+   Differencing cancels every *fixed* sensor artefact exactly — per-pixel offsets, dark current
+   gradients, column patterns — because they are identical in both frames. What survives is only
+   what changed between them: photon shot noise and sensor read noise.
+
+3. **Count the ones.** One *run* reads ~2.4 million bits (11,950 segments of 200) and asks how far
+   the number of 1-bits sits from the expected half. That distance, expressed in standard
+   deviations, is the **Z-score**. Z ≈ 0 is an ordinary batch; large |Z| means a lopsided one.
+   Dividing by √segments keeps Z ~ N(0,1) whatever the run length.
+
+4. **A biased sensor is tolerable; a drifting one is not.** Real sensors do not sit at exactly
+   0.5. A *constant* bias is removed exactly by principle 5. A bias that **drifts** survives
+   centering and accumulates like a real signal, so the instrument measures its own drift
+   continuously — per-loop camera recalibration, a cross-loop drift regression, and a per-loop
+   record of everything that was subtracted.
+
+5. **Re-centre every loop on itself (studentization).** After each loop, every Z becomes
+   `(Z − loop mean) / loop σ`, estimated from that loop's own hundreds of measurements. This
+   removes the sensor's offset far better than a short calibration phase could, and forces the
+   per-run distribution to N(0,1). The published `loop_sigma` is the health check: **≈1.000 means
+   the array is behaving as a null instrument should.**
+
+6. **Independent measurements add; correlated ones only look like they do.** Four nodes measuring
+   the same instant combine as `Σz / √k`, which sharpens signal-to-noise by √k — *if* they are
+   independent. That is an assumption, so it is tested rather than trusted: all six pairwise
+   correlations and every per-node σ are published live, and inter-node correlation shows up in
+   `loop_sigma` even when the pairwise check misses it.
+
+7. **The observer has to be present while the bits are collected.** A Focus panel shows the
+   current target in large type for exactly the window its bits are sampled in — that is the
+   original GCP/PEAR protocol, not decoration. Attended and unattended sessions are therefore
+   *different experiments*, tagged as such and never pooled; unattended runs are the matched
+   control.
+
+8. **Searching thousands of candidates inflates significance, so say so.** The largest of 5,005
+   random Z-scores is ≈3.5 by chance alone. Results are reported with a **Bonferroni-corrected**
+   p-value over the number of comparisons actually made, and labelled *significant* or *consistent
+   with chance* accordingly.
+
+> **What this cannot do.** A lottery draw is physically independent of these measurements, so this
+> **cannot predict winning numbers** and no amount of Z-score will change that. What it can do is
+> measure tiny deviations in physical randomness *correctly and honestly*, and record whether an
+> attending observer makes any difference. Treat the output as an experiment, not a betting tip.
+>
+> **Status:** the ×√n gain from four nodes is **not yet established** — see
+> [`docs/PLAN.md`](docs/PLAN.md) §1.12 and [`CLAUDE.md`](CLAUDE.md) for the open questions and what
+> each measurement actually showed.
 
 ## In a Nutshell
 
@@ -11,12 +77,11 @@ inspired by
 the [Global Consciousness Project](https://grokipedia.com/page/Global_Consciousness_Project).
 The whole idea in plain language:
 
-- Each chip produces a stream of **physically random bits**. The default source is its own
-  **camera sitting in the dark**: with no light, what the sensor still records is photon shot
-  noise and read noise — quantum-scale randomness, taken raw (see
-  [Camera Entropy](#camera-entropy-ov5647-dark-frame)). The chip's built-in hardware RNG is
-  still selectable as an alternative. Over a fair sample either produces 0-bits and 1-bits in
-  equal amounts.
+- Each chip produces a stream of **physically random bits** from its own **camera sensor**, and
+  from nothing else — the built-in hardware RNG has been removed from the firmware entirely (see
+  [Camera Entropy](#camera-entropy-ov5647-dark-frame)). The bits come from the difference between
+  consecutive frames, so they are photon shot noise plus sensor read noise, taken raw. Over a fair
+  sample this produces 0-bits and 1-bits in equal amounts.
 - The device grabs millions of these bits and asks: *did this batch lean a little more toward
   1s (or 0s) than pure chance predicts?* That tiny lean is summarized as a **Z-score** — how
   many standard deviations the batch sits from "perfectly fair." Z ≈ 0 is ordinary; large
@@ -136,17 +201,27 @@ master additionally serves the web UI and drives the session.
 
 | node | address | power | role |
 |---|---|---|---|
-| master | 192.168.178.100 | USB (isolated) | web UI, GCP, session control |
+| master | 192.168.178.100 | PoE | web UI, GCP, session control |
 | slave0 | 192.168.178.103 | PoE | GCP + UDP command loop |
 | slave1 | 192.168.178.145 | PoE | GCP + UDP command loop |
 | slave2 | 192.168.178.155 | PoE | GCP + UDP command loop |
 
 - **Cameras:** one OV5647 per node on its own MIPI-CSI connector (SCCB on GPIO8/7, XCLK
-  unwired — the RPi-style module clocks itself), lens capped and taped, in the dark.
-  **Never shared between nodes** — a shared source would break independence by construction.
-- **Power:** the boards accept PoE directly, no splitters. The master is deliberately kept on
-  separate USB power — that is the control for whether a shared rail correlates the nodes
-  (`PLAN_NETWORK` Risk 1), so it is a measurement choice, not a convenience.
+  unwired — the RPi-style module clocks itself), inside a shared **enclosure with its own
+  constant LED illumination**. **Never shared between nodes** — a shared source would break
+  independence by construction.
+- **Lighting:** the enclosure was originally sealed *dark*, which measurably hurt the statistics
+  (see [`docs/PLAN.md`](docs/PLAN.md) §1.11–1.13): without photons the noise is read-noise
+  dominated, bias worsens and per-run σ rose to 1.08. It is now deliberately **lit** to a working
+  level (`mean_pixel` ≈ 15–40 per node), which restored σ to 1.004. Two hard-won rules: the LED
+  runs on its **own supply**, never a node's VSYS pin — PWM current on the rail feeding the
+  sensor's analog supply destroyed the bias (−4.3e-3, nothing certified) — and it must be
+  **constant current, not PWM**.
+- **Power:** all four boards take PoE directly, no splitters. ⚠ The master previously ran on
+  separate USB power as the control for whether a shared rail correlates the nodes
+  (`PLAN_NETWORK` Risk 1). That split has been **retired by decision**, so inter-node correlation
+  can no longer be attributed to the rail. The one measurement taken while it was intact found no
+  rail effect (master↔slave pairs mean r +0.023 vs slave↔slave +0.024).
 - **PSRAM:** mandatory when the camera source is used (capture buffers + extraction ring)
 - **PHY:** IP101GRI via RMII (Ethernet RJ45, DHCP) — on **every** node
 - **CPU:** ESP32-P4 @ 360 MHz, 768 KB SRAM
@@ -370,11 +445,22 @@ the only property the statistics above depend on.
 Each node subtracts **its own** baseline mean first, so each hardware bias is removed
 independently before the scores are combined.
 
-⚠ **Independence is an assumption, and it is currently violated.** The √n gain is only real if
-the nodes do not correlate. A 4-node session showed inter-node correlation *growing* over ~30
-minutes (combined σ 1.038 → 1.083 → 1.182), which a pooled pairwise check missed entirely. See
-the open finding recorded in [CLAUDE.md](CLAUDE.md). `/status` publishes every
-pairwise r and per-node σ so this is visible rather than assumed.
+⚠ **Independence is an assumption, and it is tested rather than trusted.** The √n gain is only
+real if the nodes do not correlate. The history is worth knowing:
+
+| condition | mean per-run σ | worst pair |
+|---|---|---|
+| early 4-node session | 1.038 → 1.083 → **1.182** (growing) | +0.064 |
+| 10 loops, open bench | 1.015 ± 0.012 | \|r\|√n = 0.95 |
+| 5 loops, **sealed dark** enclosure | **1.0795 ± 0.0222** | \|r\|√n = 2.92 |
+| 5 loops, **lit** enclosure | **1.0040 ± 0.0144** | — |
+
+The original growth did not reproduce; sealing the enclosure brought σ inflation back (best
+explanation: thermal, four self-heating boards with no airflow); lighting it restored σ to unity.
+**The ×√n gain is still not established** — the mechanisms were never isolated. `/status`
+publishes every pairwise r and per-node σ so this stays visible rather than assumed, and
+`loop_sigma` is the more sensitive of the two: it caught inflation the pairwise check missed.
+See [`docs/PLAN.md`](docs/PLAN.md) §1.12 and [CLAUDE.md](CLAUDE.md).
 
 ### Wiring (Ethernet only)
 
@@ -492,15 +578,16 @@ Accessible in the browser via Ethernet after startup (read IP from Serial Monito
 
 | Element | Description |
 |---|---|
-| **Baseline runs** | Calibration runs per loop, default 100 (10–5000) |
+| **Baseline runs** | Drift-reference runs per loop, default 50 (10–5000). See the note below — this is *not* the camera calibration |
 | **Loops** | How often the whole experiment repeats, default 1 (1–500) |
 | **Runs (0=all)** | Cap on measured combinations per loop for quick tests, `0` = all |
 | **Ranking** | Cumulative Z (Stouffer, default) or Peak Z (best single run) |
-| **Entropy** | 📷 Camera (OV5647 dark frame, default) or on-chip TRNG |
+| **Entropy** | 📷 Camera (OV5647) — the only source; the TRNG was removed from the firmware |
+| **🎯 Focus display** | Attended session (default) — uncheck for the matched unattended control |
 | **Euro-Lotto** | 5 numbers (1–50) + 2 bonus numbers (1–12) |
 | **6 of 49** | 6 numbers (1–49) |
 | **🔁 Loop X / N** | Loop counter, shown while running when Loops > 1 |
-| **Calibration phase** | Gold progress bar with ✔ when done |
+| **Baseline phase** | Gold progress bar with ✔ when done. Labelled *"Baseline — drift reference"*, deliberately **not** "Calibration": the camera exposure sweep is a separate phase, and one word for both was ambiguous |
 | **Number scoring phase** | Blue progress bar with ✔ when done |
 | **Measurement phase** | Green progress bar with runtime, ETA and ✔ when done |
 | **🧩 Coverage (highest Z)** | Diversified high-Z picks (spread out); updates live after each loop |
@@ -511,7 +598,16 @@ Accessible in the browser via Ethernet after startup (read IP from Serial Monito
 | **Abort** | Stops after current run, shows cumulative results so far |
 | **Save CSV** | Downloads both Coverage sections (highest + lowest Z) as `.csv` |
 | **Browser reload / close** | ESP keeps running all loops; page reconnects and shows live progress |
-| **Diagnostics** | `http://<IP>/diag` (source health) and `http://<IP>/loops` (per-loop table) |
+| **Diagnostics** | `http://<IP>/diag` (source health), `http://<IP>/loops` (per-loop table), `http://<IP>/calibrate` (last camera exposure sweep) |
+
+> **On "Baseline runs".** The baseline *subtraction* is mathematically inert: `baseline_mean` is a
+> constant taken off every run in the loop, so it shifts the loop mean by exactly itself and
+> studentization then removes it completely — the final Z is unchanged to the bit. The phase is
+> kept because `baseline_mean` is the **input to the cross-loop drift regression**
+> (`drift_slope`/`drift_t`), which is what caught a real −0.334 z/loop drift in the sealed
+> enclosure. It is also the more precise offset instrument: 50 runs give SE ≈ 0.14 z against
+> ≈0.40 z implied by the camera sweep's bias figure. Cost is ~70 s per loop. **Do not remove the
+> phase on the grounds that the subtraction does nothing** — the subtraction is not why it exists.
 
 ## Key Code
 
@@ -926,4 +1022,5 @@ elotto_slave/  — separate repo: https://github.com/hpheuer/elotto_slave  (must
 | v2.0 | GCP methodology upgrade: per-loop **studentization** (`(z−m)/σ`, TRNG health σ published), **random measurement order** per loop (drift immunity), **master–slave independence check** (Pearson r, per-loop centered, per-device σ), 5× number scoring, **stride sampling** for capped runs, fewer yields (~15% faster). ⚠ Z-scores not comparable with pre-v2.0 sessions |
 | v2.1 | **Camera entropy**: OV5647 dark-frame noise (photon shot + read noise) replaces the TRNG as the default source — one camera per node, frame-pair diff → LSB → XOR-fold → ring buffer, ~3.4 Mbit/s, run length 8000 segments (~0.5 s). Shared `elotto_camera` component across both repos; **Entropy** selector in the UI (`?src=1` camera / `?src=0` TRNG); a camera stall **aborts** the session on either node instead of silently substituting the TRNG; **cross-loop drift check** (raw offset regression, `drift_slope`/`drift_t`) with the per-loop table at `/loops`; camera health in `/diag`; slave `D` (diagnostics) command |
 | v2.2 | **UDP node link** replaces the UART1 crossover (docs/PLAN_NETWORK.md Phase C): broadcast trigger on port 5000 so every node starts on one datagram, unicast replies, discovery by broadcast (no IP table). Same `P`/`B`/`M`/`D`/`A` semantics, so the statistics layer is untouched — verified by an A/B at identical settings (n=600 pairs: `pair_r` +0.065, σm/σs 1.05/1.00, zero lost triggers). Every frame carries the sequence number it answers; late replies are dropped and counted (`net_retries`/`net_lost`/`net_stale` in `/status`). The slave gains Ethernet, its own `/diag` and OTA — required, not optional, since rollback reverts any image that cannot be reached over the network |
+| v2.4 | **Abstract** section stating the eight design principles plainly. **Photons only**: the on-chip TRNG is *deleted* from both firmwares — no `?src=`, no Entropy dropdown, no fallback of any kind. **Per-loop camera calibration**: every loop broadcasts an exposure sweep, each node keeps the fastest setting passing bias/σ/autocorr/light gates and reports it, logged per loop in `/loops`; the whole last sweep is served at `/calibrate`. Run window unified to 1000 ms (11,950 segments) with a 350 ms blank. **Enclosure built, measured dark, then lit** — sealed-dark cost per-run σ (1.0795 ± 0.0222); lit restored it (1.0040 ± 0.0144). Never power illumination from a node's VSYS pin. UI: aligned input rows, fixed-width Pause/Continue, master IP shown, phone breakpoint, baseline bar renamed off "Calibration". ⚠ Open: ×√n still not established; the `mean_px < 64` gate now excludes the best exposure rung, and calibration still selects on rate where rate is CPU-bound |
 | v2.3 | **4-node array** (docs/PLAN_NETWORK.md Phase D): `slaves[]` discovered by broadcast — no IP list, no node count configured; combine is `Σz/√k` over the nodes that answered *that run*; independence checked across **all** node pairs with the full matrix in `/status`; a node whose source degrades or that stops answering is dropped and the rest continue over √(k−1), aborting only below two nodes; per-node health row (src, σ, Mbit/s, stalls, lost) and an "N-node array · SNR ×…" badge. `SCORE_REPS` 10 → 5. Fixed a latent hang: a sub-millisecond `SO_RCVTIMEO` rounds to 0, which lwIP means as *wait forever*. ⚠ **Open**: inter-node correlation grows during a session (combined σ 1.038 → 1.083 → 1.182 over 3 loops) — the √n gain is not yet established |

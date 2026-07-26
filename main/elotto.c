@@ -104,6 +104,41 @@ static const char HTML[] =
 "filter:drop-shadow(0 0 10px rgba(240,192,64,.5))}"
 "#focusBox{min-height:104px;display:flex;align-items:center;justify-content:center;"
 "flex-wrap:wrap;gap:2px}"
+// One label column of a FIXED width, so every input/select starts at the same x.
+// The rows used to be independently centred flex boxes, which left each control
+// hanging off a label of a different length.
+".frow{grid-column:span 2;display:grid;grid-template-columns:150px 1fr;"
+"align-items:center;gap:8px}"
+".frow>label,.frow>span:first-child{color:#f0c040;font-size:.9em;text-align:right}"
+".fin{width:80px;padding:5px 8px;border-radius:6px;border:1px solid #a08030;"
+"background:#0a2e0a;color:#fff;font-size:1em;text-align:center}"
+// Pause/Continue differ in width, and .btns is centre-justified, so the pair
+// used to shift sideways every time the label changed. A floor wide enough for
+// the longer word pins both.
+"#btnPause,#btnAbort{min-width:168px}"
+".tblwrap{overflow-x:auto}"
+// Phone layout: shrink the CHROME only. The Focus numbers (.numBig) are sized
+// for salience by the deliberate decision documented above and are left alone —
+// #focusBox already wraps, so a narrow screen costs rows, not legibility.
+"@media(max-width:520px){"
+"body{padding:12px}"
+"h1{font-size:1.7em;margin:8px 0 4px}"
+"#subtitle{font-size:.9em;margin-bottom:16px}"
+".card{padding:14px;border-radius:11px}"
+".btn{padding:11px 16px;font-size:.95em}"
+"#btnPause,#btnAbort{min-width:126px}"
+".frow{grid-template-columns:118px 1fr;gap:6px}"
+".frow>label,.frow>span:first-child{font-size:.8em}"
+".sv{font-size:1.3em}"
+".sl{font-size:.68em}"
+".stats{gap:6px}"
+".stat{padding:7px 4px}"
+"table{font-size:.8em}"
+"th,td{padding:6px 3px}"
+".num{width:26px;height:26px;font-size:.8em}"
+".num.euro{width:38px;height:36px;font-size:.74em;padding-top:6px}"
+"#msg{font-size:.95em}"
+"}"
 "</style></head><body>"
 "<div class='wrap'>"
 "<h1>&#9752; E-Lotto <a href='https://grokipedia.com/page/Global_Consciousness_Project'"
@@ -112,34 +147,28 @@ static const char HTML[] =
 "<div id='slaveBadge' style='display:none;text-align:center;color:#a0e8ff;"
 "font-size:.88em;margin:-18px 0 12px'></div>"
 "<div class='card'>"
-"<div id='runsRow' style='display:grid;grid-template-columns:1fr 1fr;gap:8px 14px;justify-items:center;margin-bottom:10px'>"
-"<div style='grid-column:span 2;display:flex;align-items:center;gap:6px'>"
-"<label style='color:#f0c040;font-size:.9em'>Baseline runs:</label>"
+"<div id='runsRow' style='display:grid;grid-template-columns:1fr 1fr;gap:8px 14px;margin-bottom:10px'>"
+"<div class='frow'>"
+"<label for='numBaseline'>Baseline runs:</label>"
 // Defaults per the Phase 5 timing budget, restated for the uniform 1000 ms
 // window: the cycle is ~1.38 s (1027 ms lit + 350 ms blank), so a ~10 min
 // measurement loop is ~430 runs, not the 850 the 500 ms draw allowed.
 // `Runs = 0` (all) still works, and 430 of 5005 is still stride-sampled across
 // the whole combination space rather than a lexicographic prefix.
-"<input id='numBaseline' type='number' value='50' min='10' max='5000' step='50'"
-" style='width:70px;padding:5px 8px;border-radius:6px;border:1px solid #a08030;"
-"background:#0a2e0a;color:#fff;font-size:1em;text-align:center'>"
+"<input id='numBaseline' class='fin' type='number' value='50' min='10' max='5000' step='50'>"
 "</div>"
-"<div style='grid-column:span 2;display:flex;align-items:center;gap:6px'>"
-"<label style='color:#f0c040;font-size:.9em'>Loops:</label>"
-"<input id='numLoops' type='number' value='1' min='1' max='500' step='1'"
-" style='width:70px;padding:5px 8px;border-radius:6px;border:1px solid #a08030;"
-"background:#0a2e0a;color:#fff;font-size:1em;text-align:center'>"
+"<div class='frow'>"
+"<label for='numLoops'>Loops:</label>"
+"<input id='numLoops' class='fin' type='number' value='1' min='1' max='500' step='1'>"
 "</div>"
-"<div style='grid-column:span 2;display:flex;align-items:center;gap:6px'>"
-"<label style='color:#f0c040;font-size:.9em'>Runs (0=all):</label>"
-"<input id='numRuns' type='number' value='430' min='0' max='8000' step='1'"
-" style='width:70px;padding:5px 8px;border-radius:6px;border:1px solid #a08030;"
-"background:#0a2e0a;color:#fff;font-size:1em;text-align:center'>"
+"<div class='frow'>"
+"<label for='numRuns'>Runs (0=all):</label>"
+"<input id='numRuns' class='fin' type='number' value='430' min='0' max='8000' step='1'>"
 "</div>"
-"<div style='grid-column:span 2;display:flex;align-items:center;gap:6px'>"
-"<label style='color:#f0c040;font-size:.9em'>Ranking:</label>"
+"<div class='frow'>"
+"<label for='selRank'>Ranking:</label>"
 "<select id='selRank' style='padding:5px 8px;border-radius:6px;border:1px solid #a08030;"
-"background:#0a2e0a;color:#fff;font-size:.92em'>"
+"background:#0a2e0a;color:#fff;font-size:.92em;max-width:100%'>"
 "<option value='1'>Cumulative Z (Stouffer, recommended)</option>"
 "<option value='0'>Peak Z (best single run)</option>"
 "</select>"
@@ -147,8 +176,8 @@ static const char HTML[] =
 // No entropy selector: photons or nothing. The on-chip TRNG was removed from
 // the firmware entirely (sensor.h) because an option to produce an
 // indistinguishable result from a digital source is a liability, not a feature.
-"<div style='grid-column:span 2;display:flex;align-items:center;gap:6px'>"
-"<span style='color:#f0c040;font-size:.9em'>Entropy:</span>"
+"<div class='frow'>"
+"<span>Entropy:</span>"
 "<span style='font-size:.92em'>&#128247; OV5647 dark-frame photons"
 "<span style='color:#8fae8f'> &middot; the only source</span></span>"
 "</div>"
@@ -156,10 +185,15 @@ static const char HTML[] =
 // choice is explicit and the answer is recorded with the results. Unchecking it
 // gives the matched control the comparison needs — same mode, runs, segment
 // counts, source and loops, panel off.
-"<div style='grid-column:span 2;display:flex;align-items:center;gap:6px'>"
+// Empty first cell so the checkbox lines up with the inputs above it rather
+// than with their labels.
+"<div class='frow'>"
+"<span></span>"
+"<span style='display:flex;align-items:center;gap:6px'>"
 "<input id='chkFocus' type='checkbox' checked style='width:16px;height:16px'>"
 "<label for='chkFocus' style='color:#f0c040;font-size:.9em'>"
 "&#127919; Focus display (attended session)</label>"
+"</span>"
 "</div>"
 "<button class='btn btn-euro' style='width:100%' onclick='doStart(0)'>&#127808; Euro-Lotto</button>"
 "<button class='btn btn-649' style='width:100%' onclick='doStart(1)'>&#127808; 6 of 49</button>"
@@ -180,13 +214,21 @@ static const char HTML[] =
 "<div id='loopBadge' style='display:none;text-align:center;color:#f0c040;"
 "font-weight:700;font-size:1.05em;margin-bottom:10px'></div>"
 "<div id='calArea'>"
-"<div style='color:#f0c040;font-size:.88em;margin-bottom:4px'>&#128295; Calibration"
+// Labelled "Baseline", NOT "Calibration". This bar tracks the baseline runs;
+// the camera exposure sweep is a different phase entirely (and says so in
+// #msg). Calling both "calibration" in one interface was ambiguous. Element ids
+// keep their old cal* names so nothing else has to change.
+"<div style='color:#f0c040;font-size:.88em;margin-bottom:4px' "
+"title='Reference runs with the display off. Feeds the cross-loop drift "
+"regression (drift_slope/drift_t). The ranking is unaffected either way: "
+"studentize() removes any constant offset exactly. This is NOT the camera "
+"exposure calibration.'>&#128207; Baseline &#8212; drift reference"
 "<span id='calCheck'></span></div>"
 "<div class='prog-wrap' style='height:18px'>"
 "<div id='pfCal' style='background:linear-gradient(90deg,#a08030,#f0c040);"
 "height:100%;border-radius:20px;width:0%;transition:width .5s'></div></div>"
 "<div style='color:#f0c040;font-size:.9em;text-align:center;margin-top:4px'>"
-"<span id='sCalDone'>0</span> / <span id='sCalTotal'>100</span> Runs</div>"
+"<span id='sCalDone'>0</span> / <span id='sCalTotal'>50</span> Runs</div>"
 "</div>"
 "<div id='scoreArea' style='margin-top:14px'>"
 "<div style='color:#6ab0e8;font-size:.88em;margin-bottom:4px'>&#127919; Number scoring"
@@ -520,7 +562,11 @@ static const char HTML[] =
 "+'<th align=left>stalls</th>'"
 "+'<th align=left>lost</th></tr>';"
 "for(var i=0;i<d.nodes.length;i++){var N=d.nodes[i];"
-"var nm=(i===0?'master':'slave'+i)+(N.ip&&N.ip!=='self'?' '+N.ip:'');"
+// The master reports ip:"self" (it has no idea what address the client used to
+// reach it), so take the address this page was served from -- which IS the
+// master's, by construction. Keeps the list symmetric: every row names a host.
+"var ipTxt=(N.ip&&N.ip!=='self')?N.ip:location.hostname;"
+"var nm=(i===0?'master':'slave'+i)+(ipTxt?' '+ipTxt:'');"
 // A camera fault is named, not merely reflected in a shrunken node count: the
 // operator has to know WHICH node died and that it was rebooted.
 "var st=N.cam_fault?' \\u26a0 CAMERA FAULT \\u2013 rebooted'+(N.reboots>1?' x'+N.reboots:'')"

@@ -172,6 +172,19 @@ so a fresh session does not need them.
 
 Phase 1: baseline calibration (all nodes in parallel; informational — ranking uses
 studentization instead).
+⚠ **The baseline SUBTRACTION is mathematically inert — do not "fix" it, and do not delete the
+phase because of it** (verified 2026-07-26). `baseline_mean` is a *constant* subtracted from every
+run in the loop (`sensor.c`, `zm = zraw - baseline_mean`), so it shifts the loop mean by exactly
+itself and `studentize()` then removes it completely: the final z is unchanged to the bit. The
+phase is kept because `baseline_mean` is the **input to the cross-loop drift regression**
+(`drift_add()` → `drift_slope`/`drift_t`, stored per loop in `/loops` as `base`/`raw_m`) — the
+diagnostic that caught the master drifting −0.334 z/loop in §1.12. It is also the *more precise*
+offset instrument: 50 runs give SE ≈ 0.14 z on the per-run offset, against ≈0.40 z implied by the
+calibration sweep's bias figure, because the baseline sees ~20× more data. Cost is 50 × 1.4 s ≈
+70 s/loop (~8 % of a 10 min loop); 25–30 runs is the floor worth keeping.
+The UI bar is labelled **"Baseline — drift reference"**, not "Calibration": the camera exposure
+sweep is a different phase, and having two things called calibration in one interface was
+ambiguous. The `cal*` element ids are historical.
 Phase 0: score individual numbers 1..N with **exactly one** node-combined run each, sweeping the
 numbers in a **fresh random order (Fisher–Yates, no repeats)** — `score_one_run()`. Repeats *in
 place* were removed in Phase 5: five consecutive runs of the same number froze the Focus panel
