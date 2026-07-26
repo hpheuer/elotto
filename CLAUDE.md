@@ -58,7 +58,7 @@ run*, so a node missing one reply costs that run's gain, not the session.
 
 **The x sqrt(n) gain is NOT established** — it assumes the nodes are independent, and a 4-node
 session showed inter-node correlation growing over ~30 min (combined sigma 1.038 -> 1.083 ->
-1.182) that a pooled pairwise check missed. Open finding in docs/PLAN_NETWORK.md; judge
+1.182) that a pooled pairwise check missed. Open finding (see item 1 below); judge
 sessions on per-loop combined sigma AND the full pairwise matrix, never `pair_r` alone.
 
 The UART1 crossover used before Phase C is gone: one datagram starts every node at once, where
@@ -69,12 +69,17 @@ instead of measuring twice. **All receive timeouts go through `link_arm_timeout(
 rounds `SO_RCVTIMEO` to whole ms and treats 0 as *wait forever*, so a sub-millisecond remainder
 would hang the session — this already happened once.
 
-**Plans**: `docs/PLAN_4NODE.md` is the contract for the *noise source and statistics* (Phases
-0–3 done, v2.1). `docs/PLAN_NETWORK.md` is the contract for *transport, provisioning and
-firmware delivery* — 4-node UDP sync + Ethernet OTA, superseding PLAN_4NODE's UART-star
-Phase 4. Both record every gate result and design decision.
+**Plan**: `docs/PLAN.md` is the current contract. Task 1 is per-loop camera calibration.
 
-**Noise source** (see docs/PLAN_4NODE.md):
+⚠ **`docs/PLAN_4NODE.md` and `docs/PLAN_NETWORK.md` were deleted (2026-07-26, user request).**
+They are in git history, last present at commit `8e134e5` —
+`git show 8e134e5:docs/PLAN_4NODE.md`. Source comments still cite them ("PLAN_4NODE Phase 3",
+"PLAN_NETWORK §4"); those citations are historical and resolve to git history, not to a file on
+disk. They were left as-is on purpose — repointing them at `PLAN.md` would make them cite phases
+that document does not contain. Everything below is the standing summary of what they recorded,
+so a fresh session does not need them.
+
+**Noise source**:
 - Each node has its **own** OV5647 camera (never shared — sharing one would break
   independence by construction). Entropy = non-overlapping frame pairs, diff = f[2k+1]−f[2k]
   per pixel (cancels FPN exactly), LSB packed, XOR-folded. ~3 Mbit/s per node.
@@ -82,9 +87,9 @@ Phase 4. Both record every gate result and design decision.
   `src=0` = on-chip TRNG (register 0x501101A4, still available for A/B). The UI has an
   **Entropy** dropdown; `/start` defaults to camera explicitly rather than inheriting the
   previous session's source.
-- Segments per run are source- **and phase**-dependent (Phase 5): a scoring run holds its
-  candidate number ~1000 ms, a measurement run holds a draw ~500 ms. z stays N(0,1) either
-  way — normalised by √segments.
+- Segments per run are **source-dependent only** (`CAM_SEGMENTS` 11950 / `TRNG_SEGMENTS`):
+  every run — scoring, measurement and baseline alike — holds its target for the same ~1000 ms
+  window. z stays N(0,1) regardless, being normalised by √segments.
 - ✅ **The segment count travels on the wire** (`M<seg>`, `B<runs>,<seg>`), so the constants
   live in `main/sensor.c` only. This retired the old "duplicated in both repos and must match"
   hazard: a slave that is *told* the length cannot disagree about it. `slave.c` keeps
@@ -136,7 +141,7 @@ Bonferroni-corrected significance line (compute_significance()). The raw top[]/l
 are still computed (for significance) but no longer displayed or serialized. Coverage is
 cumulative-mode only.
 
-**Focus display (Phase 5, docs/PLAN_4NODE.md)**: a "Focus:" card shows the current target in
+**Focus display (Phase 5)**: a "Focus:" card shows the current target in
 large type for exactly the window its bits are collected in — the candidate number while
 scoring, the whole draw while measuring — so the observer is present *while* the noise is
 sampled (the original GCP/PEAR protocol). It changes nothing statistically, so a session is
@@ -230,7 +235,6 @@ is gone. Those are the cases OTA cannot repair — the P4 has no
    already wired as the control (master isolated on USB, three slaves on one PoE rail) and
    `/status` publishes the full pairwise matrix, so one 3-loop session answers it: slaves
    correlating only with each other ⇒ the rail; the master tracking them too ⇒ the room.
-   Full record in docs/PLAN_NETWORK.md.
 2. **Node-drop test never run** (PLAN_NETWORK Phase D gate): unplug a node mid-run, expect
    degrade to √3 with a UI flag and no crash. The code path exists and is untested.
 3. **Camera bias degrades under sustained load** — `.103` went from 0.499307 idle to 0.497884

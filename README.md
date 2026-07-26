@@ -108,7 +108,7 @@ them at a glance. The line underneath is the instrument's own check —
 <code>window · gap · windows · missed</code> — where <b>missed</b> counts windows the UI never
 saw, the failure that would credit an effect to the wrong combination. <b>Pause</b> holds
 between runs without losing the loop; paused time is excluded from the elapsed clock.
-See <a href="docs/PLAN_4NODE.md">PLAN_4NODE.md</a> Phase 5.</td>
+See <a href="docs/PLAN.md">PLAN.md</a>.</td>
 </tr>
 </table>
 
@@ -152,7 +152,7 @@ master additionally serves the web UI and drives the session.
 - **CPU:** ESP32-P4 @ 360 MHz, 768 KB SRAM
 - **Chip revision:** v1.3 (sdkconfig adjusted: `CONFIG_ESP32P4_REV_MIN_0=y`)
 - **Node link:** UDP on the shared switch — broadcast trigger to port 5000, unicast replies.
-  The UART1 crossover this used before is gone; see [docs/PLAN_NETWORK.md](docs/PLAN_NETWORK.md)
+  The UART1 crossover this used before is gone; see [docs/PLAN.md](docs/PLAN.md)
 - **USB:** recovery only — bootloader, partition table, or a board whose factory updater is
   gone. Firmware ships over Ethernet. Every node carries its own updater in `factory`.
   Addresses above are informational: the master finds nodes by broadcast, so nothing depends
@@ -257,7 +257,8 @@ measurement statistics. The UI shows the effective reps per number.
 
 The default noise source is **not** the on-chip TRNG but an OV5647 camera per node, sitting in
 the dark. Selectable per session in the UI (**Entropy**) or via `POST /start?src=1` (camera) /
-`?src=0` (TRNG). Design contract and every gate result: [docs/PLAN_4NODE.md](docs/PLAN_4NODE.md).
+`?src=0` (TRNG). Design contract: [docs/PLAN.md](docs/PLAN.md); the phase-by-phase gate results
+are in git history (`git show 8e134e5:docs/PLAN_4NODE.md`).
 
 ### Why a camera in the dark
 
@@ -372,7 +373,7 @@ independently before the scores are combined.
 ⚠ **Independence is an assumption, and it is currently violated.** The √n gain is only real if
 the nodes do not correlate. A 4-node session showed inter-node correlation *growing* over ~30
 minutes (combined σ 1.038 → 1.083 → 1.182), which a pooled pairwise check missed entirely. See
-the open finding in [docs/PLAN_NETWORK.md](docs/PLAN_NETWORK.md). `/status` publishes every
+the open finding recorded in [CLAUDE.md](CLAUDE.md). `/status` publishes every
 pairwise r and per-node σ so this is visible rather than assumed.
 
 ### Wiring (Ethernet only)
@@ -817,7 +818,7 @@ list the ports before an `erase-flash` rather than trusting one written down.
 
 Reset does *nothing* but restart: the bootloader boots whatever `otadata` points at, so a reset
 on a broken app boots the broken app again. What recovers a node is layered, weakest failure
-first (see [docs/PLAN_NETWORK.md](docs/PLAN_NETWORK.md) §3a, all three proven on hardware):
+first (all three proven on hardware):
 
 | failure | what recovers it |
 |---|---|
@@ -891,8 +892,9 @@ components/
 ota_firmware/ — the recovery updater, its own IDF project (Ethernet + HTTP + esp_ota only)
 partitions.csv — shared partition table: factory (updater) + ota_0/ota_1, used by all three
 docs/
-  PLAN_4NODE.md      — the camera-entropy design contract: phases, gates, decisions
-  PLAN_NETWORK.md    — the transport/provisioning contract: UDP sync, Ethernet OTA
+  PLAN.md            — the current design contract (Task 1: per-loop camera calibration).
+                       The superseded PLAN_4NODE.md / PLAN_NETWORK.md, with every phase gate
+                       result, are in git history at commit 8e134e5
   ui_start.png       — start screen (inputs, entropy source, Focus checkbox, mode buttons)
   ui_focus.png       — Focus panel mid-measurement: draw on screen, euro numbers as stars
   ui_done.png        — a finished run: condition tag, per-node health, UDP link health
