@@ -321,19 +321,29 @@ Five guards keep systematic hardware effects from masquerading as GCP signal:
   `offset a → b · drift ±s z/loop (t = …)` and flags ⚠ at |t| > 3. The full per-loop table is
   at [`/loops`](#diagnostics) — this is the guard that only a many-hour session can exercise.
 
-The number-scoring phase also runs **`SCORE_REPS` dual-ESP GCP runs per candidate number**
-(Stouffer, slave-combined ÷√2 → per-number SE = 1/√(2·REPS)), so the pool choice — locked for
-the whole cumulative session — doesn't ride on single-run noise. `SCORE_REPS` is **10**
-(SE ≈ 0.22, ~5 min of scoring for 6-of-49); raise it to **40** (SE ≈ 0.11) for a session whose
-pool choice has to be trusted. It affects only *which* numbers enter the pool, not the
-measurement statistics. The UI shows the effective reps per number.
+The number-scoring phase gives each candidate number **exactly one node-combined run**, sweeping
+the numbers in a fresh random order (Fisher–Yates, no repeats). Per-number SE is 1/√k ≈ **0.50** at
+four nodes. Repeats *in place* were deliberately removed: five consecutive runs of the same number
+froze the Focus panel for ~7 s, and onset is precisely what the observer is meant to notice. The
+scoring precision affects only *which* numbers enter the pool, never the measurement statistics
+that follow. **If a pool choice has to be trusted on its own, run several full random passes —
+never repeats in place.**
 
 ## Camera Entropy (OV5647 dark frame)
 
-The default noise source is **not** the on-chip TRNG but an OV5647 camera per node, sitting in
-the dark. Selectable per session in the UI (**Entropy**) or via `POST /start?src=1` (camera) /
-`?src=0` (TRNG). Design contract: [docs/PLAN.md](docs/PLAN.md); the phase-by-phase gate results
-are in git history (`git show 8e134e5:docs/PLAN_4NODE.md`).
+> ⚠ **Partly historical.** The *technique* below is current — non-overlapping frame pairs, diff,
+> LSB, XOR-fold, ring buffer — but two things have changed and the measured numbers in this section
+> predate both. **(1)** The camera is now the **only** source: there is no `?src=`, no Entropy
+> selector and no TRNG. **(2)** The enclosure is **lit**, not dark. Sealing it dark was measured
+> and rejected — without photons the noise is read-noise dominated, bias worsened ~6× and per-run σ
+> rose to 1.0795 ± 0.0222; lighting it restored σ to 1.0040 ± 0.0144. So "sitting in the dark"
+> below describes an earlier configuration, and every bias/`mean_pixel`/`zero_diff` figure quoted
+> here belongs to it. Current per-node figures live in
+> [`docs/PLAN.md`](docs/PLAN.md) §1.13.
+
+The noise source is an OV5647 camera per node. Design contract:
+[docs/PLAN.md](docs/PLAN.md); the phase-by-phase gate results are in git history
+(`git show 8e134e5:docs/PLAN_4NODE.md`).
 
 ### Why a camera in the dark
 
@@ -609,9 +619,28 @@ Accessible in the browser via Ethernet after startup (read IP from Serial Monito
 > ≈0.40 z implied by the camera sweep's bias figure. Cost is ~70 s per loop. **Do not remove the
 > phase on the grounds that the subtraction does nothing** — the subtraction is not why it exists.
 
-## Key Code
+## Key Code &mdash; HISTORICAL
 
-### 1 — One Word of Noise, Two Possible Sources
+> ⚠ **This whole section is a historical snapshot and is no longer a description of the code.**
+> The listings below were written against a two-node, TRNG-selectable build and are kept because
+> they explain *why* things are shaped the way they are — the popcount trick, studentization,
+> Stouffer accumulation and coverage selection are all still the real design. But do not read any
+> of it as current source. Specifically, since these were written:
+>
+> - **the TRNG is gone** — `noise_word()`, `RNG_REG`, `s_active_source`, `NOISE_CAMERA`,
+>   `TRNG_SEGMENTS` and `?src=` no longer exist in either firmware; the camera is the only source
+>   and a stalled camera drops or aborts rather than falling back;
+> - **the array is up to four nodes, not two** — the combine is `Σz/√k` over the nodes that
+>   answered *that run*, not `(z_m + z_s)/√2`;
+> - **run length is 11,950 segments (~1000 ms)**, a single constant with no per-source split;
+> - **number scoring is one run per candidate**, not `SCORE_REPS` repeats in place;
+> - **combinations are measured in a fresh random order per loop**, not lexicographically;
+> - **per-loop camera calibration** runs an exposure sweep at the head of every loop.
+>
+> For current behaviour read [`CLAUDE.md`](CLAUDE.md) and [`docs/PLAN.md`](docs/PLAN.md), or the
+> source itself.
+
+### 1 — One Word of Noise, Two Possible Sources *(superseded: photons only)*
 
 Everything above the bit source is unchanged by the camera work: `gcp_zscore_raw()` just asks
 for words. `noise_word()` decides where they come from, and enforces the no-silent-fallback
@@ -706,15 +735,18 @@ raw_m = baseline_mean + mean(z_master);   // the offset this loop's source actua
 
 ### 5 — Number Scoring → Candidate Pool
 
-Numbers are **not** drawn randomly. Every candidate number is GCP-scored with `SCORE_REPS`
-slave-combined runs (Stouffer per number, ÷√2 like Phase 2); the highest-scoring numbers
-form the pool that combinations are later built from:
+Numbers are **not** drawn randomly. Every candidate number gets a GCP score and the highest-scoring
+numbers form the pool that combinations are later built from. Current code gives each number
+**exactly one node-combined run**, in a fresh random sweep order:
 
 ```c
 // sensor.c — score_and_build_pool()
-for (int k = 1; k <= max_val; k++)
-    for (int r = 0; r < SCORE_REPS; r++)   // dual-ESP runs per number (Stouffer)
-        scores[k] += score_one_run();      // master + slave in parallel, / sqrt(2)
+// s_perm[] holds a fresh Fisher-Yates order over the candidates, so the observer
+// never sees the same number twice in a row and no number sits at a fixed
+// position across loops. One run each -- the repeat loop that used to sit here
+// froze the Focus panel for ~7 s per number.
+for (each k in random order)
+    scores[k] = score_one_run();       // all nodes in parallel, Sum(z)/sqrt(k)
 // keep the pool_size highest scores, then insertion-sort the pool ascending
 ```
 
@@ -1023,4 +1055,4 @@ elotto_slave/  — separate repo: https://github.com/hpheuer/elotto_slave  (must
 | v2.1 | **Camera entropy**: OV5647 dark-frame noise (photon shot + read noise) replaces the TRNG as the default source — one camera per node, frame-pair diff → LSB → XOR-fold → ring buffer, ~3.4 Mbit/s, run length 8000 segments (~0.5 s). Shared `elotto_camera` component across both repos; **Entropy** selector in the UI (`?src=1` camera / `?src=0` TRNG); a camera stall **aborts** the session on either node instead of silently substituting the TRNG; **cross-loop drift check** (raw offset regression, `drift_slope`/`drift_t`) with the per-loop table at `/loops`; camera health in `/diag`; slave `D` (diagnostics) command |
 | v2.2 | **UDP node link** replaces the UART1 crossover (docs/PLAN_NETWORK.md Phase C): broadcast trigger on port 5000 so every node starts on one datagram, unicast replies, discovery by broadcast (no IP table). Same `P`/`B`/`M`/`D`/`A` semantics, so the statistics layer is untouched — verified by an A/B at identical settings (n=600 pairs: `pair_r` +0.065, σm/σs 1.05/1.00, zero lost triggers). Every frame carries the sequence number it answers; late replies are dropped and counted (`net_retries`/`net_lost`/`net_stale` in `/status`). The slave gains Ethernet, its own `/diag` and OTA — required, not optional, since rollback reverts any image that cannot be reached over the network |
 | v2.4 | **Abstract** section stating the eight design principles plainly. **Photons only**: the on-chip TRNG is *deleted* from both firmwares — no `?src=`, no Entropy dropdown, no fallback of any kind. **Per-loop camera calibration**: every loop broadcasts an exposure sweep, each node keeps the fastest setting passing bias/σ/autocorr/light gates and reports it, logged per loop in `/loops`; the whole last sweep is served at `/calibrate`. Run window unified to 1000 ms (11,950 segments) with a 350 ms blank. **Enclosure built, measured dark, then lit** — sealed-dark cost per-run σ (1.0795 ± 0.0222); lit restored it (1.0040 ± 0.0144). Never power illumination from a node's VSYS pin. UI: aligned input rows, fixed-width Pause/Continue, master IP shown, phone breakpoint, baseline bar renamed off "Calibration". ⚠ Open: ×√n still not established; the `mean_px < 64` gate now excludes the best exposure rung, and calibration still selects on rate where rate is CPU-bound |
-| v2.3 | **4-node array** (docs/PLAN_NETWORK.md Phase D): `slaves[]` discovered by broadcast — no IP list, no node count configured; combine is `Σz/√k` over the nodes that answered *that run*; independence checked across **all** node pairs with the full matrix in `/status`; a node whose source degrades or that stops answering is dropped and the rest continue over √(k−1), aborting only below two nodes; per-node health row (src, σ, Mbit/s, stalls, lost) and an "N-node array · SNR ×…" badge. `SCORE_REPS` 10 → 5. Fixed a latent hang: a sub-millisecond `SO_RCVTIMEO` rounds to 0, which lwIP means as *wait forever*. ⚠ **Open**: inter-node correlation grows during a session (combined σ 1.038 → 1.083 → 1.182 over 3 loops) — the √n gain is not yet established |
+| v2.3 | **4-node array** (docs/PLAN_NETWORK.md Phase D): `slaves[]` discovered by broadcast — no IP list, no node count configured; combine is `Σz/√k` over the nodes that answered *that run*; independence checked across **all** node pairs with the full matrix in `/status`; a node whose source degrades or that stops answering is dropped and the rest continue over √(k−1), aborting only below two nodes; per-node health row (src, σ, Mbit/s, stalls, lost) and an "N-node array · SNR ×…" badge. `SCORE_REPS` 10 → 5 (repeats in place were removed entirely in a later version). Fixed a latent hang: a sub-millisecond `SO_RCVTIMEO` rounds to 0, which lwIP means as *wait forever*. ⚠ **Open at this version**: inter-node correlation grows during a session (combined σ 1.038 → 1.083 → 1.182 over 3 loops). *Did not reproduce later — see v2.4 and the σ table above; the √n gain is nevertheless still not established.* |
