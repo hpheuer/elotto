@@ -384,10 +384,25 @@ task per session. Escalate back if a gate fails twice or a decision above is mis
 every green gate; the master and slave repos must be committed and flashed together whenever the
 shared `components/` or the wire protocol changes.
 
-**Session prompt:**
+**Session prompt** (Task 1 is complete; this is the prompt for what follows it):
 
-> Continue Task 1 of docs/PLAN.md — camera calibration. §1.8 lists what is already built and the
-> next steps in order. Everything you need is in that file and CLAUDE.md.
+> Task 1 of docs/PLAN.md — per-loop camera calibration — is built and its gate passed. Start by
+> reading §1.10: it records the 10-loop result and, importantly, what is still **provisional**
+> because the cameras had no dark enclosure when it was measured.
+>
+> First check whether the enclosure now exists (ask me, or look at the master's `mean_px` in
+> `/diag` — bench light ran 5–10 at exposure 16). If it does: re-derive the bias-vs-exposure
+> curve under controlled light, re-check the `mean_px < 64` leak gate against it, then run the
+> deferred matched `?cal=0` control. If it does not: leave all light-dependent work alone and do
+> the two untested safety paths instead — node-drop and camera-fault/reboot (CLAUDE.md open
+> item 2).
+>
+> Everything you need is in docs/PLAN.md and CLAUDE.md.
 
-Start every session by re-reading §1.8 and updating it at the end, so the next one never has to
-re-derive the state. The four decisions in §1.7 are settled — do not re-litigate them.
+Start every session by re-reading **§1.10** and updating it at the end, so the next one never has
+to re-derive the state.
+
+§1.7's decisions are settled — do not re-litigate them, **except decision 3 (the XOR fold), which
+was WITHDRAWN on measured evidence**; §1.10 and the comment in `camera_calibrate()` say why, and
+that withdrawal is itself now settled. Entropy is photons only: the on-chip TRNG was removed from
+both firmwares (see the CLAUDE.md noise-source section) and must not be reintroduced in any form.
