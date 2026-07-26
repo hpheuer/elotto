@@ -784,6 +784,123 @@ static void slave_baseline_wait(void)
     nodes_collect(g_status.baseline_total * 800 + 15000, true);
 }
 
+/* ── Per-loop camera calibration (docs/PLAN.md Task 1) ────────────────────
+ *
+ * Deliberately a separate command from 'B' rather than an extra field on it.
+ * Baseline calibration measures the per-run z OFFSET and writes no camera
+ * register; this tunes the sensor and reads no z. Sharing a command would make
+ * a session that wants one but not the other impossible to express, and the
+ * matched no-calibration control needs exactly that.
+ *
+ * The shape is otherwise identical to the baseline phase, which is the point:
+ * one broadcast starts every node's sweep at once, the master runs its own in
+ * parallel, then waits for every ack. Not pausable, for the same reason the
+ * baseline is not — one 'K' sets every slave running autonomously, so a
+ * master-side hold would desynchronise them rather than pause them. */
+static void slave_calibrate_start(int budget_ms)
+{
+    if (!s_slave_ok) return;
+    char cmd[24];
+    snprintf(cmd, sizeof(cmd), "K%d", budget_ms);
+    nodes_send(cmd);
+}
+
+/* Record what one node reported: "OK:<exp>,<gain>,<fold>,<bias>,<mbit_s>,<G|U>".
+ * The trailing tag is the same idiom as the 'Z:' reply's source tag — appended
+ * after the numbers so it cannot disturb a field-order parse — and says whether
+ * the node actually adopted a GATED setting or fell back to its previous one.
+ * Without it a node that certified nothing would be indistinguishable in
+ * /status from one that certified the setting it happens to be running. */
+static void node_take_cal(int k)
+{
+    NodeStatus *N = &g_status.nodes[k + 1];
+    N->cam_exp = 0;
+    N->cam_cal_ok = 0;
+    if (!s_link[k].replied) return;
+    const char *resp = s_link[k].reply;
+    if (resp[0] != 'O' || resp[1] != 'K' || resp[2] != ':') return;
+
+    unsigned long e = 0, g = 0;
+    int   fold = 0;
+    float bias = 0.0f, mb = 0.0f;
+    if (sscanf(resp + 3, "%lu,%lu,%d,%f,%f", &e, &g, &fold, &bias, &mb) < 5) return;
+    const char *tag = strrchr(resp, ',');
+    N->cam_exp      = (uint32_t)e;
+    N->cam_gain     = (uint16_t)g;
+    N->cam_fold     = fold ? 1 : 0;
+    N->cam_bias     = bias;
+    N->cam_cal_mbit = mb;
+    N->cam_cal_ok   = (tag && tag[1] == 'G') ? 1 : 0;
+    printf("node %d (%s): cal exposure=%lu gain=%lu fold=%d bias=%.6f %.2f Mbit/s %s\n",
+           k + 1, N->ip, e, g, fold, bias, mb,
+           N->cam_cal_ok ? "" : "(no gated setting -- kept previous)");
+}
+
+/* Wait for every node's ack. The timeout is derived from the budget the nodes
+ * were given plus the settle-and-flush overhead the sweep pays on top of it, so
+ * a slower node is not mistaken for a missing one. A node that really does not
+ * answer is handled by the existing rule — dropped after NODE_MISS_LIMIT, the
+ * session continues over √(k−1). */
+static void slave_calibrate_wait(int budget_ms)
+{
+    if (!s_slave_ok) return;
+    nodes_collect(budget_ms + 15000, true);
+    for (int k = 0; k < s_nslaves; k++) node_take_cal(k);
+}
+
+/* The master's own sweep, kept in PSRAM: the table is ~1.2 KB and internal RAM
+ * is already full with results[] (adding it as .bss fails the LINK, not the
+ * run). Allocated once and never freed, so GET /calibrate can still serve the
+ * last sweep long after the session that produced it finished. */
+static camera_cal_t *s_cal;
+
+const camera_cal_t *elotto_last_calibration(void)
+{
+    return (s_cal && s_cal->nsteps > 0) ? s_cal : NULL;
+}
+
+static bool cal_abort_cb(void) { return g_status.abort_requested; }
+
+static void calibrate_master(int budget_ms)
+{
+    NodeStatus *N = &g_status.nodes[0];
+    N->cam_exp = 0;
+    N->cam_cal_ok = 0;
+    if (!s_cal)
+        s_cal = heap_caps_calloc(1, sizeof(camera_cal_t), MALLOC_CAP_SPIRAM);
+    if (!s_cal) { printf("cal: no PSRAM for the sweep table -- skipped\n"); return; }
+
+    bool ok = camera_calibrate(budget_ms, cal_abort_cb, s_cal);
+    N->cam_exp      = s_cal->exposure;
+    N->cam_gain     = (uint16_t)s_cal->gain;
+    N->cam_fold     = s_cal->xor_fold ? 1 : 0;
+    N->cam_bias     = (float)s_cal->bias;
+    N->cam_cal_mbit = (float)s_cal->mbit_per_sec;
+    N->cam_cal_ok   = ok ? 1 : 0;
+    printf("master: cal exposure=%lu gain=%lu fold=%d %s (%lu ms, %d steps)\n",
+           (unsigned long)s_cal->exposure, (unsigned long)s_cal->gain,
+           (int)s_cal->xor_fold, ok ? "" : "(no gated setting -- kept previous)",
+           (unsigned long)s_cal->elapsed_ms, s_cal->nsteps);
+}
+
+/* One calibration phase: broadcast, sweep locally in parallel, wait for acks.
+ * Only meaningful for a camera session — the TRNG has no exposure — so a TRNG
+ * session skips it entirely rather than spending a slice of every loop on a
+ * sweep whose result nothing would read. */
+static void calibrate_all(void)
+{
+    if (g_status.cal_budget_ms <= 0) return;
+    if (s_active_source != NOISE_CAMERA) return;
+
+    g_status.phase = PHASE_CALIBRATE;
+    int64_t t0 = esp_timer_get_time();
+    slave_calibrate_start(g_status.cal_budget_ms);   // trigger first, then measure
+    calibrate_master(g_status.cal_budget_ms);
+    if (!g_status.abort_requested) slave_calibrate_wait(g_status.cal_budget_ms);
+    g_status.cal_ms = (int)((esp_timer_get_time() - t0) / 1000);
+    printf("calibration: %d ms for %d node(s)\n", g_status.cal_ms, g_status.node_ok);
+}
+
 static void slave_trigger(int nseg)
 {
     if (!s_slave_ok) return;
@@ -1156,11 +1273,20 @@ static void record_loop(double loop_mean, int loop_idx)
         L->sigma = (float)g_status.loop_sigma;
         L->nodes = (uint8_t)g_status.node_count;
         L->t_s   = (uint32_t)(g_status.elapsed_ms / 1000);
+        L->cal_ms = (uint16_t)(g_status.cal_ms > 65535 ? 65535 : g_status.cal_ms);
         for (int i = 0; i < g_status.node_count && i < MAX_NODES; i++) {
             L->mean_n[i] = (float)mean_n[i];
             L->sig_n[i]  = (float)sig_n[i];
             L->cam_mbit[i]   = i ? g_status.nodes[i].cam_mbit : (float)cs.mbit_per_sec;
             L->cam_stalls[i] = i ? g_status.nodes[i].cam_stalls : cs.stalls;
+            // The operating point this loop was measured AT (§1.5.2). Per-loop
+            // re-tuning is only safe because it is recorded: without this the
+            // setting change and a drift in the data look the same afterwards.
+            L->cam_exp[i]    = g_status.nodes[i].cam_exp;
+            L->cam_gain[i]   = g_status.nodes[i].cam_gain;
+            L->cam_fold[i]   = g_status.nodes[i].cam_fold;
+            L->cam_cal_ok[i] = g_status.nodes[i].cam_cal_ok;
+            L->cam_bias[i]   = g_status.nodes[i].cam_bias;
         }
     }
     g_status.nodes[0].cam_mbit   = (float)cs.mbit_per_sec;
@@ -1370,6 +1496,7 @@ void elotto_task(void *pvParam)
     g_status.off_last        = 0.0;
     g_status.sigma_lo        = 0.0;
     g_status.sigma_hi        = 0.0;
+    g_status.cal_ms          = 0;
     memset(&s_drift, 0, sizeof(s_drift));
     // focus_mode is set by /start and NOT reset here — it is the session's tag.
     // Everything else about the panel starts clean, including a pause left over
@@ -1447,6 +1574,17 @@ void elotto_task(void *pvParam)
             memset(pool_main, 0, sizeof(pool_main));
             memset(pool_euro, 0, sizeof(pool_euro));
         }
+
+        /* ── Task 1: camera calibration (every node in parallel) ──────── */
+        // Before the baseline, because the baseline estimates the offset of the
+        // runs it will be subtracted from and must therefore be measured on the
+        // SAME operating point those runs use. Calibrating after it would leave
+        // the whole loop correcting for an offset from a setting it no longer
+        // runs on. A full sweep every loop is the decision in §1.5.1: the
+        // optimum is not assumed constant, and re-deriving it is what tracks
+        // thermal drift.
+        calibrate_all();
+        if (g_status.abort_requested) { slave_abort(); goto done; }
 
         /* ── Phase 1: Baseline calibration (every node in parallel) ────── */
         // Baseline runs at MEASUREMENT length: it estimates the offset of the

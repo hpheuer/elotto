@@ -302,9 +302,31 @@ static void stats_reset_locked(void)
     s_ring_tail = s_ring_head;           // drop unread old-setting words
     s_stream_start_us = esp_timer_get_time();
 
+    /* The PUBLISHED snapshot has to be zeroed too, not just the accumulators it
+     * is computed from. publish_stats() only refreshes it after a pair has been
+     * extracted, so a reader polling in the gap between the reset and the next
+     * pair would be served the pre-reset window — and would have no way to tell.
+     *
+     * That is not theoretical: it made the first calibration sweep score every
+     * one of its ten candidates on the same stale cumulative snapshot. Each
+     * window passed its bit target the instant it opened, so all ten rows came
+     * back byte-identical and the sweep "chose" in 2.4 s of a 30 s budget.
+     * Zeroing here makes an unmeasured window look empty, which is what it is.
+     *
+     * The health counters stay cumulative on purpose: ring_drops, consumer_waits
+     * and stalls are read elsewhere as lifetime totals. */
     xSemaphoreTake(s_mutex, portMAX_DELAY);
     s_stats.frame_pairs       = 0;
     s_stats.stuck_frame_count = 0;
+    s_stats.bits_extracted    = 0;
+    s_stats.ones_count        = 0;
+    s_stats.bias              = 0.0;
+    s_stats.sigma             = 0.0;
+    s_stats.sigma_samples     = 0;
+    s_stats.mean_pixel_level  = 0.0;
+    s_stats.mbit_per_sec      = 0.0;
+    s_stats.zero_diff_frac    = 0.0;
+    for (int L = 0; L < 4; L++) s_stats.autocorr_lag[L] = 0.0;
     xSemaphoreGive(s_mutex);
 }
 
@@ -344,7 +366,13 @@ static void camera_task(void *arg)
         // Settling after a parameter change: throw the pair away rather than
         // extract from it, then open the window cleanly on the last one.
         if (s_settle_pairs > 0) {
-            if (--s_settle_pairs == 0) stats_reset_locked();
+            // Reset FIRST, clear the flag second. camera_stats_settled() is the
+            // caller's signal that the window is open, and the caller runs at a
+            // higher priority than this task — so a flag cleared before the
+            // reset lets it read the previous setting's numbers and call them
+            // the new window's.
+            if (s_settle_pairs == 1) stats_reset_locked();
+            s_settle_pairs--;
             ioctl(s_fd, VIDIOC_QBUF, &first);
             ioctl(s_fd, VIDIOC_QBUF, &buf);
             have_first = false;
@@ -580,7 +608,10 @@ bool camera_set_exposure(uint32_t exposure, uint32_t gain)
 {
     if (s_fd < 0) return false;
     if (exposure < 1) exposure = 1;
-    if (exposure > 0xFFFFF) exposure = 0xFFFFF;
+    // 0xFFFF, not 0xFFFFF: the three registers below hold 16 integer bits, so a
+    // larger value loses its top bits on the way in and reads back as something
+    // else — which this function would then report as "did not latch".
+    if (exposure > 0xFFFF) exposure = 0xFFFF;
     if (gain > 0x3FF) gain = 0x3FF;
 
     cam_reg_write(0x3503, 0x03);                       // keep AEC/AGC manual
@@ -612,6 +643,273 @@ void camera_get_exposure(uint32_t *exposure, uint32_t *gain)
 
 void camera_set_xor_fold(bool on) { s_xor_fold = on; }
 bool camera_get_xor_fold(void)    { return s_xor_fold; }
+
+/* ── The sweep (PLAN.md Task 1) ────────────────────────────────────────────
+ *
+ * Exposure ladder, in sensor line units (the integer part of regs
+ * 0x3500-0x3502). Geometric, and spanning BOTH sides of the power-on default
+ * (16): the premise under test is that more light means more shot noise means a
+ * more uniform LSB, and a ladder that only went up could not tell a real
+ * response from a plateau. The Task 1 gate asks for exactly that curve — "if
+ * bias does not respond to exposure, the premise is wrong and the task stops
+ * there" — so the downward rungs are the control, not padding.
+ *
+ * Capped at 512 lines: past roughly the frame's own line count the sensor
+ * stretches the frame instead of just integrating longer, and frame time is
+ * what pays for the bit rate. Coarse on purpose — §1.5.1 budgets the whole
+ * sweep at about 5 % of a ~10 min loop. */
+static const uint32_t s_cal_ladder[] = { 4, 8, 16, 32, 64, 128, 256, 512 };
+#define CAL_LADDER_N  (sizeof(s_cal_ladder) / sizeof(s_cal_ladder[0]))
+
+/* Hard gates, inherited from the original Phase 0 gate these cameras have met
+ * before. Quality first; rate is only the tie-break among candidates that pass. */
+#define CAL_BIAS_TOL        1e-3
+#define CAL_AUTOC_TOL       0.01
+#define CAL_SIGMA_TOL       0.05
+/* A window has to be long enough that the gate tests the SETTING and not the
+ * sampling error of the window: SE(bias) = 0.5/sqrt(bits), so 2 Mbit gives
+ * 3.5e-4 against a 1e-3 gate — about 3 sigma of headroom — and the 8 Mbit target
+ * takes that to 1.8e-4 whenever the slice allows. A candidate too slow to reach
+ * the minimum inside its slice is rejected as unmeasurable rather than scored on
+ * numbers that cannot support the decision. */
+#define CAL_MIN_BITS        2000000ULL
+#define CAL_TARGET_BITS     8000000ULL
+#define CAL_MIN_MINIRUNS    200
+/* Light-leak floor. Deliberately generous (a quarter of full scale) because
+ * raising mean_px is the very mechanism the sweep is exploiting: this gate is
+ * here to catch a camera looking at a lit room, where high exposure saturates,
+ * not to cap the intended increase. The measured value is reported per step, so
+ * the choice stays auditable rather than implicit. */
+#define CAL_MAX_MEAN_PX     64.0
+/* Frame pairs discarded before a window opens. CAM_BUF_COUNT=4 means up to two
+ * pairs already captured under the old setting can be queued; the rest gives the
+ * sensor a few frames to actually apply the new one. */
+#define CAL_SETTLE_PAIRS    4
+#define CAL_SETTLE_TIMEOUT_MS 4000
+
+static uint32_t cal_gate(const camera_cal_step_t *s)
+{
+    uint32_t f = 0;
+    if (s->bits < CAL_MIN_BITS || s->minirun_n < CAL_MIN_MINIRUNS) f |= CAM_CAL_FAIL_BITS;
+    if (fabs(s->bias - 0.5) >= CAL_BIAS_TOL)    f |= CAM_CAL_FAIL_BIAS;
+    if (s->autocorr_max >= CAL_AUTOC_TOL)       f |= CAM_CAL_FAIL_AUTOC;
+    if (fabs(s->sigma - 1.0) > CAL_SIGMA_TOL)   f |= CAM_CAL_FAIL_SIGMA;
+    if (s->stuck_frames != 0)                   f |= CAM_CAL_FAIL_STUCK;
+    if (s->mean_pixel_level >= CAL_MAX_MEAN_PX) f |= CAM_CAL_FAIL_LIGHT;
+    return f;
+}
+
+/* Measure one candidate. Returns false only if the sweep was aborted. */
+static bool cal_step(camera_cal_step_t *st, uint32_t exposure, uint32_t gain,
+                     bool fold, int64_t deadline_us, bool (*abort_cb)(void))
+{
+    memset(st, 0, sizeof(*st));
+    st->exposure = exposure;
+    st->gain     = gain;
+    st->xor_fold = fold;
+
+    if (!camera_set_exposure(exposure, gain)) {
+        st->fail = CAM_CAL_FAIL_APPLY;   // read-back disagreed; score nothing
+        return true;
+    }
+    s_xor_fold = fold;
+
+    // Settle and flush BEFORE the window opens, or the score is a blend of two
+    // settings: the driver still holds frames captured under the previous one
+    // and the ring still holds words extracted from them.
+    camera_stats_reset(CAL_SETTLE_PAIRS);
+    int64_t settle_limit = esp_timer_get_time() + CAL_SETTLE_TIMEOUT_MS * 1000LL;
+    while (!camera_stats_settled()) {
+        if (abort_cb && abort_cb()) return false;
+        if (esp_timer_get_time() > settle_limit) {
+            // No frames are arriving. Clear the countdown by hand — leaving it
+            // armed would make the capture task swallow the NEXT candidate's
+            // pairs too, and every later step would score an empty window. Safe
+            // here precisely because the capture task is demonstrably not
+            // running the countdown down itself.
+            s_settle_pairs = 0;
+            st->fail = CAM_CAL_FAIL_BITS;
+            ESP_LOGW(TAG_CAM, "cal: no frames at exposure=%lu -- candidate skipped",
+                     (unsigned long)exposure);
+            return true;
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+
+    camera_stats_t cs;
+    for (;;) {
+        camera_get_stats(&cs);
+        if (cs.bits_extracted >= CAL_TARGET_BITS) break;
+        if (esp_timer_get_time() >= deadline_us) break;
+        if (abort_cb && abort_cb()) return false;
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+    camera_get_stats(&cs);
+
+    st->bits             = cs.bits_extracted;
+    st->minirun_n        = cs.sigma_samples;
+    st->bias             = cs.bias;
+    st->sigma            = cs.sigma;
+    st->mbit_per_sec     = cs.mbit_per_sec;
+    st->mean_pixel_level = cs.mean_pixel_level;
+    st->zero_diff_frac   = cs.zero_diff_frac;
+    st->stuck_frames     = cs.stuck_frame_count;
+    double amax = 0.0;
+    for (int L = 0; L < 4; L++)
+        if (fabs(cs.autocorr_lag[L]) > amax) amax = fabs(cs.autocorr_lag[L]);
+    st->autocorr_max = amax;
+    st->fail = cal_gate(st);
+
+    ESP_LOGI(TAG_CAM, "cal: exp=%-5lu gain=%-4lu fold=%d  bias=%.6f (%+.1e) sigma=%.4f "
+             "r=%.4f mean_px=%.2f zero=%.4f %.3f Mbit/s  %.1f Mbit  %s0x%02x",
+             (unsigned long)exposure, (unsigned long)gain, (int)fold,
+             st->bias, st->bias - 0.5, st->sigma, st->autocorr_max,
+             st->mean_pixel_level, st->zero_diff_frac, st->mbit_per_sec,
+             st->bits / 1e6, st->fail ? "FAIL " : "pass ", (unsigned)st->fail);
+    return true;
+}
+
+bool camera_calibrate(int budget_ms, bool (*abort_cb)(void), camera_cal_t *out)
+{
+    if (!out) return false;
+    memset(out, 0, sizeof(*out));
+    out->chosen = -1;
+    if (s_fd < 0 || !camera_is_ready()) return false;
+
+    int64_t t0 = esp_timer_get_time();
+
+    // The setting in force at entry: the power-on default on loop 0, the
+    // previous loop's choice afterwards. It is both the fallback and the first
+    // rung of the sweep (see below).
+    uint32_t e0 = 0, g0 = 0;
+    camera_get_exposure(&e0, &g0);
+    bool fold0 = s_xor_fold;
+
+    if (budget_ms < 2000) budget_ms = 2000;
+    // Steps: the entry setting, then the ladder, then one fold trial.
+    int planned = 1 + (int)CAL_LADDER_N + 1;
+    if (planned > CAM_CAL_MAX_STEPS) planned = CAM_CAL_MAX_STEPS;
+    int64_t slice_us = (int64_t)budget_ms * 1000 / planned;
+
+    int n = 0;
+    /* Step 0 re-measures the setting already in force, WITHOUT changing it.
+     * Two things fall out of one slice. Against the same exposure appearing
+     * later in the ladder it is the reset proof the Task 1 gate asks for — two
+     * consecutive windows at the same setting must agree within sampling error.
+     * And from loop 2 onward the entry setting is the previous loop's winner, so
+     * this rung measures drift at a FIXED operating point, which is the only way
+     * to tell a genuinely moving optimum from a noisy sweep. */
+    if (!cal_step(&out->step[n], e0, g0, fold0, t0 + slice_us, abort_cb)) goto aborted;
+    n++;
+
+    for (int i = 0; i < (int)CAL_LADDER_N && n < planned; i++) {
+        if (!cal_step(&out->step[n], s_cal_ladder[i], g0, fold0,
+                      t0 + (int64_t)(n + 1) * slice_us, abort_cb)) goto aborted;
+        n++;
+    }
+
+    /* The fold trial (§1.3: the XOR fold is a processing parameter and is in
+     * scope). Only one extra window, and only when it could improve on what the
+     * ladder already found:
+     *   - fold currently ON and something passed → try it OFF at the winner's
+     *     exposure. Passing there doubles the stream for free, which is a larger
+     *     win than the exposure sweep alone produces.
+     *   - fold currently OFF and nothing passed → try it ON at the least-biased
+     *     exposure, the fold's actual job being to square away a raw LSB bias.
+     * Any other combination could only trade rate away or quality away, and the
+     * objective forbids both. */
+    if (n < planned) {
+        int best = -1;
+        for (int i = 0; i < n; i++)
+            if (!out->step[i].fail &&
+                (best < 0 || out->step[i].mbit_per_sec > out->step[best].mbit_per_sec))
+                best = i;
+        int ref = best;
+        if (ref < 0) {
+            for (int i = 0; i < n; i++)
+                if (out->step[i].bits >= CAL_MIN_BITS &&
+                    (ref < 0 || fabs(out->step[i].bias - 0.5) < fabs(out->step[ref].bias - 0.5)))
+                    ref = i;
+        }
+        bool worth = (ref >= 0) && ((best >= 0) ? fold0 : !fold0);
+        if (worth) {
+            if (!cal_step(&out->step[n], out->step[ref].exposure, out->step[ref].gain,
+                          !fold0, t0 + (int64_t)(n + 1) * slice_us, abort_cb)) goto aborted;
+            n++;
+        }
+    }
+    out->nsteps = n;
+
+    // Selection: only gated candidates are eligible, fastest among them wins.
+    int pick = -1;
+    for (int i = 0; i < n; i++)
+        if (!out->step[i].fail &&
+            (pick < 0 || out->step[i].mbit_per_sec > out->step[pick].mbit_per_sec))
+            pick = i;
+
+    uint32_t use_e   = (pick >= 0) ? out->step[pick].exposure : e0;
+    uint32_t use_g   = (pick >= 0) ? out->step[pick].gain     : g0;
+    bool     use_fld = (pick >= 0) ? out->step[pick].xor_fold : fold0;
+
+    bool applied = camera_set_exposure(use_e, use_g);
+    s_xor_fold = use_fld;
+    if (!applied && pick >= 0) {
+        // It latched while being scored and refuses now. Do not run the session
+        // on an unverified setting: fall back to the entry one and say so.
+        ESP_LOGE(TAG_CAM, "cal: chosen exposure=%lu would not re-apply -- reverting",
+                 (unsigned long)use_e);
+        camera_set_exposure(e0, g0);
+        s_xor_fold = fold0;
+        use_e = e0; use_g = g0; use_fld = fold0;
+        pick  = -1;
+    }
+
+    out->chosen   = pick;
+    out->ok       = (pick >= 0);
+    out->exposure = use_e;
+    out->gain     = use_g;
+    out->xor_fold = use_fld;
+    if (pick >= 0) {
+        out->bias             = out->step[pick].bias;
+        out->sigma            = out->step[pick].sigma;
+        out->mbit_per_sec     = out->step[pick].mbit_per_sec;
+        out->autocorr_max     = out->step[pick].autocorr_max;
+        out->mean_pixel_level = out->step[pick].mean_pixel_level;
+    }
+
+    /* Open a clean window on the setting the session will actually run, so the
+     * per-loop bias/rate in /status and /loops describe THIS loop's operating
+     * point and not the last candidate the sweep happened to try. Waiting for it
+     * also guarantees the first measured run draws from post-change frames. */
+    camera_stats_reset(CAL_SETTLE_PAIRS);
+    int64_t settle_limit = esp_timer_get_time() + CAL_SETTLE_TIMEOUT_MS * 1000LL;
+    while (!camera_stats_settled() && esp_timer_get_time() < settle_limit) {
+        if (abort_cb && abort_cb()) break;
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+
+    out->elapsed_ms = (uint32_t)((esp_timer_get_time() - t0) / 1000);
+    ESP_LOGI(TAG_CAM, "cal: %s exposure=%lu gain=%lu fold=%d (%d/%d passed, %lu ms)",
+             out->ok ? "chose" : "NO gated setting -- kept",
+             (unsigned long)use_e, (unsigned long)use_g, (int)use_fld,
+             pick >= 0 ? 1 : 0, n, (unsigned long)out->elapsed_ms);
+    return out->ok;
+
+aborted:
+    out->nsteps = n;
+    camera_set_exposure(e0, g0);
+    s_xor_fold = fold0;
+    // Re-arm rather than clear: nobody waits for it now, but the ring still holds
+    // words extracted at whatever candidate the sweep died on, and the next
+    // session must not draw them.
+    camera_stats_reset(CAL_SETTLE_PAIRS);
+    out->exposure   = e0;
+    out->gain       = g0;
+    out->xor_fold   = fold0;
+    out->elapsed_ms = (uint32_t)((esp_timer_get_time() - t0) / 1000);
+    ESP_LOGW(TAG_CAM, "cal: aborted after %d step(s) -- entry setting restored", n);
+    return false;
+}
 
 void camera_get_stats(camera_stats_t *out)
 {

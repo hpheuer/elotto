@@ -1,6 +1,7 @@
 #pragma once
 #include <stdint.h>
 #include <stdbool.h>
+#include "camera.h"
 
 #define NUM_RUNS      8000
 #define TOP_N           10
@@ -10,7 +11,10 @@
 
 typedef enum { MODE_EUROJACKPOT = 0, MODE_LOTTO_649 = 1 } ElottoMode;
 typedef enum { ELOTTO_IDLE, ELOTTO_RUNNING, ELOTTO_DONE, ELOTTO_ABORTED } ElottoState;
-typedef enum { PHASE_SCORING, PHASE_BASELINE, PHASE_MEASURING } ElottoPhase;
+// PHASE_CALIBRATE is appended, not inserted: it runs FIRST in a loop but the
+// other three are wired into the UI and the CSV by value.
+typedef enum { PHASE_SCORING, PHASE_BASELINE, PHASE_MEASURING,
+               PHASE_CALIBRATE } ElottoPhase;
 // Ranking across loops: PEAK = best single-run Z (noise extreme); CUMULATIVE =
 // Stouffer Z = Σz/√k per fixed combination (GCP cumulative-deviation method)
 typedef enum { RANK_PEAK = 0, RANK_CUMULATIVE = 1 } ElottoRank;
@@ -71,6 +75,17 @@ typedef struct {
     uint32_t lost;          // runs this node failed to answer in time
     float    cam_mbit;      // camera rate at the last per-loop 'D' query
     uint32_t cam_stalls;
+    // What this node's camera calibration chose at the start of the current loop
+    // (PLAN.md Task 1). Nodes land on DIFFERENT settings and that is correct —
+    // the cameras are physically different units — which is exactly why the
+    // setting has to be published per node rather than as one session number.
+    uint32_t cam_exp;       // 0 = this node has not calibrated (yet, or at all)
+    uint16_t cam_gain;
+    uint8_t  cam_fold;      // XOR fold state chosen
+    uint8_t  cam_cal_ok;    // 1 = a candidate passed every gate; 0 = the node
+                            // kept its previous setting because none did
+    float    cam_bias;      // bias of the window that chose it
+    float    cam_cal_mbit;  // rate of that same window
 } NodeStatus;
 
 // Per-loop health record (PLAN_4NODE Phase 3). A 20 h session gives slow drift
@@ -93,6 +108,17 @@ typedef struct {
     float    cam_mbit[MAX_NODES]; // camera rate at loop end, 0 = not answered
     uint32_t cam_stalls[MAX_NODES];
     uint32_t t_s;          // elapsed seconds at loop end
+    // Camera settings this loop was MEASURED AT (PLAN.md Task 1 §1.5.2, and
+    // mandatory there rather than optional). Per-loop re-tuning is what tracks
+    // thermal drift, and studentize() makes it safe for the statistics — but a
+    // per-loop change nobody logged is indistinguishable from drift in the data,
+    // so the setting travels with the loop it produced.
+    uint32_t cam_exp[MAX_NODES];    // 0 = not calibrated this loop
+    uint16_t cam_gain[MAX_NODES];
+    uint8_t  cam_fold[MAX_NODES];
+    uint8_t  cam_cal_ok[MAX_NODES]; // 0 = kept its previous setting, no gate passed
+    float    cam_bias[MAX_NODES];   // bias of the window that chose it
+    uint16_t cal_ms;       // wall time the whole per-loop calibration cost
 } LoopStat;
 
 typedef struct {
@@ -183,6 +209,15 @@ typedef struct {
                                           // z_slave of run k with z_master of
                                           // run k+1 — correlation dressed as
                                           // physics, so they are counted, not used
+    // ── Per-loop camera calibration (PLAN.md Task 1) ───────────────────
+    int              cal_budget_ms;       // sweep budget per loop, 0 = do not
+                                          // calibrate. A no-calibration session
+                                          // is the matched control this change
+                                          // has to be compared against, so it is
+                                          // a session parameter, not a #define
+    int              cal_ms;              // what the last loop's calibration
+                                          // actually cost, master + ack wait —
+                                          // the §1.6 gate is a measured number
     int              noise_source;        // NoiseSource requested for this session
     volatile bool    noise_stalled;       // a camera session lost its source and could
                                           // not continue: at n <= 2 losing one node
@@ -205,3 +240,9 @@ extern ElottoStatus g_status;
 
 void slave_probe(void);
 void elotto_task(void *pvParam);
+
+/* The master's most recent calibration sweep, or NULL if it has never run one.
+ * The whole per-candidate table, not just the winner: the Task 1 gate is a
+ * bias-vs-exposure CURVE, and a single chosen point cannot show whether bias
+ * responded to exposure at all. Served by GET /calibrate. */
+const camera_cal_t *elotto_last_calibration(void);

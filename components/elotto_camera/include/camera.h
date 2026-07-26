@@ -66,7 +66,12 @@ bool camera_stats_settled(void);
 
 // Apply and VERIFY BY READ-BACK. Returns false if the sensor did not take the
 // value — a silently ignored write would make calibration score the previous
-// setting and then "choose" it. exposure 1..0xFFFFF, gain 0..0x3FF.
+// setting and then "choose" it. exposure 1..0xFFFF, gain 0..0x3FF.
+//
+// The exposure range is the one the REGISTERS can hold, not the one the OV5647
+// datasheet lists: 0x3500[3:0]/0x3501/0x3502[7:4] carry 16 integer bits, so a
+// value above 0xFFFF would be truncated on the way in and read back as a
+// different number. Clamping to what round-trips keeps set/get honest.
 bool camera_set_exposure(uint32_t exposure, uint32_t gain);
 void camera_get_exposure(uint32_t *exposure, uint32_t *gain);
 
@@ -75,6 +80,79 @@ void camera_get_exposure(uint32_t *exposure, uint32_t *gain);
 // raw bias already passes is worth twice the stream. Kconfig sets the default.
 void camera_set_xor_fold(bool on);
 bool camera_get_xor_fold(void);
+
+/* ── The sweep (docs/PLAN.md Task 1 §1.4) ──────────────────────────────────
+ *
+ * Objective, settled in §1.7 and NOT a tunable: **best entropy, not maximum
+ * rate**. A candidate must pass every hard gate below; among those that do, the
+ * fastest wins. Rate is the tie-break and never a reason to accept a measurably
+ * less uniform stream — the entropy is the instrument.
+ *
+ * Runs on master and slave from the same source, so the two cannot drift apart
+ * in what "calibrated" means. Each node calibrates its OWN camera and they will
+ * land on different settings; the cameras are physically different units and
+ * nothing requires them to share an operating point. What they must still share
+ * is the segment count per run, which travels on the wire.
+ *
+ * MUST NOT run while a measurement is consuming words: every step empties the
+ * ring, so a session drawing from it would be reading discarded entropy.
+ */
+
+// Which gate a candidate failed. 0 = passed all of them. Reported per step so
+// a sweep that chose nothing says WHY rather than just "no".
+#define CAM_CAL_FAIL_APPLY   0x01   // sensor did not latch the setting (read-back)
+#define CAM_CAL_FAIL_BITS    0x02   // too few bits in its slice to score at all
+#define CAM_CAL_FAIL_BIAS    0x04   // |bias - 0.5| >= 1e-3
+#define CAM_CAL_FAIL_AUTOC   0x08   // some |autocorr lag 1..4| >= 0.01
+#define CAM_CAL_FAIL_SIGMA   0x10   // per-mini-run sigma outside 1 +- 0.05
+#define CAM_CAL_FAIL_STUCK   0x20   // a frame pair came back byte-identical
+#define CAM_CAL_FAIL_LIGHT   0x40   // mean pixel level above the light-leak floor
+
+#define CAM_CAL_MAX_STEPS   12
+
+// One candidate setting and the window that scored it. The whole table is kept
+// and published: the Task 1 gate asks for a bias-vs-exposure CURVE, and a curve
+// is the only way to tell a real response from noise around one lucky point.
+typedef struct {
+    uint32_t exposure, gain;
+    bool     xor_fold;
+    uint64_t bits;              // bits in this window (0 = never measured)
+    int      minirun_n;         // mini-runs behind `sigma`
+    double   bias, sigma, mbit_per_sec;
+    double   autocorr_max;      // max |lag 1..4|
+    double   mean_pixel_level, zero_diff_frac;
+    uint32_t stuck_frames;
+    uint32_t fail;              // CAM_CAL_FAIL_* bitmask, 0 = passed
+} camera_cal_step_t;
+
+typedef struct {
+    bool     ok;                // a candidate passed every gate and was applied
+    int      chosen;            // index into step[], -1 if none passed
+    uint32_t exposure, gain;    // what the camera is running on now
+    bool     xor_fold;
+    double   bias, sigma, mbit_per_sec, autocorr_max, mean_pixel_level;
+    int      nsteps;
+    uint32_t elapsed_ms;
+    camera_cal_step_t step[CAM_CAL_MAX_STEPS];
+} camera_cal_t;
+
+/* Sweep the exposure ladder, score each candidate over its own window, apply the
+ * best setting that passes every gate, and verify it by read-back.
+ *
+ * `out` is ~1.2 KB — allocate it in PSRAM once, not on a task stack.
+ *
+ * If NO candidate passes, the setting in force at entry is restored and `ok` is
+ * false. That is deliberate: "best of a bad lot" would move the operating point
+ * to something no gate certified, which is the one way this could quietly change
+ * the measured physics. The caller keeps measuring on the known setting instead.
+ *
+ * `abort_cb` (may be NULL) is polled while waiting; returning true ends the sweep
+ * early, restores the entry setting and returns false. The slave passes one that
+ * also pumps its socket, since its command loop is blocked for the whole sweep.
+ *
+ * Returns true if a gated setting was applied.
+ */
+bool camera_calibrate(int budget_ms, bool (*abort_cb)(void), camera_cal_t *out);
 
 // Priority of the extraction task created by camera_init().
 #define ELOTTO_CAM_TASK_PRIO 4

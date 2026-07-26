@@ -241,7 +241,7 @@ static const char HTML[] =
 "</div>"
 "</div>"
 "<script>"
-"var timer=null,curMode=0,lastData=null,lastDisplayed=null;"
+"var timer=null,curMode=0,lastData=null,lastDisplayed=null,calShown=false;"
 "var ftimer=null,lastSeq=-1,winSeen=0,winMissed=0,paused=false;"
 "function fmt(ms){"
 "var m=Math.floor(ms/60000),h=Math.floor(m/60);m=m%60;"
@@ -410,6 +410,15 @@ static const char HTML[] =
 "fetch('/status').then(function(r){return r.json();}).then(function(d){"
 "updateLoopBadge(d.loop_current||1,d.loops_total||1);"
 "updateFocusInfo(d);"
+// Calibration is the first thing a loop does and nothing is on screen for it —
+// the panel stays hidden, since nothing is being attended to while the sensor is
+// tuned. Say so, or a 30 s pause at the top of every loop looks like a stall.
+// Only on the transition, so it cannot wipe 'Aborting...'.
+"var calNow=(d.phase==='calibrating');"
+"if(calNow!==calShown){calShown=calNow;"
+"document.getElementById('msg').textContent=calNow"
+"?'\\uD83D\\uDD27 Calibrating cameras \\u2014 exposure sweep, '"
+"+Math.round((d.cal_budget_ms||0)/1000)+' s':'';}"
 "var stDone=d.state==='done'||d.state==='aborted';"
 "var scorePct=d.scoring_total>0?Math.round(d.scoring_done*100/d.scoring_total):0;"
 "document.getElementById('pfScore').style.width=scorePct+'%';"
@@ -509,15 +518,23 @@ static const char HTML[] =
 "if(d.nodes&&d.nodes.length){"
 "var s3='<table style=\"width:100%;font-size:.82em;margin-top:6px\">'"
 "+'<tr style=\"color:#90ee90\"><th align=left>node</th><th align=left>src</th>'"
-"+'<th align=left>\\u03c3</th><th align=left>Mbit/s</th><th align=left>stalls</th>'"
+"+'<th align=left>\\u03c3</th><th align=left>Mbit/s</th><th align=left>exp</th>'"
+"+'<th align=left>stalls</th>'"
 "+'<th align=left>lost</th></tr>';"
 "for(var i=0;i<d.nodes.length;i++){var N=d.nodes[i];"
 "var nm=(i===0?'master':'slave'+i)+(N.ip&&N.ip!=='self'?' '+N.ip:'');"
 "var st=N.ok?'':' \\u26a0 dropped';"
+// Each node calibrates its own camera and they WILL differ — different physical
+// sensors, which is why one measured cleaner than the other at identical
+// settings. So the setting is shown per node, with the fold state that goes with
+// it; '!' marks a node that certified nothing and kept its previous setting.
+"var ex='\\u2013';"
+"if(N.cam_exp>0)ex=N.cam_exp+(N.cam_fold?'\\u2295':'')+(N.cam_cal?'':'!');"
 "s3+='<tr style=\"opacity:'+(N.ok?1:.55)+'\"><td>'+nm+st+'</td>'"
 "+'<td>'+(N.src==='cam'?'\\uD83D\\uDCF7':N.src==='trng'?'TRNG':'\\u2013')+'</td>'"
 "+'<td>'+(N.sigma>0?N.sigma.toFixed(3):'\\u2013')+'</td>'"
 "+'<td>'+(N.cam_mbit>0?N.cam_mbit.toFixed(2):'\\u2013')+'</td>'"
+"+'<td title=\"exposure chosen by this loop\\u2019s calibration\">'+ex+'</td>'"
 "+'<td>'+(N.cam_stalls>0?'\\u26a0 '+N.cam_stalls:'0')+'</td>'"
 "+'<td>'+(N.lost>0?'\\u26a0 '+N.lost:'0')+'</td></tr>';}"
 "s3+='</table>';"
@@ -658,9 +675,10 @@ static esp_err_t status_handler(httpd_req_t *req)
         g_status.mode == MODE_EUROJACKPOT ? "euro" : "649";
 
     const char *phase_str =
-        g_status.phase == PHASE_SCORING  ? "scoring"  :
-        g_status.phase == PHASE_BASELINE ? "baseline" :
-                                           "measuring";
+        g_status.phase == PHASE_SCORING   ? "scoring"     :
+        g_status.phase == PHASE_BASELINE  ? "baseline"    :
+        g_status.phase == PHASE_CALIBRATE ? "calibrating" :
+                                            "measuring";
     const char *rank_str = (g_status.rank_mode == RANK_CUMULATIVE) ? "cum" : "peak";
     pos += snprintf(buf+pos, sizeof(buf)-pos,
         "{\"state\":\"%s\",\"mode\":\"%s\",\"phase\":\"%s\","
@@ -673,6 +691,7 @@ static esp_err_t status_handler(httpd_req_t *req)
         "\"net_retries\":%lu,\"net_lost\":%lu,\"net_stale\":%lu,"
         "\"focus\":%s,\"paused\":%s,\"paused_ms\":%lld,"
         "\"focus_win_ms\":%.1f,\"focus_gap_ms\":%.1f,"
+        "\"cal_budget_ms\":%d,\"cal_ms\":%d,"
         "\"loops_done\":%d,\"drift_slope\":%.5f,\"drift_t\":%.2f,"
         "\"off_first\":%.4f,\"off_last\":%.4f,"
         "\"sigma_lo\":%.4f,\"sigma_hi\":%.4f,"
@@ -693,6 +712,7 @@ static esp_err_t status_handler(httpd_req_t *req)
         g_status.focus_mode ? "true" : "false",
         g_status.paused ? "true" : "false", (long long)g_status.paused_ms,
         g_status.focus_win_ms, g_status.focus_gap_ms,
+        g_status.cal_budget_ms, g_status.cal_ms,
         g_status.loops_done, g_status.drift_slope, g_status.drift_t,
         g_status.off_first, g_status.off_last,
         g_status.sigma_lo, g_status.sigma_hi,
@@ -717,11 +737,15 @@ static esp_err_t status_handler(httpd_req_t *req)
         const NodeStatus *N = &g_status.nodes[i];
         pos += snprintf(buf + pos, sizeof(buf) - pos,
             "%s{\"id\":%d,\"ip\":\"%s\",\"ok\":%s,\"src\":\"%s\",\"sigma\":%.4f,"
-            "\"lost\":%lu,\"cam_mbit\":%.3f,\"cam_stalls\":%lu}",
+            "\"lost\":%lu,\"cam_mbit\":%.3f,\"cam_stalls\":%lu,"
+            "\"cam_exp\":%lu,\"cam_gain\":%d,\"cam_fold\":%d,\"cam_cal\":%d,"
+            "\"cam_bias\":%.6f,\"cam_cal_mbit\":%.3f}",
             i ? "," : "", i, i ? N->ip : "self", N->ok ? "true" : "false",
             (N->src == NOISE_CAMERA) ? "cam" : (N->src == NOISE_TRNG) ? "trng" : "?",
             N->sigma,
-            (unsigned long)N->lost, N->cam_mbit, (unsigned long)N->cam_stalls);
+            (unsigned long)N->lost, N->cam_mbit, (unsigned long)N->cam_stalls,
+            (unsigned long)N->cam_exp, (int)N->cam_gain, (int)N->cam_fold,
+            (int)N->cam_cal_ok, N->cam_bias, N->cam_cal_mbit);
     }
     pos += snprintf(buf + pos, sizeof(buf) - pos, "],");
 
@@ -804,18 +828,85 @@ static esp_err_t loops_handler(httpd_req_t *req)
         if (nn > MAX_NODES) nn = MAX_NODES;
         len = snprintf(buf, sizeof(buf),
             "%s{\"loop\":%d,\"t_s\":%lu,\"base\":%.4f,\"raw_m\":%.4f,"
-            "\"mean\":%.4f,\"sigma\":%.4f,\"nodes\":%d,\"n\":[",
+            "\"mean\":%.4f,\"sigma\":%.4f,\"cal_ms\":%d,\"nodes\":%d,\"n\":[",
             i ? "," : "", i + 1, (unsigned long)L->t_s,
-            L->base, L->base + L->mean_n[0], L->mean, L->sigma, nn);
+            L->base, L->base + L->mean_n[0], L->mean, L->sigma, (int)L->cal_ms, nn);
         httpd_resp_send_chunk(req, buf, len);
         for (int k = 0; k < nn; k++) {
+            // cam_exp/gain/fold are the operating point this loop was MEASURED
+            // AT, not a diagnostic: per-loop re-tuning is only defensible
+            // because the setting travels with the loop it produced (§1.5.2).
             len = snprintf(buf, sizeof(buf),
-                "%s{\"mean\":%.4f,\"sigma\":%.4f,\"cam_mbit\":%.3f,\"cam_stalls\":%lu}",
+                "%s{\"mean\":%.4f,\"sigma\":%.4f,\"cam_mbit\":%.3f,\"cam_stalls\":%lu,"
+                "\"cam_exp\":%lu,\"cam_gain\":%d,\"cam_fold\":%d,\"cam_cal\":%d,"
+                "\"cam_bias\":%.6f}",
                 k ? "," : "", L->mean_n[k], L->sig_n[k], L->cam_mbit[k],
-                (unsigned long)L->cam_stalls[k]);
+                (unsigned long)L->cam_stalls[k], (unsigned long)L->cam_exp[k],
+                (int)L->cam_gain[k], (int)L->cam_fold[k], (int)L->cam_cal_ok[k],
+                L->cam_bias[k]);
             httpd_resp_send_chunk(req, buf, len);
         }
         httpd_resp_send_chunk(req, "]}", 2);
+    }
+    httpd_resp_send_chunk(req, "]}", 2);
+    httpd_resp_send_chunk(req, NULL, 0);
+    return ESP_OK;
+}
+
+/* ── /calibrate GET – the master's last camera sweep (PLAN.md Task 1) ──
+ * The WHOLE per-candidate table, not just the winner. The Task 1 gate is
+ * "a full sweep produces a monotonic, explainable bias-vs-exposure curve rather
+ * than noise — if bias does not respond to exposure, the premise is wrong and
+ * the task stops there", and one chosen point cannot answer that. Each row
+ * carries the gate bitmask it failed, so a sweep that certified nothing says
+ * which property was missing instead of only "no".
+ *
+ * Read-only: the sweep runs inside a session, at the start of every loop, so
+ * this reports the real code path rather than a separate manual one that could
+ * quietly diverge from it. `POST /start?runs=1&loops=1&baseline=1` gives a
+ * curve in about a minute.
+ *
+ * Step 0 is always the setting that was in force when the sweep began. Against
+ * the same exposure appearing later in the ladder it is the camera_stats_reset()
+ * proof the gate asks for — two windows at the same setting must agree within
+ * sampling error — and from loop 2 on it measures drift at a fixed operating
+ * point, which is what tells a genuinely moving optimum from a noisy sweep. */
+static esp_err_t calibrate_handler(httpd_req_t *req)
+{
+    const camera_cal_t *c = elotto_last_calibration();
+    char buf[320];
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+
+    if (!c) {
+        httpd_resp_sendstr(req, "{\"ran\":false,\"steps\":[]}");
+        return ESP_OK;
+    }
+
+    int len = snprintf(buf, sizeof(buf),
+        "{\"ran\":true,\"ok\":%s,\"chosen\":%d,\"exposure\":%lu,\"gain\":%lu,"
+        "\"fold\":%d,\"bias\":%.6f,\"sigma\":%.4f,\"mbit_s\":%.3f,"
+        "\"autocorr\":%.4f,\"mean_px\":%.2f,\"ms\":%lu,\"steps\":[",
+        c->ok ? "true" : "false", c->chosen,
+        (unsigned long)c->exposure, (unsigned long)c->gain, (int)c->xor_fold,
+        c->bias, c->sigma, c->mbit_per_sec, c->autocorr_max, c->mean_pixel_level,
+        (unsigned long)c->elapsed_ms);
+    httpd_resp_send_chunk(req, buf, len);
+
+    for (int i = 0; i < c->nsteps && i < CAM_CAL_MAX_STEPS; i++) {
+        const camera_cal_step_t *s = &c->step[i];
+        len = snprintf(buf, sizeof(buf),
+            "%s{\"exposure\":%lu,\"gain\":%lu,\"fold\":%d,\"bits\":%llu,"
+            "\"miniruns\":%d,\"bias\":%.6f,\"sigma\":%.4f,\"mbit_s\":%.3f,"
+            "\"autocorr\":%.4f,\"mean_px\":%.2f,\"zero_diff\":%.4f,"
+            "\"stuck\":%lu,\"fail\":%lu,\"pass\":%s}",
+            i ? "," : "", (unsigned long)s->exposure, (unsigned long)s->gain,
+            (int)s->xor_fold, (unsigned long long)s->bits, s->minirun_n,
+            s->bias, s->sigma, s->mbit_per_sec, s->autocorr_max,
+            s->mean_pixel_level, s->zero_diff_frac,
+            (unsigned long)s->stuck_frames, (unsigned long)s->fail,
+            s->fail ? "false" : "true");
+        httpd_resp_send_chunk(req, buf, len);
     }
     httpd_resp_send_chunk(req, "]}", 2);
     httpd_resp_send_chunk(req, NULL, 0);
@@ -911,6 +1002,11 @@ static esp_err_t start_handler(httpd_req_t *req)
         // source decides what physics is being measured, so it must never be
         // inherited silently. Camera matches the UI default; ?src=0 = TRNG.
         g_status.noise_source   = NOISE_CAMERA;
+        // Per-loop camera calibration (PLAN.md Task 1). ~30 s buys the full
+        // ladder at about 5 % of a ~10 min loop, which is the §1.5.1 budget.
+        // ?cal=0 turns it off — the matched control a calibrated session has to
+        // be compared against, and the only way to measure what the sweep costs.
+        g_status.cal_budget_ms  = 30000;
         // Absent ?focus= means UNATTENDED. A session started by curl or a
         // script has no observer by definition, so the control condition is
         // what a missing flag has to mean; the UI always sends it explicitly.
@@ -945,6 +1041,11 @@ static esp_err_t start_handler(httpd_req_t *req)
             // no-focus control must be identical in every other respect.
             if (httpd_query_key_value(qry, "focus", val, sizeof(val)) == ESP_OK)
                 g_status.focus_mode = (val[0] == '1');
+            // ?cal=<ms> -> sweep budget per loop; 0 = do not calibrate.
+            if (httpd_query_key_value(qry, "cal", val, sizeof(val)) == ESP_OK) {
+                int c = atoi(val);
+                if (c >= 0 && c <= 120000) g_status.cal_budget_ms = c;
+            }
         }
         xTaskCreate(elotto_task, "elotto", 8192, NULL, 5, NULL);
     }
@@ -1069,7 +1170,7 @@ static bool session_running(void) { return g_status.state == ELOTTO_RUNNING; }
 static void start_webserver(void)
 {
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
-    cfg.max_uri_handlers  = 16;   /* 8 here + 5 registered by elotto_ota */
+    cfg.max_uri_handlers  = 16;   /* 9 here + 5 registered by elotto_ota */
     cfg.stack_size        = 8192;
     cfg.recv_wait_timeout = 20;   /* /update streams a ~700 KB body */
     cfg.send_wait_timeout = 20;
@@ -1085,6 +1186,7 @@ static void start_webserver(void)
         {"/loops",  HTTP_GET,  loops_handler,  NULL},
         {"/focus",  HTTP_GET,  focus_handler,  NULL},
         {"/pause",  HTTP_POST, pause_handler,  NULL},
+        {"/calibrate", HTTP_GET, calibrate_handler, NULL},
     };
     for (int i = 0; i < (int)(sizeof(uris) / sizeof(uris[0])); i++)
         httpd_register_uri_handler(srv, &uris[i]);

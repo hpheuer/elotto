@@ -163,8 +163,21 @@ unattended sessions must never be pooled**; run matched no-focus controls.
 - ⚠ **The window is set by a segment count and the conversion is not stable** — the achievable
   window moved 1.75× across one afternoon under identical settings. Check
   `focus_win_ms`/`focus_gap_ms` in /status rather than assuming the constants still hold.
-- ⚠ `camera_get_stats()`'s `mbit_per_sec` and `bias` are **lifetime averages since stream
-  start**, not instantaneous — a falling `mbit_s` is not evidence of live degradation.
+- ⚠ `camera_get_stats()` is cumulative **since the last `camera_stats_reset()`**. With per-loop
+  calibration on (the default) that reset happens every loop, so `mbit_s`/`bias` in `/status`
+  and `/loops` are now per-loop figures. In a `?cal=0` session there is no reset and they are
+  lifetime averages again — a falling `mbit_s` is then not evidence of live degradation.
+
+**Per-loop camera calibration (PLAN.md Task 1, done 2026-07-26)**: at the start of every loop the
+master broadcasts `K<budget_ms>`, sweeps its own exposure ladder in parallel, and waits for every
+node's `OK:<exp>,<gain>,<fold>,<bias>,<mbit_s>,<G|U>`. Each node keeps the fastest setting that
+passes the quality gates; if none passes it keeps the one it had and reports `U`. `~27 s` per loop
+(≈4.4 % of a 10 min loop). `POST /start?cal=0` turns it off — that is the matched control.
+`GET /calibrate` serves the master's whole last sweep, per candidate, with the gate each failed.
+**Nodes land on different exposures on purpose** (different physical sensors, different light);
+what they must still share is the segment count, which travels on the wire.
+The chosen setting is recorded per loop in `/loops` — mandatory, because a per-loop change nobody
+logged is indistinguishable from drift in the data.
 
 Loops: the whole experiment repeats N times (device-side, in elotto_task). Two ranking modes
 (g_status.rank_mode): RANK_PEAK keeps the best single-run z across loops via absorb_loop();
@@ -253,6 +266,10 @@ is gone. Those are the cases OTA cannot repair — the P4 has no
    figure — visible as a raw per-run offset of −2.69 z/run. `studentize()` removes it exactly
    and σ stayed ≈1 in both loops, so nothing downstream is affected. Related to item 3, now with
    a number. Phase 5 is not the cause: it *lowered* duty cycle from ~99.5% to 71%.
+   **Largely explained, 2026-07-26**: the exposure sweep shows bias is a steep function of
+   exposure, and the Kconfig default of 16 lines sat an order of magnitude worse than 128
+   (−3.8e-4 vs −7.8e-5 in a clean 8 Mbit window). Per-loop calibration now moves it off 16. That
+   does not explain the *load* dependence in item 3, only the level.
 
 Also long-open: the **camera-stall abort has never been observed firing** (PLAN_4NODE's
 "Remaining work" item 1) — the only safety claim in these documents that has only been reasoned

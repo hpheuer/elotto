@@ -212,17 +212,101 @@ dropped after `NODE_MISS_LIMIT`, session continues over √(k−1).
   (was `#if CONFIG_ELOTTO_CAM_XOR_FOLD` inside the hot loop); Kconfig now only sets the
   power-on default.
 
-Both projects build. Nothing is wired into a session yet — the API exists, unused.
+**Done (2026-07-26) — steps 1–4 below are all built, flashed to all four nodes and verified on
+hardware.** The four decisions in §1.7 are implemented as written.
+
+- `camera_calibrate(budget_ms, abort_cb, camera_cal_t*)` in the shared component. Ladder
+  `{4, 8, 16, 32, 64, 128, 256, 512}` exposure lines, preceded by a re-measure of the setting
+  already in force and followed by one XOR-fold trial. Gates: `|bias−0.5| < 1e-3`,
+  `|autocorr 1..4| < 0.01`, σ within 1 ± 0.05, zero stuck frames, `mean_px < 64`, and at least
+  2 Mbit / 200 mini-runs in the window (below that the window cannot support a 1e-3 decision —
+  SE(bias) = 0.5/√bits). Tie-break on rate, only among candidates that pass.
+  **If nothing passes, the entry setting is restored and `ok` is false** — never "best of a bad
+  lot", which would move the operating point to something no gate certified.
+- Wire protocol: `K<budget_ms>` → `OK:<exp>,<gain>,<fold>,<bias>,<mbit_s>,<G|U>`. The trailing
+  tag is one field beyond what §1.4 specified: it distinguishes a node that adopted a **G**ated
+  setting from one that kept its previous one (**U**ncertified. Without it the two look identical
+  in `/status`). Same idiom as the `Z:` reply's `,C|T` source tag.
+- `calibrate_all()` runs at the top of every loop, before the baseline — the baseline estimates
+  the offset of the runs it is subtracted from, so it must be measured at the same operating
+  point. Not pausable, same reason as the baseline. Skipped entirely for a TRNG session.
+- `LoopStat` + `/loops` carry `cam_exp/gain/fold/cal/bias` per node and `cal_ms` per loop (§1.5.2).
+- `/status` carries the same per node; the UI's node table gained an `exp` column
+  (`128⊕` = fold on, trailing `!` = uncertified).
+- `GET /calibrate` serves the master's whole last sweep table, per candidate, with the gate
+  bitmask each one failed. Read-only — the sweep only runs inside a session, so this reports the
+  real code path rather than a manual one that could diverge from it.
+- `POST /start?cal=<ms>` (default 30000, `0` = off) — the matched no-calibration control, and the
+  only way to measure what the sweep costs.
+
+**Two bugs found by the first hardware run, both fixed in `camera.c`:**
+
+1. `camera_stats_reset()` zeroed the producer's accumulators but not the **published snapshot**
+   `camera_get_stats()` serves — `publish_stats()` only refreshes it after a pair is extracted.
+   Every one of the first sweep's ten candidates was therefore scored on the same stale
+   cumulative snapshot: each window passed its bit target the instant it opened, all ten rows came
+   back byte-identical, and the sweep "chose" in 2.4 s of a 30 s budget. The reset now zeroes the
+   published mirror too, so an unmeasured window reads as empty.
+2. The settle countdown cleared `s_settle_pairs` **before** running the reset. Since the caller
+   runs above the capture task, it could observe `camera_stats_settled() == true` and read the
+   previous setting's numbers as the new window's. Reset now happens first, flag second.
+
+### 1.9 Gate results (2026-07-26, all four nodes)
+
+| gate | result |
+|---|---|
+| `camera_stats_reset()` proven | ✅ step 0 (exposure 128) vs the ladder's own 128 rung: bias 0.500222 vs 0.499922 — 3.0e-4 apart against SE(diff) 2.5e-4, i.e. 1.2 σ. Agrees within sampling error. |
+| monotonic bias-vs-exposure curve | ✅ see below — the premise holds, decisively |
+| chosen setting passes every gate, verified by read-back | ✅ `camera_set_exposure()` re-verifies on apply; `ok=true` requires it |
+| four nodes calibrate from one broadcast, all ack, settings logged | ✅ master 128, `.103` 512, `.155` 128, `.145` 512 — all `cam_cal=1` |
+| per-loop cost inside budget | ✅ 26.8 s and 26.6 s against a 30 s budget = **4.4 %** of a 10 min loop |
+| chosen settings in `/loops` | ✅ per node per loop |
+| a node that does not answer is dropped | ⬜ not exercised — same long-open node-drop test as CLAUDE.md item 2 |
+| `loop_sigma` ≈ 1 and clean pairwise matrix on a calibrated multi-loop session | ⬜ needs a real session; the smoke test ran 2 runs/loop, where σ is undefined |
+
+**The curve** (master, fold on, 8 Mbit per window):
+
+| exposure | bias − 0.5 | zero_diff | mean_px | verdict |
+|---|---|---|---|---|
+| 4 | **−4.9e-3** | 19.9 % | 2.6 | fail: bias + σ |
+| 8 | −1.9e-3 | 15.5 % | 3.3 | fail: bias |
+| 16 *(old default)* | −3.8e-4 | 10.8 % | 4.9 | pass |
+| 32 | −1.9e-4 | 7.7 % | 8.6 | pass |
+| 64 | −9e-6 | 6.3 % | 16.9 | pass |
+| 128 | −7.8e-5 | 5.1 % | 33.8 | **pass — chosen** |
+| 256 | +2.0e-5 | 3.9 % | 68.6 | fail: light floor |
+| 512 | −1.0e-3 | 3.7 % | 140.8 | fail: light floor |
+| 128, fold **off** | −1.7e-3 | 5.0 % | 34.1 | fail: bias (but 6.34 Mbit/s) |
+
+Exactly the predicted mechanism: more exposure → fewer zero-diffs → more uniform LSB, until the
+frame stops being a dark frame. **This retires the Kconfig default of 16 as an operating point** —
+it passed, but sat an order of magnitude worse in bias than 64/128. And the fold-off row settles
+§1.3's open question with a number: the raw LSB bias is 1.7e-3 and the fold takes it to 7.8e-5,
+so the fold is doing real work and doubling the stream is not available at this exposure.
+
+**Things worth knowing for the next session:**
+
+- **The nodes chose different exposures and that is the design, not a fault.** The master's 512
+  saturates at mean_px 141 while two slaves ran 512 inside the light gate — the sensors sit in
+  different light. This is the same physical difference that made one camera cleaner than the
+  other at identical settings in §1.3.
+- **The optimum really does move between loops**, which is the entire justification for §1.5.1:
+  `.145` chose 512/fold-off in loop 1 and 512/fold-on in loop 2; `.155` went 256 → 128. Had this
+  been a re-verify instead of a full sweep, those changes would have been missed.
+- **The `mean_px < 64` light-leak floor is now the binding constraint on the master's ladder** —
+  it, not bias, is what stops it going past 128. The threshold is a judgement call (a quarter of
+  full scale, chosen so the gate catches a lit room rather than capping the intended increase).
+  Every step publishes its measured `mean_px`, so it can be revisited against data.
+- **Abort during a sweep is exercised and clean**: `ok=false`, `chosen=-1`, entry exposure
+  restored, no node dropped, `net_lost=0`, all three slaves back to streaming.
 
 **Next, in order:**
 
-1. `camera_calibrate(budget_ms, result*)` in the shared component: the ladder sweep, scoring and
-   gate check described in §1.4. Shared, so master and slave run byte-identical logic.
-2. Wire it in: new `K<budget_ms>` command → `OK:<exposure>,<gain>,<fold>,<bias>,<mbit_s>`;
-   master calls its own `camera_calibrate()` locally while the broadcast is in flight, then waits
-   for every ack, exactly as `slave_baseline_start()`/`slave_baseline_wait()` already do.
-3. Record chosen settings per loop in `LoopStat` + `/loops` (§1.5.2 — mandatory, not optional).
-4. Publish per-node settings in `/status` so the UI can show what each node chose.
+1. Run a **real** calibrated session (several loops, full run count) and check `loop_sigma` ≈ 1
+   and the pairwise matrix — the one remaining gate, and the one way this could do real damage.
+2. Run the matched `?cal=0` control against it.
+3. Consider whether `CAM_SEGMENTS` should be re-derived: the chosen exposure changes the frame
+   rate, so the 1000 ms focus window moves with it (§1.5.3). Watch `focus_win_ms`.
 
 ---
 
