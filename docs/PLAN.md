@@ -300,13 +300,80 @@ so the fold is doing real work and doubling the stream is not available at this 
 - **Abort during a sweep is exercised and clean**: `ok=false`, `chosen=-1`, entry exposure
   restored, no node dropped, `net_lost=0`, all three slaves back to streaming.
 
+### 1.10 The 10-loop gate session (2026-07-26) — TASK 1 GATE PASSED
+
+10 loops × 430 runs Eurojackpot, 4 nodes, camera-only, calibration on, display live with a
+6.4 Hz `/focus` poller standing in for the browser. 2 h 14 min, 4300 measurement runs.
+
+| loop | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| σ | 1.052 | 1.013 | 1.026 | 0.960 | 0.992 | 0.995 | 1.013 | 0.971 | 1.050 | 1.081 |
+
+**Mean σ = 1.015 ± 0.012** — 1.3 SE from unity. The decisive detail is not the mean but the
+spread: SD across loops is 0.038 against the 0.034 expected from sampling alone at 430 runs.
+**The per-loop retune adds no variance component of its own**, which was the one way Task 1
+could have done real damage.
+
+| gate | result |
+|---|---|
+| `loop_sigma` ≈ 1 over a calibrated multi-loop session | ✅ 1.015 ± 0.012 |
+| pairwise matrix stays clean | ✅ all six pairs \|r\| ≤ 0.0145 over 4300 runs; worst \|r\|√n = **0.95** vs threshold 3 |
+| per-loop cost inside budget | ✅ 25.0–25.9 s/loop = **3.2 %** of 134 min |
+| chosen settings in `/loops` | ✅ per node per loop, all 10 loops |
+| a node that does not answer is dropped | ⬜ still not exercised — no node failed |
+
+**Open item 1 (inter-node correlation growth) DOES NOT REPRODUCE.** The historical session had
+σ 1.038 → 1.083 → 1.182 with a pooled worst pair of +0.064. This one is flat at 1.015 with a
+worst pair 4× smaller on 10× the runs, same array, same power topology. Not proof the ×√n gain
+is established — the mechanism behind the original growth was never identified, so a differing
+condition is still possible — but the finding as recorded no longer holds.
+
+**Open item 4 (window drift) DOES NOT REPRODUCE.** Window 1102.0–1115.1 ms across the session
+(spread 1.2 %), gap 347.9–348.2 ms against the 350 ms constant, `drift_slope` −0.0054 z/loop at
+t = −0.20. Item 4 recorded 1.75× variation across a day and 8.3 % creep over 1700 runs.
+
+**§1.5.3's concern is resolved, with a mechanism.** Exposures ranged from **4 to 512 across
+nodes simultaneously** all session and the gap never moved off 348 ms. The bit rate is
+**CPU-bound, not exposure-bound**, so differing exposures do not desynchronise the nodes. Only
+the XOR fold did, by genuinely doubling one node's rate — which is the second reason it is out
+of the sweep.
+
+Other results: 4362 focus windows published, **0 missed**, 0 HTTP errors (4362 = 4300 draws + 62
+scoring, i.e. every window observed). No camera faults, reboots, stalls, lost triggers or stale
+replies; 4/4 nodes throughout. `best_z` = 3.011 against an expected max |z| of ≈3.0 for 430
+draws from N(0,1) — the instrument behaves as a null instrument should.
+
+⚠ **All of the above was measured with the cameras OPEN ON THE BENCH — no enclosure.** The
+master's `mean_px` at a fixed exposure of 16 read 4.89 in the morning and 10.34 in the
+afternoon: its light level roughly doubled over the day. That is why its chosen exposure walked
+down 64 → 4 across the session, and why exposure 4 (bias 0.4951, failing, in the morning sweep)
+measured 0.4998 by the evening. **The calibration tracking this is the system working as §1.5.1
+intends**, but it means three things are conditional on bench light and must be re-derived once
+the cameras are enclosed (user is building one, 2026-07-26):
+
+- the chosen exposures and the §1.9 bias-vs-exposure curve,
+- the `mean_px < 64` light-leak threshold,
+- the matched `?cal=0` control, which is therefore **deliberately deferred** — running it now
+  would compare against conditions the enclosure invalidates.
+
+The σ and independence results are *not* conditional on this: they concern the statistical
+behaviour of the combined z, not the absolute light level.
+
+**Fixed after the session:**
+- `camera_calibrate()` reported `bias 0.000000` when no candidate passed, which in `/loops` read
+  like a catastrophic bias rather than "not certified". It now reports step 0's measurements —
+  the setting actually in force — with `ok` carrying the certified/not distinction.
+- `drift_t` is published only from **6** loops (`DRIFT_MIN_LOOPS`), not 3. At three loops the
+  regression has one degree of freedom, where the 5 % critical value is 12.7; it duly fired
+  +10.30 at loop 3 for nothing and settled to −0.20 by loop 10.
+
 **Next, in order:**
 
-1. Run a **real** calibrated session (several loops, full run count) and check `loop_sigma` ≈ 1
-   and the pairwise matrix — the one remaining gate, and the one way this could do real damage.
-2. Run the matched `?cal=0` control against it.
-3. Consider whether `CAM_SEGMENTS` should be re-derived: the chosen exposure changes the frame
-   rate, so the 1000 ms focus window moves with it (§1.5.3). Watch `focus_win_ms`.
+1. **Blocked on hardware:** the dark enclosure. Then re-run the sweep to get a bias-vs-exposure
+   curve under controlled light, and re-check the `mean_px` gate against it.
+2. The matched `?cal=0` control, after the enclosure.
+3. The node-drop test (CLAUDE.md item 2) — still the only untested safety path, now joined by
+   the camera-fault/reboot path added the same day.
 
 ---
 

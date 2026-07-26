@@ -862,12 +862,21 @@ bool camera_calibrate(int budget_ms, bool (*abort_cb)(void), camera_cal_t *out)
     out->exposure = use_e;
     out->gain     = use_g;
     out->xor_fold = use_fld;
-    if (pick >= 0) {
-        out->bias             = out->step[pick].bias;
-        out->sigma            = out->step[pick].sigma;
-        out->mbit_per_sec     = out->step[pick].mbit_per_sec;
-        out->autocorr_max     = out->step[pick].autocorr_max;
-        out->mean_pixel_level = out->step[pick].mean_pixel_level;
+
+    /* Report the measurements of the setting the camera is ACTUALLY on, whether
+     * or not a gate certified it. When nothing passed we revert to the entry
+     * setting, and step 0 measured exactly that — so its numbers are the honest
+     * answer. Leaving the fields zeroed (as this first did) put `bias 0.000000`
+     * into the /loops table, which reads like a catastrophic bias rather than
+     * "not certified": a node that kept a perfectly good previous setting looked
+     * broken. `ok` is what says certified or not; these are just what was seen. */
+    int rep = (pick >= 0) ? pick : 0;
+    if (rep < n && out->step[rep].bits >= CAL_MIN_BITS) {
+        out->bias             = out->step[rep].bias;
+        out->sigma            = out->step[rep].sigma;
+        out->mbit_per_sec     = out->step[rep].mbit_per_sec;
+        out->autocorr_max     = out->step[rep].autocorr_max;
+        out->mean_pixel_level = out->step[rep].mean_pixel_level;
     }
 
     /* Open a clean window on the setting the session will actually run, so the

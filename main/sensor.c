@@ -1316,12 +1316,23 @@ static void publish_pair_stats(void)
  * Running sums, so the test stays exact past LOOP_HIST stored loops. */
 static struct { double n, sx, sxx, sy, sxy, syy; } s_drift;
 
+/* Loops needed before the slope is published at all.
+ *
+ * SIX, not three. The regression has n−2 degrees of freedom, so at three loops
+ * t has ONE — where the 5 % critical value is 12.7, not 2. The 10-loop session
+ * of 2026-07-26 duly reported drift_t = +10.30 after loop 3 (p ≈ 0.06, i.e.
+ * nothing) from two near-identical offsets and one outlier, then settled to
+ * −0.20 by loop 10 as the df arrived. A flag that fires on noise is worse than
+ * no flag, because the one time it matters nobody believes it. At six loops
+ * df = 4 and the |t| > 3 threshold means roughly what it looks like. */
+#define DRIFT_MIN_LOOPS 6
+
 static void drift_add(double x, double y)
 {
     s_drift.n++;
     s_drift.sx += x; s_drift.sxx += x * x;
     s_drift.sy += y; s_drift.sxy += x * y; s_drift.syy += y * y;
-    if (s_drift.n < 3) return;
+    if (s_drift.n < DRIFT_MIN_LOOPS) return;
     double n   = s_drift.n;
     double sxx = s_drift.sxx - s_drift.sx * s_drift.sx / n;
     double sxy = s_drift.sxy - s_drift.sx * s_drift.sy / n;

@@ -36,6 +36,16 @@
 | slave1 | 192.168.178.145 (static lease) | e8:f6:0a:e0:ce:a8 | — | factory = updater, ota_0 = slave app |
 | slave2 | 192.168.178.155 | e8:f6:0a:e0:c7:a1 | COM9 | factory = updater, ota_0 = slave app |
 
+⚠ **NO DARK ENCLOSURE YET (2026-07-26).** All four cameras sit open on the bench. The master's
+`mean_px` at a fixed exposure of 16 read 4.89 in the morning and 10.34 in the afternoon — its
+light level roughly doubled over one day, which is why per-loop calibration walked its chosen
+exposure down from 64 to 4. The calibration tracking that is the system working as intended, but
+**any absolute-light number is provisional until the enclosure exists** (user is building one):
+the chosen exposures, the bias-vs-exposure curve in `docs/PLAN.md` §1.9, and the `mean_px < 64`
+leak threshold all have to be re-derived afterwards. The matched `?cal=0` control is deliberately
+deferred for the same reason. **σ and the pairwise independence results are NOT affected** —
+they concern the statistical behaviour of the combined z, not the light level.
+
 All four boards are provisioned, each with its own OV5647, and all four run simultaneously:
 **the three slaves take PoE directly from one switch** (no splitters — PLAN_NETWORK Risk 2
 resolved), while the **master stays on separate USB power on purpose**. That split is not
@@ -254,26 +264,33 @@ is gone. Those are the cases OTA cannot repair — the P4 has no
 
 ## Open items (2026-07-25) — deferred by decision, not forgotten
 
-1. **Inter-node correlation grows during a session.** Combined σ rose 1.038 → 1.083 → 1.182
-   over three loops while the pooled worst pairwise r stayed a harmless-looking +0.064. The
-   ×√n gain rests on independence, so this decides whether four nodes beat one. The array is
-   already wired as the control (master isolated on USB, three slaves on one PoE rail) and
-   `/status` publishes the full pairwise matrix, so one 3-loop session answers it: slaves
-   correlating only with each other ⇒ the rail; the master tracking them too ⇒ the room.
+1. ~~**Inter-node correlation grows during a session.**~~ **DOES NOT REPRODUCE (2026-07-26).**
+   The 10-loop calibrated session held combined σ at **1.015 ± 0.012** with every one of the six
+   pairs at |r| ≤ 0.0145 over 4300 runs (worst |r|√n = 0.95 vs threshold 3). The original
+   finding was σ 1.038 → 1.083 → 1.182 with a pooled worst pair of +0.064 — same array, same
+   power topology (master on USB, three slaves on one PoE rail), 10× the runs.
+   **Not yet proof the ×√n gain is established**: the mechanism behind the original growth was
+   never identified, so a differing condition rather than a fix is still possible. But do not
+   plan around the old numbers. See `docs/PLAN.md` §1.10.
 2. **Node-drop test never run** (PLAN_NETWORK Phase D gate): unplug a node mid-run, expect
-   degrade to √3 with a UI flag and no crash. The code path exists and is untested.
+   degrade to √3 with a UI flag and no crash. The code path exists and is untested. **Now joined
+   by the camera-fault/reboot path** (`E:` reply → drop → `R` → `esp_restart()`), added
+   2026-07-26 and likewise never observed firing.
 3. **Camera bias degrades under sustained load** — `.103` went from 0.499307 idle to 0.497884
-   after a session, outside PLAN_4NODE Phase 0's 1e-3 gate. Likely the same cause as (1).
+   after a session, outside PLAN_4NODE Phase 0's 1e-3 gate. Was thought to share a cause with
+   (1); with (1) gone that link is dead. **Do not chase this until the cameras are enclosed**:
+   per-loop calibration now resets the statistics every loop, so the numbers in `/loops` are
+   per-window rather than lifetime, and every 10-loop per-node bias sat within 1e-3 of 0.5.
 
-4. **The Focus run window drifts (Phase 5, new).** The window is set by a fixed segment count,
-   but the count→duration conversion moved by up to **1.75×** across one afternoon under
-   identical settings, and within the gate session the measurement window crept 474.8 → 514.4 ms
-   over 1700 runs (pushing the loop to 10.5 min against a 10 min budget). Cause not established;
-   thermal or SoC-level load is the suspect, cumulative camera state is ruled out (each session
-   began after a reboot). Watch `focus_win_ms`/`focus_gap_ms` rather than trusting the
-   constants. The fix, if it becomes annoying, is a closed loop — adjust segments per run from
-   the measured window — which is safe because the count already travels to the slaves on the
-   wire and z is normalised by √segments, so per-run counts may differ freely.
+4. ~~**The Focus run window drifts.**~~ **DOES NOT REPRODUCE (2026-07-26).** Over the 10-loop
+   calibrated session the window held **1102.0–1115.1 ms (spread 1.2 %)** and the gap
+   **347.9–348.2 ms** against the 350 ms constant, across 4300 runs and 2 h 14 min. The original
+   finding was 1.75× variation across a day and 8.3 % creep over 1700 runs.
+   Also resolved with a mechanism: exposures ran from **4 to 512 across nodes simultaneously**
+   and the gap never moved, because **the bit rate is CPU-bound, not exposure-bound**. Only the
+   XOR fold shifted it, by genuinely doubling one node's rate — one of the two reasons the fold
+   is out of the calibration sweep. `focus_win_ms`/`focus_gap_ms` are now measured in **every**
+   session (attended or not) and recorded per loop in `/loops`.
 5. **The master's camera bias is ~1.2e-3, outside Phase 0's 1e-3 gate** and ~9× the Phase 1
    figure — visible as a raw per-run offset of −2.69 z/run. `studentize()` removes it exactly
    and σ stayed ≈1 in both loops, so nothing downstream is affected. Related to item 3, now with

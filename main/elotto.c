@@ -558,7 +558,9 @@ static const char HTML[] =
 "if(d.loops_done>1){"
 "var sgn=d.drift_slope>=0?'+':'';"
 // The slope needs >= 3 loops before it has a standard error at all
-"var d4=d.loops_done<3?'':(' \\u00b7 drift '+sgn+d.drift_slope.toFixed(4)+' z/loop (t = '"
+// 6 loops, not 3: at 3 the regression has one degree of freedom and |t|>3 fires
+// on noise (measured: t=+10.30 at loop 3, -0.20 by loop 10). See DRIFT_MIN_LOOPS.
+"var d4=d.loops_done<6?'':(' \\u00b7 drift '+sgn+d.drift_slope.toFixed(4)+' z/loop (t = '"
 "+d.drift_t.toFixed(1)+(Math.abs(d.drift_t)>3?' \\u26a0 drifting)':' ok)'));"
 "var s4='offset '+d.off_first.toFixed(3)+' \\u2192 '+d.off_last.toFixed(3)+' z/run'+d4"
 "+' \\u00b7 \\u03c3 '+d.sigma_lo.toFixed(3)+'\\u2013'+d.sigma_hi.toFixed(3)"
