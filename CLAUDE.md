@@ -316,10 +316,12 @@ is gone. Those are the cases OTA cannot repair — the P4 has no
    master's raw offset drifted −0.334 z/loop at t = −4.75, against −0.0054 at t = −0.20 on the
    open bench. Best reading is **thermal**, not electrical — see §1.12's rail test. Unresolved
    under the now-lit box, which has not been measured over a full session.
-2. **Node-drop test never run** (PLAN_NETWORK Phase D gate): unplug a node mid-run, expect
-   degrade to √3 with a UI flag and no crash. The code path exists and is untested. **Now joined
-   by the camera-fault/reboot path** (`E:` reply → drop → `R` → `esp_restart()`), added
-   2026-07-26 and likewise never observed firing.
+2. ~~**Node-drop test never run.**~~ **DROPPED BY DECISION (user, 2026-07-26) — do not
+   re-propose.** The node-drop test (unplug a node mid-run, expect degrade to √3 with a UI flag
+   and no crash) and the camera-fault/reboot path (`E:` reply → drop → `R` → `esp_restart()`)
+   will **not** be tested. This is a research instrument, not a commercial application, and the
+   cost of exercising these paths is not worth it here. The code exists and has been reasoned
+   about; treat it as **unverified by choice**, not as an outstanding task.
 3. **Camera bias degrades under sustained load** — `.103` went from 0.499307 idle to 0.497884
    after a session, outside PLAN_4NODE Phase 0's 1e-3 gate. Was thought to share a cause with
    (1); with (1) gone that link is dead. Per-loop calibration now resets the statistics every
@@ -351,9 +353,9 @@ is gone. Those are the cases OTA cannot repair — the P4 has no
    (128) gives −4.6e-4, a factor of 2.5, not the order of magnitude seen on the bench. Calibration
    still moves the master off 16 and still helps; it just helps less than this item claims.
 
-Also long-open: the **camera-stall abort has never been observed firing** (PLAN_4NODE's
-"Remaining work" item 1) — the only safety claim in these documents that has only been reasoned
-about. Phase C proved the UDP abort path; this is the *source-loss* path.
+The **camera-stall abort has never been observed firing** (PLAN_4NODE's "Remaining work" item 1)
+— Phase C proved the UDP abort path; this is the *source-loss* path. **Covered by the same
+decision as open item 2: unverified by choice, not a task.**
 
 **Phase 5 (Focus display) is DONE** (2026-07-25), gate passed except the 10 min loop budget
 (10.5 min, item 4 above). A matched no-focus control session was recorded alongside it; the

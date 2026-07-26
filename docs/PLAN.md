@@ -375,9 +375,9 @@ behaviour of the combined z, not the absolute light level.
    is a valid sealed-dark result; arm B died with a reboot; and §1.13 then changed the hardware,
    so **both** arms must be re-run. Blocked on: lighting the three slaves, and restoring the
    master to USB power.
-3. The node-drop test (CLAUDE.md item 2) — still the only untested safety path, now joined by
-   the camera-fault/reboot path added the same day. **Light-independent, so it can be done while
-   the optics are being finished.**
+3. ~~The node-drop test (CLAUDE.md item 2)~~ **DROPPED by user decision, 2026-07-26.** The
+   node-drop, camera-fault/reboot and camera-stall-abort paths will not be exercised — research
+   instrument, not a commercial application. Unverified by choice. Do not re-propose.
 
 ### 1.11 The enclosure exists — and it overturns §1.9's curve (2026-07-26, later)
 
