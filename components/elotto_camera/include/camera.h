@@ -38,6 +38,44 @@ esp_err_t camera_init(void);
 bool camera_is_ready(void);
 void camera_get_stats(camera_stats_t *out);
 
+/* ── Calibration control (docs/PLAN.md Task 1) ─────────────────────────────
+ *
+ * Everything in camera_stats_t is cumulative since the stream started (or since
+ * the last reset). That is why a reset exists at all: to score a candidate
+ * sensor setting you need the statistics of a WINDOW, and without this a
+ * measurement taken after changing exposure is still dominated by the setting
+ * before it.
+ *
+ * Order for evaluating one candidate:
+ *   camera_set_exposure(e, g)      -> false if the sensor did not latch it
+ *   camera_stats_reset(settle)     -> discard `settle` pairs, empty the ring,
+ *                                     then zero the statistics
+ *   wait for camera_stats_settled()
+ *   ...let bits accumulate...
+ *   camera_get_stats(&s)           -> describes only this window
+ *
+ * Must not run while a measurement is consuming words: the reset empties the
+ * ring, and a session drawing from it would be reading discarded entropy.
+ */
+
+// Discard `settle_pairs` frame pairs (>=1), empty the ring, then zero every
+// entropy statistic and restart the rate clock. Asynchronous: the capture task
+// performs it, so poll camera_stats_settled().
+void camera_stats_reset(int settle_pairs);
+bool camera_stats_settled(void);
+
+// Apply and VERIFY BY READ-BACK. Returns false if the sensor did not take the
+// value — a silently ignored write would make calibration score the previous
+// setting and then "choose" it. exposure 1..0xFFFFF, gain 0..0x3FF.
+bool camera_set_exposure(uint32_t exposure, uint32_t gain);
+void camera_get_exposure(uint32_t *exposure, uint32_t *gain);
+
+// The XOR fold is a *processing* parameter, so calibration may choose it too:
+// it halves the bit rate to square away the raw LSB bias, so a setting whose
+// raw bias already passes is worth twice the stream. Kconfig sets the default.
+void camera_set_xor_fold(bool on);
+bool camera_get_xor_fold(void);
+
 // Priority of the extraction task created by camera_init().
 #define ELOTTO_CAM_TASK_PRIO 4
 

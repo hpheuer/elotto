@@ -90,8 +90,9 @@ differed at identical settings, and bias tracked light level.
 But more exposure → longer frame time → fewer frames per second → **lower Mbit/s**. So "maximum"
 (rate) and "best" (quality) are in direct tension and a single number cannot maximise both.
 
-**Proposed objective, quality-first:** among the settings that pass the quality gates, pick the
-one with the highest sustained Mbit/s.
+**DECIDED (user, 2026-07-26): best entropy, not maximum rate.** Among the settings that pass the
+quality gates, pick the one with the highest sustained Mbit/s — rate is the tie-break only, never
+a reason to accept a measurably less uniform stream.
 
 - Hard gates (inherited from the original Phase 0 gate, which these cameras have met before):
   `|bias − 0.5| < 1e-3`, `|autocorr lag 1..4| < 0.01`, per-mini-run σ within 1 ± 0.05,
@@ -100,13 +101,13 @@ one with the highest sustained Mbit/s.
 
 Rationale: the entropy is the instrument. A faster stream that is measurably less uniform buys
 granularity at the cost of the thing being measured, and the project has consistently refused
-that trade (a stalled camera drops the node rather than substituting the TRNG). **This is a
-decision to confirm, not something to infer from the wording.**
+that trade (a stalled camera drops the node rather than substituting the TRNG).
 
-Worth knowing while deciding: `CONFIG_ELOTTO_CAM_XOR_FOLD` is on by default and halves the bit
-rate to square away the raw LSB bias. If calibration can find a setting whose *raw* bias passes
-the gate, the fold could be turned off and the rate would double — a larger win than anything the
-exposure sweep alone will produce. Worth testing during the sweep, not assumed.
+**The XOR fold is in scope** — it is a *processing* parameter, and the task explicitly covers
+"camera or processing parameter". `CONFIG_ELOTTO_CAM_XOR_FOLD` halves the bit rate to square away
+the raw LSB bias, so a setting whose *raw* bias already passes is worth twice the stream — a
+larger win than the exposure sweep alone will produce. It is now a runtime flag
+(`camera_set_xor_fold()`), Kconfig setting only the power-on default, so the sweep can try it.
 
 ### 1.4 Proposed design
 
@@ -141,19 +142,22 @@ dropped after `NODE_MISS_LIMIT`, session continues over √(k−1).
 
 ### 1.5 Consequences that need deciding, not discovering later
 
-1. **Per-loop cost.** A sweep of K settings × T seconds runs at the start of *every* loop, and a
-   loop is currently ~10 min. Ten candidates at 3 s each is 30 s, i.e. ~5 % overhead per loop,
-   which is affordable; a fine sweep is not. Suggested shape: full ladder on loop 0, then on later
-   loops only re-verify the current setting against the gates and step one notch if it has
-   drifted. That honours "at the beginning of each loop" while keeping the cost bounded.
-2. **⚠ Re-tuning between loops changes the instrument mid-session.** Loop 1 and loop 2 would be
-   measured with different sensor settings. This is a milder version of the thing the abort-on-
-   stall policy exists to prevent (never mix entropy sources inside one session, because a
-   session-level flag cannot say which runs were affected). It is probably acceptable —
-   `studentize()` removes each loop's own offset exactly, so a per-loop change is absorbed the way
-   the camera's residual bias already is — but it must be **recorded per loop**, in `LoopStat` and
-   in `/loops`, so any effect is attributable to the setting that produced it. Do not ship the
-   re-tune without the record.
+1. **Per-loop cost — DECIDED: full sweep every loop.** A sweep of K settings × T seconds runs at
+   the start of *every* loop, and a loop is ~10 min; ten candidates at 3 s each is ~30 s, about
+   5 % overhead. The reason for the full sweep rather than a cheap re-verify is physical: the best
+   setting is not assumed constant. Temperature drifts over a session, and the achievable window
+   was already measured moving 1.75× across a day at fixed settings — so a sweep that re-derives
+   the optimum each loop is the point, not overhead to be optimised away. Keep the ladder coarse
+   enough that the cost stays near 5 %.
+2. **Different sensor settings per loop are ACCEPTED (user, 2026-07-26).** Loop 1 and loop 2 may
+   be measured at different exposures. This is deliberate: re-deriving the optimum each loop is
+   what tracks thermal drift. It is safe for the statistics because `studentize()` removes each
+   loop's own offset exactly, the same mechanism that already absorbs the camera's residual bias.
+   It is **not** the same as mixing entropy sources mid-session — the source stays the camera
+   throughout; only its operating point moves.
+   Still mandatory: **record the chosen settings per loop** in `LoopStat` and `/loops`, so any
+   effect stays attributable to the setting that produced it. Do not ship the re-tune without the
+   record — a per-loop change nobody logged is indistinguishable from drift in the data.
 3. **Exposure changes the bit rate, and the rate sets the run window.** Per-run wall time is the
    max over nodes, so a slave that calibrates to a slower setting slows every run for everyone.
    And the window is already unstable (±35 % across a day at a fixed segment count), so
@@ -181,13 +185,44 @@ dropped after `NODE_MISS_LIMIT`, session continues over √(k−1).
 - `loop_sigma` ≈ 1 and the pairwise matrix stays clean on a calibrated multi-loop session — the
   retune must not disturb the statistics, which is the one way this could do real damage.
 
-### 1.7 Open questions for the user
+### 1.7 Decisions (settled 2026-07-26)
 
-1. **Confirm the objective** in §1.3: quality gates first, rate only as tie-break. The alternative
-   reading of "maximum random data stream" is rate-first, which would trade away uniformity.
-2. **Full sweep every loop, or full on loop 0 and a cheap re-verify afterwards?** (§1.5.1)
-3. **Is the XOR-fold in scope?** Turning it off doubles the rate if raw bias passes, and
-   calibration is the natural place to find out.
+1. **Objective: best entropy, not maximum rate.** Quality gates first, rate as tie-break only.
+2. **Full sweep at the start of every loop.** Camera *and* processing parameters may need
+   re-deriving; temperature drift is expected.
+3. **The XOR fold is in scope** as a processing parameter.
+4. **Different settings per loop are fine**, provided they are recorded per loop.
+
+### 1.8 Implementation status
+
+**Done — the foundation from §1.2, in the shared `elotto_camera` component (both ends get it):**
+
+- `camera_stats_reset(settle_pairs)` / `camera_stats_settled()` — discards `settle_pairs` frame
+  pairs, empties the ring, then zeroes every entropy accumulator and restarts the rate clock, so
+  `camera_get_stats()` describes only the window that starts now. Performed by the capture task
+  itself, so it cannot race the producer. Health counters (`ring_drops`, `consumer_waits`,
+  `stalls`) are deliberately left cumulative — other code reads them as lifetime totals.
+  This also fixes the trap noted in CLAUDE.md: with a reset per loop, `mbit_s` and `bias` become
+  per-window figures instead of misleading lifetime averages.
+- `camera_set_exposure(exposure, gain)` — applies and **verifies by read-back**, returning false
+  if the sensor did not latch it. Without this a silently ignored write would make the sweep
+  score the previous setting and then "choose" it.
+- `camera_get_exposure()`.
+- `camera_set_xor_fold()` / `camera_get_xor_fold()` — the fold became a runtime flag
+  (was `#if CONFIG_ELOTTO_CAM_XOR_FOLD` inside the hot loop); Kconfig now only sets the
+  power-on default.
+
+Both projects build. Nothing is wired into a session yet — the API exists, unused.
+
+**Next, in order:**
+
+1. `camera_calibrate(budget_ms, result*)` in the shared component: the ladder sweep, scoring and
+   gate check described in §1.4. Shared, so master and slave run byte-identical logic.
+2. Wire it in: new `K<budget_ms>` command → `OK:<exposure>,<gain>,<fold>,<bias>,<mbit_s>`;
+   master calls its own `camera_calibrate()` locally while the broadcast is in flight, then waits
+   for every ack, exactly as `slave_baseline_start()`/`slave_baseline_wait()` already do.
+3. Record chosen settings per loop in `LoopStat` + `/loops` (§1.5.2 — mandatory, not optional).
+4. Publish per-node settings in `/status` so the UI can show what each node chose.
 
 ---
 

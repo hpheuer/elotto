@@ -182,10 +182,22 @@ static void accumulate_pixel_level(const uint8_t *frame, uint32_t n)
 // reuses a or b as the other side of the next pair.
 static uint32_t s_bitacc = 0;
 static int      s_bitacc_n = 0;
-#if CONFIG_ELOTTO_CAM_XOR_FOLD
 static uint32_t s_fold_pending = 0;
 static bool     s_fold_have = false;
+static volatile bool s_xor_fold =
+#if CONFIG_ELOTTO_CAM_XOR_FOLD
+    true;
+#else
+    false;
 #endif
+
+/* Frame pairs the capture task must throw away before a measurement window
+ * opens. After an exposure change the driver still holds frames captured under
+ * the OLD setting, and the ring still holds words extracted from them, so a
+ * window opened immediately would score a blend of two settings. Set by
+ * camera_stats_reset(); the capture task counts it down and zeroes the
+ * statistics when it reaches 0, so the window starts clean. */
+static volatile int s_settle_pairs = 0;
 
 static void diff_and_extract(const uint8_t *a, const uint8_t *b, uint32_t n)
 {
@@ -197,18 +209,23 @@ static void diff_and_extract(const uint8_t *a, const uint8_t *b, uint32_t n)
         if (d == 0) zeros++;
         uint32_t bit = d & 1u;
 
-#if CONFIG_ELOTTO_CAM_XOR_FOLD
-        // Adjacent pixels are different Bayer channels, so folding them also
-        // averages out per-channel LSB structure rather than just squaring a
-        // single channel's bias.
-        if (!s_fold_have) {
-            s_fold_pending = bit;
-            s_fold_have = true;
-            continue;
+        // Runtime, not #if: the XOR fold is a *processing* parameter the
+        // per-loop calibration is allowed to choose (PLAN.md Task 1). It halves
+        // the rate to square away the raw LSB bias, so if a calibrated exposure
+        // makes the raw bias pass on its own, turning the fold off doubles the
+        // stream. Kconfig still sets the power-on default.
+        if (s_xor_fold) {
+            // Adjacent pixels are different Bayer channels, so folding them also
+            // averages out per-channel LSB structure rather than just squaring a
+            // single channel's bias.
+            if (!s_fold_have) {
+                s_fold_pending = bit;
+                s_fold_have = true;
+                continue;
+            }
+            bit ^= s_fold_pending;
+            s_fold_have = false;
         }
-        bit ^= s_fold_pending;
-        s_fold_have = false;
-#endif
 
         s_bitacc = (s_bitacc << 1) | bit;
         if (++s_bitacc_n == 32) {
@@ -257,6 +274,40 @@ static void publish_stats(void)
     xSemaphoreGive(s_mutex);
 }
 
+/* Zero every accumulator that describes the entropy and restart the rate clock,
+ * so camera_get_stats() from here on describes ONLY the window that starts now.
+ *
+ * This is the prerequisite for calibration, not a convenience. Every statistic
+ * in this file was cumulative since stream start: bias, sigma, autocorrelation,
+ * mean pixel level, zero-diff fraction, and mbit_per_sec (which divided by total
+ * stream time). Measure setting A, switch to B, read again, and the second
+ * number is still mostly A — so no candidate setting could be scored at all.
+ *
+ * The ring is emptied too: it holds words extracted under the previous setting,
+ * and a consumer draining them would be measuring the old configuration.
+ *
+ * Called from the capture task once the settle countdown expires, so it cannot
+ * race the producer. The health counters (ring_drops / consumer_waits / stalls)
+ * are deliberately NOT reset — other code reads them as lifetime totals. */
+static void stats_reset_locked(void)
+{
+    s_bits_extracted = 0; s_ones_count = 0;
+    s_run_ones = 0; s_run_bits = 0;
+    s_z_mean = 0.0; s_z_m2 = 0.0; s_z_n = 0;
+    for (int L = 0; L < 4; L++) { s_autocorr_both1[L] = 0; s_autocorr_pairs[L] = 0; }
+    s_pixel_sum = 0; s_pixel_n = 0;
+    s_zero_diffs = 0; s_diff_n = 0;
+    s_bitacc = 0; s_bitacc_n = 0;
+    s_fold_have = false;                 // a half-folded pair must not straddle
+    s_ring_tail = s_ring_head;           // drop unread old-setting words
+    s_stream_start_us = esp_timer_get_time();
+
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    s_stats.frame_pairs       = 0;
+    s_stats.stuck_frame_count = 0;
+    xSemaphoreGive(s_mutex);
+}
+
 static void camera_task(void *arg)
 {
     // Hold both frames of a pair dequeued at once rather than copying the
@@ -288,6 +339,17 @@ static void camera_task(void *arg)
             have_first = true;
             accumulate_pixel_level(s_bufs[buf.index], s_frame_size);
             continue;               // keep this buffer; do not requeue yet
+        }
+
+        // Settling after a parameter change: throw the pair away rather than
+        // extract from it, then open the window cleanly on the last one.
+        if (s_settle_pairs > 0) {
+            if (--s_settle_pairs == 0) stats_reset_locked();
+            ioctl(s_fd, VIDIOC_QBUF, &first);
+            ioctl(s_fd, VIDIOC_QBUF, &buf);
+            have_first = false;
+            vTaskDelay(1);
+            continue;
         }
 
         diff_and_extract(s_bufs[first.index], s_bufs[buf.index], s_frame_size);
@@ -495,6 +557,61 @@ bool camera_read_word(uint32_t *out)
     s_ring_tail = (s_ring_tail + 1) % RING_WORDS;
     return true;
 }
+
+/* ── Calibration control (PLAN.md Task 1) ─────────────────────────────── */
+
+void camera_stats_reset(int settle_pairs)
+{
+    if (settle_pairs < 1) settle_pairs = 1;
+    s_settle_pairs = settle_pairs;       // capture task resets once it hits 0
+}
+
+bool camera_stats_settled(void)
+{
+    return s_settle_pairs == 0;
+}
+
+/* Apply exposure/gain and CONFIRM by read-back. Writing these registers is not
+ * proof they stuck — the driver rewrites the format array on S_FMT and some
+ * OV5647 revisions latch exposure only via group-hold — and a calibration that
+ * silently failed to apply a setting would score the previous one and "choose"
+ * it. Returns false if the sensor did not take the value. */
+bool camera_set_exposure(uint32_t exposure, uint32_t gain)
+{
+    if (s_fd < 0) return false;
+    if (exposure < 1) exposure = 1;
+    if (exposure > 0xFFFFF) exposure = 0xFFFFF;
+    if (gain > 0x3FF) gain = 0x3FF;
+
+    cam_reg_write(0x3503, 0x03);                       // keep AEC/AGC manual
+    cam_reg_write(0x350a, (gain >> 8) & 0x03);
+    cam_reg_write(0x350b, gain & 0xFF);
+    cam_reg_write(0x3500, (exposure >> 12) & 0x0F);
+    cam_reg_write(0x3501, (exposure >> 4) & 0xFF);
+    cam_reg_write(0x3502, (exposure << 4) & 0xF0);
+
+    uint32_t re = 0, rg = 0;
+    camera_get_exposure(&re, &rg);
+    if (re != exposure || rg != gain) {
+        ESP_LOGW(TAG_CAM, "exposure/gain did not latch: wrote %lu/%lu, read %lu/%lu",
+                 (unsigned long)exposure, (unsigned long)gain,
+                 (unsigned long)re, (unsigned long)rg);
+        return false;
+    }
+    return true;
+}
+
+void camera_get_exposure(uint32_t *exposure, uint32_t *gain)
+{
+    uint32_t e0 = 0, e1 = 0, e2 = 0, g0 = 0, g1 = 0;
+    cam_reg_read(0x3500, &e0); cam_reg_read(0x3501, &e1); cam_reg_read(0x3502, &e2);
+    cam_reg_read(0x350a, &g0); cam_reg_read(0x350b, &g1);
+    if (exposure) *exposure = ((e0 & 0x0F) << 12) | ((e1 & 0xFF) << 4) | ((e2 & 0xF0) >> 4);
+    if (gain)     *gain     = ((g0 & 0x03) << 8) | (g1 & 0xFF);
+}
+
+void camera_set_xor_fold(bool on) { s_xor_fold = on; }
+bool camera_get_xor_fold(void)    { return s_xor_fold; }
 
 void camera_get_stats(camera_stats_t *out)
 {
