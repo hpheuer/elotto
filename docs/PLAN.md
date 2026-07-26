@@ -369,11 +369,192 @@ behaviour of the combined z, not the absolute light level.
 
 **Next, in order:**
 
-1. **Blocked on hardware:** the dark enclosure. Then re-run the sweep to get a bias-vs-exposure
-   curve under controlled light, and re-check the `mean_px` gate against it.
-2. The matched `?cal=0` control, after the enclosure.
+1. ~~**Blocked on hardware:** the dark enclosure.~~ **DONE — §1.11** (built, verified dark, curve
+   re-derived, `mean_px` gate re-checked). Superseded again by **§1.13**, which lit it.
+2. ~~The matched `?cal=0` control, after the enclosure.~~ **NOT DONE — see §1.12.** Arm A ran and
+   is a valid sealed-dark result; arm B died with a reboot; and §1.13 then changed the hardware,
+   so **both** arms must be re-run. Blocked on: lighting the three slaves, and restoring the
+   master to USB power.
 3. The node-drop test (CLAUDE.md item 2) — still the only untested safety path, now joined by
-   the camera-fault/reboot path added the same day.
+   the camera-fault/reboot path added the same day. **Light-independent, so it can be done while
+   the optics are being finished.**
+
+### 1.11 The enclosure exists — and it overturns §1.9's curve (2026-07-26, later)
+
+A LEGO dark box now covers all four cameras on the bench. Measured on firmware `95ffe4a`; all
+four nodes were reflashed first, because the master had been running `af20f90-dirty`, which
+pre-dates the two §1.10 fixes — one of which is exactly the sweep's bias reporting.
+
+**Verifying the enclosure — the flatness, not any single reading, is the proof:**
+
+| exposure | 4 | 8 | 16 | 32 | 64 | 128 | 256 | 512 |
+|---|---|---|---|---|---|---|---|---|
+| `mean_px` bench (§1.9) | 2.6 | 3.3 | 4.9 | 8.6 | 16.9 | 33.8 | 68.6 | 140.8 |
+| `mean_px` enclosed | 3.06 | 3.09 | 3.15 | 3.25 | 3.47 | 3.90 | 3.20 | 3.34 |
+
+A **128× change in integration time moves `mean_px` by 1.27×**, where on the bench it moved 54×.
+The residual ≈3.1 is the sensor's exposure-independent black level plus read noise, not light.
+**The enclosure is dark.** (A single reading would not have shown this: `mean_px` at exposure 16
+read 3.52 idle vs 4.89 in the morning bench sweep — only 1.4× apart, which on its own looks like
+a partial enclosure. The exposure sweep is what separates offset from light.)
+
+**1. §1.9's bias-vs-exposure curve does not survive, because it was largely a curve in light.**
+Enclosed, bias is **U-shaped with a shallow optimum at 64–128**, degrading at *both* ends:
+
+| exposure | 4 | 8 | 16 | 32 | 64 | 128 | 256 | 512 |
+|---|---|---|---|---|---|---|---|---|
+| bias − 0.5 | −1.34e-3 | −1.21e-3 | −1.14e-3 | −1.06e-3 | −5.8e-4 | **−4.6e-4** | −2.06e-3 | −2.32e-3 |
+| `zero_diff` | 16.1 % | 16.0 % | 15.7 % | 15.2 % | 14.4 % | 13.1 % | 15.8 % | 15.5 % |
+| verdict | BIAS | BIAS | BIAS | BIAS | pass | **pass — chosen** | BIAS | BIAS |
+
+The high-exposure failures can no longer be blamed on a light floor — `mean_px` is 3.2–3.3 there.
+Only 64 and 128 pass; every other rung fails BIAS (1e-3). SE(bias) at these window sizes is
+≈1.7e-4, so −1.2e-3 is ≈7 σ: the failures are real, not sampling noise. Autocorrelation is a
+non-issue throughout, 0.0002–0.0010 against a 0.01 tolerance — passing by 10×.
+
+**2. The `mean_px < 64` leak gate is now entirely non-binding** — 16.4× headroom at the worst
+rung, where on the bench it was *the* binding constraint on the master's ladder. **BIAS is now the
+sole binding gate.** The threshold also no longer does the job it was chosen for: at 64 it would
+not notice the room lights until the box was practically open. Re-derived recommendation: with a
+dark floor of 3.1–3.9, **8.0** keeps ≈2× headroom over the floor and would catch a leak an order
+of magnitude earlier. **Not applied** — changing a gate constant is a decision, not a measurement.
+
+**3. The enclosure bought stability and cost raw LSB uniformity.** At exposure 128, `zero_diff`
+went 5.1 % (bench) → 13.1 % (enclosed) and the best achievable bias went −7.8e-5 → −4.6e-4.
+Photon shot noise was doing useful whitening work; without photons the LSB is driven by a smaller
+read-noise distribution, more pixels land on the same quantisation level, and the XOR fold carries
+more of the load. **The source is now predominantly sensor read/thermal noise rather than photon
+shot noise.** That is consistent with the "dark-frame" design as written, but the proportions have
+changed, and claims about *photon* entropy should now say so. Both are physical; they are not the
+same physics.
+
+Other results: all four nodes certified (`cam_cal=1`), choosing **128 / 32 / 64 / 512** — still
+different per node, still by design. Per-node bias 0.499545 / 0.499111 / 0.500000 / 0.499970, all
+inside 1e-3. Sweep cost 25.0 s. Step 0 against the ladder's own 16 rung: bias −1.23e-3 vs
+−1.14e-3, `mean_px` 3.14 vs 3.15 — the `camera_stats_reset()` proof holds again.
+
+### 1.12 The matched `?cal=0` control (2026-07-26)
+
+⚠ §1.10's calibrated 10-loop session **cannot serve as the control's comparison arm** — it ran in
+bench light, which §1.11 shows the enclosure invalidates. The control therefore needs a *fresh
+calibrated arm under the enclosure*: two sessions, not one. Both arms are 5 loops × 430 runs
+Eurojackpot, 4 nodes, **unattended** (no `?focus=`), run back to back so the only difference
+between them is `cal=30000` vs `cal=0`. Unattended on both sides keeps the pair internally valid
+per the attended/unattended pooling rule; it does weaken comparability to §1.10, which ran with a
+live display, and the 5-loop geometry is deliberately not §1.10's 10-loop one.
+
+**Arm A (calibrated, sealed dark, 5 × 430) — COMPLETE and valid for its conditions:**
+
+| loop | 1 | 2 | 3 | 4 | 5 |
+|---|---|---|---|---|---|
+| σ | 1.1526 | 1.0588 | 1.0584 | 1.0240 | 1.1038 |
+
+**Mean σ = 1.0795 ± 0.0222 — 3.6 SE above unity.** §1.10 (open bench) was 1.015 ± 0.012, consistent
+with 1; the difference is 0.065 ± 0.025, i.e. **2.6 SE. Sealing the box made σ significantly worse.**
+Worst pair 0-1 (master↔.155) r = +0.0630, |r|√n = **2.92** over 2150 runs — under the threshold of
+3, so it never flagged, while σ went to 1.15. §1.10's worst was 0.95 over twice the runs.
+
+Per-loop drift of the raw offset, regressed on loop index (computed by hand — `DRIFT_MIN_LOOPS` is
+6, so a 5-loop session publishes nothing):
+
+| node | slope (z/loop) | t (3 df) |
+|---|---|---|
+| master | **−0.334** | **−4.75** |
+| .155 | −0.502 | −2.19 |
+| .103 | −0.024 | −1.37 |
+| .145 | +0.036 | +0.67 |
+
+Only the master is significant (crit. 3.18 at 5 %); it walks +0.97 → −0.41 over 70 min, against
+§1.10's −0.0054 z/loop at t = −0.20. Dropping loop 3 leaves the slope identical and raises |t| to
+12, so it is not a single-point artifact. Loop 1 is the worst loop (σ 1.1526) and decomposes
+exactly: 49 % of the excess variance is .155's own over-dispersion (σ 1.2798 at exposure 128,
+which per-loop calibration then moved to 64, dropping it to 1.0253), 49 % is inter-node
+correlation, 2 % the other nodes.
+
+**The correlation is NOT rail-borne**, and arm A is the only session that can say so, because it
+ran with the master still on USB and the three slaves on PoE:
+
+| pairs | r | mean |
+|---|---|---|
+| master ↔ slaves (0-1, 0-2, 0-3) | +0.0630, +0.0142, −0.0095 | **+0.023** |
+| slave ↔ slave (1-2, 1-3, 2-3) | +0.0018, +0.0287, +0.0418 | **+0.024** |
+
+Identical means, and the largest single pair involves the node on the *isolated* rail. Combined
+with the master's drift, the best reading is **thermal**: four self-heating boards sealed in a box
+with no airflow. The enclosure traded a light confound for a thermal one.
+
+**Arm B (`cal=0` control) — VOID.** The master rebooted mid-session while the LED was being
+fitted (USB unplugged), taking the session with it. Nothing to salvage.
+
+⚠ **Arm A is now also void as half of a matched pair** — not because it is wrong, but because it
+measured a sealed-dark enclosure, and §1.13 changed the hardware. Both arms must be re-run under
+the final lighting and power topology.
+
+### 1.13 Lighting the enclosure (2026-07-26, evening)
+
+§1.11 concluded the box was dark, which cost raw LSB uniformity, and §1.12 found sealing it cost σ
+as well. The fix is **controlled light, which is what §1.9's "under controlled light" always meant
+and is not the same as darkness.** An LED was added to the master. Three failure modes were found
+before it worked, and the order matters:
+
+**1. LED on the ESP's VSYS pin, PWM-dimmed — catastrophic, and the mechanism is *conducted*, not
+optical.** Bias went to −4.33e-3 (4× worse than darkness, 11× worse than open bench), σ 1.05–1.07,
+and **0 of 9 rungs certified**. The initial diagnosis — PWM chopping the light so consecutive
+frames see different illumination, breaking `f[2k+1] − f[2k]` — was **wrong**: `mean_px` was
+2.4–3.5 throughout, i.e. there was never enough light to chop. Moving the LED to its own supply
+restored 8 of 9 rungs *while the light level barely changed*. **The damage was PWM current on the
+rail feeding the sensor's analog supply.** Never power illumination from a node's VSYS.
+
+**2. Too dim to measure.** With a clean supply the LED's contribution was still not distinguishable
+from zero: `mean_px` stayed flat at 3.3–4.1 across the ladder (1.25×, the dark signature), and at
+exposure 128 read *lower* than sealed dark. Sweep-to-sweep variation is the same size as the
+signal at that level. Needed ~35–95× more light, not the 5–8× first estimated from a `/diag`
+reading that was contaminated by the VSYS window.
+
+**3. Too bright.** `mean_px` 159 at exposure 256, `zero_diff` **up** to 20.4 % and σ to 6.6 —
+saturation, not noise: clipped pixels do not change between frames, so they diff to zero.
+
+**Final master setting (verified):** light stable to **1.0 % over 56 s** (15.48–15.64), no flicker.
+LED output falls ~12 % over the first minutes as the junction warms — let it settle before
+measuring.
+
+| exposure | `mean_px` | bias − 0.5 | `zero_diff` | σ | autocorr | verdict |
+|---|---|---|---|---|---|---|
+| 4 | 5.6 | −1.59e-3 | 14.6 % | 1.005 | 0.0004 | BIAS |
+| 8 | 8.7 | −1.06e-3 | 11.8 % | 1.002 | 0.0007 | BIAS |
+| **16** | **15.6** | **−3.7e-4** | **9.2 %** | 0.996 | 0.0004 | **chosen** |
+| 32 | 32.9 | −2.1e-4 | 6.6 % | 0.994 | 0.0004 | passes |
+| 64 | 68.7 | **−4.8e-5** | 5.9 % | 0.998 | 0.0009 | **LIGHT — by 7 %** |
+| 128 | 118.6 | −8.09e-3 | 11.4 % | 1.906 | 0.0097 | saturating |
+| 256 | 165.3 | −4.44e-2 | 23.6 % | 6.314 | 0.0887 | saturating |
+| 512 | 207.9 | −8.37e-2 | 37.7 % | 8.937 | 0.1661 | saturating |
+
+`mean_px` now spans 25.7× across the ladder where sealed-dark gave 1.27× — photons are reaching
+the sensor and shot-noise whitening is back (`zero_diff` 9.2 % at exposure 16 beats the open
+bench's 10.8 %). **This is the best sustained state the master has been in.**
+
+**Two software policies now cost a factor of 7 in bias, and neither is physics:**
+
+- **The `mean_px < 64` gate excludes the best rung.** Exposure 64 measures bias −4.8e-5 — matching
+  §1.9's open-bench best — with σ 0.998 and autocorr 0.0009, no quality failure at all. It is
+  rejected on light level alone, by 7 %. The gate was written when *all* light was an accidental
+  leak; with deliberate illumination its semantics have changed. True saturation onset lies
+  between 68.7 (clean) and 118.6 (σ 1.91). ⚠ Still **not changed** — a decision, not a measurement.
+- **Selection takes the *fastest* passing rung, which is degenerate.** §1.10 established the bit
+  rate is CPU-bound; the sweep measures 3.217–3.293 Mbit/s across exposure 4→512, a 2.4 % spread,
+  so the tie-break among passers is noise. It picked exposure 16 (bias −3.7e-4) over 32
+  (−2.1e-4). Across arm A the master wandered 128 → 256 → **8** → 128 → 128 for the same reason,
+  once choosing a rung a standalone sweep had *failed*. **Recommendation: select the lowest
+  |bias − 0.5| among passing candidates** ([camera.c:836](../components/elotto_camera/camera.c#L836)).
+  Note that dimming the light cannot recover this on its own — selection always sits at the dim
+  end of the passing range, wherever that range is put.
+
+⚠ **Hardware state at the end of this session — both must be resolved before the control pair:**
+1. **Only the master is lit.** The three slaves are still sealed dark; the array is asymmetric.
+2. **All four nodes are now on PoE.** The master was moved off USB while the LED was fitted, so the
+   Risk 1 control described in CLAUDE.md **no longer exists** and inter-node correlation is
+   currently unattributable. Arm A's rail-vs-thermal finding above was only possible *because*
+   that split was intact. Put the master back on USB.
 
 ---
 

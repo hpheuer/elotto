@@ -36,21 +36,56 @@
 | slave1 | 192.168.178.145 (static lease) | e8:f6:0a:e0:ce:a8 | — | factory = updater, ota_0 = slave app |
 | slave2 | 192.168.178.155 | e8:f6:0a:e0:c7:a1 | COM9 | factory = updater, ota_0 = slave app |
 
-⚠ **NO DARK ENCLOSURE YET (2026-07-26).** All four cameras sit open on the bench. The master's
-`mean_px` at a fixed exposure of 16 read 4.89 in the morning and 10.34 in the afternoon — its
-light level roughly doubled over one day, which is why per-loop calibration walked its chosen
-exposure down from 64 to 4. The calibration tracking that is the system working as intended, but
-**any absolute-light number is provisional until the enclosure exists** (user is building one):
-the chosen exposures, the bias-vs-exposure curve in `docs/PLAN.md` §1.9, and the `mean_px < 64`
-leak threshold all have to be re-derived afterwards. The matched `?cal=0` control is deliberately
-deferred for the same reason. **σ and the pairwise independence results are NOT affected** —
-they concern the statistical behaviour of the combined z, not the light level.
+✅ **DARK ENCLOSURE EXISTS (2026-07-26, later).** A LEGO dark box covers all four cameras. It is
+verified dark by *flatness*, not by any single reading: across exposure 4→512 the master's
+`mean_px` moves only 3.06→3.90 (**1.27× over a 128× integration range**), where open on the bench
+it moved 2.6→140.8 (54×). The residual ≈3.1 is sensor black level plus read noise, not light.
+Do not judge the enclosure by one `mean_px` — at exposure 16 it reads 3.52 enclosed vs 4.89 on the
+morning bench, only 1.4× apart, which alone looks like a *partial* box. Sweep, don't spot-check.
+
+Sealed dark it measured badly, so **the box is now LIT** (`docs/PLAN.md` §1.13). Darkness cost
+raw LSB uniformity — photon shot noise had been doing real whitening work — and sealing it cost σ
+as well. **"Controlled light" was always the goal; it is not the same as darkness.**
+
+**Final master optics (2026-07-26 evening):** one LED on its **own supply**, steady DC, stable to
+1.0 % over a minute. Chosen exposure 16 at `mean_px` 15.6, bias **−3.3e-4**, σ 1.005, autocorr
+0.0005, `zero_diff` 9.2 % — the best sustained state the master has been in, and `zero_diff` now
+beats the old open bench. `mean_px` spans 25.7× across the ladder (sealed dark gave 1.27×).
+
+⚠ **NEVER power illumination from a node's VSYS pin.** An LED on VSYS with PWM dimming produced
+bias −4.33e-3 and certified **0 of 9** rungs. The mechanism is **conducted, not optical** — PWM
+current on the rail feeding the sensor's analog supply. It was misdiagnosed as optical flicker
+first; the giveaway is that a separate supply restored 8 of 9 rungs *while `mean_px` barely
+changed*. Also: LED output falls ~12 % as the junction warms, so let it settle before measuring.
+
+Two software policies now cost a factor of 7 in bias, and neither is physics — see §1.13:
+- **The `mean_px < 64` gate excludes the best rung.** Exposure 64 gives bias −4.8e-5 (matching the
+  §1.9 open-bench best) with σ 0.998, rejected on light level alone by 7 %. Real saturation starts
+  between `mean_px` 68.7 (clean) and 118.6 (σ 1.91). ⚠ **Not changed** — a decision, not a
+  measurement. The earlier suggestion to *lower* it to 8.0 applied to the dark box and is dead.
+- **Calibration selects the *fastest* passing rung, which is degenerate** now that §1.10 has shown
+  the bit rate is CPU-bound (2.4 % spread across exposure 4→512). It should select **lowest
+  |bias − 0.5|**. Dimming cannot fix this: selection always sits at the dim end of the passing range.
+
+⚠ **Hardware state, unresolved:** only the **master** is lit — the three slaves are still sealed
+dark, so the array is asymmetric — and **all four nodes are now on PoE**, so the Risk 1 control
+below no longer exists and inter-node correlation is currently unattributable.
+
+**σ and the pairwise independence results are not affected by light *level*** — they concern the
+statistical behaviour of the combined z. They *were* affected by sealing the box: see §1.12, where
+the sealed-dark 5-loop arm ran σ = 1.0795 ± 0.0222 against the open bench's 1.015 ± 0.012.
 
 All four boards are provisioned, each with its own OV5647, and all four run simultaneously:
 **the three slaves take PoE directly from one switch** (no splitters — PLAN_NETWORK Risk 2
 resolved), while the **master stays on separate USB power on purpose**. That split is not
 convenience, it is the Risk 1 control: if the three PoE nodes correlate with each other but not
 with the master, the shared rail is the mechanism. Keep it that way.
+
+⚠ **BROKEN as of 2026-07-26 evening: all four nodes are on PoE.** The master came off USB while
+its LED was fitted. Until it goes back, there is no node on an independent rail and any inter-node
+correlation is **unattributable**. This is not academic — it is exactly the control that let §1.12
+show arm A's correlation was *not* rail-borne (master↔slave pairs mean +0.023 vs slave↔slave
++0.024, with the largest single pair on the isolated node). Restore it before the next session.
 
 **COM ports are not stable** — the same slave has enumerated as COM6, COM8 and COM9. Always
 list the ports before an `erase-flash` rather than trusting a number written down here; a wrong
@@ -197,7 +232,9 @@ passes the quality gates; if none passes it keeps the one it had and reports `U`
 (≈4.4 % of a 10 min loop). `POST /start?cal=0` turns it off — that is the matched control.
 `GET /calibrate` serves the master's whole last sweep, per candidate, with the gate each failed.
 **Nodes land on different exposures on purpose** (different physical sensors, different light);
-what they must still share is the segment count, which travels on the wire.
+what they must still share is the segment count, which travels on the wire. Enclosed, they still
+spread **128 / 32 / 64 / 512** inside one dark box — so the spread is the *sensors* differing, not
+the light, and it is not something the enclosure was ever going to remove.
 The chosen setting is recorded per loop in `/loops` — mandatory, because a per-loop change nobody
 logged is indistinguishable from drift in the data.
 
@@ -272,15 +309,25 @@ is gone. Those are the cases OTA cannot repair — the P4 has no
    **Not yet proof the ×√n gain is established**: the mechanism behind the original growth was
    never identified, so a differing condition rather than a fix is still possible. But do not
    plan around the old numbers. See `docs/PLAN.md` §1.10.
+   ⚠ **PARTIALLY BACK under the sealed-dark enclosure (§1.12).** A 5-loop arm ran σ =
+   **1.0795 ± 0.0222** (3.6 SE above unity) with worst pair |r|√n = **2.92** — under the flag
+   threshold of 3, so the pairwise check stayed silent while σ went to 1.15. Not the original
+   *growth* pattern (it does not climb monotonically), and it is specific to the sealed box: the
+   master's raw offset drifted −0.334 z/loop at t = −4.75, against −0.0054 at t = −0.20 on the
+   open bench. Best reading is **thermal**, not electrical — see §1.12's rail test. Unresolved
+   under the now-lit box, which has not been measured over a full session.
 2. **Node-drop test never run** (PLAN_NETWORK Phase D gate): unplug a node mid-run, expect
    degrade to √3 with a UI flag and no crash. The code path exists and is untested. **Now joined
    by the camera-fault/reboot path** (`E:` reply → drop → `R` → `esp_restart()`), added
    2026-07-26 and likewise never observed firing.
 3. **Camera bias degrades under sustained load** — `.103` went from 0.499307 idle to 0.497884
    after a session, outside PLAN_4NODE Phase 0's 1e-3 gate. Was thought to share a cause with
-   (1); with (1) gone that link is dead. **Do not chase this until the cameras are enclosed**:
-   per-loop calibration now resets the statistics every loop, so the numbers in `/loops` are
-   per-window rather than lifetime, and every 10-loop per-node bias sat within 1e-3 of 0.5.
+   (1); with (1) gone that link is dead. Per-loop calibration now resets the statistics every
+   loop, so the numbers in `/loops` are per-window rather than lifetime, and every 10-loop
+   per-node bias sat within 1e-3 of 0.5. **The enclosure now exists (see above), so the light
+   confound is gone and this is finally chaseable** — but note §1.11: in the dark the *level* of
+   bias is worse everywhere (best −4.6e-4 vs −7.8e-5 on the bench), so a fresh idle-vs-loaded
+   baseline has to be taken under the enclosure before any load effect can be read off.
 
 4. ~~**The Focus run window drifts.**~~ **DOES NOT REPRODUCE (2026-07-26).** Over the 10-loop
    calibrated session the window held **1102.0–1115.1 ms (spread 1.2 %)** and the gap
@@ -299,6 +346,10 @@ is gone. Those are the cases OTA cannot repair — the P4 has no
    exposure, and the Kconfig default of 16 lines sat an order of magnitude worse than 128
    (−3.8e-4 vs −7.8e-5 in a clean 8 Mbit window). Per-loop calibration now moves it off 16. That
    does not explain the *load* dependence in item 3, only the level.
+   ⚠ **Revised under the enclosure (§1.11): "a steep function of exposure" was a function of
+   LIGHT.** In the dark the curve is shallow and U-shaped — 16 gives −1.14e-3 and the best rung
+   (128) gives −4.6e-4, a factor of 2.5, not the order of magnitude seen on the bench. Calibration
+   still moves the master off 16 and still helps; it just helps less than this item claims.
 
 Also long-open: the **camera-stall abort has never been observed firing** (PLAN_4NODE's
 "Remaining work" item 1) — the only safety claim in these documents that has only been reasoned
