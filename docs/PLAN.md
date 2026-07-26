@@ -232,3 +232,11 @@ Planning/architecture: Fable/Opus — this document is the contract. Implementat
 task per session. Escalate back if a gate fails twice or a decision above is missing. Commit at
 every green gate; the master and slave repos must be committed and flashed together whenever the
 shared `components/` or the wire protocol changes.
+
+**Session prompt:**
+
+> Continue Task 1 of docs/PLAN.md — camera calibration. §1.8 lists what is already built and the
+> next steps in order. Everything you need is in that file and CLAUDE.md.
+
+Start every session by re-reading §1.8 and updating it at the end, so the next one never has to
+re-derive the state. The four decisions in §1.7 are settled — do not re-litigate them.
