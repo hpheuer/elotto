@@ -207,16 +207,13 @@ master additionally serves the web UI and drives the session.
 | slave2 | 192.168.178.155 | PoE | GCP + UDP command loop |
 
 - **Cameras:** one OV5647 per node on its own MIPI-CSI connector (SCCB on GPIO8/7, XCLK
-  unwired — the RPi-style module clocks itself), inside a shared **enclosure with its own
-  constant LED illumination**. **Never shared between nodes** — a shared source would break
-  independence by construction.
-- **Lighting:** the enclosure was originally sealed *dark*, which measurably hurt the statistics
-  (see [`docs/PLAN.md`](docs/PLAN.md) §1.11–1.13): without photons the noise is read-noise
-  dominated, bias worsens and per-run σ rose to 1.08. It is now deliberately **lit** to a working
-  level (`mean_pixel` ≈ 15–40 per node), which restored σ to 1.004. Two hard-won rules: the LED
-  runs on its **own supply**, never a node's VSYS pin — PWM current on the rail feeding the
-  sensor's analog supply destroyed the bias (−4.3e-3, nothing certified) — and it must be
-  **constant current, not PWM**.
+  unwired — the RPi-style module clocks itself), in a shared enclosure where they **see some
+  ambient, constant light** (`mean_pixel` ≈ 15–40). **Never shared between nodes** — a shared
+  source would break independence by construction.
+- **Lighting:** constant light, not darkness — a sealed dark box measurably hurt the statistics
+  (per-run σ 1.08 vs 1.00 lit; see [`docs/PLAN.md`](docs/PLAN.md) §1.11–1.13). Two hard rules: the
+  LED needs its **own supply** — never a node's VSYS pin — and it must be **constant current, not
+  PWM**. Both were learned the hard way.
 - **Power:** all four boards take PoE directly, no splitters. ⚠ The master previously ran on
   separate USB power as the control for whether a shared rail correlates the nodes
   (`PLAN_NETWORK` Risk 1). That split has been **retired by decision**, so inter-node correlation
@@ -331,15 +328,10 @@ never repeats in place.**
 
 ## Camera Entropy (OV5647 dark frame)
 
-> ⚠ **Partly historical.** The *technique* below is current — non-overlapping frame pairs, diff,
-> LSB, XOR-fold, ring buffer — but two things have changed and the measured numbers in this section
-> predate both. **(1)** The camera is now the **only** source: there is no `?src=`, no Entropy
-> selector and no TRNG. **(2)** The enclosure is **lit**, not dark. Sealing it dark was measured
-> and rejected — without photons the noise is read-noise dominated, bias worsened ~6× and per-run σ
-> rose to 1.0795 ± 0.0222; lighting it restored σ to 1.0040 ± 0.0144. So "sitting in the dark"
-> below describes an earlier configuration, and every bias/`mean_pixel`/`zero_diff` figure quoted
-> here belongs to it. Current per-node figures live in
-> [`docs/PLAN.md`](docs/PLAN.md) §1.13.
+> ⚠ **Partly historical.** The technique below is current — frame pairs, diff, LSB, XOR-fold, ring
+> buffer. Two things are not: the camera is now the **only** source (no `?src=`, no TRNG), and the
+> **cameras see some ambient, constant light** rather than darkness. Measured figures in this
+> section predate the lighting; current ones are in [`docs/PLAN.md`](docs/PLAN.md) §1.13.
 
 The noise source is an OV5647 camera per node. Design contract:
 [docs/PLAN.md](docs/PLAN.md); the phase-by-phase gate results are in git history

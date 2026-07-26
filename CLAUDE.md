@@ -70,9 +70,21 @@ Two software policies now cost a factor of 7 in bias, and neither is physics —
 ⚠ **Hardware state, unresolved:** the **master and slave1 (.145)** are lit; **slave0 (.103) and
 slave2 (.155) are still sealed dark** (`mean_px` 2.6 and 3.5), so the array is asymmetric.
 
-**σ and the pairwise independence results are not affected by light *level*** — they concern the
-statistical behaviour of the combined z. They *were* affected by sealing the box: see §1.12, where
-the sealed-dark 5-loop arm ran σ = 1.0795 ± 0.0222 against the open bench's 1.015 ± 0.012.
+**σ and the pairwise results ARE affected by sealing the box — and lighting it fixed them.**
+✅ **Task 1's `?cal=0` control is DONE (§1.14).** Two matched 5×430 arms under light:
+`cal=30000` gave σ **1.0040 ± 0.0144**, `cal=0` gave **0.9995 ± 0.0147** — difference **0.22 SE**,
+so **per-loop calibration is statistically neutral**, the one way Task 1 could have done damage.
+
+| | sealed dark (§1.12) | lit (§1.14) |
+|---|---|---|
+| mean per-run σ | 1.0795 ± 0.0222 | **1.0040 ± 0.0144** |
+| worst \|r\|√n | 2.92 | **1.27** |
+| master drift | −0.334 z/loop, t = −4.75 | −0.075 z/loop, t = −2.62 |
+
+Thermal is the best explanation and is still **unproven** — enclosure temperature was never
+measured — but three signatures agree across both conditions. ⚠ Arm A's pairwise matrix was lost by
+starting arm B before capturing `/loops`+`/status`; a new session resets `PairAcc` and `loop_hist`.
+**Capture both at arm completion, before starting anything else.**
 
 All four boards are provisioned, each with its own OV5647, and all four run simultaneously:
 **all four take PoE directly from one switch** (no splitters — PLAN_NETWORK Risk 2 resolved).

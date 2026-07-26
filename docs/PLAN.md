@@ -550,8 +550,9 @@ bench's 10.8 %). **This is the best sustained state the master has been in.**
   end of the passing range, wherever that range is put.
 
 ⚠ **Hardware state at the end of this session:**
-1. **Master and slave1 (.145) are lit; slave0 (.103) and slave2 (.155) are still sealed dark**
-   (`mean_px` 2.6 and 3.5). The array is asymmetric and must be finished before the control pair.
+1. ~~Master and slave1 lit; slave0 and slave2 still dark.~~ **RESOLVED — all four lit**, exposures
+   16 / 16 / 32 / 16 (master / .103 / .145 / .155), `mean_px` 15.5 / 36.8 / 22.0 / 33.0, every node
+   certified with σ within 0.003 of 1.000. See §1.14.
 2. **All four nodes are on PoE, and this is now permanent (user decision, 2026-07-26).** The
    master's separate USB supply — the PLAN_NETWORK Risk 1 control — came off when its LED was
    fitted and **will not be restored; do not re-propose it.** Consequence: inter-node correlation
@@ -559,6 +560,67 @@ bench's 10.8 %). **This is the best sustained state the master has been in.**
    on an independent rail to contrast against. **Arm A above is the only measurement that can ever
    separate them on this rig**, and it says the correlation is *not* rail-borne. It cannot be
    repeated.
+
+### 1.14 The control pair, re-run under light — TASK 1 CONTROL PASSED (2026-07-26, night)
+
+Both arms re-run after §1.13 lit all four cameras. 5 loops × 430 runs each, unattended, back to
+back so both sit in the same thermal state. Entry exposures 16 / 16 / 32 / 16
+(master / .103 / .145 / .155) — `cal=0` does not log them, so they are recorded here.
+
+| loop | 1 | 2 | 3 | 4 | 5 | **mean σ** |
+|---|---|---|---|---|---|---|
+| arm A `cal=30000` | 0.9863 | 1.0102 | 0.9635 | 1.0101 | 1.0500 | **1.0040 ± 0.0144** |
+| arm B `cal=0` | 0.9847 | 0.9706 | 0.9743 | 1.0226 | 1.0451 | **0.9995 ± 0.0147** |
+
+**A − B = +0.0046 ± 0.0206 = 0.22 SE. No detectable difference.** Per-loop camera calibration is
+**statistically neutral** — it adds no variance of its own and removes none. That was the one way
+Task 1 could have done real damage, and it does not. Both arms sit within 0.3 SE of unity, and both
+SDs across loops (0.0322, 0.0328) fall *below* the 0.0341 expected from sampling alone, so neither
+carries a hidden variance component.
+
+| gate | result |
+|---|---|
+| `loop_sigma` ≈ 1 over a calibrated multi-loop session | ✅ 1.0040 ± 0.0144 |
+| matched `?cal=0` control run and compared | ✅ 0.9995 ± 0.0147, difference 0.22 SE |
+| pairwise matrix stays clean | ✅ arm B worst \|r\|√n = **1.27** over 2150 runs (threshold 3) |
+| per-loop cost inside budget | ✅ ~24.2 s/loop |
+| chosen settings in `/loops` | ✅ arm A, all 5 loops |
+| a node that does not answer is dropped | ⬜ never exercised — **dropped by decision**, CLAUDE.md item 2 |
+
+**Lighting the enclosure fixed everything sealing it broke.** Three independent signatures moved
+together, in the same direction:
+
+| | sealed dark (§1.12) | lit (§1.14) |
+|---|---|---|
+| mean per-run σ | 1.0795 ± 0.0222 | **1.0040 ± 0.0144** |
+| worst \|r\|√n | 2.92 | **1.27** |
+| master drift | −0.334 z/loop, t = **−4.75** | **−0.075 z/loop, t = −2.62** |
+
+Arm B's matrix is the cleanest measured on this rig — three of six pairs are *negative*. The
+master's drift is 4.5× smaller and below the |t| > 3 flag; no other node is significant. The
+thermal explanation remains **unproven** — enclosure temperature was never measured — but it now
+has three signatures agreeing across two conditions.
+
+Other results: `net_retries`/`net_lost`/`net_stale` all **0** across both arms, 4/4 nodes
+throughout, no faults, stalls or reboots. Window 1028–1034 ms, gap 354–359 ms against the 350 ms
+constant. `best_z` = 3.184 against an expected max |z| ≈ 3.0 for 430 draws — a null instrument.
+
+⚠ **Arm A's pairwise matrix was lost.** The orchestration started arm B before `/loops` and
+`/status` were captured, and a new session resets `PairAcc` and `loop_hist`. Arm A's five σ values
+and its loops 1–2 per-node detail survive; loops 3–5 per-node data and the whole arm-A matrix do
+not. The σ comparison above is complete, but the *correlation* comparison rests on arm B alone. σ is
+the more sensitive of the two and agrees, so this is inference rather than measurement.
+**Lesson: capture `/loops` and `/status` at arm completion, before starting anything else.**
+
+**Next, in order:**
+1. **Selection criterion** ([camera.c:836](../components/elotto_camera/camera.c#L836)) — switch to
+   lowest |bias − 0.5| among passing candidates. Three independent demonstrations now: the wandering
+   exposures in §1.12, a rung chosen that a standalone sweep had failed, and §1.13's pick of
+   exposure 16 over 32 at double the bias. Do it **before** any further paired session, so both arms
+   share one rule.
+2. **The `mean_px < 64` gate**, which now excludes the best rung (§1.13). Decide deliberately.
+3. **The attended-vs-unattended comparison** — `focus=1` against a matched `focus=0` control, on a
+   statistic chosen *before* looking. This is the actual experiment, and it has never been analysed.
 
 ---
 
