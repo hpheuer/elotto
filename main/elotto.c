@@ -11,6 +11,7 @@
 #include "nvs_flash.h"
 #include "esp_timer.h"
 #include "sensor.h"
+#include "nodes.h"      // slave_probe(), for the UI's node-discovery button
 #include "camera.h"
 #include "elotto_ota.h"
 

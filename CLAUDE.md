@@ -9,7 +9,11 @@
 
 ## Project structure
 - main/elotto.c   – app_main, Ethernet, webserver, HTML/JS UI, /diag + /loops + /focus + /pause
-- main/sensor.c   – noise source, GCP analysis, baseline calibration, node link (UDP), lottery extraction
+- main/sensor.c   – GCP analysis, scoring/pooling, baseline, studentization, drift, publishing
+- main/nodes.c    – **the array**: UDP link, discovery, calibration handshake, per-node health,
+  the drop/reboot policy. Split out of sensor.c 2026-07-27 as a pure move (~520 lines); every
+  static it owns was already used only by the functions that moved with it. `main/nodes.h` is
+  the API. sensor.c reaches the other boards only through it.
 - main/sensor.h   – types and declarations
 - partitions.csv  – **shared** partition table (factory 1 MB + ota_0/ota_1 3 MB on 32 MB flash).
   Referenced by all three projects; a board flashed by one must be updatable by the others.

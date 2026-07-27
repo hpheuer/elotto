@@ -292,8 +292,13 @@ typedef struct {
 
 extern ElottoStatus g_status;
 
-void slave_probe(void);
 void elotto_task(void *pvParam);
+
+/* Administrative randomness only — measurement order, and the link's initial
+ * sequence number. Seeded from the camera once per session, then run forward
+ * arithmetically. It NEVER enters a z-score: spending rate-limited camera
+ * entropy on a shuffle would stall the session for bits nobody measures. */
+uint32_t fast_rng(void);
 
 /* The master's most recent calibration sweep, or NULL if it has never run one.
  * The whole per-candidate table, not just the winner: the Task 1 gate is a

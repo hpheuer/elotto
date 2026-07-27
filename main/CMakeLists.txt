@@ -2,6 +2,7 @@ idf_component_register(
     SRCS
         "elotto.c"
         "sensor.c"
+        "nodes.c"
     INCLUDE_DIRS
         "."
     REQUIRES
