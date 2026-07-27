@@ -613,14 +613,94 @@ the more sensitive of the two and agrees, so this is inference rather than measu
 **Lesson: capture `/loops` and `/status` at arm completion, before starting anything else.**
 
 **Next, in order:**
-1. **Selection criterion** ([camera.c:836](../components/elotto_camera/camera.c#L836)) — switch to
-   lowest |bias − 0.5| among passing candidates. Three independent demonstrations now: the wandering
-   exposures in §1.12, a rung chosen that a standalone sweep had failed, and §1.13's pick of
-   exposure 16 over 32 at double the bias. Do it **before** any further paired session, so both arms
-   share one rule.
-2. **The `mean_px < 64` gate**, which now excludes the best rung (§1.13). Decide deliberately.
+1. ~~**Selection criterion**~~ **DONE (§1.15)** — now lowest |bias − 0.5| among passing candidates.
+2. ~~**The `mean_px < 64` gate**~~ **DONE (§1.15)** — raised to 100.0.
 3. **The attended-vs-unattended comparison** — `focus=1` against a matched `focus=0` control, on a
    statistic chosen *before* looking. This is the actual experiment, and it has never been analysed.
+   ⚠ Deferred by the user, 2026-07-27. Do not start it unasked.
+
+### 1.15 The control pair re-run under the final optics (2026-07-27)
+
+Everything §1.14 measured was superseded at once: the calibration **selection rule** changed
+(lowest |bias − 0.5|, not fastest), the **light gate** rose (`CAL_MAX_MEAN_PX` 64 → 100), the
+**optics** changed (LEDs now fixed to each camera and shielded — master `mean_px` 45.7 at exposure
+16, against §1.13's 15.6), and `main/` was **refactored into four files** with the z-score
+primitive moved into a shared component. So the pair was re-run: 6 loops × 430 runs, Eurojackpot,
+4 nodes, unattended, back to back. 6 loops rather than 5 because `DRIFT_MIN_LOOPS` is 6 — a 5-loop
+session publishes no drift figures at all, which is why §1.12 and §1.14 both had to compute the
+slope by hand.
+
+| loop | 1 | 2 | 3 | 4 | 5 | 6 | **mean σ** |
+|---|---|---|---|---|---|---|---|
+| arm A `cal=30000` | 1.0313 | 0.9903 | 1.0452 | 1.0338 | 0.9608 | 0.9839 | **1.0075 ± 0.0138** |
+| arm B `cal=0` | 1.0055 | 0.9927 | 1.0134 | 0.9745 | **1.4179** | 1.0109 | **1.0691 ± 0.0700** |
+
+**A − B = −0.0616 ± 0.0713 = 0.86 SE.** Excluding arm B's loop 5 (below): B = 0.9994 ± 0.0072 and
+**A − B = +0.0081 ± 0.0156 = 0.52 SE**. Neutral either way, so **the Task 1 conclusion survives the
+new selection rule, the new gate, the new optics and the refactor.**
+
+| gate | arm A | arm B |
+|---|---|---|
+| mean σ within 2 SE of 1 | ✅ 0.55 SE | ✅ 0.99 SE (see caveat) |
+| worst \|r\|·√n < 3 (n = 2580) | ✅ **1.04** | ✅ **0.95** |
+| `net_retries`/`lost`/`stale` | ✅ 0 / 0 / 0 | ✅ 0 / 0 / 0 |
+| faults, stalls, reboots | ✅ none, 4/4 throughout | ✅ none, 4/4 throughout |
+| per-node bias within 1e-3 | ✅ worst .103 at 0.499188 | ⬜ not measurable — `cal=0` never populates `cam_bias` |
+| window / gap | 1027.1 / 348.0 ms | 1027.2 / 348.0 ms |
+
+⚠ **Arm B's σ gate is a weak pass.** It clears 2 SE only because loop 5 inflates its own SE
+five-fold (0.0138 → 0.0700). A single bad loop widens the error bar that judges it, so this gate
+cannot detect a single bad loop *by construction*. Read the per-loop column, not the mean.
+
+**The refactors are clean.** Arm A ran 2580 runs on the split codebase and is statistically
+indistinguishable from §1.14's arm A on the old one:
+
+| | §1.14 arm A (old code) | §1.15 arm A (nodes.c/focus.c/elotto_gcp) |
+|---|---|---|
+| mean σ | 1.0040 ± 0.0144 | 1.0075 ± 0.0138 |
+| worst \|r\|·√n | 1.27 | 1.04 |
+
+**Node .145 lost a loop, and it was NOT correlation.** Arm B loop 5:
+
+| node | master | **.145** | .103 | .155 |
+|---|---|---|---|---|
+| σ | 0.9817 | **2.2673** | 0.9863 | 1.0377 |
+| mean offset | +0.0044 | **+2.0973** | −0.2099 | +0.1084 |
+
+`√(Σσᵢ²/4)` = **1.428** against the observed **1.4179** — the combined excursion is fully accounted
+for by .145's own variance with **no inter-node term**, and the pairwise matrix stayed clean
+(worst 0.95). That is structurally unlike §1.12's sealed-dark result, where correlation supplied
+about half the excess. `.145` held `cam_mbit` 3.417 with zero stalls throughout: the camera kept
+delivering bits at full rate, and it was their *quality* that moved. It partly recovered in loop 6
+(σ 1.0433, offset still +1.1168).
+
+⚠ **Do not conclude that calibration prevented this.** Three reasons: n = 1; the arms are
+**ordered, not randomised**, so B is always the later and warmer one; and arm A had its own
+single-loop anomaly — `.103` at mean offset **+2.3720** in loop 1 — which merely happened to be an
+offset rather than a variance excursion, and studentization removes offsets exactly.
+
+**But the design point is real, and it is a criticism of this experiment, not of the firmware:**
+if per-loop calibration protects anything, it protects the **tail** — rare bad loops — and a
+6-loop comparison of *mean* σ cannot see that. §1.14 and §1.15 both answered "does calibration add
+variance?" (no). Neither has ever asked "does calibration reduce the rate of bad loops?", which
+needs many more loops and a count of excursions, not a mean.
+
+**Drift, published for the first time** (6 loops clears `DRIFT_MIN_LOOPS`):
+
+| arm | slope (z/loop) | t | flagged? |
+|---|---|---|---|
+| A | +0.0208 | 0.59 | no |
+| B | +0.0248 | **3.79** | **yes, \|t\| > 3** |
+
+Near-identical slopes, opposite verdicts — arm A's baseline offsets scatter far more
+(−0.62 … +0.04) than arm B's (−0.19 … +0.08), so the same trend clears significance only in B.
+Both are **positive**, where §1.12's sealed-dark master drifted **−0.334** z/loop. Worth watching,
+not yet worth explaining.
+
+⚠ **Node discovery order is not stable between sessions.** Arm A enumerated
+`self/.103/.145/.155`, arm B `self/.145/.103/.155`. The `nodes[]` index is therefore **not** a node
+identity across sessions, and reading `/loops` with the wrong arm's ordering misattributes
+per-node results to the wrong hardware. Always map through `nodes[].ip`.
 
 ---
 
