@@ -753,6 +753,91 @@ array passed every gate in §1.15, and one node with a lower ceiling costs a sli
 not correctness. ⚠ Note also that the raised `CAL_MAX_MEAN_PX` of 100 is now *binding on the
 master*: its exposure-32 rung fails on light at 104.65 while its σ there is a perfectly good 1.0394.
 
+### 1.17 A 200-loop session, the σ-margin fix, and a failing LED (2026-07-27, evening)
+
+**The run.** 200 loops × 63 combinations, Eurojackpot, attended, 6.46 h. First use of the
+attended pool confirmation: `pool_auto = 0`, pool cut to 7 main + 3 bonus = 63 combinations.
+Operationally spotless — `net 0/0/0`, 4/4 nodes throughout, no faults, stalls or reboots.
+
+**Result: null.** best |z| **2.96** over 63 comparisons, Bonferroni **p = 0.194**. The expected
+largest |z| under chance for 63 comparisons is ≈2.7–2.9. Nothing here.
+
+**Four instrument gates failed**, over the 128 loops `LOOP_HIST` stores:
+
+| gate | result |
+|---|---|
+| mean σ within 2 SE of 1 | ❌ 1.0343 ± 0.0135 = **2.53 SE** high |
+| loop-to-loop spread | ❌ SD **0.1531** vs **0.0891** expected at n = 63 |
+| worst \|r\|·√n < 3 | ❌ **3.31** (.103↔.155) |
+| drift \|t\| < 3 | ❌ **t = −3.86** |
+
+Excess variance is real: √(0.1531² − 0.0891²) = **0.125**.
+
+**It is two nodes, and the other two are textbook clean:**
+
+| node | mean σ | SD | max |
+|---|---|---|---|
+| master | 0.9889 | **0.0973** | 1.2532 |
+| .155 | 0.9907 | **0.0850** | 1.2176 |
+| .103 | 1.0669 | **0.2435** | 2.4282 |
+| .145 | 1.0294 | **0.2126** | 3.0082 |
+
+Expected sampling SD at n = 63 is 0.0891; master and .155 sit exactly on it. The instrument and
+the refactored code are sound.
+
+**§1.16's rung hypothesis is confirmed outright for `.145`:**
+
+| `.145` on | loops | mean σ | SD | max |
+|---|---|---|---|---|
+| exp **16** (good rung) | 36 | 0.9886 | **0.0821** | 1.145 |
+| exp **32** (bad rung) | 91 | 1.0454 | **0.2454** | **3.008** |
+
+On its good rung it is indistinguishable from a healthy node. Every excursion came from exp 32.
+
+⚠ **This REFUTES "per-loop calibration protects the tail"** — the reading §1.15 and §1.16 found
+plausible. Calibration put `.145` on its *bad* rung in **91 of 127 loops (72 %)**. It was not
+protecting; it was selecting the fault. Mechanism: the rule minimised |bias − 0.5| among rungs
+passing the gates, `.145`'s exp-32 sits *on* the σ gate so it passes some sweeps, and when it did
+its bias often measured best. **The rule optimised the quantity that studentization already
+removes, and ignored the one that costs SNR.**
+
+**Fix — σ margin (`camera.c`).** A candidate must now clear the σ gate with margin
+(|σ − 1| ≤ `CAL_SIGMA_TOL`/2 = 0.025) to be *selectable*; among those, lowest |bias − 0.5| still
+wins. Falls back to the bare gate if nothing qualifies. Replayed against all four measured
+ladders before flashing: master/.103/.155 keep exactly the rung they had, only `.145` moves.
+Verified live afterwards — on the confirming sweep `.145`'s exp 32 **passed the bare gate and was
+excluded by the margin**, exactly as designed.
+
+⚠ **The fix is partial and known to be so.** On that same sweep `.145`'s exp **64** cleared the
+margin (σ 1.0102) when a ladder nine hours earlier had it at σ 3.0750. The sweep's σ simply does
+not always predict the session's, and no selection rule reading that sweep can fully compensate.
+A feedback path — the master excluding a node's current exposure after an observed bad loop —
+would address the real problem and is not implemented.
+
+### ⚠ `.145`'s ILLUMINATION IS FAILING — physical, unresolved
+
+Comparing matched exposures nine hours apart (12:50 → 22:20), same enclosure, same everything:
+
+| node | ratio |
+|---|---|
+| .103 | 0.97× |
+| .155 | 0.92× |
+| **master** | **0.75×** |
+| **.145** | **0.35×** |
+
+`.145` at exposure 16 fell `mean_px` **33.81 → 11.61**. The ratio holds across every rung, so it
+is genuine light loss, not measurement noise. §1.13's junction-warming figure is ~12 %; this is
+65 %. **This is a hardware fault in progress, not drift.**
+
+Note the pattern: the two nodes that fell are the master and `.145` — **the first two to be
+lit** (§1.13). Worth checking whether they share a supply, and whether an LED, a solder joint or
+a mount is failing. Not diagnosable from software.
+
+Consequence for the analysis above: `.145`'s ceiling result in §1.16 still holds (it is clean to
+`mean_px` ≈ 34 and broken by ≈ 46–60 in *both* measurements, where .155 is clean at 63–68), but any
+comparison of absolute `mean_px` across today's sessions is confounded by falling light, and the
+200-loop session ran while it was falling.
+
 ---
 
 ## Workflow

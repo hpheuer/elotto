@@ -869,13 +869,48 @@ bool camera_calibrate(int budget_ms, bool (*abort_cb)(void), camera_cal_t *out)
      * so select on it directly. It is noisy too (SE ~1.7e-4 per candidate), but
      * unlike rate it is INFORMATIVE: the real spread across a ladder is
      * -1.6e-3 to -4.8e-5, ~30x the SE, so this reliably picks the right region
-     * and only ties arbitrarily between rungs that are genuinely equivalent. */
+     * and only ties arbitrarily between rungs that are genuinely equivalent.
+     *
+     * ── SIGMA MARGIN (added 2026-07-27, PLAN.md §1.17) ────────────────────
+     * Bias alone is not enough, because bias is NOT the property that hurts.
+     * studentize() removes each loop's offset exactly, so a bias that survives
+     * calibration is largely corrected downstream; an over-dispersed node is
+     * not corrected — it just costs SNR, and it is what drives loop_sigma.
+     *
+     * Measured, over a 200-loop session: node .145 sat on exposure 32 in 91 of
+     * 127 logged loops and produced every sigma excursion there (per-loop sigma
+     * SD 0.245, max 3.008), while on exposure 16 it was indistinguishable from
+     * a healthy node (SD 0.082 against the 0.089 expected from sampling alone).
+     * Its exposure-32 rung sits ON the sigma gate: it passes some sweeps and
+     * fails others, and when it passed, its bias often measured best — so the
+     * bias-only rule selected it. The rule optimised the wrong quantity.
+     *
+     * Fix: a candidate must clear the sigma gate with MARGIN to be selectable,
+     * not merely clear it. A rung that scrapes the gate is a rung on a cliff.
+     * Half the tolerance is the threshold; among candidates that meet it, the
+     * lowest |bias-0.5| still wins, so nothing else about the rule changes.
+     *
+     * Fallback to the bare gate if nothing meets the margin, so a node whose
+     * whole ladder is marginal still chooses rather than keeping a stale
+     * setting and reporting 'U'.
+     *
+     * ⚠ This narrows the window in which a cliff-edge rung can be picked; it
+     * does not abolish it. The deeper problem is that the sweep's sigma does
+     * not always predict the session's: .145's exposure 32 measured inside
+     * [0.95, 1.05] often enough to be chosen 91 times, then produced 3.0 in
+     * use. Verified not to disturb the healthy nodes — replayed against all
+     * four measured ladders, master/.103/.155 keep exactly the rung they had. */
     int pick = -1;
-    for (int i = 0; i < n; i++)
-        if (!out->step[i].fail &&
-            (pick < 0 || fabs(out->step[i].bias - 0.5) <
-                         fabs(out->step[pick].bias - 0.5)))
-            pick = i;
+    for (int pass = 0; pass < 2 && pick < 0; pass++) {
+        const double stol = pass ? CAL_SIGMA_TOL : (CAL_SIGMA_TOL / 2.0);
+        for (int i = 0; i < n; i++) {
+            if (out->step[i].fail) continue;
+            if (fabs(out->step[i].sigma - 1.0) > stol) continue;
+            if (pick < 0 || fabs(out->step[i].bias - 0.5) <
+                            fabs(out->step[pick].bias - 0.5))
+                pick = i;
+        }
+    }
 
     uint32_t use_e   = (pick >= 0) ? out->step[pick].exposure : e0;
     uint32_t use_g   = (pick >= 0) ? out->step[pick].gain     : g0;
