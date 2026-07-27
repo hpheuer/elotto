@@ -1,0 +1,9 @@
+idf_component_register(
+    SRCS
+        "gcp.c"
+    INCLUDE_DIRS
+        "include"
+    REQUIRES
+        elotto_camera
+        freertos
+)

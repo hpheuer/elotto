@@ -16,6 +16,7 @@ idf_component_register(
         esp_hw_support
         lwip
         elotto_camera
+        elotto_gcp
         elotto_link
         elotto_ota
 )

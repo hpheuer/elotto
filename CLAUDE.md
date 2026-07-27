@@ -19,6 +19,16 @@
 - components/elotto_link/ – the UDP wire format between master and slaves
   (`EL1 <seq> <payload>`, ports 5000/5001). One definition compiled into both ends, so the
   two cannot disagree about framing.
+- components/elotto_gcp/ – **the z-score primitive itself** (`gcp_zscore_raw()`), for the same
+  reason and with more at stake: the combine is Sum(z)/√k over nodes, which is only meaningful
+  if every node computes z identically. It was duplicated in `main/sensor.c` and
+  `elotto_slave/main/slave.c` until 2026-07-27 — arithmetic identical, maintained twice. A
+  divergence there would have been invisible: a wrong-but-plausible z looks exactly like a
+  result. The two call sites differed only in abort handling, now the `on_yield` callback
+  (slave polls its abort socket; master passes NULL and aborts between runs).
+  ⚠ `GCP_SEGMENT_SD` is the literal `7.07106781`, **not** `sqrt(50.0)` — every z the rig has
+  recorded came from that constant, and a change in the numbers must never be a side effect
+  of tidying.
 - components/elotto_ota/ – update endpoint + boot-safety logic (rollback, boot counter,
   mark-valid, /update /boot /reboot /poison /otainfo).
   All three components are **shared**: the slave repo pulls them via

@@ -12,6 +12,7 @@
 #include "lwip/inet.h"
 #include "sensor.h"
 #include "camera.h"
+#include "gcp.h"
 #include "elotto_link.h"
 
 ElottoStatus g_status = { .state = ELOTTO_IDLE };
@@ -151,24 +152,11 @@ static void node_camera_failed(int node, const char *why)
     }
 }
 
-/* This node's own camera stopped mid-run. Latched, because gcp_zscore_raw()
- * checks it per segment and must not re-pay the 2 s stall timeout thousands of
- * times on the way out of a run that is already void. */
-static volatile bool s_cam_fault;
-
-static inline bool noise_word(uint32_t *w)
-{
-    if (camera_read_word(w)) return true;
-    s_cam_fault = true;
-    return false;                              // bits are never invented
-}
-
 // Called once per session, after discovery, before any measurement.
 static void camera_source_begin(void)
 {
     g_status.noise_stalled = false;
     g_status.fault[0]      = '\0';
-    s_cam_fault            = false;
     prng_seed();
     if (!camera_is_ready())
         node_camera_failed(0, "not streaming at session start");
@@ -187,33 +175,16 @@ static const char *p_label(double absZ)
  * so a slave cannot disagree about it. */
 static int segments_for(void) { return CAM_SEGMENTS; }
 
-/* One run. Returns false if the camera stopped delivering part-way through: the
- * run produced no usable z and the caller must not score it, because a short
- * run is not a small run — its z would be normalised by a √segments it never
- * reached. */
-static bool gcp_zscore_raw(int nseg, double *out)
+/* One run, via the shared primitive in components/elotto_gcp — the same object
+ * code the slaves run, so no node can compute z differently from another.
+ *
+ * NULL yield callback: the master aborts between runs, never inside one, so
+ * there is nothing to poll mid-run. A false return means the run produced no
+ * usable z and the caller must not score it — a short run is not a small run,
+ * its z would be normalised by a √segments it never reached. */
+static bool gcp_zscore_ok(int nseg, double *out)
 {
-    double z_sum = 0.0;
-    for (int seg = 0; seg < nseg; seg++) {
-        uint32_t w;
-        int ones = 0;
-        for (int i = 0; i < 6; i++) {
-            if (!noise_word(&w)) return false;
-            ones += __builtin_popcount(w);
-        }
-        if (!noise_word(&w)) return false;
-        ones += __builtin_popcount(w & 0xFF);   // 200 bits = SEGMENT_BITS
-
-        z_sum += (ones - 100.0) / 7.07106781;
-        // The camera path already yields inside camera_read_word() whenever it
-        // waits on the producer, which is most of the time. This stays as a
-        // fraction of the run so it matches the slave's cadence at every run
-        // length — per-run wall time is the max over nodes, so a mismatch would
-        // slow every measurement to the slowest device.
-        if (seg % (nseg / 4 + 1) == 0) vTaskDelay(1);
-    }
-    *out = z_sum / sqrt((double)nseg);
-    return true;
+    return gcp_zscore_raw(nseg, NULL, out) == GCP_OK;
 }
 
 /* ── Focus display + pause (docs/PLAN_4NODE.md Phase 5) ───────────────────
@@ -527,7 +498,7 @@ static void score_and_build_pool(int max_val, int pool_size, uint8_t *pool,
      * target, for the same reason Phase 2 measures combinations in a permuted
      * order.
      *
-     * fast_rng() deliberately, not noise_word(): measurement order is
+     * fast_rng() deliberately, not the camera: measurement order is
      * administrative randomness, not measured data, and must not spend
      * rate-limited camera entropy. */
     uint8_t order[51];
@@ -1282,7 +1253,7 @@ static double score_one_run(void)
     int nseg = segments_for();
     slave_trigger(nseg);
     double zm = 0.0;
-    bool   ok = gcp_zscore_raw(nseg, &zm);
+    bool   ok = gcp_zscore_ok(nseg, &zm);
     // Sampling is over the moment the local run returns; the reply wait below
     // is dark time. The caller lit the panel — see focus_publish().
     focus_off();
@@ -1914,7 +1885,7 @@ void elotto_task(void *pvParam)
                     goto done;
                 }
                 double bz = 0.0;
-                if (gcp_zscore_raw(segments_for(), &bz)) { bsum += bz; bn++; }
+                if (gcp_zscore_ok(segments_for(), &bz)) { bsum += bz; bn++; }
                 else {
                     // A void run must not be averaged in as a zero — that would
                     // pull the offset toward 0 and quietly bias every run it is
@@ -1986,7 +1957,7 @@ void elotto_task(void *pvParam)
         // every loop and accumulate √k-coherently — exactly like a real signal.
         for (int i = 0; i < g_status.runs_total; i++) s_perm[i] = (uint16_t)i;
         for (int i = g_status.runs_total - 1; i > 0; i--) {
-            // Deliberately fast_rng(), not noise_word(): this is administrative
+            // Deliberately fast_rng(), not the camera: this is administrative
             // randomness (measurement order), not measured data. Spending
             // rate-limited camera entropy here would stall the session for
             // bits that never enter a z-score.
@@ -2033,7 +2004,7 @@ void elotto_task(void *pvParam)
             int nseg = segments_for();
             slave_trigger(nseg);
             double zraw = 0.0;
-            bool   zok  = gcp_zscore_raw(nseg, &zraw);
+            bool   zok  = gcp_zscore_ok(nseg, &zraw);
             double zm   = zraw - g_status.baseline_mean;
             focus_off();          // sampling done; the reply wait is dark time
             if (!zok) node_camera_failed(0, "stalled mid-run");
