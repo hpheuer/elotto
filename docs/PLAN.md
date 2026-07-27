@@ -702,6 +702,57 @@ not yet worth explaining.
 identity across sessions, and reading `/loops` with the wrong arm's ordering misattributes
 per-node results to the wrong hardware. Always map through `nodes[].ip`.
 
+### 1.16 Why .145 (slave1) misbehaves — and why more light is the wrong fix (2026-07-27)
+
+`.145` had been the outlier twice: σ **1.1884** across a 6644-run attended session, and σ **2.2673**
+in §1.15 arm B loop 5. The obvious hypothesis was under-illumination — it ran exposure 32 where
+the master ran 8, and its light-per-unit-exposure was the lowest of the four (1.53 vs 2.1–3.1).
+
+**The slaves' sweeps were being computed, stored in PSRAM, and thrown away unread** — only the
+chosen rung travels on the wire, and the slave served just `/` and `/diag`. Added `GET /calibrate`
+to the slave, with the serialiser moved into `elotto_camera` so both firmwares emit one shape.
+This is what made the rest of this section possible; without it a per-node optical fault is not
+diagnosable at all.
+
+**Each node has its own breakdown point, and they differ by nearly 2×:**
+
+| node | last GOOD rung | `mean_px` | σ | first BAD rung | `mean_px` | σ |
+|---|---|---|---|---|---|---|
+| master | 16 | 58.23 | 0.9579 | 32 | 104.65 | 1.0394 *(light gate, not quality)* |
+| .103 | 16 | 37.77 | 0.9819 | 32 | 63.38 | **1.8948** |
+| **.145** | 16 | 33.81 | 1.0299 | 32 | **60.31** | **1.3503** |
+| .155 | **32** | **67.62** | **1.0207** | 64 | 107.23 | 3.0267 |
+
+**More light would make `.145` worse, not better.** It is mildly dimmer than `.155` at every
+matched rung (~5–10 %), so that part of the hypothesis was right — but it *breaks down at less
+light*: σ 1.35 at `mean_px` 60.3, where `.155` is clean at 67.6. Its usable ceiling is genuinely
+lower. Adding light cannot raise a ceiling; calibration would simply retreat to a shorter exposure
+and land back where it already is. **And there is nothing to gain by trying: the bit rate is
+CPU-bound** (3.295 vs 3.359 Mbit/s across its whole ladder), so being confined to exposure 16
+costs nothing at all.
+
+**The likely mechanism for the intermittency: exposure 32 sits exactly on `.145`'s edge.** It has
+been *selected* repeatedly — exp 32 in the 6644-run session (σ 1.1884), exp 32 throughout §1.15
+arm A, and inherited as exp 32 for all six loops of arm B, which is the arm that produced the
+σ 2.2673 loop. Today the same rung failed the gates outright and calibration chose **16**
+(bias +5.0e-6, σ 1.0299 — its best measured state). A rung that passes some sweeps and fails
+others is precisely a node that is fine most of the time and occasionally not.
+
+⚠ Not established: this predicts arm A should have been protected by re-selecting every loop, yet
+arm A also chose 32 each loop and stayed clean. So the edge is real but the mechanism linking it to
+the bad loops is inferred, not shown.
+
+**This is the first concrete support for §1.15's "calibration protects the tail" reading**, and it
+suggests the mechanism: per-loop calibration gives a marginal node a fresh chance each loop, where
+`cal=0` locks in whatever it entered with for the whole session. Arm B entered on 32 and stayed
+there. That remains a hypothesis — testing it needs a count of bad loops over many more loops, not
+a comparison of mean σ.
+
+**No action taken on the hardware, and none recommended.** `.145` is correct at exposure 16, the
+array passed every gate in §1.15, and one node with a lower ceiling costs a slice of the √n gain,
+not correctness. ⚠ Note also that the raised `CAL_MAX_MEAN_PX` of 100 is now *binding on the
+master*: its exposure-32 rung fails on light at 104.65 while its σ there is a perfectly good 1.0394.
+
 ---
 
 ## Workflow

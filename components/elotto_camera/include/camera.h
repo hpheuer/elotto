@@ -155,6 +155,19 @@ typedef struct {
  */
 bool camera_calibrate(int budget_ms, bool (*abort_cb)(void), camera_cal_t *out);
 
+/* Serialise a sweep as JSON onto an open HTTP request, chunk by chunk (the full
+ * table is ~1.2 KB and does not belong on a handler's stack).
+ *
+ * Shared because BOTH firmwares serve it: the master at GET /calibrate, and each
+ * slave at the same path. A per-node optical fault — one sensor dispersing more
+ * than its neighbours — cannot be diagnosed from the master's own ladder, and
+ * the wire protocol deliberately carries only the CHOSEN rung, not the sweep.
+ * Without this the slaves' sweeps were computed, stored in PSRAM, and thrown
+ * away unread.
+ *
+ * Pass c = NULL (or a sweep that never ran) to emit {"ran":false,"steps":[]}. */
+esp_err_t camera_cal_send_json(void *httpd_req, const camera_cal_t *c);
+
 // Priority of the extraction task created by camera_init().
 #define ELOTTO_CAM_TASK_PRIO 4
 

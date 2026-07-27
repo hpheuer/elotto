@@ -1097,44 +1097,10 @@ static esp_err_t loops_handler(httpd_req_t *req)
  * point, which is what tells a genuinely moving optimum from a noisy sweep. */
 static esp_err_t calibrate_handler(httpd_req_t *req)
 {
-    const camera_cal_t *c = elotto_last_calibration();
-    char buf[320];
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-
-    if (!c) {
-        httpd_resp_sendstr(req, "{\"ran\":false,\"steps\":[]}");
-        return ESP_OK;
-    }
-
-    int len = snprintf(buf, sizeof(buf),
-        "{\"ran\":true,\"ok\":%s,\"chosen\":%d,\"exposure\":%lu,\"gain\":%lu,"
-        "\"fold\":%d,\"bias\":%.6f,\"sigma\":%.4f,\"mbit_s\":%.3f,"
-        "\"autocorr\":%.4f,\"mean_px\":%.2f,\"ms\":%lu,\"steps\":[",
-        c->ok ? "true" : "false", c->chosen,
-        (unsigned long)c->exposure, (unsigned long)c->gain, (int)c->xor_fold,
-        c->bias, c->sigma, c->mbit_per_sec, c->autocorr_max, c->mean_pixel_level,
-        (unsigned long)c->elapsed_ms);
-    httpd_resp_send_chunk(req, buf, len);
-
-    for (int i = 0; i < c->nsteps && i < CAM_CAL_MAX_STEPS; i++) {
-        const camera_cal_step_t *s = &c->step[i];
-        len = snprintf(buf, sizeof(buf),
-            "%s{\"exposure\":%lu,\"gain\":%lu,\"fold\":%d,\"bits\":%llu,"
-            "\"miniruns\":%d,\"bias\":%.6f,\"sigma\":%.4f,\"mbit_s\":%.3f,"
-            "\"autocorr\":%.4f,\"mean_px\":%.2f,\"zero_diff\":%.4f,"
-            "\"stuck\":%lu,\"fail\":%lu,\"pass\":%s}",
-            i ? "," : "", (unsigned long)s->exposure, (unsigned long)s->gain,
-            (int)s->xor_fold, (unsigned long long)s->bits, s->minirun_n,
-            s->bias, s->sigma, s->mbit_per_sec, s->autocorr_max,
-            s->mean_pixel_level, s->zero_diff_frac,
-            (unsigned long)s->stuck_frames, (unsigned long)s->fail,
-            s->fail ? "false" : "true");
-        httpd_resp_send_chunk(req, buf, len);
-    }
-    httpd_resp_send_chunk(req, "]}", 2);
-    httpd_resp_send_chunk(req, NULL, 0);
-    return ESP_OK;
+    /* Body lives in the camera component now: the slaves serve the same path,
+     * and a per-node optical fault is diagnosed by comparing ladders, which is
+     * only meaningful if every node emits the same shape. */
+    return camera_cal_send_json(req, elotto_last_calibration());
 }
 
 /* ── /focus GET – the current target (PLAN_4NODE Phase 5) ─────────────
