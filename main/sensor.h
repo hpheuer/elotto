@@ -14,7 +14,18 @@ typedef enum { ELOTTO_IDLE, ELOTTO_RUNNING, ELOTTO_DONE, ELOTTO_ABORTED } Elotto
 // PHASE_CALIBRATE is appended, not inserted: it runs FIRST in a loop but the
 // other three are wired into the UI and the CSV by value.
 typedef enum { PHASE_SCORING, PHASE_BASELINE, PHASE_MEASURING,
-               PHASE_CALIBRATE } ElottoPhase;
+               PHASE_CALIBRATE, PHASE_POOL_CONFIRM } ElottoPhase;
+
+/* What the operator did with the proposed pool. Written by the /pool handler,
+ * read and cleared by elotto_task — one word, so no lock is needed. */
+typedef enum { POOL_WAIT = 0, POOL_ACCEPT, POOL_MORE, POOL_CANCEL } PoolAction;
+
+/* Hand the operator's answer to the waiting session. `n_main`/`n_euro` are the
+ * numbers still CHECKED; for POOL_MORE they are the ones to keep and omit from
+ * the re-scoring pass. Returns false if no session is waiting. */
+bool elotto_pool_reply(PoolAction act,
+                       const uint8_t *main_sel, int n_main,
+                       const uint8_t *euro_sel, int n_euro);
 // Ranking across loops: PEAK = best single-run Z (noise extreme); CUMULATIVE =
 // Stouffer Z = Σz/√k per fixed combination (GCP cumulative-deviation method)
 typedef enum { RANK_PEAK = 0, RANK_CUMULATIVE = 1 } ElottoRank;
@@ -247,6 +258,31 @@ typedef struct {
                                           // as words — a node silently missing from
                                           // the combine is the failure mode this whole
                                           // policy exists to prevent
+    /* ── Attended pool confirmation ────────────────────────────────────
+     * Scoring proposes a pool; with `pool_confirm` set the session STOPS at
+     * PHASE_POOL_CONFIRM and publishes the proposal here so the operator can
+     * edit it before thousands of runs are spent measuring it. Opt-in per
+     * session (`POST /start?confirm=1`) because a device that waits for a
+     * human would hang every scripted or overnight run — the web UI sends it,
+     * curl does not.
+     *
+     * Keeping fewer numbers is legitimate and shrinks the combination space
+     * exactly: at pool_n_main == pool_need_main (and, for Eurojackpot,
+     * pool_n_euro == 2) there is exactly ONE combination, and Phase 2 measures
+     * that single draw repeatedly — which is the highest-power way to use the
+     * instrument, see PLAN.md §1.14 note 3. */
+    uint8_t          pool_main[POOL_MAIN_49];   // proposed/confirmed main numbers
+    float            pool_main_z[POOL_MAIN_49]; // their scoring z, for display
+    uint8_t          pool_euro[POOL_EURO_12];   // Eurojackpot bonus pool
+    float            pool_euro_z[POOL_EURO_12];
+    uint8_t          pool_n_main;         // slots filled
+    uint8_t          pool_n_euro;
+    uint8_t          pool_need_main;      // a draw needs this many (5 or 6)
+    uint8_t          pool_need_euro;      // 2 for Eurojackpot, 0 for 6-of-49
+    uint8_t          pool_confirm;        // 1 = this session stops and asks
+    uint8_t          pool_auto;           // 1 = nobody answered; the proposal was
+                                          // taken unchanged after the timeout, and
+                                          // that fact belongs in the record
     LoopStat        *loop_hist;           // per-loop health table (LOOP_HIST entries,
                                           // PSRAM — internal RAM is full with results[];
                                           // NULL if the allocation failed, in which case

@@ -202,7 +202,11 @@ static const char HTML[] =
 "<span id='runsErr' style='color:#ff6b6b;font-size:.9em'></span>"
 "</div>"
 "<div id='startBtns' style='display:none'></div>"
-"<div class='btns' id='runBtns' style='display:none'>"
+// margin-bottom, not a margin on what follows: several different things can sit
+// under these buttons (loop badge, progress, message) and each would otherwise
+// need its own spacing rule. Set here, it applies to whichever one appears.
+// JS only ever writes .style.display, so the margin survives show/hide.
+"<div class='btns' id='runBtns' style='display:none;margin-bottom:16px'>"
 // Pause is required, not a nicety: without it the only way to stop attending is
 // to abort and throw the loop away, which guarantees that tired-observer data
 // gets measured rather than skipped.
@@ -254,6 +258,28 @@ static const char HTML[] =
 "</div>"
 "<div id='msg'></div>"
 "</div>"
+/* Pool confirmation modal. Fixed overlay rather than a card in the flow: the
+   session is BLOCKED while this is up, so it must read as a stop, not as one
+   more panel to scroll past. */
+"<div id='poolOv' style='display:none;position:fixed;inset:0;z-index:50;"
+"background:rgba(0,0,0,.72);align-items:center;justify-content:center;padding:16px'>"
+"<div style='background:#0f3d0f;border:1px solid rgba(144,238,144,.35);"
+"border-radius:14px;max-width:560px;width:100%;max-height:92vh;overflow-y:auto;"
+"padding:20px;box-shadow:0 8px 40px rgba(0,0,0,.6)'>"
+"<h3 style='color:#f0c040;margin-bottom:4px'>Selected Numbers</h3>"
+"<div id='poolHint' style='color:#90ee90;font-size:.86em;margin-bottom:12px'></div>"
+"<div id='poolMainWrap'><div style='color:#f0c040;font-size:.82em;margin-bottom:5px'>"
+"Main numbers</div><div id='poolMain' style='display:flex;flex-wrap:wrap;gap:7px'></div></div>"
+"<div id='poolEuroWrap' style='margin-top:14px'>"
+"<div style='color:#f0c040;font-size:.82em;margin-bottom:5px'>Bonus numbers</div>"
+"<div id='poolEuro' style='display:flex;flex-wrap:wrap;gap:7px'></div></div>"
+"<div id='poolCount' style='margin-top:14px;font-size:.9em;color:#fff'></div>"
+"<div class='btns' style='margin-top:16px'>"
+"<button class='btn btn-euro' id='poolOk' onclick='poolSend(\"ok\")'>OK</button>"
+"<button class='btn' id='poolMore' onclick='poolSend(\"more\")' "
+"style='background:#2e7d9e;color:#fff'>Select more</button>"
+"<button class='btn btn-abort' id='poolCancel' onclick='poolSend(\"cancel\")'>Cancel</button>"
+"</div></div></div>"
 "<div class='card' id='focusCard' style='display:none;text-align:center'>"
 "<div style='color:#f0c040;font-size:.88em;margin-bottom:8px;text-align:left'>"
 "&#127919; Focus:</div>"
@@ -283,7 +309,7 @@ static const char HTML[] =
 "</div>"
 "<script>"
 "var timer=null,curMode=0,lastData=null,lastDisplayed=null,calShown=false;"
-"var ftimer=null,lastSeq=-1,winSeen=0,winMissed=0,paused=false;"
+"var ftimer=null,lastSeq=-1,winSeen=0,winMissed=0,paused=false,pausePendUntil=0;"
 "function fmt(ms){"
 "var m=Math.floor(ms/60000),h=Math.floor(m/60);m=m%60;"
 "return h>0?h+':'+('0'+m).slice(-2)+' h':m+' min';}"
@@ -312,7 +338,10 @@ static const char HTML[] =
 "document.getElementById('runBtns').style.display='flex';"
 "document.getElementById('progArea').style.display='block';"
 "if(d.focus)startFocus();"
-"setPauseBtn(d.paused);"
+"applyPaused(d.paused);"
+// A page loaded (or reloaded) while the device is already waiting must show the
+// prompt too — the session is blocked until somebody answers it.
+"if(d.phase==='poolconfirm'&&!poolShown&&d.pool_main)poolShow(d);"
 "updateLoopBadge(d.loop_current||1,d.loops_total||1);"
 "document.getElementById('sCalTotal').textContent=d.baseline_total;"
 "setScoreTotal(d);"
@@ -367,7 +396,10 @@ static const char HTML[] =
 "document.getElementById('measArea').style.display='none';"
 // A refused start must not leave the UI pretending a session began with the
 // settings just typed in — that is how ignored parameters stay invisible.
-"fetch('/start?mode='+mode+'&baseline='+base+'&loops='+loops+'&runs='+runs+'&rank='+rank+'&focus='+foc,{method:'POST'})"
+// confirm=1 unconditionally from the UI: a human pressed this button, so there
+// is by definition someone to answer the pool prompt. curl never sends it.
+"fetch('/start?mode='+mode+'&baseline='+base+'&loops='+loops+'&runs='+runs+'&rank='+rank"
+"+'&focus='+foc+'&confirm=1',{method:'POST'})"
 ".then(function(r){if(!r.ok){"
 "document.getElementById('runsErr').textContent="
 "'\\u26a0 a session is already running \\u2014 abort it first';"
@@ -379,7 +411,11 @@ static const char HTML[] =
 "document.getElementById('startBtns').style.display='none';"
 "document.getElementById('runBtns').style.display='flex';"
 "document.getElementById('progArea').style.display='block';"
-"paused=false;setPauseBtn(false);"
+// NOT `paused=false` first — setPauseBtn is idempotent now, so pre-assigning the
+// state would make it skip the DOM update and a session started right after a
+// paused one would show "Continue" while running. Clear the latch, let the
+// setter see the real transition.
+"pausePendUntil=0;setPauseBtn(false);"
 "if(foc)startFocus();else stopFocus();"
 "lastData=null;lastDisplayed=null;"
 "document.getElementById('btnSave').style.display='none';"
@@ -395,15 +431,98 @@ static const char HTML[] =
 "fetch('/abort',{method:'POST'});"
 "document.getElementById('msg').textContent='Aborting...';"
 "}"
+/* IDEMPOTENT ON PURPOSE. pollFocus() runs at 10 Hz and used to call this every
+   tick, rewriting innerHTML ten times a second and repainting the button
+   continuously — visible as a flicker even when nothing had changed. Bail out
+   when the state already matches and the DOM is touched only on a real change. */
+/* ── Pool confirmation ──────────────────────────────────────────────
+   The device is parked at PHASE_POOL_CONFIRM until one of these three answers
+   arrives, so the modal is rendered once (poolShown latches) and then left
+   alone: re-rendering on every /status poll would wipe the operator's
+   checkboxes out from under them mid-decision. */
+"var poolShown=false,poolNeedM=0,poolNeedE=0,poolFullM=0,poolFullE=0;"
+"function poolChecked(id){"
+"var out=[],b=document.querySelectorAll('#'+id+' input:checked');"
+"for(var i=0;i<b.length;i++)out.push(parseInt(b[i].value,10));"
+"return out;}"
+/* Button states are the spec: OK needs enough numbers left to form one draw,
+   "Select more" only means anything while a slot is free. */
+"function poolSync(){"
+"var m=poolChecked('poolMain').length,e=poolChecked('poolEuro').length;"
+"var okM=m>=poolNeedM,okE=(poolNeedE===0)||(e>=poolNeedE);"
+"document.getElementById('poolOk').disabled=!(okM&&okE);"
+"document.getElementById('poolMore').disabled=(m>=poolFullM)&&(e>=poolFullE);"
+"var cm=comb(m,poolNeedM),ce=poolNeedE?comb(e,poolNeedE):1;"
+"var t=cm*ce;"
+"document.getElementById('poolCount').innerHTML=(okM&&okE)"
+"?'Keeps <b>'+m+'</b>'+(poolNeedE?' + <b>'+e+'</b> bonus':'')+"
+"' \\u2192 <b>'+t+'</b> combination'+(t===1?'':'s')+' to measure'"
+"+(t===1?' \\u2014 the same draw every run, which is the most sensitive way to use it.':'')"
+":'<span style=\"color:#ff6b6b\">Too few numbers for a single draw \\u2014 need at least '"
+"+poolNeedM+(poolNeedE?' + '+poolNeedE+' bonus':'')+'.</span>';"
+"}"
+"function comb(n,k){if(k>n||k<0)return 0;var r=1;"
+"for(var i=0;i<k;i++)r=r*(n-i)/(i+1);return Math.round(r);}"
+"function poolChip(o,euro){"
+"return \"<label style='display:inline-flex;align-items:center;gap:5px;\"+"
+"\"background:rgba(0,0,0,.3);border-radius:8px;padding:5px 9px;cursor:pointer'>\"+"
+"\"<input type='checkbox' checked value='\"+o.n+\"' onchange='poolSync()' \"+"
+"\"style='width:15px;height:15px'>\"+"
+"\"<b style='color:\"+(euro?'#ffdc6a':'#fff')+\"'>\"+o.n+\"</b>\"+"
+"\"<span style='color:#8fae8f;font-size:.78em'>z \"+o.z.toFixed(2)+\"</span></label>\";}"
+"function poolShow(d){"
+"poolNeedM=d.pool_need_main;poolNeedE=d.pool_need_euro;"
+"poolFullM=d.pool_main.length;poolFullE=d.pool_euro.length;"
+"var h='';for(var i=0;i<d.pool_main.length;i++)h+=poolChip(d.pool_main[i],false);"
+"document.getElementById('poolMain').innerHTML=h;"
+"h='';for(var i=0;i<d.pool_euro.length;i++)h+=poolChip(d.pool_euro[i],true);"
+"document.getElementById('poolEuro').innerHTML=h;"
+"document.getElementById('poolEuroWrap').style.display=d.pool_euro.length?'block':'none';"
+"document.getElementById('poolHint').textContent="
+"'Scoring chose these. Uncheck any you do not want, then OK to measure them '"
+"+'\\u2014 or Select more to re-score the rest and refill the free slots.';"
+"document.getElementById('poolOv').style.display='flex';"
+"poolShown=true;poolSync();"
+"}"
+"function poolHide(){"
+"document.getElementById('poolOv').style.display='none';poolShown=false;}"
+"function poolSend(act){"
+"var m=poolChecked('poolMain'),e=poolChecked('poolEuro');"
+"var q='/pool?act='+act+'&main='+m.join(',')+'&euro='+e.join(',');"
+// Hide immediately: the device needs a moment to pick the answer up, and a
+// modal that lingers invites a second click on a session that has moved on.
+"poolHide();"
+"if(act==='cancel'){document.getElementById('msg').textContent='Cancelled.';}"
+"else{document.getElementById('msg').textContent="
+"act==='more'?'Re-scoring the remaining numbers...':'Pool confirmed \\u2014 measuring...';}"
+"fetch(q,{method:'POST'}).then(function(r){"
+"if(!r.ok)document.getElementById('msg').textContent='Pool rejected by device.';});"
+"}"
 "function setPauseBtn(p){"
-"paused=!!p;"
+"p=!!p;"
+"if(p===paused)return;"
+"paused=p;"
 "var b=document.getElementById('btnPause');"
 "b.innerHTML=paused?'\\u25b6 Continue':'\\u23f8 Pause';"
 "b.style.background=paused?'#4a9e4a':'#a08030';"
 "}"
+/* The second half of the flicker was a race, not a repaint. doPause() updates
+   the button immediately (so the click feels responsive) but /pause only takes
+   effect BETWEEN runs — up to ~1.4 s away. Meanwhile the 10 Hz poller kept
+   reporting the device's old state and flipping the button straight back, so a
+   single click produced ~10 alternations of Pause/Continue before the device
+   caught up. Device state is therefore ignored while a request is outstanding,
+   until it agrees with what was asked. The deadline is a self-heal: if the POST
+   is lost, the UI re-syncs to the device rather than lying forever. */
+"function applyPaused(p){"
+"p=!!p;"
+"if(Date.now()<pausePendUntil){if(p!==paused)return;pausePendUntil=0;}"
+"setPauseBtn(p);"
+"}"
 // Pause is device-side, so this only asks; /status and /focus report the truth.
 "function doPause(){"
 "var want=paused?0:1;"
+"pausePendUntil=Date.now()+6000;"
 "fetch('/pause?on='+want,{method:'POST'});"
 "setPauseBtn(want);"
 "}"
@@ -422,9 +541,14 @@ static const char HTML[] =
 "if(ftimer)clearInterval(ftimer);"
 "ftimer=setInterval(pollFocus,100);"
 "}"
+/* Hides the whole card, not just its contents. Clearing focusBox alone left an
+   empty card on screen after Abort/Done, which reads as "a window is still
+   coming" — exactly the wrong signal from a panel whose only job is to say what
+   is being measured RIGHT NOW. Nothing is being measured, so nothing is shown. */
 "function stopFocus(){"
 "if(ftimer)clearInterval(ftimer);ftimer=null;"
 "document.getElementById('focusBox').innerHTML='';"
+"document.getElementById('focusCard').style.display='none';"
 "}"
 "function pollFocus(){"
 "fetch('/focus').then(function(r){return r.json();}).then(function(f){"
@@ -434,8 +558,8 @@ static const char HTML[] =
 // missed one".
 "box.innerHTML=\"<span style='color:#f0c040;font-size:1.6em;font-weight:700'>"
 "\\u23f8 PAUSED</span>\";"
-"lastSeq=f.seq;setPauseBtn(true);return;}"
-"if(paused)setPauseBtn(false);"
+"lastSeq=f.seq;applyPaused(true);return;}"
+"applyPaused(false);"
 "if(!f.on){box.innerHTML='';return;}"
 "if(f.seq===lastSeq)return;"
 "if(lastSeq>=0&&f.seq>lastSeq+1)winMissed+=f.seq-lastSeq-1;"
@@ -450,6 +574,10 @@ static const char HTML[] =
 "fetch('/status').then(function(r){return r.json();}).then(function(d){"
 "updateLoopBadge(d.loop_current||1,d.loops_total||1);"
 "updateFocusInfo(d);"
+// Raise the prompt as soon as the device parks on it, and take it down again
+// the moment it moves on (an answer from another browser tab, or the timeout).
+"if(d.phase==='poolconfirm'){if(!poolShown&&d.pool_main)poolShow(d);}"
+"else if(poolShown)poolHide();"
 // Calibration is the first thing a loop does and nothing is on screen for it —
 // the panel stays hidden, since nothing is being attended to while the sensor is
 // tuned. Say so, or a 30 s pause at the top of every loop looks like a stall.
@@ -502,7 +630,7 @@ static const char HTML[] =
 "}"
 "if(d.state==='running'&&d.cover&&d.cover.length)showResults(d);"
 "if(d.state==='done'||d.state==='aborted'){"
-"clearInterval(timer);stopFocus();"
+"clearInterval(timer);stopFocus();poolHide();"
 "document.getElementById('runBtns').style.display='none';"
 "document.getElementById('measCheck').innerHTML=\" <span style='color:#90ee90;font-size:1.1em'>&#10004;</span>\";"
 "document.getElementById('runsRow').style.display='grid';"
@@ -519,7 +647,12 @@ static const char HTML[] =
    says whether the ~200 ms blanking was free or had to be paid for), and the
    count of windows the UI missed entirely (must stay 0). */
 "function updateFocusInfo(d){"
-"if(!d.focus){document.getElementById('focusCard').style.display='none';return;}"
+/* Also hidden whenever nothing is being measured. This runs on every /status
+   poll, so without the state test it re-showed the card immediately after
+   stopFocus() hid it — including on a page load against an already-finished
+   session, where the panel would reappear with no run behind it. */
+"if(!d.focus||d.state!=='running'){"
+"document.getElementById('focusCard').style.display='none';return;}"
 "document.getElementById('focusCard').style.display='block';"
 "var s='window '+(d.focus_win_ms||0).toFixed(0)+' ms \\u00b7 gap '"
 "+(d.focus_gap_ms||0).toFixed(0)+' ms \\u00b7 windows '+winSeen"
@@ -543,6 +676,12 @@ static const char HTML[] =
 // Which condition produced these numbers. An attended session is not equivalent
 // to an unattended one, so the two must never be pooled later.
 "s2+=(s2?' \\u00b7 ':'')+(d.focus?'\\uD83C\\uDFAF attended (focus)':'unattended (control)');"
+// Carried into the results line because the Focus card — where these normally
+// live — is hidden once the session ends. `missed` is a gate, not a curiosity:
+// a skipped window credits an effect to the wrong combination, so it has to
+// survive the panel it was displayed in.
+"if(d.focus&&winSeen>0)s2+=' \\u00b7 windows '+winSeen+' \\u00b7 missed '+winMissed"
+"+(winMissed?' \\u26a0':' \\u2713');"
 "if(d.paused_ms>0)s2+=' \\u00b7 paused '+fmt(d.paused_ms)+' (excluded from elapsed)';"
 // The WORST pair, not an average: the sqrt(n) gain fails if ANY pair
 // correlates, so five clean pairs must not dilute one bad one.
@@ -726,10 +865,11 @@ static esp_err_t status_handler(httpd_req_t *req)
         g_status.mode == MODE_EUROJACKPOT ? "euro" : "649";
 
     const char *phase_str =
-        g_status.phase == PHASE_SCORING   ? "scoring"     :
-        g_status.phase == PHASE_BASELINE  ? "baseline"    :
-        g_status.phase == PHASE_CALIBRATE ? "calibrating" :
-                                            "measuring";
+        g_status.phase == PHASE_SCORING      ? "scoring"     :
+        g_status.phase == PHASE_BASELINE     ? "baseline"    :
+        g_status.phase == PHASE_CALIBRATE    ? "calibrating" :
+        g_status.phase == PHASE_POOL_CONFIRM ? "poolconfirm" :
+                                               "measuring";
     const char *rank_str = (g_status.rank_mode == RANK_CUMULATIVE) ? "cum" : "peak";
     pos += snprintf(buf+pos, sizeof(buf)-pos,
         "{\"state\":\"%s\",\"mode\":\"%s\",\"phase\":\"%s\","
@@ -749,7 +889,9 @@ static esp_err_t status_handler(httpd_req_t *req)
         "\"loop_current\":%d,\"loops_total\":%d,"
         "\"scoring_done\":%d,\"scoring_total\":%d,"
         "\"baseline_done\":%d,\"baseline_total\":%d,\"baseline_mean\":%.4f,"
-        "\"completed\":%d,\"total\":%d,\"elapsed_ms\":%lld,",
+        "\"completed\":%d,\"total\":%d,\"elapsed_ms\":%lld,"
+        "\"pool_confirm\":%d,\"pool_auto\":%d,"
+        "\"pool_need_main\":%d,\"pool_need_euro\":%d,",
         state_str, mode_str, phase_str,
         g_status.slave_connected ? "true" : "false", rank_str,
         g_status.noise_stalled ? "true" : "false", g_status.fault,
@@ -770,7 +912,33 @@ static esp_err_t status_handler(httpd_req_t *req)
         g_status.scoring_done, g_status.scoring_total,
         g_status.baseline_done, g_status.baseline_total, g_status.baseline_mean,
         g_status.runs_completed, g_status.runs_total,
-        (long long)g_status.elapsed_ms);
+        (long long)g_status.elapsed_ms,
+        g_status.pool_confirm, g_status.pool_auto,
+        g_status.pool_need_main, g_status.pool_need_euro);
+
+    /* The proposed pool, and only while it is actually being asked about: it is
+     * ~150 bytes and /status is polled once a second for the whole session, so
+     * there is no reason to carry it through the other 99 % of the run.
+     *
+     * RUNNING is part of the test, not decoration: `phase` keeps its last value
+     * after a session ends, so a cancelled confirmation leaves the device
+     * reading poolconfirm/aborted indefinitely. Both UI call sites gate on
+     * `pool_main` being present, so withholding it here is what stops the modal
+     * being raised over a session that is already gone. */
+    if (g_status.phase == PHASE_POOL_CONFIRM &&
+        g_status.state == ELOTTO_RUNNING) {
+        pos += snprintf(buf+pos, sizeof(buf)-pos, "\"pool_main\":[");
+        for (int i = 0; i < g_status.pool_n_main; i++)
+            pos += snprintf(buf+pos, sizeof(buf)-pos, "%s{\"n\":%d,\"z\":%.2f}",
+                            i ? "," : "", g_status.pool_main[i],
+                            (double)g_status.pool_main_z[i]);
+        pos += snprintf(buf+pos, sizeof(buf)-pos, "],\"pool_euro\":[");
+        for (int i = 0; i < g_status.pool_n_euro; i++)
+            pos += snprintf(buf+pos, sizeof(buf)-pos, "%s{\"n\":%d,\"z\":%.2f}",
+                            i ? "," : "", g_status.pool_euro[i],
+                            (double)g_status.pool_euro_z[i]);
+        pos += snprintf(buf+pos, sizeof(buf)-pos, "],");
+    }
 
     /* Firmware identity: version, build time, elf sha256, running slot, OTA
      * state. Without it an update that answered "ok" cannot be distinguished
@@ -1066,6 +1234,8 @@ static esp_err_t start_handler(httpd_req_t *req)
         // This flag is the session's record of which condition produced its
         // numbers — attended and unattended runs must never be pooled later.
         g_status.focus_mode     = false;
+        g_status.pool_confirm   = 0;
+        g_status.pool_auto      = 0;
         if (httpd_req_get_url_query_str(req, qry, sizeof(qry)) == ESP_OK) {
             char val[16] = "";
             if (httpd_query_key_value(qry, "mode", val, sizeof(val)) == ESP_OK)
@@ -1094,6 +1264,12 @@ static esp_err_t start_handler(httpd_req_t *req)
                 int c = atoi(val);
                 if (c >= 0 && c <= 120000) g_status.cal_budget_ms = c;
             }
+            // ?confirm=1 -> stop after scoring and let the operator edit the
+            // pool. Opt-in, and deliberately NOT tied to ?focus: the device
+            // would otherwise block forever on any curl-started or scheduled
+            // run, including the ?cal=0 control. The web UI always sends it.
+            if (httpd_query_key_value(qry, "confirm", val, sizeof(val)) == ESP_OK)
+                g_status.pool_confirm = (val[0] == '1');
         }
         xTaskCreate(elotto_task, "elotto", 8192, NULL, 5, NULL);
     }
@@ -1105,6 +1281,80 @@ static esp_err_t start_handler(httpd_req_t *req)
 static esp_err_t abort_handler(httpd_req_t *req)
 {
     g_status.abort_requested = true;
+    httpd_resp_sendstr(req, "ok");
+    return ESP_OK;
+}
+
+/* ── /pool POST — the operator's answer to the pool proposal ─────────
+ *
+ * `POST /pool?act=ok|more|cancel&main=3,7,12&euro=2,9`
+ *
+ * `main`/`euro` are the numbers still CHECKED. For `ok` they become the pool;
+ * for `more` they are kept and omitted from a fresh scoring pass that refills
+ * the rest. Omitting the lists entirely means "unchanged", which is what the
+ * timeout path uses.
+ *
+ * 409 when no session is waiting, so a stale browser tab cannot inject a pool
+ * into a session that has already moved on. */
+static int parse_num_list(const char *s, uint8_t *out, int max_n, int max_val)
+{
+    int n = 0;
+    while (*s && n < max_n) {
+        while (*s == ',' || *s == ' ') s++;
+        if (!*s) break;
+        int v = 0, digits = 0;
+        while (*s >= '0' && *s <= '9') { v = v * 10 + (*s++ - '0'); digits++; }
+        if (!digits) { while (*s && *s != ',') s++; continue; }
+        if (v >= 1 && v <= max_val) {
+            bool dup = false;               // a duplicate would corrupt the
+            for (int i = 0; i < n; i++)     // combination enumeration
+                if (out[i] == (uint8_t)v) { dup = true; break; }
+            if (!dup) out[n++] = (uint8_t)v;
+        }
+    }
+    return n;
+}
+
+static esp_err_t pool_handler(httpd_req_t *req)
+{
+    char qry[512] = "";
+    char val[256] = "";
+    PoolAction act = POOL_ACCEPT;
+    uint8_t m[POOL_MAIN_49], e[POOL_EURO_12];
+    int nm = 0, ne = 0;
+    int max_main = (g_status.mode == MODE_EUROJACKPOT) ? 50 : 49;
+
+    if (httpd_req_get_url_query_str(req, qry, sizeof(qry)) == ESP_OK) {
+        if (httpd_query_key_value(qry, "act", val, sizeof(val)) == ESP_OK) {
+            if      (!strcmp(val, "more"))   act = POOL_MORE;
+            else if (!strcmp(val, "cancel")) act = POOL_CANCEL;
+        }
+        if (httpd_query_key_value(qry, "main", val, sizeof(val)) == ESP_OK)
+            nm = parse_num_list(val, m, POOL_MAIN_49, max_main);
+        if (httpd_query_key_value(qry, "euro", val, sizeof(val)) == ESP_OK)
+            ne = parse_num_list(val, e, POOL_EURO_12, 12);
+    }
+
+    /* Refuse a selection too small to build a draw from. The UI disables OK in
+     * that state, but the endpoint is public and a session that accepted an
+     * empty pool would compute comb(0,5) and measure nothing at all. */
+    if (act == POOL_ACCEPT && nm > 0 && nm < g_status.pool_need_main) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_sendstr(req, "too few main numbers for one draw");
+        return ESP_OK;
+    }
+    if (act == POOL_ACCEPT && g_status.pool_need_euro &&
+        ne > 0 && ne < g_status.pool_need_euro) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_sendstr(req, "too few bonus numbers for one draw");
+        return ESP_OK;
+    }
+
+    if (!elotto_pool_reply(act, m, nm, e, ne)) {
+        httpd_resp_set_status(req, "409 Conflict");
+        httpd_resp_sendstr(req, "no session waiting for a pool");
+        return ESP_OK;
+    }
     httpd_resp_sendstr(req, "ok");
     return ESP_OK;
 }
@@ -1189,6 +1439,7 @@ static void start_webserver(void)
         {"/focus",  HTTP_GET,  focus_handler,  NULL},
         {"/pause",  HTTP_POST, pause_handler,  NULL},
         {"/calibrate", HTTP_GET, calibrate_handler, NULL},
+        {"/pool", HTTP_POST, pool_handler, NULL},
     };
     for (int i = 0; i < (int)(sizeof(uris) / sizeof(uris[0])); i++)
         httpd_register_uri_handler(srv, &uris[i]);

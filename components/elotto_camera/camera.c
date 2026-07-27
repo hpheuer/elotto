@@ -675,12 +675,28 @@ static const uint32_t s_cal_ladder[] = { 4, 8, 16, 32, 64, 128, 256, 512 };
 #define CAL_MIN_BITS        2000000ULL
 #define CAL_TARGET_BITS     8000000ULL
 #define CAL_MIN_MINIRUNS    200
-/* Light-leak floor. Deliberately generous (a quarter of full scale) because
- * raising mean_px is the very mechanism the sweep is exploiting: this gate is
- * here to catch a camera looking at a lit room, where high exposure saturates,
- * not to cap the intended increase. The measured value is reported per step, so
- * the choice stays auditable rather than implicit. */
-#define CAL_MAX_MEAN_PX     64.0
+/* Over-illumination backstop. This was a LIGHT-LEAK floor at 64.0 (a quarter of
+ * full scale) back when the cameras were meant to sit in the dark and any raised
+ * mean_px meant uncontrolled light getting in. The enclosure is now deliberately
+ * LIT (PLAN.md §1.13), so a high mean_px means the lamp is on, not that a leak
+ * has appeared — the gate no longer measures what it was written to measure.
+ *
+ * Raised to 100.0 on measured evidence. At 64.0 it rejected the best rung the
+ * rig has ever produced: exposure 64 at mean_px 68.7 gave bias -4.8e-5 (matching
+ * the §1.9 open-bench best) with sigma 0.998 and autocorr 0.0009 — no quality
+ * failure at all, refused on light level alone by 7%.
+ *
+ * The value sits inside a measured safe zone: mean_px 68.7 is clean, 118.6 is
+ * decisively broken (sigma 1.91, autocorr 0.0097, bias -8.1e-3). 100 admits the
+ * good rung and still stops gross over-illumination.
+ *
+ * Note what this gate does NOT protect against, because the answer is "nothing
+ * the others miss": across every lit sweep measured, exposures 128/256/512 fail
+ * BIAS and SIGMA on their own, and exposure 64 failed LIGHT *only*. Saturation
+ * does not hide from the quality gates — it announces itself. Those are the real
+ * protection; this is a coarse backstop. The measured value is reported per step
+ * either way, so the choice stays auditable rather than implicit. */
+#define CAL_MAX_MEAN_PX     100.0
 /* Frame pairs discarded before a window opens. CAM_BUF_COUNT=4 means up to two
  * pairs already captured under the old setting can be queued; the rest gives the
  * sensor a few frames to actually apply the new one. */
@@ -833,11 +849,31 @@ bool camera_calibrate(int budget_ms, bool (*abort_cb)(void), camera_cal_t *out)
      * longer touches it. */
     out->nsteps = n;
 
-    // Selection: only gated candidates are eligible, fastest among them wins.
+    /* Selection: only gated candidates are eligible, LOWEST |bias-0.5| wins.
+     *
+     * This used to select the FASTEST passing candidate, from the assumption
+     * that a shorter exposure means a faster frame rate means more bits per
+     * second. That assumption is dead: §1.10 showed the bit rate is CPU-bound,
+     * not exposure-bound, and a full sweep measures 3.217-3.293 Mbit/s across
+     * exposure 4..512 — a 2.4% spread, i.e. measurement noise. So the tie-break
+     * was comparing eight numbers that are all the same and picking whichever
+     * happened to measure highest: a coin toss across the whole passing range.
+     *
+     * What that cost, measured: the master picked exposure 16 (bias -3.7e-4)
+     * over 32 (-2.1e-4) on a 0.7% rate difference, and across one 5-loop
+     * session its choice wandered 128 -> 256 -> 8 -> 128 -> 128, once landing
+     * on a rung a standalone sweep had *failed* at -1.21e-3.
+     *
+     * Bias is the gate that actually binds and the property that costs sigma,
+     * so select on it directly. It is noisy too (SE ~1.7e-4 per candidate), but
+     * unlike rate it is INFORMATIVE: the real spread across a ladder is
+     * -1.6e-3 to -4.8e-5, ~30x the SE, so this reliably picks the right region
+     * and only ties arbitrarily between rungs that are genuinely equivalent. */
     int pick = -1;
     for (int i = 0; i < n; i++)
         if (!out->step[i].fail &&
-            (pick < 0 || out->step[i].mbit_per_sec > out->step[pick].mbit_per_sec))
+            (pick < 0 || fabs(out->step[i].bias - 0.5) <
+                         fabs(out->step[pick].bias - 0.5)))
             pick = i;
 
     uint32_t use_e   = (pick >= 0) ? out->step[pick].exposure : e0;
