@@ -3,6 +3,7 @@ idf_component_register(
         "elotto.c"
         "sensor.c"
         "nodes.c"
+        "focus.c"
     INCLUDE_DIRS
         "."
     REQUIRES
