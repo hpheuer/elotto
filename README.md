@@ -237,7 +237,9 @@ The combinations whose parallel noise stream deviates most strongly from chance 
 baseline-corrected **Z-scores** — are surfaced as the suggested lottery numbers.
 
 Each **GCP run** consumes a fixed batch of raw noise bits, in 200-bit segments:
-- **Segments per run: 8,000 (camera, 1.6 Mbit ≈ 0.5 s)** or 32,000 (TRNG, 6.4 Mbit).
+- **Segments per run: 11,950 (≈ 2.4 Mbit, ≈ 1000 ms)** — one source, so one constant, used for
+  scoring, measurement and baseline alike. It travels on the wire (`M<seg>`, `B<runs>,<seg>`), so
+  a node that is *told* the length cannot disagree about it.
   Run length only sets granularity — statistical power per second is rate-limited either way,
   and Z stays N(0,1) because it is normalised by √segments.
 - Z-score per segment: `(ones − 100) / √50`
@@ -304,11 +306,15 @@ Five guards keep systematic hardware effects from masquerading as GCP signal:
   permutation. With a fixed order, slow drift (e.g. a temperature ramp over a ~20-min loop)
   would hit each combination at the same position every loop and accumulate exactly like a
   real signal.
-- **Master–slave independence check** — Pearson **r** between the per-run (z_master, z_slave)
-  pairs (centered per loop), shown with per-device σ. r ≈ 0 confirms the two sources are
-  independent and the √2 combine is valid; the UI flags significant correlation with ⚠.
+- **Node independence check** — Pearson **r** for **every** node pair (6 pairs at four nodes),
+  centered per loop and accumulated only over runs where both nodes contributed; the full matrix
+  and per-node σ are published in `/status`, and the UI flags |r|·√n > 3 with ⚠. r ≈ 0 across all
+  pairs is what makes the ÷√k combine valid — one correlated pair is enough to break it, which is
+  why the UI shows the **worst** pair rather than an average.
   (This is why each node needs its **own** camera — sharing one would make r ≈ 1 by
-  construction and the √2 gain fictional.)
+  construction and the ×√n gain fictional.)
+  ⚠ Judge a session on the per-loop combined σ **as well**: a pooled pairwise maximum once stayed
+  under the flag threshold while σ climbed to 1.15.
 - **Stride sampling** — a `Runs` cap measures every ⌊full/cap⌋-th combination across the whole
   space instead of the lexicographic prefix (which all shared the pool's lowest numbers).
 - **Cross-loop drift check** — studentization removes each loop's *own* offset exactly, so a
@@ -392,19 +398,33 @@ shot noise → wider noise distribution → more uniform LSB. Sensor warming and
 quantization starvation were both tested and refuted; the remaining explanation is per-unit
 light-tightness. **If tuning this, give the dimmer camera *more* light, not less.**
 
-### A stall aborts the session — it does not fall back
+### A stall drops the node — it does not fall back
 
-If a camera stops delivering, the session **aborts** (`src_stalled`, UI "⚠ camera stalled –
-aborted"). The TRNG is never silently substituted, on either node: the whole point is replacing
-opaque whitened bits with raw quantum noise, so swapping them back mid-session changes the
-physics being measured, and a session-level flag cannot say *which* runs were affected — a stall
-at run 3 of 2560 would leave 2557 TRNG-sourced runs inside a session still labelled "camera".
-Losing the run is cheaper than silently contaminating it. This covers a **slave** stall too: the
-slave tags every reply `Z:<float>,C|T` and the master aborts on `T`. The slave re-arms its
-camera on each session start, so one transient stall does not doom every later session.
+There is nothing to fall back **to**, by design. The camera is the only source in this firmware,
+so a node whose camera stops delivering has stopped being an instrument, and it is reported,
+dropped and rebooted rather than substituted.
 
-*(With ≥ 3 nodes the better answer is to drop the stalled node and combine over n−1; with 2
-nodes there is no meaningful "degrade" — losing one halves the array.)*
+The reason there is no substitute is the whole point of the project: replacing opaque whitened
+bits with raw physical noise. Swapping something else back in mid-session would change the physics
+being measured, and a session-level flag cannot say *which* runs were affected — a stall at run 3
+of 2560 would leave 2557 runs from the wrong source inside a session still labelled "camera".
+Losing the run is cheaper than silently contaminating it.
+
+What actually happens: the affected node replies `E:<reason>` instead of `Z:<z>`, the master names
+it in `g_status.fault` (shown in `/status` and in orange in the UI), drops it from the combine,
+bumps its reboot counter and sends `R`; the slave answers `OK` and calls `esp_restart()`. Its
+camera is brought up in `app_main`, so a restart is the one recovery software has, and the node
+rejoins the **next** session by discovery — never the running one.
+
+The remaining nodes carry on over √(k−1). The session only **aborts** (`src_stalled`) if the drop
+would leave fewer than two nodes, because below that the array has stopped being the instrument it
+started as.
+
+⚠ The master does **not** reboot itself on its own camera failure — that would destroy the
+`/loops` history and the results the operator needs to see. It faults, reports and aborts.
+
+⚠ These paths exist and have been reasoned about but are **unverified by choice** — see the
+open-items note in [`CLAUDE.md`](CLAUDE.md). This is a research instrument, not a product.
 
 ## The node array: master + slaves
 
@@ -414,15 +434,24 @@ master broadcasts a discovery datagram at every session start and combines over 
 answers. Nothing is configured — no IP list, no node count. One node produces identical
 results, just without the gain.
 
-Current array: master on isolated USB power, three slaves on one PoE switch (the boards take
-PoE directly, no splitters).
+Current array: **all four boards take PoE directly from one switch**, no splitters. The master
+previously ran on separate USB power as a control for rail-borne coupling; that split came off
+when its LED was fitted and is permanent. The consequence, stated plainly: inter-node correlation
+can no longer be attributed to the shared rail versus anything else, because no node sits on an
+independent one. The single session recorded while the split was still intact found master↔slave
+pairs at mean +0.023 against slave↔slave +0.024 — i.e. **not** rail-borne — and that measurement
+cannot be repeated on this rig.
 
 ### What a slave does
 
 The slave ([hpheuer/elotto_slave](https://github.com/hpheuer/elotto_slave),
-`main/slave.c`) is a second ESP32-P4 running the **identical GCP engine** (same
-`gcp_zscore_raw()`, same segment math, and the *same camera extraction code* — the
-`elotto_camera` component is shared from this repo, see [Project Structure](#project-structure))
+`main/slave.c`) is another ESP32-P4 running the **identical GCP engine** — and "identical" is now
+literal rather than maintained by hand: `gcp_zscore_raw()` lives in the shared `elotto_gcp`
+component, so master and slave compile the *same definition* of how a z-score is computed. That
+matters more than it sounds: the combine is `Σz/√k` over nodes, which is only meaningful if every
+node computed z the same way, and a divergence there would be invisible — a wrong-but-plausible z
+looks exactly like a result. The camera extraction code is shared the same way via
+`elotto_camera` (see [Project Structure](#project-structure))
 and no lottery logic. It boots, brings up Ethernet, starts a small webserver (`/diag`,
 `/otainfo`, `/update`) and sits in a blocking UDP command loop waiting for the master. Its only
 measurement job: when told to, run a GCP measurement on its **own independent noise source** —
@@ -440,8 +469,8 @@ variance, so the combined score stays N(0,1) while the signal adds coherently �
 z_combined = Σ z_node / √k        // k = nodes that actually answered THIS run
 ```
 
-`k` is per-run, not per-session: a node that misses its reply, or whose camera falls back to
-the TRNG, simply is not in that sum. The combined z stays unit-variance either way, which is
+`k` is per-run, not per-session: a node that misses its reply, or whose camera stalled and was
+dropped, simply is not in that sum. The combined z stays unit-variance either way, which is
 the only property the statistics above depend on.
 
 Each node subtracts **its own** baseline mean first, so each hardware bias is removed
@@ -529,11 +558,14 @@ master  slave_baseline_wait() ◄──── "OK" ──── slave    (resync
 **Phase 2 — every combination (parallel)**
 ```
 for each combination:
-  master  "M" ────────────────►  every node starts measuring (one datagram)
+  master  "M<seg>" ───────────►  every node starts measuring (one datagram)
   master  gcp_zscore_raw() ─────  all measure the same time window
-  master  slave_measure() ◄─ "Z:<float>,C" ── slave   (seq must match)
-  master  z = (z_master + z_slave) / √2
+  master  nodes_collect()  ◄─ "Z:<float>" ── each node   (seq must match)
+  master  z = Σ(z_node) / √k          over the k nodes that answered THIS run
 ```
+No `,<C|T>` source tag any more: with one source a completed run can only have come from the
+camera, and a run that could *not* complete says so outright (`E:<reason>`) instead of reporting a
+substitute.
 
 **Abort**
 ```
@@ -553,10 +585,11 @@ master  "A" ─►  slave sets g_abort and returns from its run at the next
   actually missed it pays). Still silent → that node is out of *that run* and the rest combine
   over √(k−1). After `NODE_MISS_LIMIT` consecutive misses it leaves the session entirely, so an
   unplugged node degrades the array instead of taxing every later run with the full retry budget.
-- **Drop-and-continue on a degraded source** — a node reporting TRNG during a camera session is
-  dropped rather than averaged in, which keeps the session source-clean by construction. The
-  session only aborts if that would leave fewer than two nodes — the same rule as the old n=2
-  abort, with the floor made explicit.
+- **Drop-and-continue on a dead source** — a node whose camera stalls replies `E:<reason>` and is
+  dropped rather than averaged in, which keeps the session source-clean by construction. There is
+  no "degraded source" to report any more: with the TRNG gone a run either completed on camera
+  bits or did not complete at all. The session only aborts if the drop would leave fewer than two
+  nodes — the same rule as the old n=2 abort, with the floor made explicit.
 - **Proportional baseline timeout** — `slave_baseline_wait()` waits `baseline_total × 800 ms +
   15 s`, so a large baseline (minutes of slave work) never trips a false timeout.
 - **Cooperative abort** — the slave polls the socket every 2000 segments, so even a long
@@ -814,7 +847,13 @@ for (j in candidates by Z) {              // best score first
 
 ## Insights from Development
 
-### TRNG Register is 75× Faster than esp_random()
+> ⚠ **The three TRNG subsections below are historical.** The on-chip TRNG was *deleted* from both
+> firmwares — no `RNG_REG`, no `esp_random()`, no `?src=`, no Entropy selector. Entropy is photons
+> only. They are kept because the findings are real and one of them is a genuine cautionary tale
+> (a register that produced 50 consecutive positive Z-scores on first use), but nothing in them
+> describes code that exists today. The camera findings after them **are** current.
+
+### TRNG Register is 75× Faster than esp_random() *(historical — TRNG removed)*
 
 The diagnostics (`/diag`) showed:
 
@@ -842,7 +881,7 @@ Solution analogous to the eTensor project (Princeton PEAR lab methodology):
 
 This gives each measurement an expected value of 0 — statistically correct.
 
-### TRNG Register Address was Initially Biased
+### TRNG Register Address was Initially Biased *(historical — TRNG removed)*
 
 Direct access to register `0x501101A4` produced **exclusively positive Z-scores** in an
 early test (all 50 runs > 0). Likely cause: TRNG initialization state on very first start.
@@ -865,7 +904,7 @@ signature is distinctive and worth remembering: **`drops` huge with `waits == 0`
 consumer never once waited for bits, so the consumer is the bottleneck. Fix: any task calling
 `camera_read_word()` runs above `ELOTTO_CAM_TASK_PRIO`.
 
-### Timing Benchmarks (TRNG source, 200,000 values/run, ESP32-P4 @ 360 MHz, direct register)
+### Timing Benchmarks *(historical — TRNG source, 200,000 values/run, direct register)*
 
 | Config | Calibration | Measurement | Total |
 |---|---|---|---|
@@ -956,20 +995,38 @@ image at it explicitly with `POST /update?slot=0|1`, choose what boots with
 
 ### `http://<IP>/diag` — source health (≈ 5 s)
 
-Runs a fresh TRNG-vs-`esp_random()` comparison (speed, bias, stuck values, Z distribution) and
-dumps the camera's running statistics under `"cam"`:
+Dumps the camera's running statistics under `"cam"` — bias, σ, autocorrelation, mean pixel level,
+`zero_diff`, throughput, stalls and ring health. `"src"` reads `camera-only`.
+
+This endpoint used to A/B the on-chip TRNG register against `esp_random()` and report both. That
+comparison is gone with the TRNG itself: there is one source now, so there is nothing to compare
+it against, and a diagnostic that reported a source the firmware cannot use would be noise.
+
+⚠ `camera_get_stats()` is cumulative **since the last `camera_stats_reset()`**. With per-loop
+calibration on (the default) that reset happens every loop, so `mbit_s` and `bias` here and in
+`/loops` are per-loop figures. In a `?cal=0` session there is no reset and they are lifetime
+averages again — a falling `mbit_s` is then not evidence of live degradation.
 
 ```json
-{"reg_ms":3,"reg_bias":0.503490,"reg_stuck":0,"reg_z_mean":0.0987, "…":"…",
- "cam":{"ready":true,"frame_pairs":8420,"bits":2694400000,"stuck_frames":0,
-        "bias":0.499983,"sigma":1.0016,"autocorr":[0,0,0,0],
-        "mean_pixel":24.83,"mbit_s":3.674,"zero_diff":0.0602,
-        "drops":81327617,"waits":3172,"stalls":0}}
+{"src":"camera-only",
+ "cam":{"ready":true,"frame_pairs":5897,"bits":1887040000,"stuck_frames":0,
+        "bias":0.499995,"sigma":1.0002,"sigma_n":589700,
+        "autocorr":[0.0000,-0.0000,-0.0000,0.0000],
+        "mean_pixel":45.73,"mbit_s":3.183,"zero_diff":0.0602,
+        "drops":50003066,"waits":9134,"stalls":0,
+        "exposure":16,"gain":1023,"fold":true}}
 ```
+
+*(A real capture from the master, 2026-07-27, under the fixed per-camera LEDs.)*
 
 Reading the camera fields:
 - `bias` → 0.5, `sigma` → 1.0, `autocorr` → 0, `stuck_frames` = 0 — the Phase 0 gates.
-- `mean_pixel` is the **light-leak check**: it must sit near the black floor.
+- `mean_pixel` **was** the light-leak check, back when the cameras were meant to sit dark and any
+  raised level meant stray light. The enclosure is now deliberately **lit** (LEDs fixed to each
+  camera, shielded from everything else), so a high `mean_pixel` means the lamp is on, not that a
+  leak has appeared. Judge it against the saturation ceiling instead: ~68 measured clean, ~119
+  decisively broken (σ 1.91). And never judge the enclosure by one reading — sweep the exposure
+  ladder, because *flatness* across it is what distinguishes black level from light.
 - `zero_diff` is the fraction of pixels whose frame-to-frame diff is 0. It explains bias
   directly (a zero diff has LSB 0), and it tracks light: more photons → more shot noise → more
   uniform LSB.
@@ -981,8 +1038,10 @@ Reading the camera fields:
 ### `http://<IP>/loops` — per-loop drift table
 
 One row per completed loop: raw per-run offset (`base`, `raw_m`), per-node means and σ
-(`mean_m`/`mean_s`, `sig_m`/`sig_s`), and camera health at that moment for both nodes
-(`cam_mbit`/`cam_stalls`, `s_cam_mbit`/`s_cam_stalls`), plus the session-level
+(`mean_m`/`mean_s`, `sig_m`/`sig_s`), per-node camera health at that moment
+(`cam_mbit`/`cam_stalls`, `s_cam_mbit`/`s_cam_stalls`), **and the exposure/gain each node chose
+that loop** — mandatory, because a per-loop change nobody logged is indistinguishable from drift
+in the data — plus the session-level
 `drift_slope` / `drift_t` and the σ range. The table stores the first 128 loops; the drift
 regression runs on running sums and stays exact beyond that.
 
@@ -995,20 +1054,32 @@ regression runs on running sums and stays exact beyond that.
 ## Project Structure
 
 ```
-main/
+main/                 (one job per file — split out of a 2128-line sensor.c on 2026-07-27)
   elotto.c    — app_main, Ethernet, webserver, HTML/JS incl. /diag + /loops, CSV save, loop UI
-  sensor.c    — GCP analysis, noise_word() source select, baseline, number scoring,
-                combination enumeration, multi-loop accumulation + drift record,
-                coverage selection, slave link (UDP)
+  sensor.c    — the GCP statistics: baseline, number scoring, pool building + attended
+                confirmation, combination enumeration, studentization, pairwise independence,
+                multi-loop accumulation + drift record, coverage selection
+  nodes.c/.h  — THE ARRAY: UDP link, discovery, the per-loop calibration handshake, the
+                diagnostics poll, and the camera-fault drop/reboot policy. sensor.c reaches
+                the other boards only through this API
+  focus.c/.h  — the observer-facing session: Focus panel, pause, the 350 ms run gap and the
+                session clock. One module because they share state — pause_gate() accumulates
+                the time held and elapsed_ms_now() subtracts it
   sensor.h    — types, ElottoStatus (phase/baseline/loop/ranking/coverage/drift/link fields)
 components/
-  elotto_camera/  — OV5647 dark-frame entropy: camera.c, include/camera.h, Kconfig
+  elotto_camera/  — OV5647 entropy: camera.c, include/camera.h, Kconfig
+  elotto_gcp/     — the z-score primitive, gcp_zscore_raw(). Shared for a stronger reason than
+                    reuse: the combine is Sum(z)/√k over nodes, so it is only meaningful if
+                    every node computes z identically. One definition, so they cannot disagree
   elotto_link/    — the master↔slave UDP wire format (EL1 <seq> <payload>, ports 5000/5001)
   elotto_ota/     — /update endpoint + boot safety (rollback, boot counter, mark-valid)
-                    All three are SHARED with the slave repo via
+                    All four are SHARED with the slave repo via
                     EXTRA_COMPONENT_DIRS=../elotto/components, so the two repos must stay
-                    siblings on disk and a change here affects both nodes — build, flash
+                    siblings on disk and a change here affects every node — build, flash
                     and commit them together.
+                    ⚠ ota_firmware points at the single elotto_ota directory, NOT at
+                    components/: IDF compiles everything it discovers, so aiming at the
+                    parent would drag the camera into the recovery image.
 ota_firmware/ — the recovery updater, its own IDF project (Ethernet + HTTP + esp_ota only)
 partitions.csv — shared partition table: factory (updater) + ota_0/ota_1, used by all three
 docs/
