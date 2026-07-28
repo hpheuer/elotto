@@ -251,13 +251,14 @@ static void score_and_build_pool(int max_val, int pool_size, uint8_t *pool,
         int j = (int)(fast_rng() % (uint32_t)(i + 1));
         uint8_t t = order[i]; order[i] = order[j]; order[j] = t;
     }
-    /* The kept numbers are not measured, so they must not be counted either —
-     * otherwise the progress bar stalls short of its total for the whole pass.
-     * ADDS rather than assigns: a Eurojackpot loop calls this twice (50 main,
-     * then 12 bonus) and the two are one progress bar, not two. Assigning here
-     * made the bonus pass reset a full bar back to 0/12. The caller zeroes the
-     * pair before the first pass of a group. */
-    g_status.scoring_total += n_order;
+    /* scoring_total is NOT touched here. The caller sets it once, up front, to
+     * the whole group's count — 62 for a Eurojackpot loop (50 main + 12 bonus).
+     *
+     * Two earlier versions of this were both wrong in ways the operator sees.
+     * Assigning `n_order` here made the bonus pass reset a full bar to 0/12.
+     * Accumulating fixed the reset but left the TOTAL growing mid-phase: the
+     * bar read 49/50 and then 54/62, so the percentage jumped backwards. A
+     * progress bar whose denominator moves is not a progress bar. */
 
     for (int idx = 0; idx < n_order; idx++) {
         if (g_status.abort_requested) return;
@@ -340,6 +341,26 @@ static void pool_scores_for(const uint8_t *sel, int n_sel,
  * unchecking a bonus number left the caller measuring comb(5,2)=10 draws over a
  * pool_euro[] whose tail was the previous proposal. A value the caller owns
  * cannot go stale that way. */
+/* ── The observer gate (PHASE_READY) ───────────────────────────────────
+ * Same one-word handshake as the pool prompt: the webserver task sets the flag,
+ * elotto_task spins on it. No timeout, deliberately — there is no sensible
+ * default action here (the pool prompt has one: take the proposal), and an
+ * unattended session never reaches this gate because it is gated on
+ * `pool_confirm`. A session parked here waits as long as the operator needs. */
+static volatile bool s_ready_go = false;
+
+void elotto_ready_go(void) { s_ready_go = true; }
+
+static void ready_wait(void)
+{
+    s_ready_go     = false;
+    g_status.phase = PHASE_READY;
+    while (!s_ready_go && !g_status.abort_requested) {
+        vTaskDelay(pdMS_TO_TICKS(100));
+        g_status.elapsed_ms = elapsed_ms_now();
+    }
+}
+
 static void pool_confirm_wait(bool euro, int mx, int *io_pool_nm, int *io_pool_ne,
                               uint8_t *pool_main, uint8_t *pool_euro, int nm)
 {
@@ -417,7 +438,11 @@ static void pool_confirm_wait(bool euro, int mx, int *io_pool_nm, int *io_pool_n
          * independently: unchecking a bonus number should not re-run the main
          * sweep, which is fifty runs of screen time. */
         g_status.phase = PHASE_SCORING;
-        g_status.scoring_total = 0;      // fresh bar for the re-scoring pass
+        /* Only the numbers actually being re-measured count toward this bar —
+         * the retained ones are skipped entirely, so counting them would leave
+         * the bar permanently short of its total. */
+        g_status.scoring_total = (s_pool_sel_nm < pool_nm ? mx - s_pool_sel_nm : 0)
+                               + (euro && s_pool_sel_ne < pool_ne ? 12 - s_pool_sel_ne : 0);
         g_status.scoring_done  = 0;
         if (s_pool_sel_nm < pool_nm) {
             float keep_z[POOL_MAIN_49];
@@ -1132,12 +1157,28 @@ void elotto_task(void *pvParam)
         if (nodes_have_slaves() && !g_status.abort_requested)
             slave_baseline_wait();
 
+        /* ── The observer gate ────────────────────────────────────────────
+         * Everything up to here — calibration, baseline — is the instrument
+         * preparing itself, with nothing displayed and nothing to attend to.
+         * Scoring is the first phase whose bits are collected while a target
+         * is on screen, so it is where the protocol actually begins. Park and
+         * let the operator start it deliberately rather than catching them
+         * mid-thought two minutes after they pressed Start.
+         *
+         * Loop 0 only (it rides on `do_score`, which is already loop-0-only in
+         * cumulative mode) and only when a human asked for it. */
+        if (do_score && g_status.pool_confirm && !g_status.abort_requested) {
+            ready_wait();
+            if (g_status.abort_requested) goto done;
+        }
+
         /* ── Phase 0: Individual number scoring (cumulative: loop 0 only) ── */
         g_status.phase = PHASE_SCORING;
         if (do_score) {
-            // Zero the pair for this loop's group of passes; each pass adds its
-            // own measured count, so main and bonus share one bar.
-            g_status.scoring_total = 0;
+            // The WHOLE group's count, up front: 50 main + 12 bonus = 62 for
+            // Eurojackpot. Both passes fill one bar that counts to 62, rather
+            // than the total changing under the operator part-way through.
+            g_status.scoring_total = mx + (euro ? 12 : 0);
             g_status.scoring_done  = 0;
             score_and_build_pool(mx, pool_nm, pool_main, false,
                                  NULL, NULL, 0, g_status.pool_main_z);

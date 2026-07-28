@@ -227,13 +227,13 @@ static const char HTML[] =
 "title='Reference runs with the display off. Feeds the cross-loop drift "
 "regression (drift_slope/drift_t). The ranking is unaffected either way: "
 "studentize() removes any constant offset exactly. This is NOT the camera "
-"exposure calibration.'>&#128207; Baseline &#8212; drift reference"
+"exposure calibration.'><span id='calTitle'>&#128207; Baseline &#8212; drift reference</span>"
 "<span id='calCheck'></span></div>"
 "<div class='prog-wrap' style='height:18px'>"
 "<div id='pfCal' style='background:linear-gradient(90deg,#a08030,#f0c040);"
 "height:100%;border-radius:20px;width:0%;transition:width .5s'></div></div>"
 "<div style='color:#f0c040;font-size:.9em;text-align:center;margin-top:4px'>"
-"<span id='sCalDone'>0</span> / <span id='sCalTotal'>50</span> Runs</div>"
+"<span id='calCount'><span id='sCalDone'>0</span> / <span id='sCalTotal'>50</span> Runs</span></div>"
 "</div>"
 "<div id='scoreArea' style='margin-top:14px'>"
 "<div style='color:#6ab0e8;font-size:.88em;margin-bottom:4px'>&#127919; Number scoring"
@@ -275,12 +275,29 @@ static const char HTML[] =
 "<div style='color:#f0c040;font-size:.82em;margin-bottom:5px'>Bonus numbers</div>"
 "<div id='poolEuro' style='display:flex;flex-wrap:wrap;gap:7px'></div></div>"
 "<div id='poolCount' style='margin-top:14px;font-size:.9em;color:#fff'></div>"
+/* Placed inside the same overlay block below; see readyOv. */
 "<div class='btns' style='margin-top:16px'>"
 "<button class='btn btn-euro' id='poolOk' onclick='poolSend(\"ok\")'>OK</button>"
 "<button class='btn' id='poolMore' onclick='poolSend(\"more\")' "
 "style='background:#2e7d9e;color:#fff'>Select more</button>"
 "<button class='btn btn-abort' id='poolCancel' onclick='poolSend(\"cancel\")'>Cancel</button>"
 "</div></div></div>"
+/* The observer gate. Deliberately sparse — one line and one big button. This is
+   the moment the operator is meant to settle and concentrate, so the screen
+   should give them nothing else to read. */
+"<div id='readyOv' style='display:none;position:fixed;inset:0;z-index:60;"
+"background:rgba(0,0,0,.82);align-items:center;justify-content:center;padding:16px'>"
+"<div style='background:#0f3d0f;border:1px solid rgba(144,238,144,.35);"
+"border-radius:14px;max-width:460px;width:100%;padding:28px;text-align:center;"
+"box-shadow:0 8px 40px rgba(0,0,0,.6)'>"
+"<div style='color:#90ee90;font-size:1.05em;margin-bottom:6px'>System ready</div>"
+"<div style='color:#cfe8cf;font-size:.9em;margin-bottom:22px;line-height:1.5'>"
+"Cameras calibrated and baseline recorded.<br>"
+"Take your time. Press Start when you are settled and ready to attend."
+"</div>"
+"<button class='btn btn-euro' style='font-size:1.35em;padding:16px 46px' "
+"onclick='readyGo()'>&#9654; Start</button>"
+"</div></div>"
 "<div class='card' id='focusCard' style='display:none;text-align:center'>"
 "<div style='color:#f0c040;font-size:.88em;margin-bottom:8px;text-align:left'>"
 "&#127919; Focus:</div>"
@@ -311,6 +328,9 @@ static const char HTML[] =
 "<script>"
 "var timer=null,curMode=0,lastData=null,lastDisplayed=null,calShown=false;"
 "var ftimer=null,lastSeq=-1,winSeen=0,winMissed=0,paused=false,pausePendUntil=0;"
+// Set by the /status poll; read by pollFocus at 10 Hz. True while the rig is
+// calibrating, running its baseline, or parked at the observer gate.
+"var preparing=false;"
 "function fmt(ms){"
 "var m=Math.floor(ms/60000),h=Math.floor(m/60);m=m%60;"
 "return h>0?h+':'+('0'+m).slice(-2)+' h':m+' min';}"
@@ -343,6 +363,9 @@ static const char HTML[] =
 // A page loaded (or reloaded) while the device is already waiting must show the
 // prompt too — the session is blocked until somebody answers it.
 "if(d.phase==='poolconfirm'&&!poolShown&&d.pool_main)poolShow(d);"
+// A page loaded or reloaded while the device is parked at the observer gate
+// must show it too — the session is blocked until somebody presses Start.
+"if(d.phase==='ready')readyShow();"
 "updateLoopBadge(d.loop_current||1,d.loops_total||1);"
 "document.getElementById('sCalTotal').textContent=d.baseline_total;"
 "setScoreTotal(d);"
@@ -487,6 +510,17 @@ static const char HTML[] =
 "}"
 "function poolHide(){"
 "document.getElementById('poolOv').style.display='none';poolShown=false;}"
+/* ── The observer gate ────────────────────────────────────────────────
+   Hidden immediately on click: the device needs a moment to pick the answer up,
+   and a lingering button invites a second press on a session that has moved on. */
+"function readyShow(){document.getElementById('readyOv').style.display='flex';}"
+"function readyHide(){document.getElementById('readyOv').style.display='none';}"
+"function readyGo(){"
+"readyHide();"
+"document.getElementById('msg').textContent='Starting number scoring\\u2026';"
+"fetch('/ready',{method:'POST'}).then(function(r){"
+"if(!r.ok)document.getElementById('msg').textContent='Start rejected by device.';});"
+"}"
 "function poolSend(act){"
 "var m=poolChecked('poolMain'),e=poolChecked('poolEuro');"
 "var q='/pool?act='+act+'&main='+m.join(',')+'&euro='+e.join(',');"
@@ -561,7 +595,14 @@ static const char HTML[] =
 "\\u23f8 PAUSED</span>\";"
 "lastSeq=f.seq;applyPaused(true);return;}"
 "applyPaused(false);"
-"if(!f.on){box.innerHTML='';return;}"
+/* While the instrument is preparing itself there is no target to attend to, but
+   an empty panel for two minutes reads as a crash. Say what is happening
+   instead. `preparing` is set by the 1 Hz /status poll — /focus alone does not
+   know which phase the session is in. */
+"if(!f.on){box.innerHTML=preparing"
+"?\"<span style='color:#90ee90;font-size:1.15em'>Preparing the system"
+"<br><span style='color:#8fae8f;font-size:.85em'>please wait\\u2026</span></span>\""
+":'';return;}"
 "if(f.seq===lastSeq)return;"
 "if(lastSeq>=0&&f.seq>lastSeq+1)winMissed+=f.seq-lastSeq-1;"
 "lastSeq=f.seq;winSeen++;"
@@ -579,6 +620,11 @@ static const char HTML[] =
 // the moment it moves on (an answer from another browser tab, or the timeout).
 "if(d.phase==='poolconfirm'){if(!poolShown&&d.pool_main)poolShow(d);}"
 "else if(poolShown)poolHide();"
+// The observer gate: raise it while the device is parked, take it down the
+// moment it moves on (another tab answered, or the session was aborted).
+"if(d.state==='running'&&d.phase==='ready')readyShow();else readyHide();"
+"preparing=(d.state==='running'&&(d.phase==='calibrating'||d.phase==='baseline'"
+"||d.phase==='ready'));"
 // Calibration is the first thing a loop does and nothing is on screen for it —
 // the panel stays hidden, since nothing is being attended to while the sensor is
 // tuned. Say so, or a 30 s pause at the top of every loop looks like a stall.
@@ -596,10 +642,30 @@ static const char HTML[] =
 "if(d.scoring_total>0&&d.scoring_done>=d.scoring_total)"
 "document.getElementById('scoreCheck').innerHTML=\" <span style='color:#90ee90;font-size:1.1em'>&#10004;</span>\";"
 "else document.getElementById('scoreCheck').innerHTML='';"
+/* The baseline bar doubles as the calibration bar. Reusing it rather than adding
+   a second one is deliberate: the two never run at once, and the operator needs
+   ONE place to look to see that something is happening. Without this a ~25 s
+   silent gap at the head of every loop reads as a crash.
+   Progress is estimated against the LAST sweep's measured duration, not the
+   budget: the budget is a cap (30 s) while a sweep actually takes ~24 s, so a
+   budget-based bar would visibly stall at 80%. Falls back to the budget on the
+   first loop, when there is no previous sweep to estimate from. */
+"if(d.phase==='calibrating'){"
+"var est=(d.cal_ms>0?d.cal_ms:(d.cal_budget_ms||30000));"
+"var el=d.cal_elapsed_ms||0;"
+"var left=Math.max(0,Math.round((est-el)/1000));"
+"document.getElementById('calTitle').innerHTML='\\uD83D\\uDD27 Camera calibration \\u2014 exposure sweep';"
+"document.getElementById('pfCal').style.width="
+"Math.max(0,Math.min(100,Math.round(el*100/est)))+'%';"
+"document.getElementById('calCount').textContent="
+"left>0?left+' s left':'finishing\\u2026';"
+"}else{"
+"document.getElementById('calTitle').innerHTML='&#128207; Baseline &#8212; drift reference';"
 "var calPct=d.baseline_total>0?Math.round(d.baseline_done*100/d.baseline_total):0;"
 "document.getElementById('pfCal').style.width=calPct+'%';"
-"document.getElementById('sCalDone').textContent=d.baseline_done;"
-"document.getElementById('sCalTotal').textContent=d.baseline_total;"
+"document.getElementById('calCount').innerHTML='<span id=\"sCalDone\">'+(d.baseline_done||0)"
+"+'</span> / <span id=\"sCalTotal\">'+(d.baseline_total||0)+'</span> Runs';"
+"}"
 "if(d.baseline_done>=d.baseline_total&&d.baseline_total>0)"
 "document.getElementById('calCheck').innerHTML=\" <span style='color:#90ee90;font-size:1.1em'>&#10004;</span>\";"
 "else document.getElementById('calCheck').innerHTML='';"
@@ -820,10 +886,10 @@ static const char HTML[] =
 // different experiments and must not be pooled after the fact.
 "var lines=['# mode='+d.mode+',date='+new Date().toISOString().slice(0,10)"
 "+',focus='+(d.focus?'on':'off')+',paused_ms='+(d.paused_ms||0),"
-"'# coverage-10 (highest z, diversified)',hdr];"
+"'# coverage-'+(lastDisplayed?lastDisplayed.length:0)+' (highest z, diversified)',hdr];"
 "lines=lines.concat(rows(lastDisplayed));"
 "if(d.cover_low&&d.cover_low.length){"
-"lines.push('# coverage-10 (lowest z, diversified)');"
+"lines.push('# coverage-'+d.cover_low.length+' (lowest z, diversified)');"
 "lines.push(hdr);"
 "lines=lines.concat(rows(d.cover_low));}"
 "var url=URL.createObjectURL(new Blob([lines.join('\\n')],{type:'text/csv'}));"
@@ -870,6 +936,7 @@ static esp_err_t status_handler(httpd_req_t *req)
         g_status.phase == PHASE_BASELINE     ? "baseline"    :
         g_status.phase == PHASE_CALIBRATE    ? "calibrating" :
         g_status.phase == PHASE_POOL_CONFIRM ? "poolconfirm" :
+        g_status.phase == PHASE_READY        ? "ready"       :
                                                "measuring";
     const char *rank_str = (g_status.rank_mode == RANK_CUMULATIVE) ? "cum" : "peak";
     pos += snprintf(buf+pos, sizeof(buf)-pos,
@@ -883,7 +950,7 @@ static esp_err_t status_handler(httpd_req_t *req)
         "\"net_retries\":%lu,\"net_lost\":%lu,\"net_stale\":%lu,"
         "\"focus\":%s,\"paused\":%s,\"paused_ms\":%lld,"
         "\"focus_win_ms\":%.1f,\"focus_gap_ms\":%.1f,"
-        "\"cal_budget_ms\":%d,\"cal_ms\":%d,"
+        "\"cal_budget_ms\":%d,\"cal_ms\":%d,\"cal_elapsed_ms\":%d,"
         "\"loops_done\":%d,\"drift_slope\":%.5f,\"drift_t\":%.2f,"
         "\"off_first\":%.4f,\"off_last\":%.4f,"
         "\"sigma_lo\":%.4f,\"sigma_hi\":%.4f,"
@@ -906,6 +973,10 @@ static esp_err_t status_handler(httpd_req_t *req)
         g_status.paused ? "true" : "false", (long long)g_status.paused_ms,
         g_status.focus_win_ms, g_status.focus_gap_ms,
         g_status.cal_budget_ms, g_status.cal_ms,
+        /* Live sweep progress, 0 when none is in flight. cal_ms is only written
+         * when a sweep ENDS, so it cannot drive a bar while one runs. */
+        g_status.cal_start_us
+            ? (int)((esp_timer_get_time() - g_status.cal_start_us) / 1000) : 0,
         g_status.loops_done, g_status.drift_slope, g_status.drift_t,
         g_status.off_first, g_status.off_last,
         g_status.sigma_lo, g_status.sigma_hi,
@@ -999,7 +1070,7 @@ static esp_err_t status_handler(httpd_req_t *req)
         g_status.freq_nums[3], g_status.freq_nums[4], g_status.freq_nums[5],
         g_status.freq_euro[0], g_status.freq_euro[1]);
 
-    int cshow = g_status.cover_count < TOP_N ? g_status.cover_count : TOP_N;
+    int cshow = g_status.cover_count < COVER_SHOW ? g_status.cover_count : COVER_SHOW;
     if (cshow < 0) cshow = 0;
     for (int i = 0; i < cshow; i++) {
         if (i) pos += snprintf(buf+pos, sizeof(buf)-pos, ",");
@@ -1007,7 +1078,7 @@ static esp_err_t status_handler(httpd_req_t *req)
     }
     pos += snprintf(buf+pos, sizeof(buf)-pos, "],\"cover_low\":[");
 
-    int clshow = g_status.cover_low_count < TOP_N ? g_status.cover_low_count : TOP_N;
+    int clshow = g_status.cover_low_count < COVER_SHOW ? g_status.cover_low_count : COVER_SHOW;
     if (clshow < 0) clshow = 0;
     for (int i = 0; i < clshow; i++) {
         if (i) pos += snprintf(buf+pos, sizeof(buf)-pos, ",");
@@ -1282,6 +1353,24 @@ static int parse_num_list(const char *s, uint8_t *out, int max_n, int max_val)
     return n;
 }
 
+/* POST /ready — the operator is settled and wants scoring to begin.
+ *
+ * Separate from /pool because it answers a different question at a different
+ * point: /pool edits what will be measured, /ready says when to start measuring
+ * it. 409 if nothing is waiting, so a stale tab cannot un-pause a session that
+ * has already moved on. */
+static esp_err_t ready_handler(httpd_req_t *req)
+{
+    if (g_status.state != ELOTTO_RUNNING || g_status.phase != PHASE_READY) {
+        httpd_resp_set_status(req, "409 Conflict");
+        httpd_resp_sendstr(req, "no session waiting to start");
+        return ESP_OK;
+    }
+    elotto_ready_go();
+    httpd_resp_sendstr(req, "ok");
+    return ESP_OK;
+}
+
 static esp_err_t pool_handler(httpd_req_t *req)
 {
     char qry[512] = "";
@@ -1407,6 +1496,7 @@ static void start_webserver(void)
         {"/pause",  HTTP_POST, pause_handler,  NULL},
         {"/calibrate", HTTP_GET, calibrate_handler, NULL},
         {"/pool", HTTP_POST, pool_handler, NULL},
+        {"/ready", HTTP_POST, ready_handler, NULL},
     };
     for (int i = 0; i < (int)(sizeof(uris) / sizeof(uris[0])); i++)
         httpd_register_uri_handler(srv, &uris[i]);

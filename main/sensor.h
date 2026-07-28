@@ -5,6 +5,17 @@
 
 #define NUM_RUNS      8000
 #define TOP_N           10
+/* How many Coverage picks are published and shown. Fewer than TOP_N on purpose
+ * (user decision, 2026-07-28): ten diversified sets is more than anyone acts
+ * on, and a long list invites reading rank 9 as a result when the whole point
+ * of the Bonferroni line is that none of them is one.
+ *
+ * Only the DISPLAY shrinks. publish_coverage() still runs its greedy
+ * max-spread over TOP_N, and the greedy is prefix-stable — picking 5 of a
+ * 10-pick sequence gives exactly the sets a 5-pick run would have — so no
+ * published number changes. top[]/low[] are untouched; compute_significance()
+ * reads those, and shortening them would alter the corrected p-value. */
+#define COVER_SHOW       5
 #define POOL_MAIN_49    15   // C(15,6) = 5005 combinations
 #define POOL_MAIN_50    12   // C(12,5) =  792 combinations
 #define POOL_EURO_12     5   // C(5,2)  =   10 combinations
@@ -14,7 +25,23 @@ typedef enum { ELOTTO_IDLE, ELOTTO_RUNNING, ELOTTO_DONE, ELOTTO_ABORTED } Elotto
 // PHASE_CALIBRATE is appended, not inserted: it runs FIRST in a loop but the
 // other three are wired into the UI and the CSV by value.
 typedef enum { PHASE_SCORING, PHASE_BASELINE, PHASE_MEASURING,
-               PHASE_CALIBRATE, PHASE_POOL_CONFIRM } ElottoPhase;
+               PHASE_CALIBRATE, PHASE_POOL_CONFIRM, PHASE_READY } ElottoPhase;
+
+/* PHASE_READY — the observer gate, loop 0 only.
+ *
+ * Calibration and baseline take ~2 minutes during which nothing is on screen
+ * for the operator and nothing is being attended to. Scoring is where the
+ * protocol actually begins: it is the first phase whose bits are collected
+ * while a target is displayed. Starting it the instant the baseline ends means
+ * the first candidate numbers are measured while the observer is still reading
+ * the screen and settling — the opposite of the intent.
+ *
+ * So the session parks here and waits for the operator to press Start. Opt-in
+ * on the same `confirm=1` flag as the pool prompt, for the same reason: a
+ * device that blocks on a human would hang every scripted or unattended run.
+ * A timeout is deliberately NOT applied — unlike the pool proposal there is no
+ * sensible default action, and an unattended session never reaches this gate. */
+void elotto_ready_go(void);      // the operator pressed Start
 
 /* What the operator did with the proposed pool. Written by the /pool handler,
  * read and cleared by elotto_task — one word, so no lock is needed. */
@@ -247,6 +274,13 @@ typedef struct {
     int              cal_ms;              // what the last loop's calibration
                                           // actually cost, master + ack wait —
                                           // the §1.6 gate is a measured number
+    volatile int64_t cal_start_us;        // when the sweep in flight began, 0 when
+                                          // none is. Published as cal_elapsed_ms so
+                                          // the UI can show a live bar: a silent
+                                          // ~25 s gap at the head of every loop
+                                          // reads as a crash otherwise. cal_ms is
+                                          // only written when the sweep ENDS, so it
+                                          // cannot drive progress while one runs
     volatile bool    noise_stalled;       // the array lost too many cameras to carry
                                           // on. There is no substitute source to fall
                                           // back to by design, so at n >= 3 a failed

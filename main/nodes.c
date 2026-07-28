@@ -493,10 +493,12 @@ void calibrate_all(void)
 
     g_status.phase = PHASE_CALIBRATE;
     int64_t t0 = esp_timer_get_time();
+    g_status.cal_start_us = t0;          // publishes the live bar; cleared below
     slave_calibrate_start(g_status.cal_budget_ms);   // trigger first, then measure
     calibrate_master(g_status.cal_budget_ms);
     if (!g_status.abort_requested) slave_calibrate_wait(g_status.cal_budget_ms);
     g_status.cal_ms = (int)((esp_timer_get_time() - t0) / 1000);
+    g_status.cal_start_us = 0;           // no sweep in flight
     printf("calibration: %d ms for %d node(s)\n", g_status.cal_ms, g_status.node_ok);
 }
 
