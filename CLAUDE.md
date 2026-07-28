@@ -8,7 +8,12 @@
 - Build system: idf.py via ESP-IDF Extension
 
 ## Project structure
-- main/elotto.c   – app_main, Ethernet, webserver, HTML/JS UI, /diag + /loops + /focus + /pause
+- main/elotto.c   – app_main, Ethernet, webserver, HTML/JS UI. Endpoints: `/` `/status` `/start`
+  `/abort` `/loops` `/focus` `/pause` `/calibrate` `/pool` `/ready` `/probe`, plus **`/diag` (a
+  four-camera health PAGE, live, one row per node)** and `/diagjson` (the master's own stats, which
+  is where `/diag`'s JSON went on 2026-07-28). Slaves serve that same JSON at their own `/diag`.
+  ⚠ `cfg.max_uri_handlers` must exceed **(count here) + 5 from elotto_ota**; registration past the
+  cap fails and the return value is checked nowhere, so an endpoint just 404s silently.
 - main/sensor.c   – GCP analysis, scoring/pooling, baseline, studentization, drift, publishing
 - main/nodes.c    – **the array**: UDP link, discovery, calibration handshake, per-node health,
   the drop/reboot policy. Split out of sensor.c 2026-07-27 as a pure move (~520 lines); every
@@ -77,17 +82,24 @@ current on the rail feeding the sensor's analog supply. It was misdiagnosed as o
 first; the giveaway is that a separate supply restored 8 of 9 rungs *while `mean_px` barely
 changed*. Also: LED output falls ~12 % as the junction warms, so let it settle before measuring.
 
-Two software policies now cost a factor of 7 in bias, and neither is physics — see §1.13:
-- **The `mean_px < 64` gate excludes the best rung.** Exposure 64 gives bias −4.8e-5 (matching the
-  §1.9 open-bench best) with σ 0.998, rejected on light level alone by 7 %. Real saturation starts
-  between `mean_px` 68.7 (clean) and 118.6 (σ 1.91). ⚠ **Not changed** — a decision, not a
-  measurement. The earlier suggestion to *lower* it to 8.0 applied to the dark box and is dead.
-- **Calibration selects the *fastest* passing rung, which is degenerate** now that §1.10 has shown
-  the bit rate is CPU-bound (2.4 % spread across exposure 4→512). It should select **lowest
-  |bias − 0.5|**. Dimming cannot fix this: selection always sits at the dim end of the passing range.
+~~Two software policies cost a factor of 7 in bias~~ — **BOTH FIXED 2026-07-27/28**:
+- ~~The `mean_px < 64` gate excludes the best rung.~~ **`CAL_MAX_MEAN_PX` is now 100.0.** It was a
+  light-*leak* floor written when the cameras were meant to sit dark; the enclosure is deliberately
+  lit, so a high `mean_px` means the lamp is on. 100 sits inside the measured safe zone (68.7 clean,
+  118.6 broken). ⚠ It is now *binding on the master*, whose exposure-32 rung fails on light at
+  104.65 with a perfectly good σ of 1.0394 — a live decision, see PLAN.md §1.16.
+- ~~Calibration selects the *fastest* passing rung.~~ **It selects the lowest |bias − 0.5| among
+  candidates that clear the σ gate WITH MARGIN** (|σ−1| ≤ half the tolerance), falling back to the
+  bare gate if none qualify. The margin was added after a 200-loop session showed the bias-only
+  rule putting `.145` on a rung it could not sustain in **91 of 127 loops**; see PLAN.md §1.17.
+  ⚠ That result also **refutes** the earlier "per-loop calibration protects the tail" reading.
 
-⚠ **Hardware state, unresolved:** the **master and slave1 (.145)** are lit; **slave0 (.103) and
-slave2 (.155) are still sealed dark** (`mean_px` 2.6 and 3.5), so the array is asymmetric.
+⚠ **Hardware state (2026-07-28):** all four are lit. **`.145` (slave1) is the weak node** — it has
+a genuinely lower usable ceiling than its neighbours (clean to `mean_px` ≈34, broken by ≈46–60,
+where `.155` is clean at 63–68), so **adding light makes it worse, not better** (PLAN.md §1.16).
+Its LED also failed progressively on 2026-07-27 (light fell to 0.35×); after a physical repair it
+sits at ~0.88× of its original level. **`.103` degrades under sustained load** — clean on idle
+sweeps, per-loop σ SD 0.24 over 78 loops — which is CLAUDE.md open item 3, still unexplained.
 
 **σ and the pairwise results ARE affected by sealing the box — and lighting it fixed them.**
 ✅ **Task 1's `?cal=0` control is DONE (§1.14).** Two matched 5×430 arms under light:
@@ -216,6 +228,22 @@ calibration sweep's bias figure, because the baseline sees ~20× more data. Cost
 The UI bar is labelled **"Baseline — drift reference"**, not "Calibration": the camera exposure
 sweep is a different phase, and having two things called calibration in one interface was
 ambiguous. The `cal*` element ids are historical.
+**Two attended gates, both opt-in on `POST /start?confirm=1`** (added 2026-07-27/28). The web UI
+always sends it; **curl never does**, so scripted runs and the `?cal=0` control never block:
+- **`PHASE_READY` — the observer gate.** After calibration and baseline (~2 min in which nothing is
+  displayed), the session parks and shows a big **Start** button; `POST /ready` releases it. Scoring
+  is the first phase whose bits are collected while a target is on screen, so it is where the
+  protocol actually begins — starting it the instant the baseline ends catches the observer
+  mid-thought. **No timeout**, deliberately: there is no sensible default action. During preparation
+  the Focus panel reads "Preparing the system".
+- **`PHASE_POOL_CONFIRM` — pool confirmation.** After scoring, the proposed pool is published and
+  the operator can edit it: `POST /pool?act=ok|more|cancel&main=..&euro=..`. "Select more" re-scores
+  with the still-checked numbers **omitted** from the pass, so they keep the measurement that chose
+  them. Combination counts recompute from the confirmed pool — keeping exactly 5+2 gives **ONE**
+  combination, which is intended and is the highest-power way to use the instrument.
+  ⚠ **15-minute timeout** accepts the proposal unchanged and records `pool_auto=1`. Verified firing.
+  In cumulative mode the pool is locked after loop 0, so this choice commits the whole session.
+
 Phase 0: score individual numbers 1..N with **exactly one** node-combined run each, sweeping the
 numbers in a **fresh random order (Fisher–Yates, no repeats)** — `score_one_run()`. Repeats *in
 place* were removed in Phase 5: five consecutive runs of the same number froze the Focus panel
@@ -275,10 +303,14 @@ unattended sessions must never be pooled**; run matched no-focus controls.
 
 **Per-loop camera calibration (PLAN.md Task 1, done 2026-07-26)**: at the start of every loop the
 master broadcasts `K<budget_ms>`, sweeps its own exposure ladder in parallel, and waits for every
-node's `OK:<exp>,<gain>,<fold>,<bias>,<mbit_s>,<G|U>`. Each node keeps the fastest setting that
-passes the quality gates; if none passes it keeps the one it had and reports `U`. `~27 s` per loop
-(≈4.4 % of a 10 min loop). `POST /start?cal=0` turns it off — that is the matched control.
-`GET /calibrate` serves the master's whole last sweep, per candidate, with the gate each failed.
+node's `OK:<exp>,<gain>,<fold>,<bias>,<mbit_s>,<G|U>`. Each node keeps the setting with the
+**lowest |bias − 0.5| among candidates clearing the σ gate with margin** (see above); if none
+passes it keeps the one it had and reports `U`. **~24 s** per loop, measured — the budget (default
+30 s) is a *cap*, not a target, so progress must never be estimated against it.
+`POST /start?cal=0` turns it off — that is the matched control, and per-loop calibration is
+**statistically neutral** (PLAN.md §1.14, §1.15: A−B = 0.52 SE over 6×430 runs per arm).
+`GET /calibrate` serves the whole last sweep per candidate with the gate each failed — **on every
+node, not just the master**, which is what makes a per-node optical fault diagnosable at all.
 **Nodes land on different exposures on purpose** (different physical sensors, different light);
 what they must still share is the segment count, which travels on the wire. Enclosed, they still
 spread **128 / 32 / 64 / 512** inside one dark box — so the spread is the *sensors* differing, not
@@ -346,6 +378,37 @@ is gone. Those are the cases OTA cannot repair — the P4 has no
 - The slave's `sdkconfig.defaults` must keep `CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y` **before**
   `ESP32P4_REV_MIN_0=y` — the latter depends on it, and without it the choice silently falls
   back to rev v3.1 and the binary refuses to boot on these v1.3 boards.
+
+## Where things stand (2026-07-28) — read this first
+
+**The instrument is sound.** In a 200-loop session the master and `.155` had per-loop σ SD of
+0.097 and 0.085 against the **0.089 that sampling alone predicts** — indistinguishable from ideal.
+Task 1 (per-loop calibration) is closed and neutral. `main/` is split four ways (elotto/sensor/
+nodes/focus) and the z-score primitive is shared with the slave via `components/elotto_gcp`, all
+verified behaviour-neutral. **Every result so far is null**, which is what a working null
+instrument produces.
+
+**Open, in the order I would pick them up:**
+1. **`.103`'s load degradation** — the only unexplained instrument fault. Clean on idle sweeps,
+   per-loop σ SD 0.24 over 78 loops. The free diagnostic is to **swap `.103`'s camera with
+   `.155`'s**: if the fault follows the camera it is the sensor, if it stays it is the board.
+2. **An unanalysed 89-loop dataset** sits in `docs/data/2026-07-28_run400_aborted/` (17.4 h,
+   ~38 700 runs, aborted at loop 90/400). Nobody has looked at whether `.145` improved after the
+   σ-margin fix and the LED repair.
+3. **`CAL_MAX_MEAN_PX` = 100 is binding on the master** (its exposure-32 rung fails on light at
+   104.65 with σ 1.0394). A decision, not a measurement.
+4. **Does calibration reduce the RATE of bad loops?** §1.14/§1.15 only ever asked "does it add
+   variance?" (no). The tail question needs a count of excursions over many loops, not a mean.
+
+**Deferred by the user — do not start unasked:** the attended-vs-unattended (focus) comparison.
+**Dropped by decision — do not re-propose:** node-drop test, camera-fault/reboot path,
+camera-stall abort, restoring the master to USB power.
+
+⚠ **Do not switch camera hardware** on the theory that the OV5647 is the problem — the data says
+otherwise (two nodes at sampling limits, autocorr 10–50× inside tolerance). The capture runs at
+**RAW8 800×800**, ~13 % of the sensor, because the pipeline is PSRAM-bound at a 640 KB diff per
+frame pair; more megapixels would *lower* the bit rate. If it is ever tried, buy **one** and run a
+matched pair, not four.
 
 ## Open items (2026-07-25) — deferred by decision, not forgotten
 
