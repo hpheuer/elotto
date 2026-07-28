@@ -1359,6 +1359,31 @@ static int parse_num_list(const char *s, uint8_t *out, int max_n, int max_val)
  * point: /pool edits what will be measured, /ready says when to start measuring
  * it. 409 if nothing is waiting, so a stale tab cannot un-pause a session that
  * has already moved on. */
+/* POST /probe — re-run slave discovery.
+ *
+ * Discovery is otherwise a one-shot broadcast at boot, so a slave that was
+ * rebooting at that moment never appears until the next session starts. That
+ * is exactly what happens after flashing all four nodes together, and it makes
+ * the health page report a node as absent when it is fine.
+ *
+ * Refused while a session runs: nodes_discover() rebuilds the whole node table,
+ * and doing that mid-session would renumber the array underneath a measurement
+ * in flight. */
+static esp_err_t probe_handler(httpd_req_t *req)
+{
+    if (g_status.state == ELOTTO_RUNNING) {
+        httpd_resp_set_status(req, "409 Conflict");
+        httpd_resp_sendstr(req, "cannot re-scan while a session is running");
+        return ESP_OK;
+    }
+    slave_probe();
+    char msg[64];
+    snprintf(msg, sizeof(msg), "ok: %d node(s)", g_status.node_count);
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_sendstr(req, msg);
+    return ESP_OK;
+}
+
 static esp_err_t ready_handler(httpd_req_t *req)
 {
     if (g_status.state != ELOTTO_RUNNING || g_status.phase != PHASE_READY) {
@@ -1422,7 +1447,120 @@ static esp_err_t pool_handler(httpd_req_t *req)
  * (sensor.h): keeping a diagnostic that measures a source the firmware cannot
  * use would only invite comparisons against a number this instrument is not
  * allowed to produce. */
+/* GET /diag — the four-camera health page.
+ *
+ * One row per node, live. Built because per-node optical faults are the thing
+ * this rig actually suffers from — a dimming LED, a sensor dispersing more than
+ * its neighbours — and until now answering "how are the cameras right now?"
+ * meant four separate curl calls and reading JSON by eye.
+ *
+ * The browser fetches each node directly (every node serves its own stats with
+ * an Access-Control-Allow-Origin header) rather than having the master proxy
+ * them. Two reasons: the master's UDP 'D' command is only safe between runs, so
+ * a proxy could not refresh during a session; and a node that has crashed
+ * should show as unreachable on its own row instead of silently reporting a
+ * stale value the master cached.
+ *
+ * Deliberately narrow: the parameters that are tuned (exposure, gain), the ones
+ * the calibration gates test (bias, sigma, autocorr, mean_px), throughput, and
+ * stall count. Everything else that used to be in the JSON — frame_pairs,
+ * drops, waits — is diagnostics for a different question and is still one click
+ * away at /diagjson. */
+static const char DIAG_HTML[] =
+"<!DOCTYPE html><html><head><meta charset='utf-8'>"
+"<meta name='viewport' content='width=device-width,initial-scale=1'>"
+"<title>elotto - camera health</title><style>"
+"body{background:#0b1a0b;color:#cfe8cf;font-family:system-ui,sans-serif;margin:0;padding:16px}"
+"h1{color:#90ee90;font-size:1.1em;margin:0 0 2px}"
+"p.sub{color:#8fae8f;font-size:.82em;margin:0 0 14px}"
+"table{border-collapse:collapse;width:100%;font-size:.86em}"
+"th{color:#f0c040;text-align:right;padding:7px 9px;border-bottom:1px solid #2c4a2c;font-weight:600}"
+"th.l,td.l{text-align:left}"
+"td{text-align:right;padding:7px 9px;border-bottom:1px solid #1b301b;font-variant-numeric:tabular-nums}"
+"tr.off td{color:#7a5a5a}"
+"a{color:#6ab0e8}"
+".ok{color:#90ee90}.warn{color:#f0c040}.bad{color:#ff6b6b;font-weight:700}"
+".n{color:#fff;font-weight:600}"
+"</style></head><body>"
+"<h1>&#128247; Camera health</h1>"
+"<p class='sub'>Live, every 2 s. Colour is against the calibration gates: "
+"bias 1e-3, |&sigma;-1| 0.05, autocorr 0.01, mean_px 100. "
+"<a href='/'>&#8592; back</a> &middot; <a href='/diagjson'>master JSON</a> &middot; "
+"<a href='#' onclick='rescan();return false'>re-scan nodes</a></p>"
+"<table><thead><tr>"
+"<th class='l'>Node</th><th>Exp</th><th>Gain</th><th>mean_px</th>"
+"<th>bias&minus;0.5</th><th>&sigma;</th><th>zero_diff</th><th>autocorr</th>"
+"<th>Mbit/s</th><th>stalls</th>"
+"</tr></thead><tbody id='rows'><tr><td class='l' colspan='10'>loading&hellip;</td></tr>"
+"</tbody></table>"
+"<p class='sub' id='foot' style='margin-top:12px'></p>"
+"<script>"
+"var nodes=null;"
+/* Node list comes from /status, which is populated by the discovery broadcast
+   at boot -- so the page works even when no session has ever run. */
+"function cls(v,warn,bad){return Math.abs(v)>=bad?'bad':(Math.abs(v)>=warn?'warn':'ok');}"
+"function f(v,n){return (v===undefined||v===null)?'-':Number(v).toFixed(n);}"
+"function row(name,ip,d){"
+"if(!d)return \"<tr class='off'><td class='l'>\"+name+\"</td>\"+"
+"\"<td class='l' colspan='9'>no answer from \"+ip+\"</td></tr>\";"
+"var c=d.cam||{};"
+"var b=(c.bias===undefined?0:c.bias-0.5);"
+"var s=(c.sigma===undefined?1:c.sigma);"
+"var ac=0;if(c.autocorr&&c.autocorr.length){for(var i=0;i<c.autocorr.length;i++)"
+"ac=Math.max(ac,Math.abs(c.autocorr[i]));}"
+"var st=c.stalls||0;"
+"return \"<tr><td class='l n'>\"+name+\"</td>\"+"
+"\"<td>\"+(c.exposure===undefined?'-':c.exposure)+\"</td>\"+"
+"\"<td>\"+(c.gain===undefined?'-':c.gain)+\"</td>\"+"
+"\"<td class='\"+(c.mean_pixel>=100?'bad':'')+\"'>\"+f(c.mean_pixel,1)+\"</td>\"+"
+"\"<td class='\"+cls(b,5e-4,1e-3)+\"'>\"+(b>=0?'+':'')+b.toExponential(2)+\"</td>\"+"
+"\"<td class='\"+cls(s-1,0.025,0.05)+\"'>\"+f(s,4)+\"</td>\"+"
+"\"<td>\"+f(c.zero_diff,4)+\"</td>\"+"
+"\"<td class='\"+cls(ac,0.005,0.01)+\"'>\"+f(ac,4)+\"</td>\"+"
+"\"<td>\"+f(c.mbit_s,3)+\"</td>\"+"
+"\"<td class='\"+(st>0?'bad':'ok')+\"'>\"+st+\"</td></tr>\";"
+"}"
+"function get(u){return fetch(u).then(function(r){return r.json();}).catch(function(){return null;});}"
+/* Discovery is a one-shot broadcast at boot, so a slave that was rebooting then
+   is missing from the list until the next session starts -- which is exactly
+   what happens after flashing all four together. Re-scan rebuilds it. Clearing
+   the cache is the point: without it the page would keep the stale list. */
+"function rescan(){"
+"document.getElementById('foot').textContent='re-scanning\\u2026';"
+"fetch('/probe',{method:'POST'}).then(function(r){return r.text();}).then(function(t){"
+"nodes=null;tick();"
+"}).catch(function(){document.getElementById('foot').textContent='re-scan failed';});"
+"}"
+"function tick(){"
+"var p=nodes?Promise.resolve(nodes):get('/status').then(function(d){"
+"nodes=(d&&d.nodes)?d.nodes:[];return nodes;});"
+"p.then(function(ns){"
+"var jobs=[get('/diagjson')];"
+"for(var i=1;i<ns.length;i++)jobs.push(get('http://'+ns[i].ip+'/diag'));"
+"Promise.all(jobs).then(function(res){"
+"var h='';"
+"h+=row('master (self)','self',res[0]);"
+"for(var i=1;i<ns.length;i++)h+=row(ns[i].ip,ns[i].ip,res[i]);"
+"document.getElementById('rows').innerHTML=h;"
+"document.getElementById('foot').textContent="
+"'updated '+new Date().toLocaleTimeString()+' \\u00b7 '+ns.length+' node(s) known';"
+"});});}"
+"tick();setInterval(tick,2000);"
+"</script></body></html>";
+
 static esp_err_t diag_handler(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_send(req, DIAG_HTML, HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+}
+
+/* GET /diagjson — this node's own camera statistics, machine-readable.
+ *
+ * Was /diag until 2026-07-28. /diag is now the human-facing page that renders
+ * all four nodes; this is the raw source behind the master's row, and each
+ * slave serves the same shape at its own /diag. */
+static esp_err_t diagjson_handler(httpd_req_t *req)
 {
     static char buf[3072];
     int pos = 0;
@@ -1456,6 +1594,7 @@ static esp_err_t diag_handler(httpd_req_t *req)
         camera_get_xor_fold() ? "true" : "false");
 
     httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     httpd_resp_sendstr(req, buf);
     return ESP_OK;
 }
@@ -1478,7 +1617,12 @@ static bool session_running(void) { return g_status.state == ELOTTO_RUNNING; }
 static void start_webserver(void)
 {
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
-    cfg.max_uri_handlers  = 16;   /* 9 here + 5 registered by elotto_ota */
+    /* 12 here + 5 registered by elotto_ota = 17. Keep headroom: registration
+     * past this limit fails, and the return value is not checked at either
+     * call site, so an endpoint would simply 404 with nothing logged. Adding
+     * /ready and /diagjson took it from 14 to 17 and silently over the old
+     * cap of 16 — count them when adding one. */
+    cfg.max_uri_handlers  = 24;
     cfg.stack_size        = 8192;
     cfg.recv_wait_timeout = 20;   /* /update streams a ~700 KB body */
     cfg.send_wait_timeout = 20;
@@ -1490,13 +1634,15 @@ static void start_webserver(void)
         {"/status", HTTP_GET,  status_handler, NULL},
         {"/start",  HTTP_POST, start_handler,  NULL},
         {"/abort",  HTTP_POST, abort_handler,  NULL},
-        {"/diag",   HTTP_GET,  diag_handler,   NULL},
+        {"/diag",     HTTP_GET, diag_handler,     NULL},
+        {"/diagjson", HTTP_GET, diagjson_handler, NULL},
         {"/loops",  HTTP_GET,  loops_handler,  NULL},
         {"/focus",  HTTP_GET,  focus_handler,  NULL},
         {"/pause",  HTTP_POST, pause_handler,  NULL},
         {"/calibrate", HTTP_GET, calibrate_handler, NULL},
         {"/pool", HTTP_POST, pool_handler, NULL},
         {"/ready", HTTP_POST, ready_handler, NULL},
+        {"/probe", HTTP_POST, probe_handler, NULL},
     };
     for (int i = 0; i < (int)(sizeof(uris) / sizeof(uris[0])); i++)
         httpd_register_uri_handler(srv, &uris[i]);

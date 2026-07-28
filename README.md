@@ -993,10 +993,35 @@ image at it explicitly with `POST /update?slot=0|1`, choose what boots with
 
 ## Diagnostics
 
-### `http://<IP>/diag` — source health (≈ 5 s)
+### `http://<master>/diag` — the four-camera health page
 
-Dumps the camera's running statistics under `"cam"` — bias, σ, autocorrelation, mean pixel level,
-`zero_diff`, throughput, stalls and ring health. `"src"` reads `camera-only`.
+One row per node, refreshed every 2 s, colour-coded against the calibration gates (bias 1e-3,
+|σ−1| 0.05, autocorr 0.01, `mean_px` 100):
+
+| Node | Exp | Gain | mean_px | bias−0.5 | σ | zero_diff | autocorr | Mbit/s | stalls |
+|---|---|---|---|---|---|---|---|---|---|
+
+Per-node optical faults are what this rig actually suffers from — a dimming LED, one sensor
+dispersing more than its neighbours — and answering "how are the cameras right now?" used to mean
+four separate `curl` calls and reading JSON by eye.
+
+The browser fetches **each node directly** (every node serves its own stats with an
+`Access-Control-Allow-Origin` header) rather than having the master proxy them. Two reasons: the
+master's UDP `D` command is only safe between runs, so a proxy could not refresh during a session;
+and a node that has crashed shows as unreachable on its own row instead of the master serving a
+stale cached value.
+
+**re-scan nodes** re-runs discovery. Discovery is otherwise a one-shot broadcast at boot, so a
+slave that was rebooting at that moment is missing until the next session starts — exactly what
+happens after flashing all four together. Refused (409) while a session runs, because
+`nodes_discover()` rebuilds the node table and would renumber the array mid-measurement.
+
+### `http://<IP>/diagjson` — source health, machine-readable
+
+The master's own camera statistics under `"cam"` — bias, σ, autocorrelation, mean pixel level,
+`zero_diff`, exposure/gain, throughput, stalls and ring health. `"src"` reads `camera-only`.
+⚠ Each **slave** serves the same shape at its own `/diag` (they have no page of their own).
+This was the master's `/diag` until 2026-07-28.
 
 This endpoint used to A/B the on-chip TRNG register against `esp_random()` and report both. That
 comparison is gone with the TRNG itself: there is one source now, so there is nothing to compare
