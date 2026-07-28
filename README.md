@@ -67,7 +67,7 @@ The design follows eight principles, and most of the engineering exists to serve
 > attending observer makes any difference. Treat the output as an experiment, not a betting tip.
 >
 > **Status:** the ×√n gain from four nodes is **not yet established** — see
-> [`docs/PLAN.md`](docs/PLAN.md) §1.12 and [`CLAUDE.md`](CLAUDE.md) for the open questions and what
+> [`docs/PLAN_HISTORY.md`](docs/PLAN_HISTORY.md) §1.12 and [`CLAUDE.md`](CLAUDE.md) for the open questions and what
 > each measurement actually showed.
 
 ## In a Nutshell
@@ -211,7 +211,7 @@ master additionally serves the web UI and drives the session.
   ambient, constant light** (`mean_pixel` ≈ 15–40). **Never shared between nodes** — a shared
   source would break independence by construction.
 - **Lighting:** constant light, not darkness — a sealed dark box measurably hurt the statistics
-  (per-run σ 1.08 vs 1.00 lit; see [`docs/PLAN.md`](docs/PLAN.md) §1.11–1.13). Two hard rules: the
+  (per-run σ 1.08 vs 1.00 lit; see [`docs/PLAN_HISTORY.md`](docs/PLAN_HISTORY.md) §1.11–1.13). Two hard rules: the
   LED needs its **own supply** — never a node's VSYS pin — and it must be **constant current, not
   PWM**. Both were learned the hard way.
 - **Power:** all four boards take PoE directly, no splitters. ⚠ The master previously ran on
@@ -337,7 +337,8 @@ never repeats in place.**
 > ⚠ **Partly historical.** The technique below is current — frame pairs, diff, LSB, XOR-fold, ring
 > buffer. Two things are not: the camera is now the **only** source (no `?src=`, no TRNG), and the
 > **cameras see some ambient, constant light** rather than darkness. Measured figures in this
-> section predate the lighting; current ones are in [`docs/PLAN.md`](docs/PLAN.md) §1.13.
+> section predate the lighting; current ones are in [`docs/PLAN_HISTORY.md`](docs/PLAN_HISTORY.md)
+> §1.13, and the *current* per-node optics are on the master's live `/diag` page.
 
 The noise source is an OV5647 camera per node. Design contract:
 [docs/PLAN.md](docs/PLAN.md); the phase-by-phase gate results are in git history
@@ -491,7 +492,7 @@ explanation: thermal, four self-heating boards with no airflow); lighting it res
 **The ×√n gain is still not established** — the mechanisms were never isolated. `/status`
 publishes every pairwise r and per-node σ so this stays visible rather than assumed, and
 `loop_sigma` is the more sensitive of the two: it caught inflation the pairwise check missed.
-See [`docs/PLAN.md`](docs/PLAN.md) §1.12 and [CLAUDE.md](CLAUDE.md).
+See [`docs/PLAN_HISTORY.md`](docs/PLAN_HISTORY.md) §1.12 and [CLAUDE.md](CLAUDE.md).
 
 ### Wiring (Ethernet only)
 

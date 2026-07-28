@@ -67,7 +67,7 @@ it moved 2.6→140.8 (54×). The residual ≈3.1 is sensor black level plus read
 Do not judge the enclosure by one `mean_px` — at exposure 16 it reads 3.52 enclosed vs 4.89 on the
 morning bench, only 1.4× apart, which alone looks like a *partial* box. Sweep, don't spot-check.
 
-Sealed dark it measured badly, so **the box is now LIT** (`docs/PLAN.md` §1.13). Darkness cost
+Sealed dark it measured badly, so **the box is now LIT** (`docs/PLAN_HISTORY.md` §1.13). Darkness cost
 raw LSB uniformity — photon shot noise had been doing real whitening work — and sealing it cost σ
 as well. **"Controlled light" was always the goal; it is not the same as darkness.**
 
@@ -161,7 +161,10 @@ instead of measuring twice. **All receive timeouts go through `link_arm_timeout(
 rounds `SO_RCVTIMEO` to whole ms and treats 0 as *wait forever*, so a sub-millisecond remainder
 would hang the session — this already happened once.
 
-**Plan**: `docs/PLAN.md` is the current contract. Task 1 is per-loop camera calibration.
+**Plan**: `docs/PLAN.md` is the **live contract** — Task 1 is complete, so it holds §1.15
+onward (what is open or recently measured). The design work and closed findings, **§1.1–§1.14**,
+are in `docs/PLAN_HISTORY.md`. Numbering runs continuously across the two, so a citation like
+"§1.13" resolves to the history file and "§1.16" to the live one.
 
 ⚠ **`docs/PLAN_4NODE.md` and `docs/PLAN_NETWORK.md` were deleted (2026-07-26, user request).**
 They are in git history, last present at commit `8e134e5` —
@@ -308,7 +311,8 @@ node's `OK:<exp>,<gain>,<fold>,<bias>,<mbit_s>,<G|U>`. Each node keeps the setti
 passes it keeps the one it had and reports `U`. **~24 s** per loop, measured — the budget (default
 30 s) is a *cap*, not a target, so progress must never be estimated against it.
 `POST /start?cal=0` turns it off — that is the matched control, and per-loop calibration is
-**statistically neutral** (PLAN.md §1.14, §1.15: A−B = 0.52 SE over 6×430 runs per arm).
+**statistically neutral** (PLAN_HISTORY.md §1.14 and PLAN.md §1.15: A−B = 0.52 SE
+over 6×430 runs per arm).
 `GET /calibrate` serves the whole last sweep per candidate with the gate each failed — **on every
 node, not just the master**, which is what makes a per-node optical fault diagnosable at all.
 **Nodes land on different exposures on purpose** (different physical sensors, different light);
@@ -419,7 +423,7 @@ matched pair, not four.
    power topology (master on USB, three slaves on one PoE rail), 10× the runs.
    **Not yet proof the ×√n gain is established**: the mechanism behind the original growth was
    never identified, so a differing condition rather than a fix is still possible. But do not
-   plan around the old numbers. See `docs/PLAN.md` §1.10.
+   plan around the old numbers. See `docs/PLAN_HISTORY.md` §1.10.
    ⚠ **PARTIALLY BACK under the sealed-dark enclosure (§1.12).** A 5-loop arm ran σ =
    **1.0795 ± 0.0222** (3.6 SE above unity) with worst pair |r|√n = **2.92** — under the flag
    threshold of 3, so the pairwise check stayed silent while σ went to 1.15. Not the original
