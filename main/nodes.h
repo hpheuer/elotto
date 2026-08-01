@@ -19,9 +19,26 @@
 
 #include <stdbool.h>
 
-/* Reply windows. LINK_MEAS_MS is here rather than private because sensor.c
- * waits on a measurement round itself, right after its own local run. */
-#define LINK_MEAS_MS    4000      // a run is ~1 s, so this is generous headroom
+/* Reply window for one measurement round. Public rather than private because
+ * sensor.c waits on the round itself, right after its own local run.
+ *
+ * DERIVED FROM THE RUN LENGTH, not a constant. It used to be a flat 4000 ms
+ * "generous headroom" for a ~1 s run — which silently became a *deadline* the
+ * moment scoring runs grew to ~3 s: every slave would still be measuring when
+ * the window closed, all of them would look silent, and after NODE_MISS_LIMIT
+ * rounds they would be DROPPED. The session would then carry on solo and still
+ * look like it was working, which is the worst kind of failure this rig has.
+ *
+ * ~11.6 segments/ms measured; 11 is used so the estimate errs long. Times three
+ * plus a fixed second, which reproduces the old 4 s window at the measurement
+ * length (11950 → 4259 ms) and gives ~10.8 s at the scoring length.
+ *
+ * Deliberately generous: a dead node is detected a few rounds later than it
+ * could be, and that is the right trade here (user decision, 2026-07-30) — there
+ * is no deadline on a session, and the cost of a false drop is a whole arm of
+ * data measured at √(k−1) without anyone noticing. */
+#define LINK_SEG_PER_MS  11
+#define LINK_MEAS_MS_FOR(nseg)  (((nseg) / LINK_SEG_PER_MS) * 3 + 1000)
 
 /* ── Session lifecycle ─────────────────────────────────────────────── */
 
@@ -63,7 +80,14 @@ void slave_baseline_wait(void);
 
 // Broadcast 'K' and sweep the master's own ladder in parallel, then collect
 // each node's chosen setting. Nodes land on different exposures on purpose.
-void calibrate_all(void);
+// Returns true if a sweep actually ran, false if it was skipped (budget 0, no
+// nodes, or the last sweep is still younger than g_status.cal_interval_ms).
+bool calibrate_all(void);
+
+// Forget when the last sweep happened, so the next calibrate_all() sweeps
+// unconditionally. Called at session start: a new session must never inherit
+// the age of the previous one's calibration.
+void calibrate_forget(void);
 
 // Per-node camera health via 'D'. Between loops only, never between an 'M' and
 // its 'Z:'. A missing answer is diagnostics-only and never drops a node.

@@ -37,9 +37,30 @@
  * PLAN.md for the measurements behind both numbers. */
 #define RUN_GAP_MS  350
 
-// The blank between runs. Also buys back most of the throughput it costs, by
-// handing the CPU back to the extraction task.
+/* The scoring phase's blank. Longer because its RUN is longer (SCORE_SEGMENTS,
+ * ~3 s): what starves the extraction task is the DUTY CYCLE, not the window
+ * length, so a 3 s run behind the ordinary 350 ms blank would sit at 89.6 %
+ * duty — past the cliff, where the achievable window stretches instead of
+ * obeying the segment count. ~1000 ms holds scoring at ~75 %, the same ratio
+ * the 1 s / 350 ms measurement cycle was tuned to.
+ *
+ * A phase-specific gap does not break the "uniform gap" rule, and it is worth
+ * saying why rather than assuming. That rule had two reasons: an attended and an
+ * unattended session must differ in the DISPLAY and nothing else — this gap
+ * applies to both equally — and the baseline must be the same instrument as the
+ * runs it is subtracted from, down to duty cycle — but the baseline is
+ * subtracted from Phase 2 runs, and scoring has no baseline subtraction at all.
+ * Baseline and Phase 2 therefore keep RUN_GAP_MS and stay matched to each other.
+ *
+ * Net cost is a wash against the three 1 s reps this replaces: 3.0 + 1.0 = 4.0 s
+ * per number against 3 × 1.38 = 4.14 s. */
+#define SCORE_GAP_MS 1000
+
+// The blank between runs, RUN_GAP_MS long.
 void run_gap(void);
+
+// The same blank, for a phase that needs a different one (scoring).
+void run_gap_ms(int ms);
 
 /* ── Session clock ─────────────────────────────────────────────────── */
 

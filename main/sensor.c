@@ -19,8 +19,40 @@
 
 ElottoStatus g_status = { .state = ELOTTO_IDLE };
 
-// Per-combination running Σz across loops (cumulative / Stouffer ranking mode)
+/* Per-combination cross-loop accumulator, shared by the two locked-pool modes:
+ * CUMULATIVE reads it as the running Σz, EXTREME as the running MAXIMUM. One
+ * array, because the two modes never run in the same session. */
 static double s_zsum[NUM_RUNS];
+
+/* EXTREME mode's running MINIMUM per combination — the low-water mark, tracked
+ * separately from the high one so a combination can hold its best positive z and
+ * its most negative z at the same time.
+ *
+ * In PSRAM, and that is not a preference: this is another 64 KB, internal RAM is
+ * already full with results[] + s_zsum, and adding it as .bss fails the LINK
+ * ("--enable-non-contiguous-regions discards section"), not the run. Allocated
+ * once on first use and never freed, like g_status.loop_hist. */
+static double *s_zmin;
+
+/* Reset both accumulators for `n` combinations. EXTREME seeds the high mark at
+ * −inf and the low at +inf, so the FIRST loop's z always wins: seeding at 0
+ * would silently floor every high at 0 and cap every low there, and a
+ * combination whose z never went positive would publish a high of exactly 0.0 —
+ * a value it never measured. */
+static bool accum_reset(int n, bool extreme)
+{
+    if (n <= 0) return true;
+    if (n > NUM_RUNS) n = NUM_RUNS;
+    if (!extreme) {
+        memset(s_zsum, 0, sizeof(double) * (size_t)n);
+        return true;
+    }
+    if (!s_zmin)
+        s_zmin = heap_caps_calloc(NUM_RUNS, sizeof(double), MALLOC_CAP_SPIRAM);
+    if (!s_zmin) return false;          // caller falls back to CUMULATIVE
+    for (int i = 0; i < n; i++) { s_zsum[i] = -INFINITY; s_zmin[i] = INFINITY; }
+    return true;
+}
 
 // Random measurement order for the current loop (Fisher–Yates, rebuilt per
 // loop) — decouples slow source drift from fixed combination indices, so drift
@@ -106,6 +138,32 @@ static void prng_seed(void)
 #define CAM_SEGMENTS   11950          // 2.4 Mbit/run ≈ 1000 ms (measured: 1027 ms
                                       // at the 350 ms gap, +2.7 % of target)
 
+/* Phase 0 (number scoring) runs THREE TIMES as long — one continuous ~3 s window
+ * per candidate number instead of the ~1 s the measurement phase uses (user
+ * decision, 2026-07-30).
+ *
+ * Why longer at all: the observer is meant to hold one number in attention, and
+ * a 1 s presentation is barely time to arrive at it. Why one long run rather
+ * than three short ones (which is what this replaces): repeating a target back
+ * to back means the second and third windows have no onset, and onset is the
+ * payload — the operator asked specifically to avoid an immediately repeated
+ * target. Statistically the two are the SAME thing: one 3 s run is
+ * Σdeviations/√(3N), which is exactly the Stouffer combination of three 1 s
+ * runs. Nothing is gained or lost in the arithmetic; what changes is that the
+ * attention window is continuous.
+ *
+ * ⚠ THE GAP HAS TO GROW WITH IT — see SCORE_GAP_MS in focus.h. Duty cycle, not
+ * window length, is what starves the extraction task, and 3 s against the
+ * ordinary 350 ms blank would be 89.6 % duty, well past the ~75 % this rig is
+ * tuned to and into the regime where the achievable window stretches instead of
+ * obeying the count.
+ *
+ * ⚠ 3 s is a TARGET, not a setting. The count→milliseconds conversion is
+ * empirical and has moved before (open item 4), so this is 3× the measurement
+ * count as a starting point: read the SCORING window from focus_win_ms in
+ * /status — focus.c accumulates it separately per phase — and trim here. */
+#define SCORE_SEGMENTS (CAM_SEGMENTS * 3)   // ≈ 3000 ms, verify against focus_win_ms
+
 // Called once per session, after discovery, before any measurement.
 static void camera_source_begin(void)
 {
@@ -125,9 +183,12 @@ static const char *p_label(double absZ)
     return "n.s.";
 }
 
-/* Segments for one run — one source, so one count, and it travels on the wire
- * so a slave cannot disagree about it. */
-static int segments_for(void) { return CAM_SEGMENTS; }
+/* Segments for one run. One source, so one count PER PHASE, and it travels on
+ * the wire (`M<seg>`, `B<runs>,<seg>`) so a slave cannot disagree about it —
+ * which is what makes a phase-dependent length safe at all. The slave accepts
+ * anything between its SEG_MIN and SEG_MAX, so no slave change was needed. */
+static int segments_for(void)         { return CAM_SEGMENTS; }   // baseline + Phase 2
+static int segments_for_scoring(void) { return SCORE_SEGMENTS; } // Phase 0
 
 /* One run, via the shared primitive in components/elotto_gcp — the same object
  * code the slaves run, so no node can compute z differently from another.
@@ -230,15 +291,24 @@ static void score_and_build_pool(int max_val, int pool_size, uint8_t *pool,
     for (int i = 0; i < n_keep; i++)
         if (keep[i] >= 1 && keep[i] <= max_val) skip[keep[i]] = true;
 
-    /* One run per candidate number, in a fresh random order — every number
-     * exactly once, no repeats (user decision, 2026-07-25).
+    /* ONE run per candidate number, ~3 s long (SCORE_SEGMENTS), in a fresh
+     * random order — every number exactly once, never twice in a row.
      *
-     * This replaces SCORE_REPS consecutive runs of the *same* number, which the
-     * Focus panel made untenable: five reps meant the display did not change
-     * for ~6.9 s, and onset — the change — is the payload. A random sweep keeps
-     * every window a genuine onset and stops the observer anticipating the next
-     * target, for the same reason Phase 2 measures combinations in a permuted
-     * order.
+     * This is the third form this phase has taken, and the reasoning is worth
+     * keeping because two of them were rejected on the same grounds:
+     *   - 5 short reps in place (until 2026-07-25) — the display froze for ~6.9 s
+     *     and only the first window had an onset.
+     *   - 1 short run (2026-07-25 → 2026-07-30) — every window a genuine onset,
+     *     but ~1 s is barely time for the observer to arrive at the number.
+     *   - 3 short reps in place (briefly, 2026-07-30) — bought the SE back and
+     *     immediately reintroduced the repeated-target problem.
+     *   - ONE LONG run (now) — a single continuous ~3 s attention window per
+     *     number, and still exactly one onset per number.
+     *
+     * The last two are arithmetically IDENTICAL: one 3 s run is Σdev/√(3N),
+     * which is the Stouffer combination of three 1 s runs. Per-number SE is
+     * 1/√(k·3) ≈ 0.29 at four nodes either way. The only difference is what the
+     * observer experiences, which is the whole point of the phase.
      *
      * fast_rng() deliberately, not the camera: measurement order is
      * administrative randomness, not measured data, and must not spend
@@ -266,7 +336,9 @@ static void score_and_build_pool(int max_val, int pool_size, uint8_t *pool,
         if (g_status.abort_requested) return;
         int k = order[idx];
         // On screen before the run starts and until it ends — display and
-        // bits cover the same interval, or the panel is decoration.
+        // bits cover the same interval, or the panel is decoration. ONE window
+        // per number, ~3 s long (SCORE_SEGMENTS): the number is held, not
+        // flashed three times, so every appearance is a genuine onset.
         focus_show_number(k, euro_pool);
         scores[k] = score_one_run();
         g_status.scoring_done++;
@@ -275,7 +347,9 @@ static void score_and_build_pool(int max_val, int pool_size, uint8_t *pool,
         // preamble; Phase 5 makes it attended screen time with a pause button,
         // so the clock has to run here too.
         g_status.elapsed_ms = elapsed_ms_now();
-        run_gap();
+        // SCORE_GAP_MS, not RUN_GAP_MS: this phase's run is ~3× longer, and it
+        // is the duty CYCLE that starves the extraction task.
+        run_gap_ms(SCORE_GAP_MS);
     }
     /* The kept numbers take the first slots, carrying the score that chose them
      * (they were not re-measured, so there is no new one to carry). */
@@ -348,6 +422,15 @@ static void pool_scores_for(const uint8_t *sel, int n_sel,
  * unattended session never reaches this gate because it is gated on
  * `pool_confirm`. A session parked here waits as long as the operator needs. */
 static volatile bool s_ready_go = false;
+
+/* Dark time between the operator pressing Start and the first target appearing.
+ * The press itself is an act of attention — hand on the mouse, eyes on the
+ * button — and the first number's ONSET is what the observer is meant to
+ * notice. Without a gap the two overlap, and the first number of the pass is
+ * measured while attention is still on the click. One second is the same order
+ * as the 350 ms inter-run blank but longer on purpose: this transition also
+ * carries the switch from operating the machine to attending to it. */
+#define READY_SETTLE_MS  1000
 
 void elotto_ready_go(void) { s_ready_go = true; }
 
@@ -505,7 +588,7 @@ static double combine_z(double z_master, int *n_used)
  * common to every number and scoring only ranks them. */
 static double score_one_run(void)
 {
-    int nseg = segments_for();
+    int nseg = segments_for_scoring();       // ~3 s, three times a Phase-2 run
     slave_trigger(nseg);
     double zm = 0.0;
     bool   ok = gcp_zscore_ok(nseg, &zm);
@@ -513,7 +596,9 @@ static double score_one_run(void)
     // is dark time. The caller lit the panel — see focus_publish().
     focus_off();
     if (!ok) node_camera_failed(0, "stalled mid-run");
-    if (nodes_have_slaves()) nodes_collect(LINK_MEAS_MS, true);
+    // Timeout from THIS run's length: at the scoring length the old flat 4 s
+    // would expire while every slave was still measuring.
+    if (nodes_have_slaves()) nodes_collect(LINK_MEAS_MS_FOR(nseg), true);
     return combine_z(zm, NULL);
 }
 
@@ -578,6 +663,11 @@ static void compute_significance(int comparisons)
  * would otherwise accumulate √k-coherently in cumulative mode), and (b) makes
  * per-run Z exactly N(0,1) under the null even if raw source reads are
  * correlated and true σ ≠ 1. Reports the pre-scaling σ as a quality metric. */
+/* Set false by RANK_EXTREME_RAW: measure the loop's mean and σ exactly as
+ * always — /status, /loops and the drift regression all depend on them — but
+ * leave results[] on the raw scale instead of rewriting it. */
+static bool s_studentize = true;
+
 static void studentize(int n, double *out_mean)
 {
     if (out_mean) *out_mean = 0.0;
@@ -593,6 +683,11 @@ static void studentize(int n, double *out_mean)
     double s = sqrt(v / (n - 1));
     g_status.loop_sigma = s;
     if (out_mean) *out_mean = m;   // the offset removed here — Phase 3 drift check
+    // RANK_EXTREME_RAW stops HERE. Everything above is measurement — loop_sigma
+    // for /status and /loops, `m` for the cross-loop drift regression — and none
+    // of it is affected by whether the rewrite below happens. Only the rewrite
+    // is optional, which is what keeps the diagnostics alive in raw mode.
+    if (!s_studentize) return;
     if (s < 1e-9) s = 1.0;
     for (int i = 0; i < n; i++) {
         double z = (g_status.results[i].z_score - m) / s;
@@ -804,7 +899,12 @@ static void record_loop(double loop_mean, int loop_idx)
         L->sigma = (float)g_status.loop_sigma;
         L->nodes = (uint8_t)g_status.node_count;
         L->t_s   = (uint32_t)(g_status.elapsed_ms / 1000);
-        L->cal_ms = (uint16_t)(g_status.cal_ms > 65535 ? 65535 : g_status.cal_ms);
+        // 0 when this loop skipped the sweep — g_status.cal_ms still holds the
+        // last sweep's duration (the UI estimates its progress bar from it), so
+        // copying it unconditionally would log a sweep that never ran here.
+        L->cal_ms = g_status.cal_did_sweep
+                  ? (uint16_t)(g_status.cal_ms > 65535 ? 65535 : g_status.cal_ms)
+                  : 0;
         L->win_ms = win_ms;
         L->gap_ms = gap_ms;
         for (int i = 0; i < g_status.node_count && i < MAX_NODES; i++) {
@@ -937,7 +1037,7 @@ static void publish_cumulative(double *zsum, int n, int k,
     for (int j = 0; j <= 12; j++) fe[j] = 0;
     *z2 = 0;
     for (int i = 0; i < n; i++) {
-        if (g_status.results[i].z_score <= 2.0) continue;
+        if (g_status.results[i].z_score <= FREQ_Z_MIN) continue;
         (*z2)++;
         for (int j = 0; j < nm; j++) fm[g_status.results[i].nums[j]]++;
         if (euro) { fe[g_status.results[i].euro[0]]++; fe[g_status.results[i].euro[1]]++; }
@@ -947,6 +1047,95 @@ static void publish_cumulative(double *zsum, int n, int k,
     // Diversified max-spread picks from the top-Z and bottom-Z pools
     publish_coverage(n, nm, false, g_status.cover,     &g_status.cover_count);
     publish_coverage(n, nm, true,  g_status.cover_low, &g_status.cover_low_count);
+}
+
+/* EXTREME ranking: publish each fixed combination's high-water and low-water
+ * mark over the loops measured so far (see ElottoRank in sensor.h).
+ *
+ * Two passes over the SAME results[] rather than two parallel result arrays.
+ * results[].z_score is scratch here — every selector downstream (top/low,
+ * coverage, frequency) reads that one field — so the highs are loaded, the
+ * high-side lists are taken, then the lows are loaded and the low-side lists are
+ * taken. Ordering matters: publish_coverage() reads results[] live, so its call
+ * has to sit inside the pass whose numbers it is meant to see.
+ *
+ * results[] is left holding, per combination, whichever mark is larger in
+ * MAGNITUDE. That is what the CSV export and any late reader should see: the
+ * headline "how far did this combination ever go", signed. */
+static void publish_extreme(const double *zmax, const double *zmin, int n,
+                            int *fm, int *fe, int *z2, int nm, int mx, bool euro)
+{
+    if (n <= 0 || !zmin) return;
+
+    /* ── High-water pass ─────────────────────────────────────────────── */
+    for (int i = 0; i < n; i++) {
+        // A combination never measured (an aborted first loop) keeps its ±inf
+        // seed; publish 0 rather than an infinity that would poison every
+        // comparison and print as "inf" in the JSON.
+        double z = isfinite(zmax[i]) ? zmax[i] : 0.0;
+        g_status.results[i].z_score = z;
+        g_status.results[i].chi_sq  = z * z;
+        g_status.results[i].p_value = p_label(fabs(z));
+    }
+    RunResult top[TOP_N];
+    int tn = 0;
+    for (int i = 0; i < n; i++) {
+        RunResult *r = &g_status.results[i];
+        if (tn < TOP_N || r->z_score > top[tn - 1].z_score) {
+            if (tn < TOP_N) tn++;
+            int p = tn - 1;
+            while (p > 0 && top[p - 1].z_score < r->z_score) { top[p] = top[p - 1]; p--; }
+            top[p] = *r;
+        }
+    }
+    for (int i = 0; i < tn; i++) g_status.top[i] = top[i];
+    g_status.result_count = tn;
+
+    // Most-frequent numbers over combinations whose HIGH mark passed 2. The
+    // high side only, matching cumulative mode's convention.
+    for (int j = 0; j <= 50; j++) fm[j] = 0;
+    for (int j = 0; j <= 12; j++) fe[j] = 0;
+    *z2 = 0;
+    for (int i = 0; i < n; i++) {
+        if (g_status.results[i].z_score <= FREQ_Z_MIN) continue;
+        (*z2)++;
+        for (int j = 0; j < nm; j++) fm[g_status.results[i].nums[j]]++;
+        if (euro) { fe[g_status.results[i].euro[0]]++; fe[g_status.results[i].euro[1]]++; }
+    }
+    publish_frequency(fm, fe, *z2, nm, mx, euro);
+    publish_coverage(n, nm, false, g_status.cover, &g_status.cover_count);
+
+    /* ── Low-water pass ──────────────────────────────────────────────── */
+    for (int i = 0; i < n; i++) {
+        double z = isfinite(zmin[i]) ? zmin[i] : 0.0;
+        g_status.results[i].z_score = z;
+        g_status.results[i].chi_sq  = z * z;
+        g_status.results[i].p_value = p_label(fabs(z));
+    }
+    RunResult low[TOP_N];
+    int ln = 0;
+    for (int i = 0; i < n; i++) {
+        RunResult *r = &g_status.results[i];
+        if (ln < TOP_N || r->z_score < low[ln - 1].z_score) {
+            if (ln < TOP_N) ln++;
+            int p = ln - 1;
+            while (p > 0 && low[p - 1].z_score > r->z_score) { low[p] = low[p - 1]; p--; }
+            low[p] = *r;
+        }
+    }
+    for (int i = 0; i < ln; i++) g_status.low[i] = low[i];
+    g_status.low_count = ln;
+    publish_coverage(n, nm, true, g_status.cover_low, &g_status.cover_low_count);
+
+    /* ── Leave results[] at the signed larger-magnitude mark ──────────── */
+    for (int i = 0; i < n; i++) {
+        double hi = isfinite(zmax[i]) ? zmax[i] : 0.0;
+        double lo = isfinite(zmin[i]) ? zmin[i] : 0.0;
+        double z  = (fabs(hi) >= fabs(lo)) ? hi : lo;
+        g_status.results[i].z_score = z;
+        g_status.results[i].chi_sq  = z * z;
+        g_status.results[i].p_value = p_label(fabs(z));
+    }
 }
 
 /* Fold one completed (or partial) loop's results into the cumulative top-N
@@ -963,7 +1152,7 @@ static void absorb_loop(RunResult *carry, int *carry_n,
 
         // Frequency accumulation over Z>2 runs (sorted desc → stop at <=2)
         for (int i = 0; i < done; i++) {
-            if (g_status.results[i].z_score <= 2.0) break;
+            if (g_status.results[i].z_score <= FREQ_Z_MIN) break;
             (*z2)++;
             for (int j = 0; j < nm; j++) fm[g_status.results[i].nums[j]]++;
             if (euro) { fe[g_status.results[i].euro[0]]++; fe[g_status.results[i].euro[1]]++; }
@@ -1030,6 +1219,11 @@ void elotto_task(void *pvParam)
     g_status.sigma_lo        = 0.0;
     g_status.sigma_hi        = 0.0;
     g_status.cal_ms          = 0;
+    g_status.cal_did_sweep   = false;
+    // A new session must not inherit the previous one's calibration age: the
+    // rig may have been idle for hours, and loop 0 is where the operating point
+    // has to be established rather than assumed.
+    calibrate_forget();
     memset(&s_drift, 0, sizeof(s_drift));
     // focus_mode is set by /start and NOT reset here — it is the session's tag.
     // Everything else about the panel starts clean, including a pause left over
@@ -1049,10 +1243,10 @@ void elotto_task(void *pvParam)
     g_status.net_retries     = 0;
     g_status.net_lost        = 0;
     g_status.net_stale       = 0;
-    if (g_status.baseline_total <= 0 || g_status.baseline_total > 5000)
-        g_status.baseline_total = 100;
-    if (g_status.loops_total <= 0 || g_status.loops_total > 500)
-        g_status.loops_total = 1;
+    if (g_status.baseline_total <= 0 || g_status.baseline_total > BASELINE_MAX)
+        g_status.baseline_total = BASELINE_DEFAULT;
+    if (g_status.loops_total <= 0 || g_status.loops_total > LOOPS_MAX)
+        g_status.loops_total = LOOPS_DEFAULT;
 
     // Re-discover every session: a node that was powered off last time joins
     // this one, and one that vanished does not sit in the table as a phantom.
@@ -1086,11 +1280,27 @@ void elotto_task(void *pvParam)
     int carry_n = 0, low_n = 0;
     int fm[51] = {0}, fe[13] = {0}, z2 = 0;
 
-    // Cumulative (Stouffer) mode: fixed pool, Σz per combination over meas_k loops
-    bool cumulative = (g_status.rank_mode == RANK_CUMULATIVE);
+    /* Both locked-pool modes (CUMULATIVE and EXTREME) fix the combination set
+     * after loop 0 and accumulate across loops; only the accumulation RULE
+     * differs. `cumulative` therefore means "locked pool" everywhere below —
+     * it is what gates re-scoring and the two attended prompts — and `extreme`
+     * selects the rule. PEAK is the odd one out: it re-scores every loop. */
+    bool extreme    = (g_status.rank_mode == RANK_EXTREME ||
+                       g_status.rank_mode == RANK_EXTREME_RAW);
+    bool cumulative = extreme || (g_status.rank_mode == RANK_CUMULATIVE);
+    // Session-scoped, and set here rather than read per call so an aborted
+    // session cannot leave the next one silently un-studentized.
+    s_studentize = (g_status.rank_mode != RANK_EXTREME_RAW);
     int  meas_k = 0;
-    if (cumulative)
-        memset(s_zsum, 0, sizeof(double) * (size_t)g_status.runs_total);
+    if (cumulative && !accum_reset(g_status.runs_total, extreme)) {
+        // No PSRAM for the low-water array. Degrade to Stouffer rather than
+        // publishing a high-water list with no low side, and say so — a silent
+        // mode switch would make the session's own record wrong.
+        printf("rank: no PSRAM for the extreme accumulator -- falling back to cumulative\n");
+        extreme = false;
+        g_status.rank_mode = RANK_CUMULATIVE;
+        accum_reset(g_status.runs_total, false);
+    }
 
     // Pairwise independence check across all nodes (per-loop centered)
     pairs_reset();
@@ -1119,7 +1329,13 @@ void elotto_task(void *pvParam)
         // runs on. A full sweep every loop is the decision in §1.5.1: the
         // optimum is not assumed constant, and re-deriving it is what tracks
         // thermal drift.
-        calibrate_all();
+        //
+        // Not necessarily EVERY loop any more: calibrate_all() skips the sweep
+        // while the last one is younger than cal_interval_ms. The reason a loop
+        // was the unit was that a loop was ~10 min; a Runs-capped loop can be
+        // seconds long, and re-tuning a camera that was tuned seconds ago
+        // measures the sweep's own noise while costing more than the loop.
+        g_status.cal_did_sweep = calibrate_all();
         if (g_status.abort_requested) { slave_abort(); goto done; }
 
         /* ── Phase 1: Baseline calibration (every node in parallel) ────── */
@@ -1170,6 +1386,16 @@ void elotto_task(void *pvParam)
         if (do_score && g_status.pool_confirm && !g_status.abort_requested) {
             ready_wait();
             if (g_status.abort_requested) goto done;
+            /* Settle. The phase moves off PHASE_READY *first*: the UI re-raises
+             * the Start overlay on any /status poll that still sees "ready", so
+             * holding the old phase across this delay would flash the dialog
+             * back over the screen the observer has just been told to attend to.
+             * The gap is not charged to focus_gap_ms either — no window has been
+             * opened yet this loop, so focus_publish() bills none for the first
+             * target. */
+            g_status.phase = PHASE_SCORING;
+            vTaskDelay(pdMS_TO_TICKS(READY_SETTLE_MS));
+            g_status.elapsed_ms = elapsed_ms_now();
         }
 
         /* ── Phase 0: Individual number scoring (cumulative: loop 0 only) ── */
@@ -1213,10 +1439,11 @@ void elotto_task(void *pvParam)
                     (g_status.runs_limit > 0 && g_status.runs_limit < full_combos)
                     ? g_status.runs_limit : full_combos;
                 if (g_status.runs_total > NUM_RUNS) g_status.runs_total = NUM_RUNS;
-                // The Stouffer accumulator was sized for the pre-confirmation
-                // combination count; the pool may now be smaller, so clear it
-                // to the new length before loop 0 starts writing into it.
-                memset(s_zsum, 0, sizeof(double) * (size_t)g_status.runs_total);
+                // The accumulator was sized for the pre-confirmation combination
+                // count; the pool may now be smaller, so re-seed it to the new
+                // length before loop 0 starts writing into it. Re-seeding, not
+                // just clearing: EXTREME's ±inf seeds have to be laid down again.
+                accum_reset(g_status.runs_total, extreme);
             }
         } else {
             g_status.scoring_done = g_status.scoring_total;   // pool already locked
@@ -1279,7 +1506,7 @@ void elotto_task(void *pvParam)
             double zm   = zraw - g_status.baseline_mean;
             focus_off();          // sampling done; the reply wait is dark time
             if (!zok) node_camera_failed(0, "stalled mid-run");
-            if (nodes_have_slaves()) nodes_collect(LINK_MEAS_MS, true);
+            if (nodes_have_slaves()) nodes_collect(LINK_MEAS_MS_FOR(nseg), true);
 
             // Per-node values for the independence check, gathered before the
             // combine so a dropped node is excluded from both consistently.
@@ -1316,11 +1543,31 @@ void elotto_task(void *pvParam)
         pairs_fold_loop();
         publish_pair_stats();
         if (cumulative) {
-            for (int i = 0; i < g_status.runs_total; i++)
-                s_zsum[i] += g_status.results[i].z_score;   // Σz per fixed combination
             meas_k++;
-            publish_cumulative(s_zsum, g_status.runs_total, meas_k, fm, fe, &z2, nm, mx, euro);
-            comparisons = g_status.runs_total;
+            if (extreme) {
+                /* High-water / low-water update. A milder loop changes nothing;
+                 * a more extreme one replaces the mark. Both sides are tested
+                 * every loop, so one loop can raise the high and another can
+                 * lower the low for the same combination. */
+                for (int i = 0; i < g_status.runs_total; i++) {
+                    double z = g_status.results[i].z_score;
+                    if (z > s_zsum[i]) s_zsum[i] = z;
+                    if (z < s_zmin[i]) s_zmin[i] = z;
+                }
+                publish_extreme(s_zsum, s_zmin, g_status.runs_total,
+                                fm, fe, &z2, nm, mx, euro);
+                /* Each published mark is the max (or min) of meas_k independent
+                 * draws, so the null distribution of the headline Z widens with
+                 * every loop. The comparison count has to widen with it or the
+                 * corrected p would improve simply by running longer — the same
+                 * rule PEAK already uses. */
+                comparisons = g_status.runs_total * meas_k;
+            } else {
+                for (int i = 0; i < g_status.runs_total; i++)
+                    s_zsum[i] += g_status.results[i].z_score;   // Σz per fixed combination
+                publish_cumulative(s_zsum, g_status.runs_total, meas_k, fm, fe, &z2, nm, mx, euro);
+                comparisons = g_status.runs_total;
+            }
         } else {
             absorb_loop(carry, &carry_n, low_carry, &low_n, fm, fe, &z2, nm, mx, euro);
             comparisons = g_status.runs_total * g_status.loop_current;
@@ -1338,17 +1585,26 @@ done:
     if (cumulative) {
         if (meas_k > 0) {
             // Complete loops exist: discard the partial loop, publish those
-            publish_cumulative(s_zsum, g_status.runs_total, meas_k, fm, fe, &z2, nm, mx, euro);
-            comparisons = g_status.runs_total;
+            if (extreme) {
+                publish_extreme(s_zsum, s_zmin, g_status.runs_total,
+                                fm, fe, &z2, nm, mx, euro);
+                comparisons = g_status.runs_total * meas_k;
+            } else {
+                publish_cumulative(s_zsum, g_status.runs_total, meas_k, fm, fe, &z2, nm, mx, euro);
+                comparisons = g_status.runs_total;
+            }
         } else if (g_status.runs_completed > 0) {
             // Aborted during the first measurement loop: treat the measured
             // subset as a single sample so partial results are still shown
             int pdone = g_status.runs_completed;
             compact_partial(pdone);
             studentize(pdone, NULL);
-            for (int i = 0; i < pdone; i++)
+            for (int i = 0; i < pdone; i++) {
                 s_zsum[i] = g_status.results[i].z_score;
-            publish_cumulative(s_zsum, pdone, 1, fm, fe, &z2, nm, mx, euro);
+                if (extreme) s_zmin[i] = g_status.results[i].z_score;
+            }
+            if (extreme) publish_extreme(s_zsum, s_zmin, pdone, fm, fe, &z2, nm, mx, euro);
+            else         publish_cumulative(s_zsum, pdone, 1, fm, fe, &z2, nm, mx, euro);
             comparisons = pdone;
         }
     } else {

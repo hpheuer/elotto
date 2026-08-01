@@ -168,6 +168,26 @@ bool camera_calibrate(int budget_ms, bool (*abort_cb)(void), camera_cal_t *out);
  * Pass c = NULL (or a sweep that never ran) to emit {"ran":false,"steps":[]}. */
 esp_err_t camera_cal_send_json(void *httpd_req, const camera_cal_t *c);
 
+/* Handle `POST /expose?exp=<lines>[&gain=<g>]` — set this node's operating point
+ * by hand, for tuning the physical light against a live mean_px reading.
+ *
+ * Shared for the same reason as the sweep serialiser: both firmwares serve this
+ * path (the master for its own camera, each slave for its own), and the clamps
+ * and the read-back semantics must be identical or /diag would show four nodes
+ * answering the same request differently.
+ *
+ * `busy` is the caller's "a measurement is in flight" predicate — the master
+ * passes its session state, the slave passes g_measuring. Refused with 409 when
+ * busy: writing a sensor register mid-run changes the instrument underneath a
+ * z-score that is already being accumulated, and the run would be labelled with
+ * a setting it was only half measured at.
+ *
+ * Omitting `gain` keeps the gain in force, so an exposure change cannot silently
+ * move the other parameter. Replies with the READ-BACK setting, not the
+ * requested one — camera_set_exposure() verifies by re-reading the registers,
+ * and a request the sensor refused must not be reported as applied. */
+esp_err_t camera_expose_handle(void *httpd_req, bool busy);
+
 // Priority of the extraction task created by camera_init().
 #define ELOTTO_CAM_TASK_PRIO 4
 

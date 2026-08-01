@@ -77,6 +77,15 @@ void run_gap(void)
     vTaskDelay(pdMS_TO_TICKS(RUN_GAP_MS));
 }
 
+/* Same blank, explicit length — scoring runs ~3× longer than a measurement run
+ * and has to keep the same duty ratio, or it lands in the starved regime the
+ * paragraphs above are about. See SCORE_GAP_MS in focus.h. */
+void run_gap_ms(int ms)
+{
+    if (ms < 0) ms = 0;
+    vTaskDelay(pdMS_TO_TICKS(ms));
+}
+
 static int64_t s_t0;               // session start
 static int64_t s_paused_us;        // total time held by pause, excluded from elapsed
 static int64_t s_focus_on_us, s_focus_off_us;

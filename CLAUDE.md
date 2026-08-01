@@ -9,9 +9,18 @@
 
 ## Project structure
 - main/elotto.c   – app_main, Ethernet, webserver, HTML/JS UI. Endpoints: `/` `/status` `/start`
-  `/abort` `/loops` `/focus` `/pause` `/calibrate` `/pool` `/ready` `/probe`, plus **`/diag` (a
-  four-camera health PAGE, live, one row per node)** and `/diagjson` (the master's own stats, which
-  is where `/diag`'s JSON went on 2026-07-28). Slaves serve that same JSON at their own `/diag`.
+  `/abort` `/loops` `/focus` `/pause` `/calibrate` `/pool` `/ready` `/probe` `/expose`, plus
+  **`/diag` (a four-camera health PAGE, live, one row per node)** and `/diagjson` (the master's own
+  stats, which is where `/diag`'s JSON went on 2026-07-28). Slaves serve that same JSON at their
+  own `/diag`.
+  **`POST /expose?exp=<lines>[&gain=<g>]` sets one node's operating point by hand** — served by
+  *every* node for its own camera (shared `camera_expose_handle()`, so four nodes cannot disagree
+  about clamps or read-back), and driven from `/diag`'s per-row **&minus;/+** buttons, which halve
+  or double the exposure. It resets the camera statistics, so `mean_px` answers in ~2 s — the point
+  is tuning the physical LIGHT against a live reading. Refused **409** while measuring (session
+  state on the master, `g_measuring` on a slave), and the reply carries the **read-back** setting,
+  never the requested one. ⚠ **Not sticky**: the next calibration sweep overwrites it, which is
+  correct — the sweep is what chooses a rung on evidence. Omitting `gain` keeps the gain in force.
   ⚠ `cfg.max_uri_handlers` must exceed **(count here) + 5 from elotto_ota**; registration past the
   cap fails and the return value is checked nowhere, so an endpoint just 404s silently.
 - main/sensor.c   – GCP analysis, scoring/pooling, baseline, studentization, drift, publishing
@@ -189,8 +198,10 @@ so a fresh session does not need them.
 - Each node has its **own** OV5647 camera (never shared — sharing one would break
   independence by construction). Entropy = non-overlapping frame pairs, diff = f[2k+1]−f[2k]
   per pixel (cancels FPN exactly), LSB packed, XOR-folded. ~3 Mbit/s per node.
-- One source ⇒ one segment count: `CAM_SEGMENTS` = 11950, ~1000 ms for every run — scoring,
-  measurement and baseline alike. z stays N(0,1) regardless, being normalised by √segments.
+- One source, but **two segment counts since 2026-07-30** (user decision): `CAM_SEGMENTS` = 11950
+  (~1030 ms) for **baseline and Phase 2**, and `SCORE_SEGMENTS` = 3 × that = 35850 for **Phase 0
+  scoring**, which measures **3370 ms** — see the Phase 0 entry below for why. z stays N(0,1) at
+  either length, being normalised by √segments, so nothing downstream needs to know which ran.
 - ✅ **The segment count travels on the wire** (`M<seg>`, `B<runs>,<seg>`), so the constant
   lives in `main/sensor.c` only. A slave that is *told* the length cannot disagree about it.
   `slave.c` keeps `CAM_SEGMENTS` **only** as the fallback for a pre-Phase-5 master, and logs
@@ -226,8 +237,13 @@ phase is kept because `baseline_mean` is the **input to the cross-loop drift reg
 (`drift_add()` → `drift_slope`/`drift_t`, stored per loop in `/loops` as `base`/`raw_m`) — the
 diagnostic that caught the master drifting −0.334 z/loop in §1.12. It is also the *more precise*
 offset instrument: 50 runs give SE ≈ 0.14 z on the per-run offset, against ≈0.40 z implied by the
-calibration sweep's bias figure, because the baseline sees ~20× more data. Cost is 50 × 1.4 s ≈
-70 s/loop (~8 % of a 10 min loop); 25–30 runs is the floor worth keeping.
+calibration sweep's bias figure, because the baseline sees ~20× more data.
+⚠ **The default is 10 runs since 2026-07-30 (user decision)**, down from 100 — ~14 s/loop instead
+of ~140 s. That is BELOW the 25–30 this entry calls the floor worth keeping: at 10 runs the
+per-run offset carries SE ≈ **0.32 z** instead of 0.14, so `drift_slope`/`drift_t` are
+correspondingly noisier — and drift is the diagnostic that caught the sealed enclosure at
+t = −4.75. `?baseline=` overrides per session; raise it for any session where drift is the
+question. The subtraction itself is unaffected, being inert either way.
 The UI bar is labelled **"Baseline — drift reference"**, not "Calibration": the camera exposure
 sweep is a different phase, and having two things called calibration in one interface was
 ambiguous. The `cal*` element ids are historical.
@@ -238,7 +254,11 @@ always sends it; **curl never does**, so scripted runs and the `?cal=0` control 
   is the first phase whose bits are collected while a target is on screen, so it is where the
   protocol actually begins — starting it the instant the baseline ends catches the observer
   mid-thought. **No timeout**, deliberately: there is no sensible default action. During preparation
-  the Focus panel reads "Preparing the system".
+  the Focus panel reads "Preparing the system". The button carries the instruction ("Focus and
+  concentrate on the numbers only") and releasing it holds **1 s dark** (`READY_SETTLE_MS`) before
+  the first number — pressing it is itself an act of attention, and onset is the payload. The phase
+  moves to `PHASE_SCORING` *before* that delay: a `/status` poll still seeing `ready` would re-raise
+  the overlay over the screen the observer was just told to attend to.
 - **`PHASE_POOL_CONFIRM` — pool confirmation.** After scoring, the proposed pool is published and
   the operator can edit it: `POST /pool?act=ok|more|cancel&main=..&euro=..`. "Select more" re-scores
   with the still-checked numbers **omitted** from the pass, so they keep the measurement that chose
@@ -247,13 +267,28 @@ always sends it; **curl never does**, so scripted runs and the `?cal=0` control 
   ⚠ **15-minute timeout** accepts the proposal unchanged and records `pool_auto=1`. Verified firing.
   In cumulative mode the pool is locked after loop 0, so this choice commits the whole session.
 
-Phase 0: score individual numbers 1..N with **exactly one** node-combined run each, sweeping the
-numbers in a **fresh random order (Fisher–Yates, no repeats)** — `score_one_run()`. Repeats *in
-place* were removed in Phase 5: five consecutive runs of the same number froze the Focus panel
-for ~6.9 s, and onset is what the observer is meant to notice. Per-number SE = 1/√k ≈ 0.50 at
-four nodes (was 0.22 at 5 reps), which changes only *which* numbers enter the pool, never the
-Phase-2 statistics. If a pool choice must be trusted on its own, run several full random
-passes — **never** repeats in place.
+Phase 0: score individual numbers 1..N with **exactly one node-combined run each, but a LONG one
+(~3370 ms, `SCORE_SEGMENTS`)**, sweeping the numbers in a **fresh random order (Fisher–Yates, no
+repeats)** — `score_one_run()`. Per-number SE = 1/√(k·3) ≈ **0.29** at four nodes.
+⚠ **Never repeat a target in place**, in any form. The phase has been through four shapes and two
+were rejected on the same ground: 5 short reps (until 2026-07-25) froze the panel ~6.9 s and only
+the first window had an onset; 3 short reps (briefly, 2026-07-30) reintroduced exactly that. One
+long run gives the same arithmetic — a 3× run is Σdev/√(3N), i.e. the Stouffer combination of
+three 1× runs — while keeping **one onset per number**, which is the payload.
+⚠ **The gap scales with it: `SCORE_GAP_MS` = 1000, not `RUN_GAP_MS` = 350.** Duty cycle, not
+window length, is what starves the extraction task; 3.4 s behind a 350 ms blank would be ~90 %.
+Measured at the real settings: window **3370 ms ± 1.5 ms across 62 numbers**, gap 1010 ms, duty
+76.9 %, rate 3.37–3.38 Mbit/s (collapsed regime is 2.68), zero stalls, `net_lost` 0.
+A phase-specific gap does **not** break the uniform-gap rule: that rule exists so attended and
+unattended sessions differ only in the display (this applies to both) and so the baseline matches
+the runs it is subtracted from (it feeds Phase 2; scoring has **no** baseline subtraction).
+⚠ `LINK_MEAS_MS` is gone — the reply window is now `LINK_MEAS_MS_FOR(nseg)`. The old flat 4000 ms
+was headroom for a 1 s run and a **deadline** for a 3.4 s one: every slave would still be
+measuring when it expired, all would look silent, and after `NODE_MISS_LIMIT` they would be
+DROPPED, leaving a solo session that still looked healthy. Deliberately generous (user decision):
+a late drop costs nothing here, a false drop costs an arm of data measured at √(k−1) unnoticed.
+Scoring costs ~4.6 min for 62 numbers, on loop 0 only in the locked-pool modes. It changes only
+*which* numbers enter the pool, never the Phase-2 statistics measured on them.
 Phase 2: measure all pool combinations in a fresh Fisher–Yates random order per loop
 (s_perm[], drift immunity); results[] stays slot-indexed. A Runs cap stride-samples the full
 space (slot i → combo ⌊i·full/total⌋). After each loop, studentize() re-expresses every z as
@@ -289,9 +324,10 @@ unattended sessions must never be pooled**; run matched no-focus controls.
   credits an effect to the wrong combination — mislabeling, not blur). `POST /pause?on=1|0`
   holds **between** runs only; state stays `running`, Σz and the permutation resume where they
   left off, and paused time is excluded from `elapsed_ms` (`paused_ms` records it).
-- **Every focus display is 1000 ms**, scoring and measurement alike, with a uniform **350 ms**
-  blank (`RUN_GAP_MS`) after every run including baseline. So `CAM_SEGMENTS` (11950) /
-  `TRNG_SEGMENTS` are single constants — no phase split. 350 ms not 200 because conscious
+- **Baseline and Phase 2 displays are 1030 ms** with a **350 ms** blank (`RUN_GAP_MS`) after every
+  run; **Phase 0 scoring is 3370 ms with a 1010 ms blank** (`SCORE_SEGMENTS` / `SCORE_GAP_MS`,
+  2026-07-30). Both cycles sit at ~75 % duty, which is the property that matters. 350 ms not 200
+  because conscious
   noticing smears over ~100–300 ms, so a 200 ms blank lets attention to target N overlap N+1's
   sampling; the hardware forces it too (1000 ms at a 200 ms gap is 83% duty, past the point
   where the loop starves the camera extraction task it consumes from and the rate collapses).
@@ -303,13 +339,21 @@ unattended sessions must never be pooled**; run matched no-focus controls.
   calibration on (the default) that reset happens every loop, so `mbit_s`/`bias` in `/status`
   and `/loops` are now per-loop figures. In a `?cal=0` session there is no reset and they are
   lifetime averages again — a falling `mbit_s` is then not evidence of live degradation.
+  ⚠ Since 2026-07-29 a sweep can also be **skipped** on a short loop (see below), so the window
+  those figures cover is "since the last sweep", which is not always one loop.
 
-**Per-loop camera calibration (PLAN.md Task 1, done 2026-07-26)**: at the start of every loop the
+**Per-loop camera calibration (PLAN.md Task 1, done 2026-07-26)**: at the start of a loop the
 master broadcasts `K<budget_ms>`, sweeps its own exposure ladder in parallel, and waits for every
 node's `OK:<exp>,<gain>,<fold>,<bias>,<mbit_s>,<G|U>`. Each node keeps the setting with the
 **lowest |bias − 0.5| among candidates clearing the σ gate with margin** (see above); if none
-passes it keeps the one it had and reports `U`. **~24 s** per loop, measured — the budget (default
-30 s) is a *cap*, not a target, so progress must never be estimated against it.
+passes it keeps the one it had and reports `U`. The budget is a *cap*, not a target, so progress
+must never be estimated against it — at the old 30 s cap a sweep measured **~24 s**.
+⚠ **The default cap is 10 s since 2026-07-30 (user decision).** This is NOT a 3× saving on a fixed
+measurement: the cap is divided evenly over the 9 candidates, so each rung is now scored on about
+a **third of the bits** (~1.1 s instead of ~3.3 s). Per-rung bias/σ are correspondingly noisier —
+the per-candidate bias SE was ~1.7e-4 at 30 s — so rungs sitting near a gate boundary will flip
+between sweeps more often, which is the failure §1.17's σ-margin rule exists to contain.
+`?cal=<ms>` restores any budget without a reflash.
 `POST /start?cal=0` turns it off — that is the matched control, and per-loop calibration is
 **statistically neutral** (PLAN_HISTORY.md §1.14 and PLAN.md §1.15: A−B = 0.52 SE
 over 6×430 runs per arm).
@@ -321,14 +365,50 @@ spread **128 / 32 / 64 / 512** inside one dark box — so the spread is the *sen
 the light, and it is not something the enclosure was ever going to remove.
 The chosen setting is recorded per loop in `/loops` — mandatory, because a per-loop change nobody
 logged is indistinguishable from drift in the data.
+⚠ **The trigger is TIME, not the loop boundary (2026-07-29, PLAN.md §1.18).** A loop that starts
+less than `cal_interval_ms` after the last sweep **skips** it — default **5 min**,
+`POST /start?calint=<ms>`, `0` = the old sweep-every-loop rule. The loop was only a proxy for "ten
+minutes have passed"; a Runs-capped or post-`/pool` loop can run in seconds, where a 24 s sweep is
+most of the loop and re-tunes a camera that has had no time to drift. At the default a full ~10 min
+loop still sweeps every loop, so **§1.14/§1.15's condition is unchanged** — but a comparison
+against those arms with short loops must pass `?calint=0`. `LoopStat.cal_ms` is **0 on a skipped
+loop** (`/loops`), `/status` carries `cal_interval_ms` and `cal_did_sweep`, and the `cam_*` fields
+still hold the setting in force, i.e. the carried-over one.
 
-Loops: the whole experiment repeats N times (device-side, in elotto_task). Two ranking modes
-(g_status.rank_mode): RANK_PEAK keeps the best single-run z across loops via absorb_loop();
-RANK_CUMULATIVE (default) locks the pool after loop 0, re-measures the fixed combination set
-each loop, accumulates s_zsum[] and ranks by Stouffer Z = Σz/√k (publish_cumulative(), no
-in-place sort of results[] so the combo↔index mapping stays stable). Top-10/Bottom-10 +
-frequency published after every loop so /status shows intermediate results. Optional Runs cap
-(g_status.runs_limit) shortens Phase 2 for quick tests.
+Loops: the whole experiment repeats N times (device-side, in elotto_task). **Four** ranking modes
+(g_status.rank_mode), `?rank=0|1|2|3`, shown live in a pill beside the loop counter (fed from
+`/status`, i.e. the DEVICE's mode, so a curl-started session still labels itself):
+- **RANK_EXTREME (2) — THE DEFAULT since 2026-07-30 (user decision).** Pool locked after loop 0;
+  each fixed combination keeps the **most extreme z it has ever produced**. A milder later loop is
+  ignored, a more extreme one replaces the mark. Highs and lows are tracked **separately**
+  (`s_zsum[]` = running max in internal RAM, `s_zmin[]` = running min **in PSRAM** — a second
+  64 KB `.bss` array fails the *link*), so a combination reading +3.1 early and −3.4 later keeps
+  both and appears on both lists. `publish_extreme()` runs two passes over `results[]`, taking the
+  high-side lists then the low-side ones, because every selector downstream reads that one field.
+  ⚠ **The published extreme CLIMBS with loop count under the null** — it is the max of k draws.
+  `comparisons = runs_total × k` for exactly that reason, so **read the Bonferroni line, never the
+  raw Z**. Verified end-to-end 2026-07-30: over two loops best_z went 1.8082 → 1.9908 (never
+  decreasing) with comparisons 20 → 40.
+- **RANK_CUMULATIVE (1)** — pool locked after loop 0, ranks by Stouffer Z = Σz/√k over the fixed
+  set (`publish_cumulative()`, no in-place sort of results[] so combo↔index stays stable). A real
+  effect d grows as d√k; an isolated extreme regresses toward 0 as loops accumulate. `comparisons`
+  stays runs_total. **This is the mode that accumulates evidence** — the user's own observation that
+  a −3 became −2 in a later loop was this working as designed, not a fault.
+- **RANK_EXTREME_RAW (3)** — EXTREME, but `studentize()` does **not** rewrite the z's (user
+  request, 2026-07-30, to see what the correction was doing). `loop_sigma`, the loop mean and the
+  drift regression are still computed; only the rewrite is skipped, so no diagnostic dies.
+  ⚠ The published Z is then **not N(0,1)** — it keeps the loop's own offset and raw σ (measured
+  0.85–0.99 in the verification run) — so the corrected p is uncalibrated, and the results line
+  says so. Two consequences that are easy to miss: the master's `zm = zraw − baseline_mean`
+  subtraction **stops being inert** and becomes a live, master-only correction; and `loop_sigma`
+  stops being a diagnostic and becomes the scale the numbers are actually on. **Never pool a raw
+  session with a studentized one.**
+- **RANK_PEAK (0)** — best single-run z across loops via `absorb_loop()`, and the odd one out: it
+  **re-scores the pool every loop**, so `do_score` is true each loop and (with `?confirm=1`) both
+  attended gates fire every loop. The retained extreme may belong to a draw never measured again.
+Coverage sets are published by the two **locked-pool** modes, not by PEAK.
+Top-10/Bottom-10 + frequency published after every loop so /status shows intermediate results.
+Optional Runs cap (g_status.runs_limit) shortens Phase 2 for quick tests.
 
 Modes: Eurojackpot (5 of 50 + 2 of 12, 7920 combinations) and 6 of 49 (5005 combinations).
 
@@ -383,7 +463,14 @@ is gone. Those are the cases OTA cannot repair — the P4 has no
   `ESP32P4_REV_MIN_0=y` — the latter depends on it, and without it the choice silently falls
   back to rev v3.1 and the binary refuses to boot on these v1.3 boards.
 
-## Where things stand (2026-07-28) — read this first
+## Where things stand (2026-07-29) — read this first
+
+⚠ **THE HARDWARE IS BEING CHANGED — lighting above all (user, 2026-07-29).** Everything below the
+software line was measured on the *old* optics. Treat every number in this file and in PLAN.md as
+describing an instrument that no longer exists: the exposure ladders, `mean_px` ceilings, per-node
+biases, σ figures and the `.145` weak-node finding all have to be re-measured. `docs/data/` was
+emptied for the same reason (open item 2). **Nothing recorded before the change may be pooled with
+anything recorded after it.** The software, its gates and their reasoning are unaffected.
 
 **The instrument is sound.** In a 200-loop session the master and `.155` had per-loop σ SD of
 0.097 and 0.085 against the **0.089 that sampling alone predicts** — indistinguishable from ideal.
@@ -396,9 +483,16 @@ instrument produces.
 1. **`.103`'s load degradation** — the only unexplained instrument fault. Clean on idle sweeps,
    per-loop σ SD 0.24 over 78 loops. The free diagnostic is to **swap `.103`'s camera with
    `.155`'s**: if the fault follows the camera it is the sensor, if it stays it is the board.
-2. **An unanalysed 89-loop dataset** sits in `docs/data/2026-07-28_run400_aborted/` (17.4 h,
-   ~38 700 runs, aborted at loop 90/400). Nobody has looked at whether `.145` improved after the
-   σ-margin fix and the LED repair.
+2. ~~An unanalysed 89-loop dataset in `docs/data/`.~~ **`docs/data/` WAS EMPTIED 2026-07-29** (user
+   decision) — **the lighting and other hardware are being changed, so nothing recorded before that
+   change is comparable to anything recorded after it.** Every archived session went: the 89-loop
+   and 54-loop aborted 400s, the 200-loop session, the control pair, all four ladder sets. The
+   tracked ones survive in git history only (`git show 56b204a:docs/data/…`); the 54-loop set
+   captured on 07-29 was never committed and is **gone**. Do not plan analyses against any of it,
+   and do not pool a post-change session with a pre-change number quoted in these documents. The
+   *conclusions* drawn from that data are still recorded in PLAN.md / PLAN_HISTORY.md — but they
+   describe the old optics, and §1.16's `.145` ceiling, §1.13's exposure choice and §1.17's
+   σ-margin evidence all have to be re-established on the new hardware before they are trusted.
 3. **`CAL_MAX_MEAN_PX` = 100 is binding on the master** (its exposure-32 rung fails on light at
    104.65 with σ 1.0394). A decision, not a measurement.
 4. **Does calibration reduce the RATE of bad loops?** §1.14/§1.15 only ever asked "does it add
