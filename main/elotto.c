@@ -156,22 +156,28 @@ static const char HTML[] =
 // measurement loop is ~430 runs, not the 850 the 500 ms draw allowed.
 // `Runs = 0` (all) still works, and 430 of 5005 is still stride-sampled across
 // the whole combination space rather than a lexicographic prefix.
-"<input id='numBaseline' class='fin' type='number' value='50' min='10' max='5000' step='50'>"
+"<input id='numBaseline' class='fin' type='number'"
+" value='" EL_STR(BASELINE_DEFAULT) "' min='" EL_STR(BASELINE_MIN) "'"
+" max='" EL_STR(BASELINE_MAX) "' step='" EL_STR(BASELINE_STEP) "'>"
 "</div>"
 "<div class='frow'>"
 "<label for='numLoops'>Loops:</label>"
-"<input id='numLoops' class='fin' type='number' value='1' min='1' max='500' step='1'>"
+"<input id='numLoops' class='fin' type='number'"
+" value='" EL_STR(LOOPS_DEFAULT) "' min='1' max='" EL_STR(LOOPS_MAX) "' step='1'>"
 "</div>"
 "<div class='frow'>"
 "<label for='numRuns'>Runs (0=all):</label>"
-"<input id='numRuns' class='fin' type='number' value='430' min='0' max='8000' step='1'>"
+"<input id='numRuns' class='fin' type='number'"
+" value='" EL_STR(RUNS_DEFAULT) "' min='0' max='" EL_STR(NUM_RUNS) "' step='1'>"
 "</div>"
 "<div class='frow'>"
 "<label for='selRank'>Ranking:</label>"
 "<select id='selRank' style='padding:5px 8px;border-radius:6px;border:1px solid #a08030;"
 "background:#0a2e0a;color:#fff;font-size:.92em;max-width:100%'>"
-"<option value='1'>Cumulative Z (Stouffer, recommended)</option>"
-"<option value='0'>Peak Z (best single run)</option>"
+"<option value='2'>Most extreme Z (keeps the peak per combination)</option>"
+"<option value='3'>Most extreme Z, no studentization (raw scale &#9888;)</option>"
+"<option value='1'>Cumulative Z (Stouffer)</option>"
+"<option value='0'>Peak Z (best single run, pool re-scored each loop)</option>"
 "</select>"
 "</div>"
 // No entropy selector: photons or nothing. The on-chip TRNG was removed from
@@ -216,8 +222,20 @@ static const char HTML[] =
 "<button class='btn btn-abort' id='btnAbort' onclick='doAbort()'>&#9632; Abort</button>"
 "</div>"
 "<div id='progArea' style='display:none'>"
-"<div id='loopBadge' style='display:none;text-align:center;color:#f0c040;"
-"font-weight:700;font-size:1.05em;margin-bottom:10px'></div>"
+/* Loop counter and, beside it, the ranking mode this session is actually
+   running. The mode decides what every published Z MEANS — a high-water mark, a
+   Stouffer sum, or a raw unstudentized value — and it is chosen once in a
+   dropdown that is off-screen for the rest of the session. Without it on the
+   progress line, the operator reads numbers whose rule they cannot see. It is
+   fed from /status (the DEVICE's mode), never from the dropdown, so a session
+   started from another tab or by curl still labels itself honestly. */
+"<div style='display:flex;align-items:center;justify-content:center;gap:10px;"
+"flex-wrap:wrap;margin-bottom:10px'>"
+"<div id='loopBadge' style='display:none;color:#f0c040;"
+"font-weight:700;font-size:1.05em'></div>"
+"<div id='modeBadge' style='display:none;color:#9fc79f;font-size:.86em;"
+"border:1px solid rgba(159,199,159,.35);border-radius:999px;padding:2px 10px'></div>"
+"</div>"
 "<div id='calArea'>"
 // Labelled "Baseline", NOT "Calibration". This bar tracks the baseline runs;
 // the camera exposure sweep is a different phase entirely (and says so in
@@ -295,8 +313,17 @@ static const char HTML[] =
 "Cameras calibrated and baseline recorded.<br>"
 "Take your time. Press Start when you are settled and ready to attend."
 "</div>"
-"<button class='btn btn-euro' style='font-size:1.35em;padding:16px 46px' "
-"onclick='readyGo()'>&#9654; Start</button>"
+/* The reminder rides ON the button rather than beside it: it is the last thing
+   read before the first target appears, and the instruction it carries — attend
+   to the number and nothing else — IS the experimental condition this session is
+   tagged with. The second line is deliberately part of the same click target. */
+"<button class='btn btn-euro' style='font-size:1.35em;padding:14px 34px;"
+"line-height:1.3' onclick='readyGo()'>&#9654; Start"
+"<div style='font-size:.52em;font-weight:400;opacity:.9;margin-top:7px'>"
+"Focus and concentrate on the numbers only</div></button>"
+"<div style='color:#a8c8a8;font-size:.78em;margin-top:14px'>"
+"The first number appears one second after you press Start."
+"</div>"
 "</div></div>"
 "<div class='card' id='focusCard' style='display:none;text-align:center'>"
 "<div style='color:#f0c040;font-size:.88em;margin-bottom:8px;text-align:left'>"
@@ -367,6 +394,7 @@ static const char HTML[] =
 // must show it too — the session is blocked until somebody presses Start.
 "if(d.phase==='ready')readyShow();"
 "updateLoopBadge(d.loop_current||1,d.loops_total||1);"
+"updateModeBadge(d.rank);"
 "document.getElementById('sCalTotal').textContent=d.baseline_total;"
 "setScoreTotal(d);"
 "if(d.scoring_total>0){"
@@ -404,13 +432,29 @@ static const char HTML[] =
 "if(total>1){b.style.display='';b.textContent='\\uD83D\\uDD01 Loop '+cur+' / '+total;}"
 "else b.style.display='none';"
 "}"
+/* Shown independently of the loop badge, which hides itself on a single-loop
+   session — the ranking rule matters just as much there. RAW is called out in
+   its own colour: its Z is not N(0,1) and the p beside it is uncalibrated. */
+"var RANKNAME={'max':'\\uD83C\\uDFAF Most extreme Z',"
+"'maxraw':'\\u26a0 Most extreme Z \\u2014 RAW, not studentized',"
+"'cum':'\\u03a3 Cumulative Z (Stouffer)',"
+"'peak':'\\u2191 Peak Z (single run)'};"
+"function updateModeBadge(rank){"
+"var b=document.getElementById('modeBadge');"
+"if(!rank||!RANKNAME[rank]){b.style.display='none';return;}"
+"b.style.display='';"
+"b.textContent=RANKNAME[rank];"
+"var raw=(rank==='maxraw');"
+"b.style.color=raw?'#f0a040':'#9fc79f';"
+"b.style.borderColor=raw?'rgba(240,160,64,.55)':'rgba(159,199,159,.35)';"
+"}"
 "function doStart(mode){"
 "curMode=mode;"
-"var base=parseInt(document.getElementById('numBaseline').value)||100;"
-"var loops=parseInt(document.getElementById('numLoops').value)||1;"
-"if(loops<1)loops=1;if(loops>500)loops=500;"
+"var base=parseInt(document.getElementById('numBaseline').value)||" EL_STR(BASELINE_DEFAULT) ";"
+"var loops=parseInt(document.getElementById('numLoops').value)||" EL_STR(LOOPS_DEFAULT) ";"
+"if(loops<1)loops=1;if(loops>" EL_STR(LOOPS_MAX) ")loops=" EL_STR(LOOPS_MAX) ";"
 "var runs=parseInt(document.getElementById('numRuns').value)||0;"
-"if(runs<0)runs=0;if(runs>8000)runs=8000;"
+"if(runs<0)runs=0;if(runs>" EL_STR(NUM_RUNS) ")runs=" EL_STR(NUM_RUNS) ";"
 "var rank=document.getElementById('selRank').value;"
 "var foc=document.getElementById('chkFocus').checked?1:0;"
 "document.getElementById('runsErr').textContent='';"
@@ -447,6 +491,10 @@ static const char HTML[] =
 "document.getElementById('resCardCoverLow').style.display='none';"
 "document.getElementById('msg').textContent='';"
 "updateLoopBadge(1,loops);"
+/* Optimistic label from the dropdown so the badge is up before the first
+   /status arrives; the very next poll overwrites it with what the DEVICE
+   reports, which is the authority if the two ever disagree. */
+"updateModeBadge({'0':'peak','1':'cum','2':'max','3':'maxraw'}[rank]);"
 "setMode(mode);"
 "if(timer)clearInterval(timer);"
 "timer=setInterval(poll,1000);"
@@ -517,6 +565,13 @@ static const char HTML[] =
 "function readyHide(){document.getElementById('readyOv').style.display='none';}"
 "function readyGo(){"
 "readyHide();"
+/* Blank the panel at the click, without waiting for the 1 Hz /status poll to
+   notice the phase change. The device holds one second before the first target
+   precisely so the press and the first onset do not overlap; leaving "Preparing
+   the system" on screen for most of that second would spend the settle time on
+   text instead of on the empty field the number is about to appear in. */
+"preparing=false;"
+"document.getElementById('focusBox').innerHTML='';"
 "document.getElementById('msg').textContent='Starting number scoring\\u2026';"
 "fetch('/ready',{method:'POST'}).then(function(r){"
 "if(!r.ok)document.getElementById('msg').textContent='Start rejected by device.';});"
@@ -615,6 +670,7 @@ static const char HTML[] =
 "function poll(){"
 "fetch('/status').then(function(r){return r.json();}).then(function(d){"
 "updateLoopBadge(d.loop_current||1,d.loops_total||1);"
+"updateModeBadge(d.rank);"
 "updateFocusInfo(d);"
 // Raise the prompt as soon as the device parks on it, and take it down again
 // the moment it moves on (an answer from another browser tab, or the timeout).
@@ -651,7 +707,7 @@ static const char HTML[] =
    budget-based bar would visibly stall at 80%. Falls back to the budget on the
    first loop, when there is no previous sweep to estimate from. */
 "if(d.phase==='calibrating'){"
-"var est=(d.cal_ms>0?d.cal_ms:(d.cal_budget_ms||30000));"
+"var est=(d.cal_ms>0?d.cal_ms:(d.cal_budget_ms||" EL_STR(CAL_BUDGET_DEFAULT_MS) "));"
 "var el=d.cal_elapsed_ms||0;"
 "var left=Math.max(0,Math.round((est-el)/1000));"
 "document.getElementById('calTitle').innerHTML='\\uD83D\\uDD27 Camera calibration \\u2014 exposure sweep';"
@@ -732,7 +788,12 @@ static const char HTML[] =
 "var res=d.cover,isEuro=d.mode==='euro';"
 "var sl=document.getElementById('sigLine');"
 "if(d.best_z!==undefined&&d.comparisons>0){"
-"var rk=d.rank==='cum'?'cumulative Z (Stouffer)':'peak Z';"
+"var rk=d.rank==='cum'?'cumulative Z (Stouffer)':"
+"(d.rank==='max'?'most extreme Z per combination':"
+// Flagged wherever the number is shown, not only in the dropdown: a raw-scale Z
+// is not N(0,1), so the corrected p beside it is uncalibrated and a reader who
+// missed the mode setting would take it at face value.
+"(d.rank==='maxraw'?'most extreme Z, RAW \\u2014 not studentized, p uncalibrated':'peak Z'));"
 "var pc=d.p_corr<0.001?d.p_corr.toExponential(1):d.p_corr.toFixed(3);"
 "var sig=d.p_corr<0.05?'significant':'consistent with chance';"
 "sl.innerHTML='Ranking: '+rk+' \\u00b7 most extreme |Z| = '+d.best_z.toFixed(2)"
@@ -756,7 +817,7 @@ static const char HTML[] =
 "var rz=Math.abs(d.pair_r)*Math.sqrt(d.pair_n);"
 "s2+=(s2?' \\u00b7 ':'')+'worst pair r = '+d.pair_r.toFixed(3)"
 "+' (n'+d.pair_i+'\\u2013n'+d.pair_j+' of '+d.pair_count+' pairs)'"
-"+(rz>3?' \\u26a0 correlated':' ok');}"
+"+(rz>" EL_STR(PAIR_FLAG_T) "?' \\u26a0 correlated':' ok');}"
 "if(s2)sl.innerHTML+=(sl.innerHTML?'<br>':'')+s2;"
 // Per-node row: source, own sigma, camera rate, stalls and missed replies. The
 // combined z averages exactly these differences away, so a node that quietly
@@ -813,7 +874,7 @@ static const char HTML[] =
 // 6 loops, not 3: at 3 the regression has one degree of freedom and |t|>3 fires
 // on noise (measured: t=+10.30 at loop 3, -0.20 by loop 10). See DRIFT_MIN_LOOPS.
 "var d4=d.loops_done<6?'':(' \\u00b7 drift '+sgn+d.drift_slope.toFixed(4)+' z/loop (t = '"
-"+d.drift_t.toFixed(1)+(Math.abs(d.drift_t)>3?' \\u26a0 drifting)':' ok)'));"
+"+d.drift_t.toFixed(1)+(Math.abs(d.drift_t)>" EL_STR(DRIFT_FLAG_T) "?' \\u26a0 drifting)':' ok)'));"
 "var s4='offset '+d.off_first.toFixed(3)+' \\u2192 '+d.off_last.toFixed(3)+' z/run'+d4"
 "+' \\u00b7 \\u03c3 '+d.sigma_lo.toFixed(3)+'\\u2013'+d.sigma_hi.toFixed(3)"
 "+' over '+d.loops_done+' loops'"
@@ -824,7 +885,8 @@ static const char HTML[] =
 "document.getElementById('resTitle').innerHTML='\\uD83E\\uDDE9 Coverage';"
 "document.getElementById('resHead').innerHTML='';"
 "document.getElementById('resBody').innerHTML="
-"'<tr><td style=\"color:#d0b0b0;padding:10px\">Coverage needs the <b>Cumulative Z</b> ranking mode.</td></tr>';"
+"'<tr><td style=\"color:#d0b0b0;padding:10px\">Coverage needs a locked-pool ranking mode "
+"(<b>Most extreme Z</b> or <b>Cumulative Z</b>).</td></tr>';"
 "document.getElementById('btnSave').style.display='none';"
 "document.getElementById('resCardCoverLow').style.display='none';"
 "return;}"
@@ -938,7 +1000,10 @@ static esp_err_t status_handler(httpd_req_t *req)
         g_status.phase == PHASE_POOL_CONFIRM ? "poolconfirm" :
         g_status.phase == PHASE_READY        ? "ready"       :
                                                "measuring";
-    const char *rank_str = (g_status.rank_mode == RANK_CUMULATIVE) ? "cum" : "peak";
+    const char *rank_str =
+        g_status.rank_mode == RANK_CUMULATIVE  ? "cum"    :
+        g_status.rank_mode == RANK_EXTREME     ? "max"    :
+        g_status.rank_mode == RANK_EXTREME_RAW ? "maxraw" : "peak";
     pos += snprintf(buf+pos, sizeof(buf)-pos,
         "{\"state\":\"%s\",\"mode\":\"%s\",\"phase\":\"%s\","
         "\"slave\":%s,\"rank\":\"%s\","
@@ -951,6 +1016,7 @@ static esp_err_t status_handler(httpd_req_t *req)
         "\"focus\":%s,\"paused\":%s,\"paused_ms\":%lld,"
         "\"focus_win_ms\":%.1f,\"focus_gap_ms\":%.1f,"
         "\"cal_budget_ms\":%d,\"cal_ms\":%d,\"cal_elapsed_ms\":%d,"
+        "\"cal_interval_ms\":%d,\"cal_did_sweep\":%d,"
         "\"loops_done\":%d,\"drift_slope\":%.5f,\"drift_t\":%.2f,"
         "\"off_first\":%.4f,\"off_last\":%.4f,"
         "\"sigma_lo\":%.4f,\"sigma_hi\":%.4f,"
@@ -977,6 +1043,7 @@ static esp_err_t status_handler(httpd_req_t *req)
          * when a sweep ENDS, so it cannot drive a bar while one runs. */
         g_status.cal_start_us
             ? (int)((esp_timer_get_time() - g_status.cal_start_us) / 1000) : 0,
+        g_status.cal_interval_ms, g_status.cal_did_sweep ? 1 : 0,
         g_status.loops_done, g_status.drift_slope, g_status.drift_t,
         g_status.off_first, g_status.off_last,
         g_status.sigma_lo, g_status.sigma_hi,
@@ -1255,17 +1322,40 @@ static esp_err_t start_handler(httpd_req_t *req)
         char qry[128] = "";
         g_status.mode           = MODE_EUROJACKPOT;
         g_status.runs_total     = 0;   // computed in elotto_task from combinatorics
-        g_status.baseline_total = 100;
+        // One definition, shared with the form field (sensor.h), so a
+        // curl-started session and a browser-started one are the same
+        // experiment. ?baseline= still overrides either way.
+        g_status.baseline_total = BASELINE_DEFAULT;
         g_status.loops_total    = 1;
         g_status.runs_limit     = 0;   // 0 = measure all combinations
-        g_status.rank_mode      = RANK_CUMULATIVE;
+        // EXTREME is the default since 2026-07-30 (user decision): a combination
+        // keeps the most extreme z it has ever produced, and a milder later loop
+        // does not erase it. See ElottoRank in sensor.h for what each mode means
+        // and why the significance line, not the raw Z, is the thing to read.
+        g_status.rank_mode      = RANK_EXTREME;
         // No ?src= any more: the camera is the only source this firmware has
         // (sensor.h). A session that cannot run on photons does not run.
-        // Per-loop camera calibration (PLAN.md Task 1). ~30 s buys the full
-        // ladder at about 5 % of a ~10 min loop, which is the §1.5.1 budget.
-        // ?cal=0 turns it off — the matched control a calibrated session has to
-        // be compared against, and the only way to measure what the sweep costs.
-        g_status.cal_budget_ms  = 30000;
+        /* Per-loop camera calibration (PLAN.md Task 1). **10 s since 2026-07-30
+         * (user decision)**, down from 30 s.
+         *
+         * The budget is a CAP that is divided evenly over the 9 candidates, so
+         * this is not a 3× saving on a fixed measurement — it is 3× less DATA
+         * per rung: ~1.1 s per candidate instead of ~3.3 s. Each rung's bias and
+         * σ are therefore estimated from about a third of the bits, and the gate
+         * decisions get correspondingly noisier (the per-candidate bias SE was
+         * ~1.7e-4 at the old budget). Rungs near a gate boundary will flip
+         * between sweeps more often than they did — which is exactly the failure
+         * §1.17's σ-margin rule was added to contain.
+         * ?cal=0 turns it off — the matched control a calibrated session has to
+         * be compared against, and the only way to measure what the sweep costs.
+         * ?cal=<ms> restores any other budget without a reflash. */
+        g_status.cal_budget_ms  = CAL_BUDGET_DEFAULT_MS;
+        // Minimum wall time between sweeps. 5 min sits well under a full ~10 min
+        // loop, so a normal session still calibrates every loop exactly as
+        // §1.5.1 measured; it only bites when loops are SHORT (a Runs cap, or a
+        // 6-of-49 pool), where a ~24 s sweep per loop would otherwise dominate
+        // the session and re-tune a camera that has not had time to drift.
+        g_status.cal_interval_ms = CAL_INTERVAL_DEFAULT_MS;
         // Absent ?focus= means UNATTENDED. A session started by curl or a
         // script has no observer by definition, so the control condition is
         // what a missing flag has to mean; the UI always sends it explicitly.
@@ -1280,18 +1370,27 @@ static esp_err_t start_handler(httpd_req_t *req)
                 g_status.mode = (val[0] == '1') ? MODE_LOTTO_649 : MODE_EUROJACKPOT;
             if (httpd_query_key_value(qry, "baseline", val, sizeof(val)) == ESP_OK) {
                 int b = atoi(val);
-                if (b > 0 && b <= 5000) g_status.baseline_total = b;
+                if (b > 0 && b <= BASELINE_MAX) g_status.baseline_total = b;
             }
             if (httpd_query_key_value(qry, "loops", val, sizeof(val)) == ESP_OK) {
                 int l = atoi(val);
-                if (l > 0 && l <= 500) g_status.loops_total = l;
+                if (l > 0 && l <= LOOPS_MAX) g_status.loops_total = l;
             }
             if (httpd_query_key_value(qry, "runs", val, sizeof(val)) == ESP_OK) {
                 int r = atoi(val);
                 if (r > 0 && r <= NUM_RUNS) g_status.runs_limit = r;
             }
-            if (httpd_query_key_value(qry, "rank", val, sizeof(val)) == ESP_OK)
-                g_status.rank_mode = (val[0] == '0') ? RANK_PEAK : RANK_CUMULATIVE;
+            // ?rank= 0 peak | 1 cumulative (Stouffer) | 2 extreme (default).
+            // The 0/1 meanings are unchanged so older scripts and the ?cal=0
+            // control still select what they always did; only the ABSENT default
+            // moved, and an unrecognised value keeps the default rather than
+            // silently falling into a mode nobody asked for.
+            if (httpd_query_key_value(qry, "rank", val, sizeof(val)) == ESP_OK) {
+                if      (val[0] == '0') g_status.rank_mode = RANK_PEAK;
+                else if (val[0] == '1') g_status.rank_mode = RANK_CUMULATIVE;
+                else if (val[0] == '2') g_status.rank_mode = RANK_EXTREME;
+                else if (val[0] == '3') g_status.rank_mode = RANK_EXTREME_RAW;
+            }
             // ?focus=1 -> attended session: the Focus panel is live and the
             // session is tagged. Run lengths do NOT depend on this — a matched
             // no-focus control must be identical in every other respect.
@@ -1300,7 +1399,14 @@ static esp_err_t start_handler(httpd_req_t *req)
             // ?cal=<ms> -> sweep budget per loop; 0 = do not calibrate.
             if (httpd_query_key_value(qry, "cal", val, sizeof(val)) == ESP_OK) {
                 int c = atoi(val);
-                if (c >= 0 && c <= 120000) g_status.cal_budget_ms = c;
+                if (c >= 0 && c <= CAL_BUDGET_MAX_MS) g_status.cal_budget_ms = c;
+            }
+            // ?calint=<ms> -> minimum time between sweeps; 0 = sweep at the top
+            // of every loop (the pre-2026-07-29 behaviour, and what a comparison
+            // against §1.14/§1.15 has to be run with).
+            if (httpd_query_key_value(qry, "calint", val, sizeof(val)) == ESP_OK) {
+                int c = atoi(val);
+                if (c >= 0 && c <= CAL_INTERVAL_MAX_MS) g_status.cal_interval_ms = c;
             }
             // ?confirm=1 -> stop after scoring and let the operator edit the
             // pool. Opt-in, and deliberately NOT tied to ?focus: the device
@@ -1481,36 +1587,98 @@ static const char DIAG_HTML[] =
 "a{color:#6ab0e8}"
 ".ok{color:#90ee90}.warn{color:#f0c040}.bad{color:#ff6b6b;font-weight:700}"
 ".n{color:#fff;font-weight:600}"
+/* Exposure controls. Buttons only, no text field, and that is deliberate: the
+   table is rebuilt from scratch every 2 s, so anything holding operator state
+   between ticks (a half-typed number, a caret position) would be wiped
+   mid-keystroke. A button carries no state to lose. */
+"button.e{background:#1b301b;color:#cfe8cf;border:1px solid #2c4a2c;border-radius:5px;"
+"font:inherit;font-size:.95em;padding:2px 8px;margin:0 1px;cursor:pointer}"
+"button.e:hover{background:#2c4a2c;color:#fff}"
+"button.e:disabled{opacity:.35;cursor:default}"
+"td.set{white-space:nowrap}"
+".ip{color:#8fae8f;font-size:.84em;font-weight:400;font-variant-numeric:tabular-nums}"
 "</style></head><body>"
 "<h1>&#128247; Camera health</h1>"
 "<p class='sub'>Live, every 2 s. Colour is against the calibration gates: "
 "bias 1e-3, |&sigma;-1| 0.05, autocorr 0.01, mean_px 100. "
 "<a href='/'>&#8592; back</a> &middot; <a href='/diagjson'>master JSON</a> &middot; "
 "<a href='#' onclick='rescan();return false'>re-scan nodes</a></p>"
+"<p class='sub'>&#9881; <b>Set exp</b> halves or doubles that node's exposure and "
+"resets its statistics, so mean_px answers within a second or two &mdash; for "
+"tuning the physical light. Refused while a session runs, and the next "
+"calibration sweep overwrites it.</p>"
 "<table><thead><tr>"
-"<th class='l'>Node</th><th>Exp</th><th>Gain</th><th>mean_px</th>"
+"<th class='l'>Node</th><th>Exp</th><th class='l'>set exp</th><th>Gain</th><th>mean_px</th>"
 "<th>bias&minus;0.5</th><th>&sigma;</th><th>zero_diff</th><th>autocorr</th>"
 "<th>Mbit/s</th><th>stalls</th>"
-"</tr></thead><tbody id='rows'><tr><td class='l' colspan='10'>loading&hellip;</td></tr>"
+"</tr></thead><tbody id='rows'><tr><td class='l' colspan='11'>loading&hellip;</td></tr>"
 "</tbody></table>"
-"<p class='sub' id='foot' style='margin-top:12px'></p>"
+"<p class='sub' id='msg' style='margin-top:12px;color:#cfe8cf;min-height:1.2em'></p>"
+"<p class='sub' id='foot' style='margin-top:2px'></p>"
 "<script>"
 "var nodes=null;"
+/* The ONE place in the firmware that maps an address to a node name, and it is
+   deliberately cosmetic: nothing addresses a node by it, nothing in the combine
+   sees it, and it is never written to /loops. The array still finds its nodes by
+   UDP broadcast with no IP table anywhere, which is why a wrong or changed
+   address here costs a label and nothing else.
+   It exists because the operator has to walk to a physical box and change a lamp,
+   and "192.168.178.145" is not what that box is called. The addresses are static
+   DHCP leases keyed on MAC, so the mapping is stable in this rig.
+   An unknown address is shown as-is rather than guessed at: the slave INDEX is
+   discovery order (reply arrival), not identity, so naming a row from its
+   position in the array would silently mislabel nodes the day two of them race. */
+"var NAMES={'192.168.178.100':'master','192.168.178.103':'slave0',"
+"'192.168.178.145':'slave1','192.168.178.155':'slave2'};"
+"function nameOf(ip){return NAMES[ip]||'unnamed';}"
+/* Name over address, both always visible: the name is what the operator thinks
+   in, the address is what they need to curl or to find the node in the router. */
+"function cell(nm,ip){return \"<td class='l n'>\"+nm+\"<div class='ip'>\"+ip+\"</div></td>\";}"
 /* Node list comes from /status, which is populated by the discovery broadcast
    at boot -- so the page works even when no session has ever run. */
 "function cls(v,warn,bad){return Math.abs(v)>=bad?'bad':(Math.abs(v)>=warn?'warn':'ok');}"
 "function f(v,n){return (v===undefined||v===null)?'-':Number(v).toFixed(n);}"
-"function row(name,ip,d){"
-"if(!d)return \"<tr class='off'><td class='l'>\"+name+\"</td>\"+"
-"\"<td class='l' colspan='9'>no answer from \"+ip+\"</td></tr>\";"
+/* The endpoint lives on the node itself, exactly like the reads above it: the
+   master proxying it would need the UDP link, which is only safe between runs,
+   and a node that has crashed must fail on its own row rather than through the
+   master. `base` is '' for the master (same origin) and 'http://<ip>' for a
+   slave, which is the one thing that differs between them. */
+/* Reports into its own line, not #foot: tick() rewrites #foot every 2 s, so the
+   answer to a click would vanish before it was read. */
+"function setExp(base,ip,v){"
+"var f=document.getElementById('msg'),who=nameOf(ip)+' ('+ip+')';"
+"f.textContent='setting '+who+' to exposure '+v+'\\u2026';"
+"fetch(base+'/expose?exp='+v,{method:'POST'}).then(function(r){"
+"return r.json().then(function(j){return {s:r.status,j:j};});}).then(function(x){"
+"if(x.j&&x.j.ok)f.textContent=who+': exposure now '+x.j.exposure+' (gain '+x.j.gain+')';"
+"else f.textContent='\\u26a0 '+who+': '+((x.j&&x.j.err)?x.j.err:'refused ('+x.s+')');"
+"tick();"
+"}).catch(function(){f.textContent='\\u26a0 '+who+': no answer to /expose';});"
+"}"
+"function row(name,ip,d,base){"
+"if(!d)return \"<tr class='off'>\"+cell(name,ip)+"
+"\"<td class='l' colspan='10'>no answer</td></tr>\";"
 "var c=d.cam||{};"
 "var b=(c.bias===undefined?0:c.bias-0.5);"
 "var s=(c.sigma===undefined?1:c.sigma);"
 "var ac=0;if(c.autocorr&&c.autocorr.length){for(var i=0;i<c.autocorr.length;i++)"
 "ac=Math.max(ac,Math.abs(c.autocorr[i]));}"
 "var st=c.stalls||0;"
-"return \"<tr><td class='l n'>\"+name+\"</td>\"+"
+/* Powers of two, because that is the ladder calibration itself sweeps
+   (4..512) — stepping in the same units keeps a hand-set rung comparable with a
+   swept one. Clamped to the register's 20 bits at the top and to 1 at the
+   bottom, where 0 would stop integration altogether. */
+"var e=c.exposure,ctl='-';"
+"if(e!==undefined){"
+"var dn=Math.max(1,Math.floor(e/2)),up=Math.min(1048575,e*2);"
+"ctl=\"<button class='e' onclick=\\\"setExp('\"+base+\"','\"+ip+\"',\"+dn+\")\\\" \"+"
+"(e<=1?'disabled':'')+\">&minus;</button>\"+"
+"\"<button class='e' onclick=\\\"setExp('\"+base+\"','\"+ip+\"',\"+up+\")\\\" \"+"
+"(e>=1048575?'disabled':'')+\">+</button>\";"
+"}"
+"return \"<tr>\"+cell(name,ip)+"
 "\"<td>\"+(c.exposure===undefined?'-':c.exposure)+\"</td>\"+"
+"\"<td class='l set'>\"+ctl+\"</td>\"+"
 "\"<td>\"+(c.gain===undefined?'-':c.gain)+\"</td>\"+"
 "\"<td class='\"+(c.mean_pixel>=100?'bad':'')+\"'>\"+f(c.mean_pixel,1)+\"</td>\"+"
 "\"<td class='\"+cls(b,5e-4,1e-3)+\"'>\"+(b>=0?'+':'')+b.toExponential(2)+\"</td>\"+"
@@ -1539,8 +1707,11 @@ static const char DIAG_HTML[] =
 "for(var i=1;i<ns.length;i++)jobs.push(get('http://'+ns[i].ip+'/diag'));"
 "Promise.all(jobs).then(function(res){"
 "var h='';"
-"h+=row('master (self)','self',res[0]);"
-"for(var i=1;i<ns.length;i++)h+=row(ns[i].ip,ns[i].ip,res[i]);"
+/* The master's own row has no address in /status — it is 'self' there — so it
+   takes the one the browser is already talking to. */
+"h+=row(nameOf(location.hostname)+' (self)',location.hostname,res[0],'');"
+"for(var i=1;i<ns.length;i++)"
+"h+=row(nameOf(ns[i].ip),ns[i].ip,res[i],'http://'+ns[i].ip);"
 "document.getElementById('rows').innerHTML=h;"
 "document.getElementById('foot').textContent="
 "'updated '+new Date().toLocaleTimeString()+' \\u00b7 '+ns.length+' node(s) known';"
@@ -1599,6 +1770,22 @@ static esp_err_t diagjson_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* POST /expose?exp=<lines>[&gain=<g>] — set THIS node's operating point by hand.
+ *
+ * The logic is in the camera component so every node answers identically; see
+ * camera.h. Refused while a session runs: `session_running()` is the same
+ * predicate /update uses, and re-tuning the sensor mid-session would change the
+ * instrument under a Σz that is already accumulating.
+ *
+ * ⚠ Not sticky. The next calibration sweep re-derives the setting and overwrites
+ * whatever was set here — which is correct (the sweep is the thing that decides
+ * an operating point on evidence), but it means this is a tool for tuning the
+ * LIGHT against a live mean_px, not a way to pin a node to a rung. */
+static esp_err_t expose_handler(httpd_req_t *req)
+{
+    return camera_expose_handle(req, g_status.state == ELOTTO_RUNNING);
+}
+
 /* ── GET / ────────────────────────────────────────────────────────── */
 static esp_err_t root_handler(httpd_req_t *req)
 {
@@ -1643,6 +1830,7 @@ static void start_webserver(void)
         {"/pool", HTTP_POST, pool_handler, NULL},
         {"/ready", HTTP_POST, ready_handler, NULL},
         {"/probe", HTTP_POST, probe_handler, NULL},
+        {"/expose", HTTP_POST, expose_handler, NULL},
     };
     for (int i = 0; i < (int)(sizeof(uris) / sizeof(uris[0])); i++)
         httpd_register_uri_handler(srv, &uris[i]);

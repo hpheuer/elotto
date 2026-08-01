@@ -20,6 +20,47 @@
 #define POOL_MAIN_50    12   // C(12,5) =  792 combinations
 #define POOL_EURO_12     5   // C(5,2)  =   10 combinations
 
+/* ── Session parameters: ONE definition each ──────────────────────────────
+ *
+ * Every value below used to exist two or three times over: once as an HTML
+ * input attribute, once as a JavaScript clamp, and once as the C validator in
+ * the /start handler — three copies that nothing forced to agree. They had
+ * already drifted apart: the baseline default was 50 in the form and 100 in the
+ * handler (so a curl session ran a different experiment from a browser one),
+ * and the calibration ETA fell back to 30000 ms for a whole build after the
+ * budget default became 10000.
+ *
+ * The page is a C string literal, so the UI copies are made to reference these
+ * through EL_STR() rather than being written out again. A limit changed here
+ * now changes the form field, the clamp and the validator together.
+ *
+ * ⚠ Defaults only. Every one is overridable per session on /start, and the
+ * matched-control sessions in PLAN.md pass their values explicitly — so
+ * changing a default here does NOT retroactively describe an archived run. */
+#define BASELINE_DEFAULT        10       // drift-reference runs per loop
+#define BASELINE_MIN            10
+#define BASELINE_MAX          5000
+#define BASELINE_STEP           10
+#define LOOPS_DEFAULT            1
+#define LOOPS_MAX              500
+#define RUNS_DEFAULT           430       // ~10 min loop at the ~1.4 s cycle
+// RUNS_MAX is NUM_RUNS: results[] is that long, so the form must not offer more.
+#define CAL_BUDGET_DEFAULT_MS 10000      // exposure-sweep CAP, split over 9 rungs
+#define CAL_BUDGET_MAX_MS   120000
+#define CAL_INTERVAL_DEFAULT_MS  300000  // min wall time between sweeps, 0 = every loop
+#define CAL_INTERVAL_MAX_MS     3600000
+
+/* Ranking/diagnostic thresholds that appear in more than one place. */
+#define FREQ_Z_MIN             2.0   // a run joins the frequency histogram above this
+#define PAIR_FLAG_T            3.0   // |r|·√n above this = nodes not independent
+#define DRIFT_FLAG_T           3.0   // |drift_t| above this = real cross-loop drift
+
+/* Stringify, so the HTML/JS copies of the numbers above are the SAME token the
+ * C code compiles. Two levels are required: the inner one would otherwise
+ * stringify the macro's name instead of its value. */
+#define EL_STR2(x) #x
+#define EL_STR(x)  EL_STR2(x)
+
 typedef enum { MODE_EUROJACKPOT = 0, MODE_LOTTO_649 = 1 } ElottoMode;
 typedef enum { ELOTTO_IDLE, ELOTTO_RUNNING, ELOTTO_DONE, ELOTTO_ABORTED } ElottoState;
 // PHASE_CALIBRATE is appended, not inserted: it runs FIRST in a loop but the
@@ -53,9 +94,42 @@ typedef enum { POOL_WAIT = 0, POOL_ACCEPT, POOL_MORE, POOL_CANCEL } PoolAction;
 bool elotto_pool_reply(PoolAction act,
                        const uint8_t *main_sel, int n_main,
                        const uint8_t *euro_sel, int n_euro);
-// Ranking across loops: PEAK = best single-run Z (noise extreme); CUMULATIVE =
-// Stouffer Z = Σz/√k per fixed combination (GCP cumulative-deviation method)
-typedef enum { RANK_PEAK = 0, RANK_CUMULATIVE = 1 } ElottoRank;
+/* Ranking across loops. Four rules, and they differ in what a combination's
+ * published Z *means* — which is the whole question of how loops combine.
+ *
+ * PEAK        — best single-run Z anywhere in the session, pool RE-SCORED every
+ *               loop. The combination set changes loop to loop, so a retained
+ *               extreme belongs to a draw that may never be measured again.
+ * CUMULATIVE  — Stouffer Z = Σz/√k per fixed combination, pool locked after loop
+ *               0. A real per-run effect d grows as d√k while noise stays N(0,1);
+ *               an isolated extreme decays as later loops regress it toward 0.
+ * EXTREME     — the most extreme z each fixed combination has EVER produced,
+ *               pool locked after loop 0 (default since 2026-07-30, user
+ *               decision). A high-water mark: a later, milder loop is ignored, a
+ *               later, more extreme one replaces it. Highs and lows are tracked
+ *               SEPARATELY, so a combination that reads +3.1 early and −3.4 later
+ *               keeps both — it stays on the high list at +3.1 and joins the low
+ *               list at −3.4. Storing one signed extreme instead would silently
+ *               drop the +3.1 the operator was told would be kept.
+ *               ⚠ The published extreme is the max of k independent draws per
+ *               combination, so it CLIMBS with loop count under the null. The
+ *               Bonferroni count therefore scales as runs_total × k (the same
+ *               rule PEAK uses), which is what keeps the significance line
+ *               honest; read that line, not the raw Z, when judging a result.
+ * EXTREME_RAW — EXTREME, but studentize() does NOT rewrite the z's (user
+ *               request, 2026-07-30, to see what the correction was doing).
+ *               ⚠ The published Z is then NOT N(0,1): it keeps the loop's own
+ *               offset and its raw σ (measured 0.94–1.10 per loop on this rig),
+ *               so the Bonferroni p is uncalibrated and comparisons against a
+ *               studentized session are not like-for-like. Two further
+ *               consequences that are easy to miss: the master's
+ *               `zm = zraw − baseline_mean` subtraction stops being inert and
+ *               becomes a live, master-only correction, and `loop_sigma` stops
+ *               being a diagnostic of the instrument and becomes the scale the
+ *               numbers are actually on. loop_sigma and the drift regression are
+ *               still computed — only the rewrite is skipped. */
+typedef enum { RANK_PEAK = 0, RANK_CUMULATIVE = 1, RANK_EXTREME = 2,
+               RANK_EXTREME_RAW = 3 } ElottoRank;
 
 /* ENTROPY IS PHOTONS, AND ONLY PHOTONS (user decision, 2026-07-26).
  *
@@ -168,7 +242,11 @@ typedef struct {
     uint8_t  cam_fold[MAX_NODES];
     uint8_t  cam_cal_ok[MAX_NODES]; // 0 = kept its previous setting, no gate passed
     float    cam_bias[MAX_NODES];   // bias of the window that chose it
-    uint16_t cal_ms;       // wall time the whole per-loop calibration cost
+    uint16_t cal_ms;       // wall time the calibration cost AT THE TOP OF THIS
+                           // LOOP. 0 = no sweep ran here (interval not elapsed,
+                           // or ?cal=0): the cam_* fields above are then the
+                           // setting carried over from an earlier loop, which
+                           // is still the operating point this loop measured at
     // The measured run window and inter-run gap OF THIS LOOP. Recorded per loop
     // because the count→duration conversion is not stable (open item 4) and
     // per-loop calibration moves the camera's rate on purpose (§1.5.3), so the
@@ -274,6 +352,19 @@ typedef struct {
     int              cal_ms;              // what the last loop's calibration
                                           // actually cost, master + ack wait —
                                           // the §1.6 gate is a measured number
+    int              cal_interval_ms;      // minimum wall time between sweeps.
+                                          // A loop that starts sooner than this
+                                          // after the last one SKIPS calibration:
+                                          // the sweep costs ~24 s, a Runs-capped
+                                          // loop can be shorter than that, and
+                                          // thermal drift moves on wall-clock
+                                          // time rather than per loop. 0 = the
+                                          // old behaviour, sweep every loop
+    bool             cal_did_sweep;       // did THIS loop calibrate? Recorded per
+                                          // loop (LoopStat.cal_ms = 0 when not),
+                                          // because "the setting was re-derived
+                                          // here" and "it was carried over" are
+                                          // different facts about the data
     volatile int64_t cal_start_us;        // when the sweep in flight began, 0 when
                                           // none is. Published as cal_elapsed_ms so
                                           // the UI can show a live bar: a silent

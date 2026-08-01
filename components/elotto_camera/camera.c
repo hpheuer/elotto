@@ -1,4 +1,5 @@
 #include <string.h>
+#include <stdlib.h>
 #include <math.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -1047,5 +1048,73 @@ esp_err_t camera_cal_send_json(void *httpd_req, const camera_cal_t *c)
     }
     httpd_resp_send_chunk(req, "]}", 2);
     httpd_resp_send_chunk(req, NULL, 0);
+    return ESP_OK;
+}
+
+/* ── POST /expose payload, shared by master and slave ───────────────────
+ *
+ * See camera.h for why this lives here rather than in either firmware.
+ *
+ * The statistics are reset after the write, for the same reason the sweep resets
+ * them per candidate: `camera_get_stats()` accumulates since the last reset, so
+ * without it the mean_px the operator is tuning against would be a blend of the
+ * old setting and the new one, converging on the truth over minutes. The whole
+ * point of this endpoint is a live reading that responds to a screwdriver. */
+esp_err_t camera_expose_handle(void *httpd_req, bool busy)
+{
+    httpd_req_t *req = (httpd_req_t *)httpd_req;
+    char buf[256];
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+
+    if (busy) {
+        httpd_resp_set_status(req, "409 Conflict");
+        httpd_resp_sendstr(req,
+            "{\"ok\":false,\"err\":\"measuring -- abort first\"}");
+        return ESP_OK;
+    }
+    if (!camera_is_ready()) {
+        httpd_resp_set_status(req, "409 Conflict");
+        httpd_resp_sendstr(req,
+            "{\"ok\":false,\"err\":\"camera not streaming\"}");
+        return ESP_OK;
+    }
+
+    uint32_t exp_now = 0, gain_now = 0;
+    camera_get_exposure(&exp_now, &gain_now);
+    uint32_t want_e = exp_now, want_g = gain_now;
+
+    char qry[96] = "", val[16] = "";
+    if (httpd_req_get_url_query_str(req, qry, sizeof(qry)) == ESP_OK) {
+        if (httpd_query_key_value(qry, "exp", val, sizeof(val)) == ESP_OK)
+            want_e = (uint32_t)strtoul(val, NULL, 10);
+        if (httpd_query_key_value(qry, "gain", val, sizeof(val)) == ESP_OK)
+            want_g = (uint32_t)strtoul(val, NULL, 10);
+    }
+
+    /* Same limits the Kconfig entries carry: 20-bit exposure, 10-bit gain, and
+     * exposure 0 would stop integration altogether. camera_set_exposure() also
+     * clamps the gain, but a rejected value should be visible in the reply
+     * rather than silently corrected two layers down. */
+    if (want_e < 1)       want_e = 1;
+    if (want_e > 1048575) want_e = 1048575;
+    if (want_g > 0x3FF)   want_g = 0x3FF;
+
+    bool applied = camera_set_exposure(want_e, want_g);
+    camera_stats_reset(CAL_SETTLE_PAIRS);
+
+    uint32_t got_e = 0, got_g = 0;
+    camera_get_exposure(&got_e, &got_g);
+    snprintf(buf, sizeof(buf),
+        "{\"ok\":%s,\"exposure\":%lu,\"gain\":%lu,\"asked\":%lu}",
+        applied ? "true" : "false",
+        (unsigned long)got_e, (unsigned long)got_g, (unsigned long)want_e);
+    if (!applied) httpd_resp_set_status(req, "500 Internal Server Error");
+    httpd_resp_sendstr(req, buf);
+    ESP_LOGI(TAG_CAM, "expose: set exposure=%lu gain=%lu -> read back %lu/%lu %s",
+             (unsigned long)want_e, (unsigned long)want_g,
+             (unsigned long)got_e, (unsigned long)got_g,
+             applied ? "" : "(DID NOT LATCH)");
     return ESP_OK;
 }

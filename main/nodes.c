@@ -98,6 +98,12 @@ void node_camera_failed(int node, const char *why)
 #define LINK_MEAS_MS    4000      // a run is ~1 s, so this is generous headroom
 #define LINK_DIAG_MS    1500
 
+/* Slack added on top of a phase's own expected duration before its ack wait
+ * gives up — settle time, flush and scheduling jitter, none of which scales
+ * with the phase. Used by BOTH the baseline wait and the calibration wait, so a
+ * node that is merely slow is not mistaken for a missing one in either. */
+#define LINK_ACK_SLACK_MS 15000
+
 // Consecutive missed replies before a node leaves the session. Without it an
 // unplugged node would cost every remaining run the full retry budget forever;
 // the Phase D gate wants an unplug to *degrade* the array, not to slow it down.
@@ -381,7 +387,7 @@ void slave_baseline_start(int n, int nseg)
 void slave_baseline_wait(void)
 {
     if (!s_slave_ok) return;
-    nodes_collect(g_status.baseline_total * 800 + 15000, true);
+    nodes_collect(g_status.baseline_total * 800 + LINK_ACK_SLACK_MS, true);
 }
 
 /* ── Per-loop camera calibration (docs/PLAN.md Task 1) ────────────────────
@@ -444,7 +450,7 @@ static void node_take_cal(int k)
 static void slave_calibrate_wait(int budget_ms)
 {
     if (!s_slave_ok) return;
-    nodes_collect(budget_ms + 15000, true);
+    nodes_collect(budget_ms + LINK_ACK_SLACK_MS, true);
     for (int k = 0; k < s_nslaves; k++) node_take_cal(k);
 }
 
@@ -483,13 +489,41 @@ static void calibrate_master(int budget_ms)
            (unsigned long)s_cal->elapsed_ms, s_cal->nsteps);
 }
 
+/* When the last sweep finished. 0 = none this session, which forces the first
+ * loop to calibrate however short the interval is. */
+static int64_t s_cal_last_us;
+
+void calibrate_forget(void) { s_cal_last_us = 0; }
+
 /* One calibration phase: broadcast, sweep locally in parallel, wait for acks.
  * Skipped when the budget is 0 — that is the matched no-calibration control —
- * and when nothing is left to calibrate. */
-void calibrate_all(void)
+ * and when nothing is left to calibrate.
+ *
+ * Also skipped when the last sweep is younger than `cal_interval_ms`. The sweep
+ * costs ~24 s, which is ~4 % of a full ~10 min loop but can be MOST of a short
+ * one (a Runs-capped test loop runs in seconds), and what it corrects — thermal
+ * drift of the sensors — moves on a wall-clock scale, not a per-loop one.
+ * Re-tuning a camera that was tuned 20 s ago measures nothing but the sweep's
+ * own noise. So the trigger is elapsed time since the last sweep, not the loop
+ * boundary; at the default interval a full-length loop still calibrates every
+ * loop, which is the behaviour §1.5.1 measured.
+ *
+ * ⚠ camera_calibrate() resets the camera statistics, so `mbit_s`/`bias` in
+ * /status and /loops are "since the last sweep" — on a skipped loop they now
+ * span several loops rather than one. */
+bool calibrate_all(void)
 {
-    if (g_status.cal_budget_ms <= 0) return;
-    if (g_status.node_ok == 0) return;
+    if (g_status.cal_budget_ms <= 0) return false;
+    if (g_status.node_ok == 0) return false;
+
+    if (s_cal_last_us && g_status.cal_interval_ms > 0) {
+        int64_t age_ms = (esp_timer_get_time() - s_cal_last_us) / 1000;
+        if (age_ms < (int64_t)g_status.cal_interval_ms) {
+            printf("calibration: skipped, last sweep %d s ago (interval %d s)\n",
+                   (int)(age_ms / 1000), g_status.cal_interval_ms / 1000);
+            return false;
+        }
+    }
 
     g_status.phase = PHASE_CALIBRATE;
     int64_t t0 = esp_timer_get_time();
@@ -499,7 +533,12 @@ void calibrate_all(void)
     if (!g_status.abort_requested) slave_calibrate_wait(g_status.cal_budget_ms);
     g_status.cal_ms = (int)((esp_timer_get_time() - t0) / 1000);
     g_status.cal_start_us = 0;           // no sweep in flight
+    // Timed from the END of the sweep: the interval is dark time between
+    // sweeps, and charging it from the start would make a slow sweep shorten
+    // the gap to the next one.
+    s_cal_last_us = esp_timer_get_time();
     printf("calibration: %d ms for %d node(s)\n", g_status.cal_ms, g_status.node_ok);
+    return true;
 }
 
 void slave_trigger(int nseg)

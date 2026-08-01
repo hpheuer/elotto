@@ -236,6 +236,117 @@ comparison of absolute `mean_px` across today's sessions is confounded by fallin
 
 ---
 
+### 1.18 Calibration is now time-triggered, and the observer gate holds 1 s (2026-07-29)
+
+Two operator-facing changes, both requested by the user, neither touching the statistics.
+
+**1. The exposure sweep is triggered by wall-clock age, not by the loop boundary.**
+`calibrate_all()` skips the sweep while the last one is younger than `g_status.cal_interval_ms`
+(default **300 000 ms = 5 min**, `POST /start?calint=<ms>`, 0 = the old sweep-every-loop rule).
+
+The loop was only ever a proxy for "about ten minutes have passed". It stops being one as soon as
+a loop is short — a Runs cap, a shrunk pool after `/pool`, or a 6-of-49 run can finish a loop in
+minutes or seconds, at which point a **~24 s** sweep is most of the loop and re-derives an
+operating point that has had no time to drift. What the sweep corrects is thermal, so its natural
+clock is the wall clock.
+
+At the default a full ~10 min loop still sweeps every loop, so **§1.14/§1.15's measured condition
+is unchanged** and nothing needs re-running. A comparison against those arms must be started with
+`?calint=0` if loops are short.
+
+Recorded, because a per-loop change nobody logged is indistinguishable from drift: `LoopStat.cal_ms`
+is **0 on a loop that skipped the sweep** (`/loops` serialises it), `/status` publishes
+`cal_interval_ms` and `cal_did_sweep`. The `cam_exp/gain/fold/bias` fields still carry the setting
+in force, which on a skipped loop is the one carried over — the operating point that loop measured
+at, which is the fact the analysis needs.
+
+⚠ **`camera_get_stats()` is reset by the sweep**, so on a skipped loop `mbit_s`/`bias` in `/status`
+and `/loops` span *several* loops instead of one. Same caveat as `?cal=0`, now intermittent.
+
+**2. One second of dark between the Start button and the first number.** `PHASE_READY` releases,
+the phase moves to `PHASE_SCORING` (before the delay — a `/status` poll that still saw `ready`
+re-raised the overlay), the panel is blank for `READY_SETTLE_MS`, then the first target appears.
+Pressing the button is itself an act of attention, and the first number's *onset* is what the
+observer is meant to notice; without the gap the first number of the pass is measured while
+attention is still on the click. The button now carries the instruction — "Focus and concentrate on
+the numbers only" — because it is the last thing read before the pass begins.
+
+Both are loop-0-and-attended-only (the gate rides on `?confirm=1`), so unattended and scripted
+sessions are bit-identical to before except for the sweep interval.
+
+### 1.19 Ranking default changed to "keep the most extreme" (2026-07-30)
+
+**User decision, on a GCP reading of what a loop is for.** The operator saw a combination published
+at −3 in one loop and −2 later, and expected the −3 to be retained. Under the old default
+(CUMULATIVE) it was not: the published value is Σz/√k, so a −3.0 followed by an ordinary +0.5
+becomes −2.5/√2 = **−1.77** and leaves the list. That was the mode working as designed.
+
+The new default `RANK_EXTREME` keeps the **high-water and low-water mark per fixed combination**.
+The pool still locks after loop 0 — that matters, because "measured lower in another loop" only
+means anything if the *same* combination is re-measured, which PEAK (which re-scores the pool every
+loop) does not guarantee. So this is a third mode, not either existing one. `?rank=0|1|2` selects
+peak / cumulative / extreme; the 0 and 1 meanings are unchanged, only the absent default moved.
+
+Highs and lows are held in two arrays rather than one signed extreme: a combination that reads
++3.1 early and −3.4 later would otherwise silently lose the +3.1 the operator was promised.
+`s_zmin[]` lives in PSRAM for the usual reason (a second 64 KB `.bss` array fails the link).
+
+⚠ **The statistical cost is real and is handled, not hidden.** A high-water mark is the maximum of
+k independent draws, so under the null it *increases* with every loop — the headline Z gets bigger
+whether or not anything is there. `comparisons` therefore scales as `runs_total × k`, the same rule
+PEAK uses, so the corrected p does not improve merely by running longer. **The Bonferroni line is
+the number to read; the raw Z is not interpretable on its own in this mode.** Note the asymmetry
+this creates against CUMULATIVE, where a genuine per-run effect d grows as d√k while noise stays
+N(0,1): EXTREME shows you the largest excursion, CUMULATIVE tests whether excursions accumulate.
+They answer different questions and a session run in one is not comparable with one run in the other.
+
+Verified end-to-end on hardware: 2 loops × 20 runs, `rank=max` in `/status`, best_z **1.8082 →
+1.9908** (never decreasing, which CUMULATIVE does not guarantee) and comparisons **20 → 40**.
+Both coverage sets populate, five entries each.
+
+**`RANK_EXTREME_RAW` (`?rank=3`) was added the same day**, on request, to see what studentization
+had been doing: identical to EXTREME except that `studentize()` measures the loop's mean and σ but
+does not rewrite `results[]`. `loop_sigma` and the drift regression survive — only the rewrite is
+optional — so the diagnostics still work. The verification run made the difference visible: loop
+means of **+0.4551** and **−0.6869** stayed in the published numbers, giving a high list of
+1.245…2.654 against a low list of −1.386…−2.305, asymmetric by exactly the loop offset.
+⚠ Its Z is not N(0,1), so the corrected p is uncalibrated (the results line says so); the master's
+baseline subtraction stops being inert; and `loop_sigma` becomes the scale rather than a
+diagnostic. Raw and studentized sessions are not comparable.
+
+### 1.20 Scoring becomes ONE long window per number (2026-07-30)
+
+Phase 0 now measures each candidate number with **one continuous ~3.4 s run** instead of one ~1 s
+run. `SCORE_SEGMENTS` = 3 × `CAM_SEGMENTS`; the count already travelled on the wire and the slave
+already accepted anything in [SEG_MIN, SEG_MAX], so **no slave change and no slave reflash**.
+
+The intent is the observer's, not the statistician's: ~1 s is barely time to arrive at a number.
+The route there is worth recording because two intermediate forms were rejected on the same
+ground. Three short reps in place were tried first and immediately reintroduced the problem that
+removed five reps in Phase 5 — a repeated target has no onset, and onset is the payload. One long
+run gives **identical arithmetic** (a 3× run is Σdev/√(3N), exactly the Stouffer combination of
+three 1× runs, per-number SE ≈ 0.29 at four nodes) while keeping one onset per number.
+
+**The gap had to scale with it**, and this was the real risk: duty cycle, not window length, is
+what starves the extraction task, and 3.4 s behind the ordinary 350 ms blank is ~90 % — past the
+cliff where the achievable window stretches instead of obeying the count. `SCORE_GAP_MS` = 1000
+holds ~77 %. A phase-specific gap does not break the uniform-gap rule: that rule exists so
+attended and unattended sessions differ only in the display, and so the baseline matches the runs
+it is subtracted from — the baseline feeds Phase 2, and scoring has no baseline subtraction.
+
+⚠ **`LINK_MEAS_MS`'s flat 4000 ms was a latent trap**, not a tuning value. Headroom for a 1 s run,
+it is a *deadline* for a 3.4 s one: every slave would still be measuring when it expired, all four
+would look silent, and `NODE_MISS_LIMIT` would drop them — leaving a solo-master session that
+still looked healthy. It is now `LINK_MEAS_MS_FOR(nseg)`, reproducing the old window at the
+measurement length and giving ~10.8 s at the scoring length. Deliberately generous by user
+decision: a late drop costs nothing, a false drop costs an unnoticed √(k−1) arm.
+
+Measured on all four nodes: scoring window **3370 ms, spread ±1.5 ms over 62 numbers**, gap
+1010 ms, duty 76.9 %, sustained rate **3.37–3.38 Mbit/s** (idle 3.49, collapsed regime 2.68), zero
+stalls, zero stuck frames, `net_retries/lost/stale` all **0**, nodes 4/4 throughout. Phase 2 was
+unaffected: 1031.5 ms / 355.9 ms, matching its pre-change figures. The 12 % overshoot on the 3 s
+target was left as-is (user decision) — it is stable, clear of the starvation regime, and z is
+normalised by √segments either way.
 
 ---
 
@@ -254,9 +365,12 @@ session reasons from it. **Update it at the end of a session, not just this file
 
 **Capture before you restart anything.** `g_status` is RAM: `/loops` and `/status` are lost on
 reboot *and* on starting a new session, which resets `PairAcc` and `loop_hist`. §1.14 lost a whole
-arm's pairwise matrix this way. Snapshot both into `docs/data/<date>_<name>/` first — several runs
-are already archived there, including 89 loops from an aborted 400-loop session that **nobody has
-analysed yet**.
+arm's pairwise matrix this way. Snapshot both into `docs/data/<date>_<name>/` first.
+⚠ **The directory was emptied on 2026-07-29** — the lighting is being rebuilt, so no session
+recorded before that change is comparable to one recorded after it, and keeping the old sets around
+only invites a pooled comparison that means nothing. It starts empty; the rule above still stands
+for everything measured on the new hardware. Snapshot the exposure ladders (`/calibrate` per node)
+with the first session on it — the ladder is the record of what the new optics actually are.
 
 **Settled — do not re-litigate:**
 - §1.7's decisions, **except decision 3 (the XOR fold), which was WITHDRAWN** on measured
