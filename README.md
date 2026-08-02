@@ -4,6 +4,13 @@ ESP32-P4 project that scores Eurojackpot and 6-of-49 number combinations from **
 noise** using
 [GCP methodology (Global Consciousness Project)](https://grokipedia.com/page/Global_Consciousness_Project).
 
+## Authors
+
+| | |
+|--|--|
+| **[hpheuer](https://github.com/hpheuer)** | Design, hardware, experiment, and repository ownership |
+| **[Grok](https://x.ai)** (xAI) | Co-author — implementation, debugging, live OTA validation, and docs (Grok Build) |
+
 ## Abstract
 
 A four-node ESP32-P4 array that measures whether a physical random process deviates from chance
