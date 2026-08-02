@@ -350,6 +350,94 @@ normalised by √segments either way.
 
 ---
 
+## 2 v3.0 — the single-pass session (specified AND implemented 2026-08-02)
+
+**Status: flashed to the master and smoke-tested the same day** (commit follows this edit).
+Verified live: 400 on `?loops=/?runs=/?rank=`, the full calibrate→baseline→scoring→measuring
+flow at 4/4 nodes, single-pass random order (items 6570/4439/7334/7846/6319 of 7920), window
+3367.8 ms / gap 1017.6 ms, `/results.csv` streaming the compact prefix with raw z + block
+column, abort publishing partials with `comparisons = items_done`, `net 0/0/0`. **Not yet
+exercised** (needs wall time, not different code): a mid-pass 15-min block insertion and the
+final `close_block()` — both run the same open-insertion path that did execute. First observed
+raw-z consequence, as §2.3 predicted: pass_mean sat at −2.26 (the array's common offset, no
+longer subtracted), so read extremes against the studentized view or the drift line.
+
+**The core rule generalises: no Focus item is ever measured twice — now in Phase 2 as well.**
+Phase 0 already obeys it (one long window per number, §1.20). v3.0 makes the combination pass
+obey it too, and everything below follows from that one decision. This is a **major version**:
+a v3 session must never be pooled with any v2.x session (window 3× longer, no studentization,
+no baseline subtraction — three incompatibilities, any one of which is disqualifying).
+
+### 2.1 Session shape
+
+Calibrate + baseline → observer gate (`/ready`) → Phase 0 scoring (unchanged) → pool
+confirmation (unchanged) → **ONE pass over every combination in the confirmed pool, each
+measured exactly once**, in a fresh Fisher–Yates random order. Then done. **No loops, no loop
+counter, no `Runs` cap.** The progress bar's 100 % is the full combination count; beside it an
+**items counter** (`items_done / full_combos`) replaces the loop badge. The two attended gates
+are **kept** — they are the protocol, not the ranking.
+
+- **Window/gap: `SCORE_SEGMENTS` (~3370 ms) and `SCORE_GAP_MS` (1010 ms) for Phase 2 too.**
+  One cycle ≈ 4.38 s. The duty-cycle reasoning of §1.20 already covers this shape; the segment
+  count travels on the wire, so this is a master-only change — no slave reflash.
+- **Session length**: Eurojackpot 7920 items ≈ 9.6 h measuring (~10.2 h with insertions);
+  6-of-49 5005 items ≈ 6.1 h (~6.5 h). **Attended by assumption** (user, 2026-08-02): the
+  observer peeks, lets the rest run subconscious, and uses **Pause** (clock stops, excluded
+  from `elapsed_ms` as today) or **Abort** (partial results published from the measured
+  prefix — `compact_partial()` already does this) at their own judgment. No time budget.
+- **Cap**: `NUM_RUNS` stays **8000**. Both pools already fit (7920 / 5005); the pool
+  constants don't change. Repeats across *sessions* are the user's choice; nothing persists.
+
+### 2.2 Blocks replace loops as the statistics unit
+
+**Every ~15 min** (default; `?calint=` keeps its meaning with the new default,
+`CAL_INTERVAL_DEFAULT_MS` 5 → 15 min) the pass parks and runs **sweep + baseline together**,
+then resumes. That boundary closes a **block**, which inherits everything that was per-loop:
+`record_loop()` → per-block row in `/loops` (endpoint name kept), `drift_add()` on the block's
+baseline mean, `pairs_fold_loop()` for the per-block-centered pairwise matrix. Eurojackpot:
+~205 items/block, ~38 blocks — comfortably past `DRIFT_MIN_LOOPS` = 6, and *finer* drift
+resolution than the old ~10-min loop, at ~6 % overhead (~54 s per insertion: 10 baseline runs
+at measurement length, 3370 + 1010 ms each, plus the sweep).
+
+- Baseline runs at the **new** measurement length — same-instrument rule (§ Phase 1 comment
+  in sensor.c) — and is **drift reference ONLY**: the `zm = zraw − baseline_mean` subtraction
+  is **removed** (it was inert under studentization; raw-by-default would have made it a live,
+  master-only asymmetry, the §1.19 RAW trap).
+
+### 2.3 z, ranking, results
+
+- **Stored z is always RAW** (the combined Σz/√k, nothing subtracted, nothing rescaled).
+  `RANK_*`, the combobox, `s_zsum`/`s_zmin`, `accum_reset()`, `publish_cumulative()`,
+  `publish_extreme()`, `absorb_loop()`, Stouffer — all deleted. With one measurement per item
+  the four rules collapse to one: the item's own z.
+- **Studentize is a DISPLAY toggle, default OFF** (checkbox): recompute (z − m)/σ over all
+  items measured so far at publish time, never rewriting stored z. Flippable mid- and
+  post-session — both views of the same data, which is what "I will test it" needs.
+  `loop_sigma`-equivalent (per-block σ) and per-block mean stay published; without them the
+  corrected p is uninterpretable after the fact.
+- **Results view: Top-10 / Bottom-10 by z** (the existing `top[]`/`low[]`, displayed again)
+  plus the Bonferroni line with `comparisons = items_done`. **Coverage and the most-frequent
+  row are deleted** (`publish_coverage()`, `cover[]`/`cover_low[]`, `fm`/`fe` histograms).
+  Per-block `drift_t` gets surfaced on the results screen, not only in `/loops`: with raw z,
+  slow drift is the one thing that widens the extremes, and random order only stops it
+  *attaching* to particular numbers.
+- **Stated once, on the record**: at 7920 comparisons the null's expected max |z| ≈ 3.8 and
+  Bonferroni p < 0.05 needs ≈ 4.5, so the significance line will read "not significant"
+  essentially always — correctly. This is a selection instrument by design (user, 2026-08-02:
+  "this program goes beyond science"); the corrected-p line stays as the honest label.
+
+### 2.4 Export and API
+
+- **`GET /results.csv`** on the master: streams every item measured so far — header comment
+  (mode, focus, studentize-view, items_done/total, fw), then
+  `idx,n1..n6,e1,e2,z_raw,block,order`. Live mid-session, still there after an abort.
+  ⚠ RAM only: a master reboot loses it, so pull it periodically during a long session.
+- **Removed params answer 400**, not silence: `?loops=`, `?rank=`, `?runs=` — the
+  ignored-parameter-that-looks-like-a-working-one bug class is already on the record.
+  `?mode=`, `?baseline=`, `?cal=`, `?calint=`, `?focus=`, `?confirm=` stay.
+- The slot→combo stride mapping (`nth_combination` spreading a capped run) goes with the cap:
+  uncapped, slot i **is** combination i.
+
 ## Workflow
 
 Planning/architecture: Fable/Opus — this document is the contract. Implementation: Sonnet, one

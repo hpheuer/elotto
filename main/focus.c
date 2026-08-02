@@ -71,15 +71,10 @@
  * plan already marked adjustable ("then pay for it in the run budget"), whereas
  * the hold time is the spec, and buying a display number by running the entropy
  * source in a starved regime trades physics for cosmetics — that regime is
- * where PLAN_4NODE's open item 3 lives. */
-void run_gap(void)
-{
-    vTaskDelay(pdMS_TO_TICKS(RUN_GAP_MS));
-}
-
-/* Same blank, explicit length — scoring runs ~3× longer than a measurement run
- * and has to keep the same duty ratio, or it lands in the starved regime the
- * paragraphs above are about. See SCORE_GAP_MS in focus.h. */
+ * where PLAN_4NODE's open item 3 lives.
+ *
+ * v3: one window (~3.4 s) and one gap (SCORE_GAP_MS) for every phase, so the
+ * fixed-length run_gap() is gone — every caller passes the length. */
 void run_gap_ms(int ms)
 {
     if (ms < 0) ms = 0;
@@ -239,5 +234,3 @@ void pause_gate(void)
     // and make focus_gap_ms meaningless.
     s_focus_off_us = esp_timer_get_time();
 }
-
-// Binomial coefficient C(n, r) for small values (max n=15, r=6)

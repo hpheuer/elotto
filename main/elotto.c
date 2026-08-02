@@ -149,36 +149,20 @@ static const char HTML[] =
 "font-size:.88em;margin:-18px 0 12px'></div>"
 "<div class='card'>"
 "<div id='runsRow' style='display:grid;grid-template-columns:1fr 1fr;gap:8px 14px;margin-bottom:10px'>"
+/* v3: no Loops, no Runs cap, no Ranking dropdown. One pass, every combination
+   in the confirmed pool measured exactly once, raw z — the session's shape is
+   fixed and the form only carries what still varies. */
 "<div class='frow'>"
 "<label for='numBaseline'>Baseline runs:</label>"
-// Defaults per the Phase 5 timing budget, restated for the uniform 1000 ms
-// window: the cycle is ~1.38 s (1027 ms lit + 350 ms blank), so a ~10 min
-// measurement loop is ~430 runs, not the 850 the 500 ms draw allowed.
-// `Runs = 0` (all) still works, and 430 of 5005 is still stride-sampled across
-// the whole combination space rather than a lexicographic prefix.
 "<input id='numBaseline' class='fin' type='number'"
 " value='" EL_STR(BASELINE_DEFAULT) "' min='" EL_STR(BASELINE_MIN) "'"
 " max='" EL_STR(BASELINE_MAX) "' step='" EL_STR(BASELINE_STEP) "'>"
 "</div>"
 "<div class='frow'>"
-"<label for='numLoops'>Loops:</label>"
-"<input id='numLoops' class='fin' type='number'"
-" value='" EL_STR(LOOPS_DEFAULT) "' min='1' max='" EL_STR(LOOPS_MAX) "' step='1'>"
-"</div>"
-"<div class='frow'>"
-"<label for='numRuns'>Runs (0=all):</label>"
-"<input id='numRuns' class='fin' type='number'"
-" value='" EL_STR(RUNS_DEFAULT) "' min='0' max='" EL_STR(NUM_RUNS) "' step='1'>"
-"</div>"
-"<div class='frow'>"
-"<label for='selRank'>Ranking:</label>"
-"<select id='selRank' style='padding:5px 8px;border-radius:6px;border:1px solid #a08030;"
-"background:#0a2e0a;color:#fff;font-size:.92em;max-width:100%'>"
-"<option value='2'>Most extreme Z (keeps the peak per combination)</option>"
-"<option value='3'>Most extreme Z, no studentization (raw scale &#9888;)</option>"
-"<option value='1'>Cumulative Z (Stouffer)</option>"
-"<option value='0'>Peak Z (best single run, pool re-scored each loop)</option>"
-"</select>"
+"<span>Measurement:</span>"
+"<span style='font-size:.92em'>every combination <b>once</b>, ~3.4 s each,"
+" random order<span style='color:#8fae8f'> &middot; raw z &middot; sweep+baseline"
+" every 15 min</span></span>"
 "</div>"
 // No entropy selector: photons or nothing. The on-chip TRNG was removed from
 // the firmware entirely (sensor.h) because an option to produce an
@@ -222,19 +206,13 @@ static const char HTML[] =
 "<button class='btn btn-abort' id='btnAbort' onclick='doAbort()'>&#9632; Abort</button>"
 "</div>"
 "<div id='progArea' style='display:none'>"
-/* Loop counter and, beside it, the ranking mode this session is actually
-   running. The mode decides what every published Z MEANS — a high-water mark, a
-   Stouffer sum, or a raw unstudentized value — and it is chosen once in a
-   dropdown that is off-screen for the rest of the session. Without it on the
-   progress line, the operator reads numbers whose rule they cannot see. It is
-   fed from /status (the DEVICE's mode), never from the dropdown, so a session
-   started from another tab or by curl still labels itself honestly. */
+/* The item counter replaced the loop counter (v3): items measured out of the
+   whole combination space, plus which block the pass is in. Fed from /status
+   (the DEVICE's numbers), so a session started by curl still labels itself. */
 "<div style='display:flex;align-items:center;justify-content:center;gap:10px;"
 "flex-wrap:wrap;margin-bottom:10px'>"
-"<div id='loopBadge' style='display:none;color:#f0c040;"
+"<div id='itemBadge' style='display:none;color:#f0c040;"
 "font-weight:700;font-size:1.05em'></div>"
-"<div id='modeBadge' style='display:none;color:#9fc79f;font-size:.86em;"
-"border:1px solid rgba(159,199,159,.35);border-radius:999px;padding:2px 10px'></div>"
 "</div>"
 "<div id='calArea'>"
 // Labelled "Baseline", NOT "Calibration". This bar tracks the baseline runs;
@@ -242,10 +220,10 @@ static const char HTML[] =
 // #msg). Calling both "calibration" in one interface was ambiguous. Element ids
 // keep their old cal* names so nothing else has to change.
 "<div style='color:#f0c040;font-size:.88em;margin-bottom:4px' "
-"title='Reference runs with the display off. Feeds the cross-loop drift "
-"regression (drift_slope/drift_t). The ranking is unaffected either way: "
-"studentize() removes any constant offset exactly. This is NOT the camera "
-"exposure calibration.'><span id='calTitle'>&#128207; Baseline &#8212; drift reference</span>"
+"title='Reference runs with the display off, repeated at every block "
+"insertion. Feeds the cross-block drift regression (drift_slope/drift_t); "
+"nothing is subtracted from any z. This is NOT the camera exposure "
+"calibration.'><span id='calTitle'>&#128207; Baseline &#8212; drift reference</span>"
 "<span id='calCheck'></span></div>"
 "<div class='prog-wrap' style='height:18px'>"
 "<div id='pfCal' style='background:linear-gradient(90deg,#a08030,#f0c040);"
@@ -268,7 +246,7 @@ static const char HTML[] =
 "<span id='measCheck'></span></div>"
 "<div class='prog-wrap'><div class='prog-fill' id='pf'></div></div>"
 "<div class='stats'>"
-"<div class='stat'><div class='sv' id='sDone'>0</div><div class='sl'>Runs</div></div>"
+"<div class='stat'><div class='sv' id='sDone'>0</div><div class='sl'>Items</div></div>"
 "<div class='stat'><div class='sv' id='sPct'>0%</div><div class='sl'>Progress</div></div>"
 "<div class='stat'><div class='sv' id='sTime'>0 min</div><div class='sl'>Time</div></div>"
 "<div class='stat'><div class='sv' id='sEta'>-</div><div class='sl'>ETA</div></div>"
@@ -334,22 +312,27 @@ static const char HTML[] =
 "<div class='card' id='resCard' style='display:none'>"
 "<h3 id='resTitle' style='color:#6ab0e8;margin-bottom:4px'></h3>"
 "<div id='sigLine' style='color:#a0c0a0;font-size:.82em;margin-bottom:4px'></div>"
-"<div style='color:#a0c0d0;font-size:.82em;margin-bottom:12px'>High-Z combinations"
-" chosen to overlap as little as possible &mdash; spread across more numbers to cover"
-" more potential draws.</div>"
+/* The studentize checkbox (v3): a DISPLAY transform, (z − m)/σ over every item
+   measured so far, computed client-side from pass_mean/pass_sigma. The stored
+   and exported z stays raw either way, and the transform is monotonic, so the
+   ranking below never changes — only the scale the numbers are shown on. */
+"<div style='color:#a0c0d0;font-size:.82em;margin:6px 0 12px;display:flex;"
+"align-items:center;gap:6px;flex-wrap:wrap'>"
+"<input id='chkStud' type='checkbox' onchange='rerender()' "
+"style='width:15px;height:15px'>"
+"<label for='chkStud'>studentized view &mdash; (z&minus;m)/&sigma; over the items"
+" measured so far; stored z stays raw</label>"
+"</div>"
 "<table><thead id='resHead'></thead>"
 "<tbody id='resBody'></tbody></table>"
 "<div style='text-align:center;margin-top:14px'>"
-"<button id='btnSave' class='btn' onclick='doSave()' style='display:none;background:#2e7d32;color:#fff;padding:10px 28px'>&#128190; Save CSV</button>"
+"<button id='btnSave' class='btn' onclick='doSave()' style='display:none;background:#2e7d32;color:#fff;padding:10px 28px'>&#128190; Save CSV (all items)</button>"
 "</div>"
 "</div>"
-"<div class='card' id='resCardCoverLow' style='display:none'>"
-"<h3 id='resTitleCoverLow' style='color:#e8a0a0;margin-bottom:4px'></h3>"
-"<div style='color:#d0b0b0;font-size:.82em;margin-bottom:12px'>Low-Z combinations"
-" chosen to overlap as little as possible &mdash; the spread-out negative-deviation"
-" picks.</div>"
-"<table><thead id='resHeadCoverLow'></thead>"
-"<tbody id='resBodyCoverLow'></tbody></table>"
+"<div class='card' id='resCardLow' style='display:none'>"
+"<h3 id='resTitleLow' style='color:#e8a0a0;margin-bottom:4px'></h3>"
+"<table><thead id='resHeadLow'></thead>"
+"<tbody id='resBodyLow'></tbody></table>"
 "</div>"
 "</div>"
 "<script>"
@@ -393,8 +376,7 @@ static const char HTML[] =
 // A page loaded or reloaded while the device is parked at the observer gate
 // must show it too — the session is blocked until somebody presses Start.
 "if(d.phase==='ready')readyShow();"
-"updateLoopBadge(d.loop_current||1,d.loops_total||1);"
-"updateModeBadge(d.rank);"
+"updateItemBadge(d);"
 "document.getElementById('sCalTotal').textContent=d.baseline_total;"
 "setScoreTotal(d);"
 "if(d.scoring_total>0){"
@@ -404,13 +386,13 @@ static const char HTML[] =
 "if(d.scoring_done>=d.scoring_total)"
 "document.getElementById('scoreCheck').innerHTML=\" <span style='color:#90ee90;font-size:1.1em'>&#10004;</span>\";"
 "if(d.phase==='measuring')document.getElementById('measArea').style.display='';"
-"if(d.cover&&d.cover.length)showResults(d);"
+"if(d.top&&d.top.length)showResults(d);"
 "if(timer)clearInterval(timer);timer=setInterval(poll,1000);"
 "}}else if(d.state==='done'||d.state==='aborted'){"
 "curMode=d.mode==='euro'?0:1;setMode(curMode);"
 "document.getElementById('msg').textContent="
 "d.state==='done'?'✅ Done! ('+fmt(d.elapsed_ms)+')'"
-":'⚠️ Aborted after '+d.completed+' runs — partial results:';"
+":'⚠️ Aborted after '+d.completed+' items — partial results:';"
 "showResults(d);"
 "}"
 "showSlaveBadge(d);"
@@ -427,35 +409,20 @@ static const char HTML[] =
 "b.innerHTML='\\uD83D\\uDD17 '+n+'-node array \\u00b7 SNR \\u00d7'+gain"
 "+(ok<n?' \\u26a0 '+(n-ok)+' dropped, running on '+ok:'');"
 "}"
-"function updateLoopBadge(cur,total){"
-"var b=document.getElementById('loopBadge');"
-"if(total>1){b.style.display='';b.textContent='\\uD83D\\uDD01 Loop '+cur+' / '+total;}"
-"else b.style.display='none';"
-"}"
-/* Shown independently of the loop badge, which hides itself on a single-loop
-   session — the ranking rule matters just as much there. RAW is called out in
-   its own colour: its Z is not N(0,1) and the p beside it is uncalibrated. */
-"var RANKNAME={'max':'\\uD83C\\uDFAF Most extreme Z',"
-"'maxraw':'\\u26a0 Most extreme Z \\u2014 RAW, not studentized',"
-"'cum':'\\u03a3 Cumulative Z (Stouffer)',"
-"'peak':'\\u2191 Peak Z (single run)'};"
-"function updateModeBadge(rank){"
-"var b=document.getElementById('modeBadge');"
-"if(!rank||!RANKNAME[rank]){b.style.display='none';return;}"
+/* Items measured / whole space, and which block the pass is in. The block
+   number matters to the operator for one reason: it says how many /loops rows
+   (drift points) exist so far. */
+"function updateItemBadge(d){"
+"var b=document.getElementById('itemBadge');"
+"if(d.state!=='running'&&d.state!=='done'&&d.state!=='aborted'){b.style.display='none';return;}"
+"if(!(d.total>0)){b.style.display='none';return;}"
 "b.style.display='';"
-"b.textContent=RANKNAME[rank];"
-"var raw=(rank==='maxraw');"
-"b.style.color=raw?'#f0a040':'#9fc79f';"
-"b.style.borderColor=raw?'rgba(240,160,64,.55)':'rgba(159,199,159,.35)';"
+"b.textContent='\\uD83C\\uDFAF Item '+(d.completed||0)+' / '+d.total"
+"+((d.loops_done>0)?' \\u00b7 block '+(d.loops_done+((d.state==='running')?1:0)):'');"
 "}"
 "function doStart(mode){"
 "curMode=mode;"
 "var base=parseInt(document.getElementById('numBaseline').value)||" EL_STR(BASELINE_DEFAULT) ";"
-"var loops=parseInt(document.getElementById('numLoops').value)||" EL_STR(LOOPS_DEFAULT) ";"
-"if(loops<1)loops=1;if(loops>" EL_STR(LOOPS_MAX) ")loops=" EL_STR(LOOPS_MAX) ";"
-"var runs=parseInt(document.getElementById('numRuns').value)||0;"
-"if(runs<0)runs=0;if(runs>" EL_STR(NUM_RUNS) ")runs=" EL_STR(NUM_RUNS) ";"
-"var rank=document.getElementById('selRank').value;"
 "var foc=document.getElementById('chkFocus').checked?1:0;"
 "document.getElementById('runsErr').textContent='';"
 "document.getElementById('sCalTotal').textContent=base;"
@@ -466,7 +433,7 @@ static const char HTML[] =
 // settings just typed in — that is how ignored parameters stay invisible.
 // confirm=1 unconditionally from the UI: a human pressed this button, so there
 // is by definition someone to answer the pool prompt. curl never sends it.
-"fetch('/start?mode='+mode+'&baseline='+base+'&loops='+loops+'&runs='+runs+'&rank='+rank"
+"fetch('/start?mode='+mode+'&baseline='+base"
 "+'&focus='+foc+'&confirm=1',{method:'POST'})"
 ".then(function(r){if(!r.ok){"
 "document.getElementById('runsErr').textContent="
@@ -488,13 +455,9 @@ static const char HTML[] =
 "lastData=null;lastDisplayed=null;"
 "document.getElementById('btnSave').style.display='none';"
 "document.getElementById('resCard').style.display='none';"
-"document.getElementById('resCardCoverLow').style.display='none';"
+"document.getElementById('resCardLow').style.display='none';"
+"document.getElementById('itemBadge').style.display='none';"
 "document.getElementById('msg').textContent='';"
-"updateLoopBadge(1,loops);"
-/* Optimistic label from the dropdown so the badge is up before the first
-   /status arrives; the very next poll overwrites it with what the DEVICE
-   reports, which is the authority if the two ever disagree. */
-"updateModeBadge({'0':'peak','1':'cum','2':'max','3':'maxraw'}[rank]);"
 "setMode(mode);"
 "if(timer)clearInterval(timer);"
 "timer=setInterval(poll,1000);"
@@ -669,8 +632,7 @@ static const char HTML[] =
 "}"
 "function poll(){"
 "fetch('/status').then(function(r){return r.json();}).then(function(d){"
-"updateLoopBadge(d.loop_current||1,d.loops_total||1);"
-"updateModeBadge(d.rank);"
+"updateItemBadge(d);"
 "updateFocusInfo(d);"
 // Raise the prompt as soon as the device parks on it, and take it down again
 // the moment it moves on (an answer from another browser tab, or the timeout).
@@ -725,7 +687,11 @@ static const char HTML[] =
 "if(d.baseline_done>=d.baseline_total&&d.baseline_total>0)"
 "document.getElementById('calCheck').innerHTML=\" <span style='color:#90ee90;font-size:1.1em'>&#10004;</span>\";"
 "else document.getElementById('calCheck').innerHTML='';"
-"if(d.phase==='measuring'||stDone){"
+/* The measurement bar's 100 % is the WHOLE combination space — the v3
+   progress contract. During a mid-pass sweep/baseline insertion the phase
+   leaves 'measuring' but the bar and counters keep their values: the pass is
+   parked, not reset. */
+"if(d.phase==='measuring'||stDone||(d.completed>0)){"
 "document.getElementById('measArea').style.display='';"
 "if(!stDone)document.getElementById('measCheck').innerHTML='';"
 "var pct=d.total>0?Math.round(d.completed*100/d.total):0;"
@@ -733,25 +699,17 @@ static const char HTML[] =
 "document.getElementById('sDone').textContent=d.completed+'/'+d.total;"
 "document.getElementById('sPct').textContent=pct+'%';"
 "document.getElementById('sTime').textContent=fmt(d.elapsed_ms);"
-"var perLoop=(d.baseline_total||0)+(d.scoring_total||0)+(d.total||0);"
-"var lc=d.loop_current||1,lt=d.loops_total||1;"
-"var gDone=(lc-1)*perLoop+(d.baseline_done||0)+(d.scoring_done||0)+d.completed;"
-"var gTotal=lt*perLoop;"
 "showSlaveBadge(d);"
-"if(gDone>0&&d.elapsed_ms>0&&gTotal>gDone){"
-"var msPer=d.elapsed_ms/gDone;"
-"var eta=Math.round(msPer*(gTotal-gDone));"
+/* ETA from the measured per-item pace over what remains. The elapsed clock
+   includes scoring/baseline, so the first items overestimate slightly and it
+   converges as the pass runs — good enough for a wall-clock this long. */
+"if(d.completed>0&&d.elapsed_ms>0&&d.total>d.completed){"
+"var msPer=d.elapsed_ms/((d.baseline_done||0)+(d.scoring_done||0)+d.completed);"
+"var eta=Math.round(msPer*(d.total-d.completed));"
 "document.getElementById('sEta').textContent=fmtEta(eta);"
 "}else document.getElementById('sEta').textContent='-';"
-"}else if((d.loop_current||1)>1){"
-"document.getElementById('measArea').style.display='';"
-"document.getElementById('pf').style.width='100%';"
-"document.getElementById('sDone').textContent=d.total+'/'+d.total;"
-"document.getElementById('sPct').textContent='100%';"
-"document.getElementById('sTime').textContent=fmt(d.elapsed_ms);"
-"document.getElementById('measCheck').innerHTML=\" <span style='color:#90ee90;font-size:1.1em'>&#10004;</span>\";"
 "}"
-"if(d.state==='running'&&d.cover&&d.cover.length)showResults(d);"
+"if(d.state==='running'&&d.top&&d.top.length)showResults(d);"
 "if(d.state==='done'||d.state==='aborted'){"
 "clearInterval(timer);stopFocus();poolHide();"
 "document.getElementById('runBtns').style.display='none';"
@@ -760,7 +718,7 @@ static const char HTML[] =
 "var done=d.state==='done';"
 "document.getElementById('msg').textContent="
 "done?'✅ Done! ('+fmt(d.elapsed_ms)+')'"
-":'⚠️ Aborted after '+d.completed+' runs — partial results:';"
+":'⚠️ Aborted after '+d.completed+' items — partial results:';"
 "showResults(d);"
 "}"
 "}).catch(function(){});"
@@ -783,24 +741,42 @@ static const char HTML[] =
 "if(d.paused_ms>0)s+=' \\u00b7 paused '+fmt(d.paused_ms)+' (excluded)';"
 "document.getElementById('focusInfo').textContent=s;"
 "}"
+/* Complementary-error function (Numerical Recipes rational approximation,
+   |error| < 1.2e-7) — enough decimal places for a p-value LABEL, which is all
+   the studentized view needs client-side. */
+"function erfc(x){var z=Math.abs(x),t=1/(1+z/2);"
+"var r=t*Math.exp(-z*z-1.26551223+t*(1.00002368+t*(0.37409196+t*(0.09678418"
+"+t*(-0.18628806+t*(0.27886807+t*(-1.13520398+t*(1.48851587+t*(-0.82215223"
+"+t*0.17087277)))))))));return x>=0?r:2-r;}"
+"function studOn(){return document.getElementById('chkStud').checked;}"
+/* The v3 display transform. Monotonic, so it never reorders the tables —
+   it only changes the scale the same raw measurements are shown on. */
+"function tz(d,z){return(studOn()&&d.pass_sigma>0)?(z-d.pass_mean)/d.pass_sigma:z;}"
+"function plab(az){return az>3.29?'p&lt;0.001':az>2.58?'p&lt;0.01':"
+"az>1.96?'p&lt;0.05':az>1.28?'p&lt;0.10':'n.s.';}"
+"function rerender(){if(lastData)showResults(lastData);}"
 "function showResults(d){"
 "lastData=d;"
-"var res=d.cover,isEuro=d.mode==='euro';"
+"var isEuro=d.mode==='euro';"
 "var sl=document.getElementById('sigLine');"
-"if(d.best_z!==undefined&&d.comparisons>0){"
-"var rk=d.rank==='cum'?'cumulative Z (Stouffer)':"
-"(d.rank==='max'?'most extreme Z per combination':"
-// Flagged wherever the number is shown, not only in the dropdown: a raw-scale Z
-// is not N(0,1), so the corrected p beside it is uncalibrated and a reader who
-// missed the mode setting would take it at face value.
-"(d.rank==='maxraw'?'most extreme Z, RAW \\u2014 not studentized, p uncalibrated':'peak Z'));"
-"var pc=d.p_corr<0.001?d.p_corr.toExponential(1):d.p_corr.toFixed(3);"
-"var sig=d.p_corr<0.05?'significant':'consistent with chance';"
-"sl.innerHTML='Ranking: '+rk+' \\u00b7 most extreme |Z| = '+d.best_z.toFixed(2)"
+/* Significance on the DISPLAYED scale: the same Bonferroni the device
+   computes, re-derived client-side so the studentized view corrects its own
+   extremes rather than borrowing the raw ones. */
+"if(d.comparisons>0&&d.top&&d.top.length){"
+"var zt=Math.abs(tz(d,d.top[0].z));"
+"var zb=(d.low&&d.low.length)?Math.abs(tz(d,d.low[0].z)):0;"
+"var zx=Math.max(zt,zb);"
+"var pcv=Math.min(1,d.comparisons*erfc(zx/1.41421356));"
+"var pc=pcv<0.001?pcv.toExponential(1):pcv.toFixed(3);"
+"var sig=pcv<0.05?'significant':'consistent with chance';"
+"sl.innerHTML='One measurement per item, '"
+"+(studOn()?'studentized view (stored z stays raw)':'raw z')"
+"+' \\u00b7 most extreme |Z| = '+zx.toFixed(2)"
 "+' \\u00b7 corrected p = '+pc+' over '+d.comparisons+' comparisons ('+sig+')';"
 "}else sl.innerHTML='';"
 "var s2='';"
-"if(d.loop_sigma>0)s2+='per-run \\u03c3 = '+d.loop_sigma.toFixed(3);"
+"if(d.pass_sigma>0)s2+='pass \\u03c3 = '+d.pass_sigma.toFixed(3)"
+"+' \\u00b7 pass mean = '+d.pass_mean.toFixed(3);"
 // Which condition produced these numbers. An attended session is not equivalent
 // to an unattended one, so the two must never be pooled later.
 "s2+=(s2?' \\u00b7 ':'')+(d.focus?'\\uD83C\\uDFAF attended (focus)':'unattended (control)');"
@@ -865,53 +841,40 @@ static const char HTML[] =
 "var s5='link: UDP \\u00b7 lost triggers '+nl+(nl?' \\u26a0':' \\u2713')"
 "+' \\u00b7 resends '+(d.net_retries||0)+' \\u00b7 stale replies '+(d.net_stale||0);"
 "sl.innerHTML+='<br>'+s5;}"
-// Cross-loop drift. studentize() removes each loop's own offset exactly, so a
-// constant bias is harmless — a trend across loops is not, and only a long
-// session gives it room to show. |t| > 3 means the slope is real, not noise.
+// Cross-block drift. v3 publishes raw z, so a trend across blocks lands
+// directly in the numbers — this line is the first thing to read on a v3
+// session, which is why it sits on the results screen and not only in /loops.
 "if(d.loops_done>1){"
 "var sgn=d.drift_slope>=0?'+':'';"
-// The slope needs >= 3 loops before it has a standard error at all
-// 6 loops, not 3: at 3 the regression has one degree of freedom and |t|>3 fires
-// on noise (measured: t=+10.30 at loop 3, -0.20 by loop 10). See DRIFT_MIN_LOOPS.
-"var d4=d.loops_done<6?'':(' \\u00b7 drift '+sgn+d.drift_slope.toFixed(4)+' z/loop (t = '"
+// 6 blocks, not 3: at 3 the regression has one degree of freedom and |t|>3
+// fires on noise (measured: t=+10.30 at 3 points, -0.20 by 10). DRIFT_MIN_LOOPS.
+"var d4=d.loops_done<6?'':(' \\u00b7 drift '+sgn+d.drift_slope.toFixed(4)+' z/block (t = '"
 "+d.drift_t.toFixed(1)+(Math.abs(d.drift_t)>" EL_STR(DRIFT_FLAG_T) "?' \\u26a0 drifting)':' ok)'));"
 "var s4='offset '+d.off_first.toFixed(3)+' \\u2192 '+d.off_last.toFixed(3)+' z/run'+d4"
 "+' \\u00b7 \\u03c3 '+d.sigma_lo.toFixed(3)+'\\u2013'+d.sigma_hi.toFixed(3)"
-"+' over '+d.loops_done+' loops'"
+"+' over '+d.loops_done+' blocks'"
 "+\" \\u00b7 <a href='/loops' target='_blank' style='color:#90ee90'>table</a>\";"
 "sl.innerHTML+='<br>'+s4;}"
 "document.getElementById('resCard').style.display='block';"
-"if(!res||res.length===0){"
-"document.getElementById('resTitle').innerHTML='\\uD83E\\uDDE9 Coverage';"
+"if(!d.top||d.top.length===0){"
+"document.getElementById('resTitle').innerHTML='\\uD83C\\uDFC6 Top 10';"
 "document.getElementById('resHead').innerHTML='';"
 "document.getElementById('resBody').innerHTML="
-"'<tr><td style=\"color:#d0b0b0;padding:10px\">Coverage needs a locked-pool ranking mode "
-"(<b>Most extreme Z</b> or <b>Cumulative Z</b>).</td></tr>';"
+"'<tr><td style=\"color:#d0b0b0;padding:10px\">No items measured yet.</td></tr>';"
 "document.getElementById('btnSave').style.display='none';"
-"document.getElementById('resCardCoverLow').style.display='none';"
+"document.getElementById('resCardLow').style.display='none';"
 "return;}"
-"lastDisplayed=res;"
+"lastDisplayed=d.top;"
 "document.getElementById('resTitle').innerHTML="
-"'\\uD83E\\uDDE9 Coverage-'+res.length+(isEuro?' Eurojackpot':' 6-of-49')+' (highest Z, diversified)';"
-"renderRunTable('resHead','resBody',res,isEuro);"
-"if(d.freq_z2>0&&d.freq_nums){"
-"var tb=document.getElementById('resBody');"
-"var fn='',fe='',nc=isEuro?5:6;"
-"for(var j=0;j<nc;j++)if(d.freq_nums[j])fn+='<span class=\"num\">'+d.freq_nums[j]+'</span>';"
-"if(isEuro&&d.freq_euro)for(var j=0;j<2;j++)if(d.freq_euro[j])fe+='<span class=\"num euro\">'+d.freq_euro[j]+'</span>';"
-"var sep='border-top:2px solid rgba(240,192,64,.4)';"
-"tb.innerHTML+='<tr style=\"background:rgba(240,192,64,.08)\">'"
-"+'<td colspan=\"4\" style=\"color:#f0c040;font-weight:700;'+sep+';padding-top:10px\">'"
-"+'&#128197; Most frequent ('+d.freq_z2+'&times; Z&gt;2):</td>'"
-"+'<td style=\"'+sep+'\">'+fn+'</td>'"
-"+(isEuro?'<td style=\"'+sep+'\">'+fe+'</td>':'')+'</tr>';"
-"}"
+"'\\uD83C\\uDFC6 Top '+d.top.length+' of '+d.comparisons+' measured'"
+"+(isEuro?' \\u2014 Eurojackpot':' \\u2014 6-of-49')+' (highest z)';"
+"renderRunTable('resHead','resBody',d.top,isEuro,d);"
 "document.getElementById('btnSave').style.display='';"
-"showCoverLow(d);"
+"showLow(d);"
 "}"
-"function renderRunTable(headId,bodyId,res,isEuro){"
+"function renderRunTable(headId,bodyId,res,isEuro,d){"
 "document.getElementById(headId).innerHTML="
-"'<tr><th>#</th><th>Run</th><th>Z-Score</th><th>p-Value</th><th>Numbers</th>'"
+"'<tr><th>#</th><th>Item</th><th>Z'+(studOn()?'&#8242;':'')+'</th><th>p</th><th>Numbers</th>'"
 "+(isEuro?'<th>Bonus</th>':'')+'</tr>';"
 "var tb=document.getElementById(bodyId);tb.innerHTML='';"
 "for(var i=0;i<res.length;i++){"
@@ -922,45 +885,24 @@ static const char HTML[] =
 "if(isEuro&&r.euro&&r.euro.length)"
 "for(var j=0;j<r.euro.length;j++)"
 "estr+='<span class=\"num euro\">'+r.euro[j]+'</span>';"
+"var z=tz(d,r.z);"
 "tb.innerHTML+='<tr><td>'+(i+1)+'</td><td>'+r.run+'</td>"
-"<td>'+r.z.toFixed(4)+'</td><td>'+r.p+'</td><td>'+nums+'</td>"
+"<td>'+z.toFixed(4)+'</td><td>'+plab(Math.abs(z))+'</td><td>'+nums+'</td>"
 "'+(isEuro?'<td>'+estr+'</td>':'')+'</tr>';"
 "}"
 "}"
-"function showCoverLow(d){"
-"var res=d.cover_low,isEuro=d.mode==='euro';"
-"if(!res||res.length===0){document.getElementById('resCardCoverLow').style.display='none';return;}"
-"document.getElementById('resTitleCoverLow').innerHTML="
-"'\\uD83E\\uDDE9 Coverage-'+res.length+(isEuro?' Eurojackpot':' 6-of-49')+' (lowest, diversified)';"
-"renderRunTable('resHeadCoverLow','resBodyCoverLow',res,isEuro);"
-"document.getElementById('resCardCoverLow').style.display='block';"
+"function showLow(d){"
+"var res=d.low,isEuro=d.mode==='euro';"
+"if(!res||res.length===0){document.getElementById('resCardLow').style.display='none';return;}"
+"document.getElementById('resTitleLow').innerHTML="
+"'\\u2B07 Bottom '+res.length+' (lowest z)';"
+"renderRunTable('resHeadLow','resBodyLow',res,isEuro,d);"
+"document.getElementById('resCardLow').style.display='block';"
 "}"
-"function doSave(){"
-"if(!lastData||!lastDisplayed)return;"
-"var d=lastData,isEuro=d.mode==='euro',nc=isEuro?5:6;"
-"var hdr=isEuro?'run,z_score,p_value,n1,n2,n3,n4,n5,e1,e2':'run,z_score,p_value,n1,n2,n3,n4,n5,n6';"
-"function rows(arr){var o=[];for(var i=0;i<arr.length;i++){"
-"var r=arr[i],cols=[r.run,r.z.toFixed(6),r.p];"
-"for(var j=0;j<nc;j++)cols.push(r.nums[j]);"
-"if(isEuro){cols.push(r.euro[0]);cols.push(r.euro[1]);}"
-"o.push(cols.join(','));}return o;}"
-// The condition travels with the data: attended and unattended sessions are
-// different experiments and must not be pooled after the fact.
-"var lines=['# mode='+d.mode+',date='+new Date().toISOString().slice(0,10)"
-"+',focus='+(d.focus?'on':'off')+',paused_ms='+(d.paused_ms||0),"
-"'# coverage-'+(lastDisplayed?lastDisplayed.length:0)+' (highest z, diversified)',hdr];"
-"lines=lines.concat(rows(lastDisplayed));"
-"if(d.cover_low&&d.cover_low.length){"
-"lines.push('# coverage-'+d.cover_low.length+' (lowest z, diversified)');"
-"lines.push(hdr);"
-"lines=lines.concat(rows(d.cover_low));}"
-"var url=URL.createObjectURL(new Blob([lines.join('\\n')],{type:'text/csv'}));"
-"var a=document.createElement('a');"
-"a.href=url;"
-"a.download='elotto_'+d.mode+'_'+new Date().toISOString().slice(0,10)+'.csv';"
-"document.body.appendChild(a);a.click();"
-"setTimeout(function(){URL.revokeObjectURL(url);document.body.removeChild(a);},100);"
-"}"
+/* The export moved to the device (v3): /results.csv streams EVERY measured
+   item with its raw z — not just the ten rows on screen — and works
+   mid-session too. The browser only navigates to it. */
+"function doSave(){window.location='/results.csv';}"
 "</script></body></html>";
 
 /* Serialize one RunResult as a JSON object; returns chars written. */
@@ -984,7 +926,9 @@ static int emit_run(char *buf, int cap, const RunResult *r, bool euro)
 /* ── /status JSON ─────────────────────────────────────────────────── */
 static esp_err_t status_handler(httpd_req_t *req)
 {
-    static char buf[6144];
+    // 20 full top/low entries (~110 B each) on top of the fixed head; 6144
+    // was sized for 10 coverage picks and would sit within ~600 B of the cap.
+    static char buf[8192];
     int  pos = 0;
     const char *state_str =
         g_status.state == ELOTTO_RUNNING ? "running" :
@@ -1000,16 +944,13 @@ static esp_err_t status_handler(httpd_req_t *req)
         g_status.phase == PHASE_POOL_CONFIRM ? "poolconfirm" :
         g_status.phase == PHASE_READY        ? "ready"       :
                                                "measuring";
-    const char *rank_str =
-        g_status.rank_mode == RANK_CUMULATIVE  ? "cum"    :
-        g_status.rank_mode == RANK_EXTREME     ? "max"    :
-        g_status.rank_mode == RANK_EXTREME_RAW ? "maxraw" : "peak";
     pos += snprintf(buf+pos, sizeof(buf)-pos,
         "{\"state\":\"%s\",\"mode\":\"%s\",\"phase\":\"%s\","
-        "\"slave\":%s,\"rank\":\"%s\","
+        "\"slave\":%s,"
         "\"src\":\"camera\",\"src_stalled\":%s,\"fault\":\"%s\","
         "\"best_z\":%.4f,\"p_corr\":%.6g,\"comparisons\":%d,"
-        "\"loop_sigma\":%.4f,\"pair_r\":%.4f,\"pair_n\":%d,"
+        "\"loop_sigma\":%.4f,\"pass_mean\":%.5f,\"pass_sigma\":%.5f,"
+        "\"pair_r\":%.4f,\"pair_n\":%d,"
         "\"pair_i\":%d,\"pair_j\":%d,\"pair_count\":%d,"
         "\"nodes_total\":%d,\"nodes_ok\":%d,"
         "\"net_retries\":%lu,\"net_lost\":%lu,\"net_stale\":%lu,"
@@ -1020,17 +961,17 @@ static esp_err_t status_handler(httpd_req_t *req)
         "\"loops_done\":%d,\"drift_slope\":%.5f,\"drift_t\":%.2f,"
         "\"off_first\":%.4f,\"off_last\":%.4f,"
         "\"sigma_lo\":%.4f,\"sigma_hi\":%.4f,"
-        "\"loop_current\":%d,\"loops_total\":%d,"
         "\"scoring_done\":%d,\"scoring_total\":%d,"
         "\"baseline_done\":%d,\"baseline_total\":%d,\"baseline_mean\":%.4f,"
         "\"completed\":%d,\"total\":%d,\"elapsed_ms\":%lld,"
         "\"pool_confirm\":%d,\"pool_auto\":%d,"
         "\"pool_need_main\":%d,\"pool_need_euro\":%d,",
         state_str, mode_str, phase_str,
-        g_status.slave_connected ? "true" : "false", rank_str,
+        g_status.slave_connected ? "true" : "false",
         g_status.noise_stalled ? "true" : "false", g_status.fault,
         g_status.best_z, g_status.p_corrected, g_status.comparisons,
-        g_status.loop_sigma, g_status.pair_r_max, g_status.pair_n,
+        g_status.loop_sigma, g_status.pass_mean, g_status.pass_sigma,
+        g_status.pair_r_max, g_status.pair_n,
         g_status.pair_r_i, g_status.pair_r_j, g_status.pair_count,
         g_status.node_count, g_status.node_ok,
         (unsigned long)g_status.net_retries, (unsigned long)g_status.net_lost,
@@ -1047,7 +988,6 @@ static esp_err_t status_handler(httpd_req_t *req)
         g_status.loops_done, g_status.drift_slope, g_status.drift_t,
         g_status.off_first, g_status.off_last,
         g_status.sigma_lo, g_status.sigma_hi,
-        g_status.loop_current, g_status.loops_total,
         g_status.scoring_done, g_status.scoring_total,
         g_status.baseline_done, g_status.baseline_total, g_status.baseline_mean,
         g_status.runs_completed, g_status.runs_total,
@@ -1123,33 +1063,26 @@ static esp_err_t status_handler(httpd_req_t *req)
         }
     pos += snprintf(buf + pos, sizeof(buf) - pos, "],");
 
-    // Cumulative top-N is published continuously, so intermediate results
-    // (after each loop) are shown too — not only when the whole job is done.
+    // Top-N / Bottom-N by raw z, updated after EVERY measured item, so the
+    // live ranking is always visible — the intermediate-results promise of v3.
     bool euro = (g_status.mode == MODE_EUROJACKPOT);
 
-    // Only the diversified coverage sets are shown; raw top/bottom rankings
-    // (g_status.top[]/low[]) are still computed internally for the significance
-    // line but no longer serialized.
-    pos += snprintf(buf+pos, sizeof(buf)-pos,
-        "\"freq_z2\":%d,\"freq_nums\":[%d,%d,%d,%d,%d,%d],\"freq_euro\":[%d,%d],\"cover\":[",
-        g_status.freq_z2_count,
-        g_status.freq_nums[0], g_status.freq_nums[1], g_status.freq_nums[2],
-        g_status.freq_nums[3], g_status.freq_nums[4], g_status.freq_nums[5],
-        g_status.freq_euro[0], g_status.freq_euro[1]);
-
-    int cshow = g_status.cover_count < COVER_SHOW ? g_status.cover_count : COVER_SHOW;
-    if (cshow < 0) cshow = 0;
-    for (int i = 0; i < cshow; i++) {
+    pos += snprintf(buf+pos, sizeof(buf)-pos, "\"top\":[");
+    int tshow = g_status.result_count;
+    if (tshow < 0) tshow = 0;
+    if (tshow > TOP_N) tshow = TOP_N;
+    for (int i = 0; i < tshow; i++) {
         if (i) pos += snprintf(buf+pos, sizeof(buf)-pos, ",");
-        pos += emit_run(buf+pos, sizeof(buf)-pos, &g_status.cover[i], euro);
+        pos += emit_run(buf+pos, sizeof(buf)-pos, &g_status.top[i], euro);
     }
-    pos += snprintf(buf+pos, sizeof(buf)-pos, "],\"cover_low\":[");
+    pos += snprintf(buf+pos, sizeof(buf)-pos, "],\"low\":[");
 
-    int clshow = g_status.cover_low_count < COVER_SHOW ? g_status.cover_low_count : COVER_SHOW;
-    if (clshow < 0) clshow = 0;
-    for (int i = 0; i < clshow; i++) {
+    int lshow = g_status.low_count;
+    if (lshow < 0) lshow = 0;
+    if (lshow > TOP_N) lshow = TOP_N;
+    for (int i = 0; i < lshow; i++) {
         if (i) pos += snprintf(buf+pos, sizeof(buf)-pos, ",");
-        pos += emit_run(buf+pos, sizeof(buf)-pos, &g_status.cover_low[i], euro);
+        pos += emit_run(buf+pos, sizeof(buf)-pos, &g_status.low[i], euro);
     }
     pos += snprintf(buf+pos, sizeof(buf)-pos, "]}");
 
@@ -1159,12 +1092,13 @@ static esp_err_t status_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* ── /loops GET – per-loop health table (PLAN_4NODE Phase 3) ──────────
- * The long-run drift record: one row per completed loop with the raw
- * (pre-studentize) per-run offsets and σ per node, plus camera health at that
- * moment. Chunked — the table outgrows any sane single buffer.
- * `raw_m` = base + mean_m is the offset the master's source actually produced;
- * that series is what drift_slope/drift_t are regressed on. */
+/* ── /loops GET – per-BLOCK health table (endpoint name is historical) ─
+ * The long-run drift record: one row per closed block (the span between two
+ * sweep+baseline insertions) with the raw per-run offsets and σ per node,
+ * plus camera health at that moment. Chunked — the table outgrows any sane
+ * single buffer. `raw_m` is the master's own per-run mean of the block — v3
+ * subtracts nothing, so that IS the raw offset the drift regression runs on;
+ * `base` is the insertion baseline's independent estimate of the same thing. */
 static esp_err_t loops_handler(httpd_req_t *req)
 {
     char buf[288];
@@ -1191,7 +1125,7 @@ static esp_err_t loops_handler(httpd_req_t *req)
             "\"mean\":%.4f,\"sigma\":%.4f,\"cal_ms\":%d,"
             "\"win_ms\":%.1f,\"gap_ms\":%.1f,\"nodes\":%d,\"n\":[",
             i ? "," : "", i + 1, (unsigned long)L->t_s,
-            L->base, L->base + L->mean_n[0], L->mean, L->sigma, (int)L->cal_ms,
+            L->base, L->mean_n[0], L->mean, L->sigma, (int)L->cal_ms,
             L->win_ms, L->gap_ms, nn);
         httpd_resp_send_chunk(req, buf, len);
         for (int k = 0; k < nn; k++) {
@@ -1211,6 +1145,55 @@ static esp_err_t loops_handler(httpd_req_t *req)
         httpd_resp_send_chunk(req, "]}", 2);
     }
     httpd_resp_send_chunk(req, "]}", 2);
+    httpd_resp_send_chunk(req, NULL, 0);
+    return ESP_OK;
+}
+
+/* ── /results.csv GET – every item measured so far (v3) ───────────────
+ * The periodic-export half of PLAN.md §2: one row per measured item, RAW z,
+ * in measurement order, live at any moment of the pass and still there after
+ * an abort. The prefix [0..runs_completed) is complete by construction —
+ * runs_completed is bumped only after a row is fully written.
+ *
+ * ⚠ RAM only. A master reboot loses the whole record and no item is ever
+ * re-measured, so on a long session pull this periodically.
+ *
+ * Fixed columns for both modes (n6 = 0, e1 = e2 = 0 where not applicable) so
+ * a parser never has to sniff the mode from the width. `z_raw` is exactly
+ * results[].z_score; the studentized view is (z_raw − pass_mean)/pass_sigma
+ * with the pass_* values from the header line, so both views are derivable
+ * from this one file forever. */
+static esp_err_t results_csv_handler(httpd_req_t *req)
+{
+    char buf[224];
+    httpd_resp_set_type(req, "text/csv");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+
+    int n = g_status.runs_completed;
+    if (n > NUM_RUNS) n = NUM_RUNS;
+
+    int len = snprintf(buf, sizeof(buf),
+        "# elotto v3 mode=%s focus=%s items=%d/%d pass_mean=%.5f "
+        "pass_sigma=%.5f blocks=%d paused_ms=%lld\n"
+        "order,item,n1,n2,n3,n4,n5,n6,e1,e2,z_raw,block\n",
+        g_status.mode == MODE_EUROJACKPOT ? "euro" : "649",
+        g_status.focus_mode ? "on" : "off",
+        n, g_status.runs_total,
+        g_status.pass_mean, g_status.pass_sigma,
+        g_status.loops_done, (long long)g_status.paused_ms);
+    httpd_resp_send_chunk(req, buf, len);
+
+    for (int j = 0; j < n; j++) {
+        const RunResult *r = &g_status.results[j];
+        len = snprintf(buf, sizeof(buf),
+            "%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%.6f,%d\n",
+            j + 1, r->index,
+            r->nums[0], r->nums[1], r->nums[2],
+            r->nums[3], r->nums[4], r->nums[5],
+            r->euro[0], r->euro[1],
+            r->z_score, (int)r->block);
+        httpd_resp_send_chunk(req, buf, len);
+    }
     httpd_resp_send_chunk(req, NULL, 0);
     return ESP_OK;
 }
@@ -1326,13 +1309,6 @@ static esp_err_t start_handler(httpd_req_t *req)
         // curl-started session and a browser-started one are the same
         // experiment. ?baseline= still overrides either way.
         g_status.baseline_total = BASELINE_DEFAULT;
-        g_status.loops_total    = 1;
-        g_status.runs_limit     = 0;   // 0 = measure all combinations
-        // EXTREME is the default since 2026-07-30 (user decision): a combination
-        // keeps the most extreme z it has ever produced, and a milder later loop
-        // does not erase it. See ElottoRank in sensor.h for what each mode means
-        // and why the significance line, not the raw Z, is the thing to read.
-        g_status.rank_mode      = RANK_EXTREME;
         // No ?src= any more: the camera is the only source this firmware has
         // (sensor.h). A session that cannot run on photons does not run.
         /* Per-loop camera calibration (PLAN.md Task 1). **10 s since 2026-07-30
@@ -1350,11 +1326,10 @@ static esp_err_t start_handler(httpd_req_t *req)
          * be compared against, and the only way to measure what the sweep costs.
          * ?cal=<ms> restores any other budget without a reflash. */
         g_status.cal_budget_ms  = CAL_BUDGET_DEFAULT_MS;
-        // Minimum wall time between sweeps. 5 min sits well under a full ~10 min
-        // loop, so a normal session still calibrates every loop exactly as
-        // §1.5.1 measured; it only bites when loops are SHORT (a Runs cap, or a
-        // 6-of-49 pool), where a ~24 s sweep per loop would otherwise dominate
-        // the session and re-tune a camera that has not had time to drift.
+        // v3: the interval IS the block length — every cal_interval_ms the
+        // pass parks for a sweep + baseline insertion and the boundary closes
+        // a /loops block. 15 min default (~6 % overhead); 0 = no mid-pass
+        // insertions (sweep + baseline at session start only).
         g_status.cal_interval_ms = CAL_INTERVAL_DEFAULT_MS;
         // Absent ?focus= means UNATTENDED. A session started by curl or a
         // script has no observer by definition, so the control condition is
@@ -1366,30 +1341,25 @@ static esp_err_t start_handler(httpd_req_t *req)
         g_status.pool_auto      = 0;
         if (httpd_req_get_url_query_str(req, qry, sizeof(qry)) == ESP_OK) {
             char val[16] = "";
+            /* v3 removed ?loops=, ?runs= and ?rank=. Refuse them LOUDLY: an
+             * ignored parameter that looks accepted is exactly the bug class
+             * the 409-on-running fix was about — a v2 script would get a
+             * session that silently measures a different experiment than the
+             * one it asked for. */
+            if (httpd_query_key_value(qry, "loops", val, sizeof(val)) == ESP_OK ||
+                httpd_query_key_value(qry, "runs",  val, sizeof(val)) == ESP_OK ||
+                httpd_query_key_value(qry, "rank",  val, sizeof(val)) == ESP_OK) {
+                httpd_resp_set_status(req, "400 Bad Request");
+                httpd_resp_sendstr(req,
+                    "v3: loops/runs/rank no longer exist -- one pass, every "
+                    "combination once, raw z");
+                return ESP_OK;
+            }
             if (httpd_query_key_value(qry, "mode", val, sizeof(val)) == ESP_OK)
                 g_status.mode = (val[0] == '1') ? MODE_LOTTO_649 : MODE_EUROJACKPOT;
             if (httpd_query_key_value(qry, "baseline", val, sizeof(val)) == ESP_OK) {
                 int b = atoi(val);
                 if (b > 0 && b <= BASELINE_MAX) g_status.baseline_total = b;
-            }
-            if (httpd_query_key_value(qry, "loops", val, sizeof(val)) == ESP_OK) {
-                int l = atoi(val);
-                if (l > 0 && l <= LOOPS_MAX) g_status.loops_total = l;
-            }
-            if (httpd_query_key_value(qry, "runs", val, sizeof(val)) == ESP_OK) {
-                int r = atoi(val);
-                if (r > 0 && r <= NUM_RUNS) g_status.runs_limit = r;
-            }
-            // ?rank= 0 peak | 1 cumulative (Stouffer) | 2 extreme (default).
-            // The 0/1 meanings are unchanged so older scripts and the ?cal=0
-            // control still select what they always did; only the ABSENT default
-            // moved, and an unrecognised value keeps the default rather than
-            // silently falling into a mode nobody asked for.
-            if (httpd_query_key_value(qry, "rank", val, sizeof(val)) == ESP_OK) {
-                if      (val[0] == '0') g_status.rank_mode = RANK_PEAK;
-                else if (val[0] == '1') g_status.rank_mode = RANK_CUMULATIVE;
-                else if (val[0] == '2') g_status.rank_mode = RANK_EXTREME;
-                else if (val[0] == '3') g_status.rank_mode = RANK_EXTREME_RAW;
             }
             // ?focus=1 -> attended session: the Focus panel is live and the
             // session is tagged. Run lengths do NOT depend on this — a matched
@@ -1401,9 +1371,8 @@ static esp_err_t start_handler(httpd_req_t *req)
                 int c = atoi(val);
                 if (c >= 0 && c <= CAL_BUDGET_MAX_MS) g_status.cal_budget_ms = c;
             }
-            // ?calint=<ms> -> minimum time between sweeps; 0 = sweep at the top
-            // of every loop (the pre-2026-07-29 behaviour, and what a comparison
-            // against §1.14/§1.15 has to be run with).
+            // ?calint=<ms> -> the block length (time between sweep+baseline
+            // insertions); 0 = no mid-pass insertions.
             if (httpd_query_key_value(qry, "calint", val, sizeof(val)) == ESP_OK) {
                 int c = atoi(val);
                 if (c >= 0 && c <= CAL_INTERVAL_MAX_MS) g_status.cal_interval_ms = c;
@@ -1804,11 +1773,11 @@ static bool session_running(void) { return g_status.state == ELOTTO_RUNNING; }
 static void start_webserver(void)
 {
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
-    /* 12 here + 5 registered by elotto_ota = 17. Keep headroom: registration
+    /* 15 here + 5 registered by elotto_ota = 20. Keep headroom: registration
      * past this limit fails, and the return value is not checked at either
      * call site, so an endpoint would simply 404 with nothing logged. Adding
-     * /ready and /diagjson took it from 14 to 17 and silently over the old
-     * cap of 16 — count them when adding one. */
+     * /ready and /diagjson once took it silently over the old cap of 16 —
+     * count them when adding one. */
     cfg.max_uri_handlers  = 24;
     cfg.stack_size        = 8192;
     cfg.recv_wait_timeout = 20;   /* /update streams a ~700 KB body */
@@ -1824,6 +1793,7 @@ static void start_webserver(void)
         {"/diag",     HTTP_GET, diag_handler,     NULL},
         {"/diagjson", HTTP_GET, diagjson_handler, NULL},
         {"/loops",  HTTP_GET,  loops_handler,  NULL},
+        {"/results.csv", HTTP_GET, results_csv_handler, NULL},
         {"/focus",  HTTP_GET,  focus_handler,  NULL},
         {"/pause",  HTTP_POST, pause_handler,  NULL},
         {"/calibrate", HTTP_GET, calibrate_handler, NULL},
