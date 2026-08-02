@@ -27,39 +27,22 @@
 
 #include "sensor.h"
 
-/* Dark time after EVERY run -- baseline, scoring and measurement alike, and
- * independently of focus_mode, so a matched no-focus control differs in the
- * display and nothing else. 350 ms, not 200: conscious noticing smears over
- * ~100-300 ms, so a 200 ms blank lets attention to target N overlap N+1's
- * sampling. The hardware forces it too -- 1000 ms at a 200 ms gap is 83 % duty,
- * past the point where the measurement loop starves the camera extraction task
- * it consumes from and the sustained rate collapses. See sensor.c's history and
- * PLAN.md for the measurements behind both numbers. */
-#define RUN_GAP_MS  350
-
-/* The scoring phase's blank. Longer because its RUN is longer (SCORE_SEGMENTS,
- * ~3 s): what starves the extraction task is the DUTY CYCLE, not the window
- * length, so a 3 s run behind the ordinary 350 ms blank would sit at 89.6 %
- * duty — past the cliff, where the achievable window stretches instead of
- * obeying the segment count. ~1000 ms holds scoring at ~75 %, the same ratio
- * the 1 s / 350 ms measurement cycle was tuned to.
+/* THE dark time after every run — baseline, scoring and measurement alike
+ * (v3: all three phases run the same ~3.4 s window), and independently of
+ * focus_mode, so a matched no-focus control differs in the display and
+ * nothing else.
  *
- * A phase-specific gap does not break the "uniform gap" rule, and it is worth
- * saying why rather than assuming. That rule had two reasons: an attended and an
- * unattended session must differ in the DISPLAY and nothing else — this gap
- * applies to both equally — and the baseline must be the same instrument as the
- * runs it is subtracted from, down to duty cycle — but the baseline is
- * subtracted from Phase 2 runs, and scoring has no baseline subtraction at all.
- * Baseline and Phase 2 therefore keep RUN_GAP_MS and stay matched to each other.
- *
- * Net cost is a wash against the three 1 s reps this replaces: 3.0 + 1.0 = 4.0 s
- * per number against 3 × 1.38 = 4.14 s. */
+ * ~1000 ms because what starves the camera extraction task is the DUTY
+ * CYCLE, not the window length: a 3.4 s run behind the old 350 ms blank
+ * would sit at ~90 % duty — past the cliff, where the achievable window
+ * stretches instead of obeying the segment count. 1000 ms holds the cycle at
+ * ~77 % (measured: window 3370 ms, gap 1010 ms, duty 76.9 %, zero stalls),
+ * the same ratio the old 1 s / 350 ms cycle was tuned to. It also does the
+ * attention job the old 350 ms did with margin: conscious noticing smears
+ * over ~100–300 ms, and a 1 s blank cleanly separates target N from N+1. */
 #define SCORE_GAP_MS 1000
 
-// The blank between runs, RUN_GAP_MS long.
-void run_gap(void);
-
-// The same blank, for a phase that needs a different one (scoring).
+// The blank between runs, `ms` long (every caller passes SCORE_GAP_MS now).
 void run_gap_ms(int ms);
 
 /* ── Session clock ─────────────────────────────────────────────────── */

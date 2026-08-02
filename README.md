@@ -1130,6 +1130,7 @@ elotto_slave/  — separate repo: https://github.com/hpheuer/elotto_slave  (must
 
 | Version | Description |
 |---|---|
+| **v3.0** | **The single-pass session (2026-08-02, docs/PLAN.md §2).** No Focus item is ever measured twice: every combination in the confirmed pool is measured **exactly once**, ~3.4 s + ~1 s gap, in one Fisher–Yates random order (Euro 12+5 → 7920 items ≈ 10 h; 6-of-49 pool 15 → 5005 ≈ 6.5 h; attended, Pause/Abort at the operator's judgment). **No loops, no Runs cap, no ranking modes** — `?loops=`/`?runs=`/`?rank=` answer 400; Coverage sets and the most-frequent row are gone. Published z is **RAW**; studentization survives as a display-only checkbox (`(z−m)/σ` over the items measured so far, stored data untouched). Baseline is drift-reference only (`zm` subtraction deleted). Every ~15 min (`?calint=`) the pass parks for a **sweep + baseline insertion**; the boundary closes a **block** — the new unit for `/loops` rows, the drift regression and the pairwise fold. Results: Top-10 / Bottom-10 by z, Bonferroni line with `comparisons = items_done`, item counter, and **`GET /results.csv`** streaming every measured item live mid-session (RAM only — pull periodically). ⚠ v3 data must never be pooled with any v2.x session. Sections below describing loops/ranking/Coverage are historical. |
 | v1.0 | GCP webserver, Eurojackpot + 6-of-49, live progress, abort, Top-10 |
 | v1.1 | Browser reconnect: page restores state after reload |
 | v1.2 | 200K TRNG values/run, popcount optimization, configurable runs (max 8000) |

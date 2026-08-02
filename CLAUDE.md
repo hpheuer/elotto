@@ -7,9 +7,38 @@
 - Target: **esp32p4**
 - Build system: idf.py via ESP-IDF Extension
 
+## v3.0 (2026-08-02) — the single-pass session. READ THIS BEFORE THE REST.
+**PLAN.md §2 is the contract; implemented and flashed 2026-08-02.** The core rule — no Focus
+item is ever measured twice — now covers Phase 2: **every combination in the confirmed pool is
+measured exactly ONCE**, ~3.4 s (`SCORE_SEGMENTS`) + ~1 s gap, in one Fisher–Yates random order.
+Consequences, stated once:
+- **No loops, no loop counter, no Runs cap, no ranking modes.** `?loops=`, `?runs=`, `?rank=`
+  answer **400**. The combobox, `RANK_*`, Stouffer/extreme accumulators, Coverage sets and the
+  most-frequent row are deleted. The progress bar's 100 % is the full combination space
+  (Euro 12+5 → 7920, 6-of-49 pool 15 → 5005; `NUM_RUNS` 8000 is the hard cap).
+- **Stored z is RAW** — no studentize rewrite, no `zm = zraw − baseline_mean` (baseline is
+  drift-reference ONLY now). Studentize survives as a **display checkbox** (default off):
+  `(z − pass_mean)/pass_sigma` from `/status`, computed client-side; monotonic, so the ranking
+  never changes, only the scale. **Never pool v3 data with any v2.x session.**
+- **Blocks replace loops as the statistics unit**: every `cal_interval_ms` (default now
+  **15 min**, `?calint=`, 0 = no mid-pass insertions) the pass parks for **sweep + baseline
+  together**; the boundary closes a block → `/loops` row, drift point, pairwise fold.
+  ~38 blocks per Euro pass. With raw z, **drift is the first diagnostic to read**.
+- **`results[]` is in MEASUREMENT order** (`.index` = combination id, `.block` stamped), so the
+  prefix is always complete: aborts need no compaction, and **`GET /results.csv`** streams every
+  measured item (raw z) live mid-session. ⚠ RAM only — pull it periodically over a ~10 h pass;
+  a master reboot loses unrepeatable measurements.
+- Session lengths: Euro ≈ 9.6 h measuring (~10.2 h with insertions), 6-of-49 ≈ 6.5 h. Attended
+  by assumption; Pause stops the clock, Abort publishes the measured prefix.
+- UI: Top-10/Bottom-10 by z (device-computed `top[]`/`low[]` in `/status`), significance line
+  with `comparisons = items_done`, item counter + block badge, Save CSV → `/results.csv`.
+Paragraphs below describing loops/ranking/Coverage are **historical (v2.x)** where they
+contradict this section.
+
 ## Project structure
 - main/elotto.c   – app_main, Ethernet, webserver, HTML/JS UI. Endpoints: `/` `/status` `/start`
-  `/abort` `/loops` `/focus` `/pause` `/calibrate` `/pool` `/ready` `/probe` `/expose`, plus
+  `/abort` `/loops` (per-**block** health) `/results.csv` (v3 export) `/focus` `/pause`
+  `/calibrate` `/pool` `/ready` `/probe` `/expose`, plus
   **`/diag` (a four-camera health PAGE, live, one row per node)** and `/diagjson` (the master's own
   stats, which is where `/diag`'s JSON went on 2026-07-28). Slaves serve that same JSON at their
   own `/diag`.
@@ -23,12 +52,13 @@
   correct — the sweep is what chooses a rung on evidence. Omitting `gain` keeps the gain in force.
   ⚠ `cfg.max_uri_handlers` must exceed **(count here) + 5 from elotto_ota**; registration past the
   cap fails and the return value is checked nowhere, so an endpoint just 404s silently.
-- main/sensor.c   – GCP analysis, scoring/pooling, baseline, studentization, drift, publishing
+- main/sensor.c   – GCP analysis, scoring/pooling, baseline, the single pass, blocks, drift,
+  publishing (Top/Bottom-N, pass mean/σ)
 - main/nodes.c    – **the array**: UDP link, discovery, calibration handshake, per-node health,
   the drop/reboot policy. Split out of sensor.c 2026-07-27 as a pure move (~520 lines); every
   static it owns was already used only by the functions that moved with it. `main/nodes.h` is
   the API. sensor.c reaches the other boards only through it.
-- main/focus.c    – focus panel, pause, the 350 ms run gap, and the session clock. These four
+- main/focus.c    – focus panel, pause, the run gap, and the session clock. These four
   share state, which is why they are one file: `pause_gate()` accumulates the time held,
   `elapsed_ms_now()` subtracts it, and a pause also nudges the gap timer so the break is not
   charged to `focus_gap_ms`. Split out 2026-07-27 as a pure move; it had **no** call into the
@@ -198,10 +228,10 @@ so a fresh session does not need them.
 - Each node has its **own** OV5647 camera (never shared — sharing one would break
   independence by construction). Entropy = non-overlapping frame pairs, diff = f[2k+1]−f[2k]
   per pixel (cancels FPN exactly), LSB packed, XOR-folded. ~3 Mbit/s per node.
-- One source, but **two segment counts since 2026-07-30** (user decision): `CAM_SEGMENTS` = 11950
-  (~1030 ms) for **baseline and Phase 2**, and `SCORE_SEGMENTS` = 3 × that = 35850 for **Phase 0
-  scoring**, which measures **3370 ms** — see the Phase 0 entry below for why. z stays N(0,1) at
-  either length, being normalised by √segments, so nothing downstream needs to know which ran.
+- One source, **ONE segment count since v3.0**: `SCORE_SEGMENTS` = 35850 (**~3370 ms**) for
+  baseline, Phase 0 scoring AND the measurement pass, all behind `SCORE_GAP_MS` ≈ 1 s
+  (`CAM_SEGMENTS` = 11950 survives only as the base constant; `RUN_GAP_MS`/`run_gap()` are
+  gone). z stays N(0,1) at any length, being normalised by √segments.
 - ✅ **The segment count travels on the wire** (`M<seg>`, `B<runs>,<seg>`), so the constant
   lives in `main/sensor.c` only. A slave that is *told* the length cannot disagree about it.
   `slave.c` keeps `CAM_SEGMENTS` **only** as the fallback for a pre-Phase-5 master, and logs
@@ -227,23 +257,13 @@ so a fresh session does not need them.
   CPU-hungry, so any task calling `camera_read_word()` must run *above* it or the producer
   starves the consumer (~10x slowdown; signature is ring `drops` huge with `waits == 0`).
 
-Phase 1: baseline calibration (all nodes in parallel; informational — ranking uses
-studentization instead).
-⚠ **The baseline SUBTRACTION is mathematically inert — do not "fix" it, and do not delete the
-phase because of it** (verified 2026-07-26). `baseline_mean` is a *constant* subtracted from every
-run in the loop (`sensor.c`, `zm = zraw - baseline_mean`), so it shifts the loop mean by exactly
-itself and `studentize()` then removes it completely: the final z is unchanged to the bit. The
-phase is kept because `baseline_mean` is the **input to the cross-loop drift regression**
-(`drift_add()` → `drift_slope`/`drift_t`, stored per loop in `/loops` as `base`/`raw_m`) — the
-diagnostic that caught the master drifting −0.334 z/loop in §1.12. It is also the *more precise*
-offset instrument: 50 runs give SE ≈ 0.14 z on the per-run offset, against ≈0.40 z implied by the
-calibration sweep's bias figure, because the baseline sees ~20× more data.
-⚠ **The default is 10 runs since 2026-07-30 (user decision)**, down from 100 — ~14 s/loop instead
-of ~140 s. That is BELOW the 25–30 this entry calls the floor worth keeping: at 10 runs the
-per-run offset carries SE ≈ **0.32 z** instead of 0.14, so `drift_slope`/`drift_t` are
-correspondingly noisier — and drift is the diagnostic that caught the sealed enclosure at
-t = −4.75. `?baseline=` overrides per session; raise it for any session where drift is the
-question. The subtraction itself is unaffected, being inert either way.
+Phase 1: baseline (all nodes in parallel), repeated at **every block insertion**.
+**v3: the subtraction is GONE, not just inert.** `zm = zraw − baseline_mean` was deleted — with
+raw z published it would have been a live, master-only correction (the RANK_EXTREME_RAW trap).
+The baseline is now purely the **drift reference**: `LoopStat.base` per block, the independent
+cross-check against the block's own master mean (`raw_m`, which is what `drift_add()` regresses
+on now — at ~205 items/block that mean carries SE ≈ 0.07 z, finer than any baseline could).
+**Default 10 runs** (`?baseline=` overrides); at the v3 run length that is ~44 s per insertion.
 The UI bar is labelled **"Baseline — drift reference"**, not "Calibration": the camera exposure
 sweep is a different phase, and having two things called calibration in one interface was
 ambiguous. The `cal*` element ids are historical.
@@ -265,7 +285,7 @@ always sends it; **curl never does**, so scripted runs and the `?cal=0` control 
   them. Combination counts recompute from the confirmed pool — keeping exactly 5+2 gives **ONE**
   combination, which is intended and is the highest-power way to use the instrument.
   ⚠ **15-minute timeout** accepts the proposal unchanged and records `pool_auto=1`. Verified firing.
-  In cumulative mode the pool is locked after loop 0, so this choice commits the whole session.
+  v3: this choice commits the whole single pass — there is nothing after it that re-scores.
 
 Phase 0: score individual numbers 1..N with **exactly one node-combined run each, but a LONG one
 (~3370 ms, `SCORE_SEGMENTS`)**, sweeping the numbers in a **fresh random order (Fisher–Yates, no
@@ -275,42 +295,39 @@ were rejected on the same ground: 5 short reps (until 2026-07-25) froze the pane
 the first window had an onset; 3 short reps (briefly, 2026-07-30) reintroduced exactly that. One
 long run gives the same arithmetic — a 3× run is Σdev/√(3N), i.e. the Stouffer combination of
 three 1× runs — while keeping **one onset per number**, which is the payload.
-⚠ **The gap scales with it: `SCORE_GAP_MS` = 1000, not `RUN_GAP_MS` = 350.** Duty cycle, not
-window length, is what starves the extraction task; 3.4 s behind a 350 ms blank would be ~90 %.
-Measured at the real settings: window **3370 ms ± 1.5 ms across 62 numbers**, gap 1010 ms, duty
-76.9 %, rate 3.37–3.38 Mbit/s (collapsed regime is 2.68), zero stalls, `net_lost` 0.
-A phase-specific gap does **not** break the uniform-gap rule: that rule exists so attended and
-unattended sessions differ only in the display (this applies to both) and so the baseline matches
-the runs it is subtracted from (it feeds Phase 2; scoring has **no** baseline subtraction).
+⚠ **The gap scales with it: `SCORE_GAP_MS` = 1000** (v3: `RUN_GAP_MS` no longer exists — every
+phase runs this window and this gap). Duty cycle, not window length, is what starves the
+extraction task; 3.4 s behind a 350 ms blank would be ~90 %. Measured at the real settings:
+window **3370 ms ± 1.5 ms across 62 numbers**, gap 1010 ms, duty 76.9 %, rate 3.37–3.38 Mbit/s
+(collapsed regime is 2.68), zero stalls, `net_lost` 0.
 ⚠ `LINK_MEAS_MS` is gone — the reply window is now `LINK_MEAS_MS_FOR(nseg)`. The old flat 4000 ms
 was headroom for a 1 s run and a **deadline** for a 3.4 s one: every slave would still be
 measuring when it expired, all would look silent, and after `NODE_MISS_LIMIT` they would be
 DROPPED, leaving a solo session that still looked healthy. Deliberately generous (user decision):
 a late drop costs nothing here, a false drop costs an arm of data measured at √(k−1) unnoticed.
-Scoring costs ~4.6 min for 62 numbers, on loop 0 only in the locked-pool modes. It changes only
-*which* numbers enter the pool, never the Phase-2 statistics measured on them.
-Phase 2: measure all pool combinations in a fresh Fisher–Yates random order per loop
-(s_perm[], drift immunity); results[] stays slot-indexed. A Runs cap stride-samples the full
-space (slot i → combo ⌊i·full/total⌋). After each loop, studentize() re-expresses every z as
-(z − loop mean)/loop σ (publishes loop_sigma, ideal ≈1) — bias correction + N(0,1) guarantee.
-Node independence: PairAcc[i][j] accumulates per-loop-centered moments for EVERY node pair
+Scoring costs ~4.6 min for 62 numbers, once per session. It changes only *which* numbers enter
+the pool, never the statistics measured on them.
+Phase 2 (v3): **ONE pass over the whole combination space** in one Fisher–Yates random order
+(s_perm[], drift immunity), each item measured exactly once at the same 3.4 s window.
+`results[]` fills in **measurement order** (`.index` = combination id, `.block` stamped), so the
+prefix is always the complete record — no slot-indexing, no stride mapping, no compaction on
+abort. z is stored **raw**; `publish_result()` maintains Top-N/Bottom-N and `pass_mean`/
+`pass_sigma` after every item, and `comparisons = items_done` feeds the Bonferroni line.
+Node independence: PairAcc[i][j] accumulates per-**block**-centered moments for EVERY node pair
 (6 at n=4), only over runs where both nodes contributed → the full Pearson matrix plus per-node
-σ in /status (⚠ if |r|·√n > 3). **Check per-loop combined σ as well** — a pooled pairwise max
-missed a growing correlation that σ caught (see PLAN_NETWORK's open finding). Mid-loop aborts
-compact the scattered partial measurements (compact_partial()).
-Cross-loop drift (Phase 3): studentization removes each loop's own offset exactly, so only a
-*trend across loops* survives it. record_loop() stores per-loop raw offsets/σ per node + camera
-health (LoopStat, PSRAM, first LOOP_HIST=128 loops, served by **/loops**), and drift_add()
-regresses the master's raw offset on the loop index using running sums (exact past 128) →
-drift_slope / drift_t in /status; |t| > 3 flags real drift. The slave's per-loop camera numbers
-come from the `D` command, queried once per loop while it is idle — a missing reply is
-diagnostics-only and never drops the slave.
-Results shown in browser UI (Ethernet, DHCP): two diversified Coverage sets — highest-z
-(g_status.cover[]) and lowest-z (g_status.cover_low[]), via publish_coverage() greedy
-max-spread (≤ nm/2 shared numbers per pick) — plus most-frequent from Z>2 runs and a
-Bonferroni-corrected significance line (compute_significance()). The raw top[]/low[] rankings
-are still computed (for significance) but no longer displayed or serialized. Coverage is
-cumulative-mode only.
+σ in /status (⚠ if |r|·√n > 3). **Check per-block combined σ as well** — a pooled pairwise max
+missed a growing correlation that σ caught (see PLAN_NETWORK's open finding).
+Cross-block drift: with raw z published, a trend across the pass lands directly in the numbers —
+random order stops it attaching to particular combinations but it still widens the extremes, so
+this is the **first diagnostic to read**. `close_block()` → record_loop() stores per-block raw
+offsets/σ per node + camera health (LoopStat, PSRAM, first LOOP_HIST=128 blocks, served by
+**/loops**), and drift_add() regresses the master's per-block mean on the block index (running
+sums, exact past 128) → drift_slope / drift_t in /status; |t| > 3 flags real drift; the UI shows
+the drift line on the results screen. The slave's per-block camera numbers come from the `D`
+command, queried at block close while it is idle — a missing reply is diagnostics-only.
+Results in the browser UI: **Top-10 and Bottom-10 by z** (served as `top[]`/`low[]` in /status),
+the Bonferroni significance line, and the **studentized-view checkbox** (display-only transform;
+see the v3 section). Save CSV navigates to `/results.csv`. Coverage and most-frequent are gone.
 
 **Focus display (Phase 5)**: a "Focus:" card shows the current target in
 large type for exactly the window its bits are collected in — the candidate number while
@@ -324,25 +341,20 @@ unattended sessions must never be pooled**; run matched no-focus controls.
   credits an effect to the wrong combination — mislabeling, not blur). `POST /pause?on=1|0`
   holds **between** runs only; state stays `running`, Σz and the permutation resume where they
   left off, and paused time is excluded from `elapsed_ms` (`paused_ms` records it).
-- **Baseline and Phase 2 displays are 1030 ms** with a **350 ms** blank (`RUN_GAP_MS`) after every
-  run; **Phase 0 scoring is 3370 ms with a 1010 ms blank** (`SCORE_SEGMENTS` / `SCORE_GAP_MS`,
-  2026-07-30). Both cycles sit at ~75 % duty, which is the property that matters. 350 ms not 200
-  because conscious
-  noticing smears over ~100–300 ms, so a 200 ms blank lets attention to target N overlap N+1's
-  sampling; the hardware forces it too (1000 ms at a 200 ms gap is 83% duty, past the point
-  where the loop starves the camera extraction task it consumes from and the rate collapses).
-  Cycle ≈ 1.4 s, so `Runs` defaults to **430** for a ~10 min loop.
+- **Every display window is 3370 ms with a 1010 ms blank** (`SCORE_SEGMENTS` / `SCORE_GAP_MS` —
+  v3 unified baseline, scoring and measurement on one cycle). ~77 % duty, which is the property
+  that matters: a shorter blank starves the camera extraction task the loop consumes from
+  (measured cliff past ~80 %), and conscious noticing smears over ~100–300 ms, so a wide blank
+  keeps attention to item N out of N+1's sampling. Cycle ≈ 4.4 s per item.
 - ⚠ **The window is set by a segment count and the conversion is not stable** — the achievable
   window moved 1.75× across one afternoon under identical settings. Check
   `focus_win_ms`/`focus_gap_ms` in /status rather than assuming the constants still hold.
-- ⚠ `camera_get_stats()` is cumulative **since the last `camera_stats_reset()`**. With per-loop
-  calibration on (the default) that reset happens every loop, so `mbit_s`/`bias` in `/status`
-  and `/loops` are now per-loop figures. In a `?cal=0` session there is no reset and they are
-  lifetime averages again — a falling `mbit_s` is then not evidence of live degradation.
-  ⚠ Since 2026-07-29 a sweep can also be **skipped** on a short loop (see below), so the window
-  those figures cover is "since the last sweep", which is not always one loop.
+- ⚠ `camera_get_stats()` is cumulative **since the last `camera_stats_reset()`**, i.e. since the
+  last sweep — with the v3 default that is one block (~15 min). In a `?cal=0` session there is
+  no reset and they are lifetime averages — a falling `mbit_s` is then not evidence of live
+  degradation.
 
-**Per-loop camera calibration (PLAN.md Task 1, done 2026-07-26)**: at the start of a loop the
+**Camera calibration (PLAN.md Task 1, done 2026-07-26; v3: per BLOCK)**: at every insertion the
 master broadcasts `K<budget_ms>`, sweeps its own exposure ladder in parallel, and waits for every
 node's `OK:<exp>,<gain>,<fold>,<bias>,<mbit_s>,<G|U>`. Each node keeps the setting with the
 **lowest |bias − 0.5| among candidates clearing the σ gate with margin** (see above); if none
@@ -363,52 +375,22 @@ node, not just the master**, which is what makes a per-node optical fault diagno
 what they must still share is the segment count, which travels on the wire. Enclosed, they still
 spread **128 / 32 / 64 / 512** inside one dark box — so the spread is the *sensors* differing, not
 the light, and it is not something the enclosure was ever going to remove.
-The chosen setting is recorded per loop in `/loops` — mandatory, because a per-loop change nobody
+The chosen setting is recorded per block in `/loops` — mandatory, because a re-tune nobody
 logged is indistinguishable from drift in the data.
-⚠ **The trigger is TIME, not the loop boundary (2026-07-29, PLAN.md §1.18).** A loop that starts
-less than `cal_interval_ms` after the last sweep **skips** it — default **5 min**,
-`POST /start?calint=<ms>`, `0` = the old sweep-every-loop rule. The loop was only a proxy for "ten
-minutes have passed"; a Runs-capped or post-`/pool` loop can run in seconds, where a 24 s sweep is
-most of the loop and re-tunes a camera that has had no time to drift. At the default a full ~10 min
-loop still sweeps every loop, so **§1.14/§1.15's condition is unchanged** — but a comparison
-against those arms with short loops must pass `?calint=0`. `LoopStat.cal_ms` is **0 on a skipped
-loop** (`/loops`), `/status` carries `cal_interval_ms` and `cal_did_sweep`, and the `cam_*` fields
-still hold the setting in force, i.e. the carried-over one.
+⚠ **The trigger is TIME (2026-07-29, PLAN.md §1.18; v3 made it the block clock).** Default
+**15 min**, `POST /start?calint=<ms>`; **0 = no mid-pass insertions** (v3 changed 0's meaning —
+there is no loop left for "every loop" to mean). Thermal drift moves on wall-clock time, and the
+insertion cadence is also what sets the drift regression's resolution. `LoopStat.cal_ms` is 0
+when a sweep did not run, `/status` carries `cal_interval_ms` and `cal_did_sweep`, and the
+`cam_*` fields always hold the setting in force.
 
-Loops: the whole experiment repeats N times (device-side, in elotto_task). **Four** ranking modes
-(g_status.rank_mode), `?rank=0|1|2|3`, shown live in a pill beside the loop counter (fed from
-`/status`, i.e. the DEVICE's mode, so a curl-started session still labels itself):
-- **RANK_EXTREME (2) — THE DEFAULT since 2026-07-30 (user decision).** Pool locked after loop 0;
-  each fixed combination keeps the **most extreme z it has ever produced**. A milder later loop is
-  ignored, a more extreme one replaces the mark. Highs and lows are tracked **separately**
-  (`s_zsum[]` = running max in internal RAM, `s_zmin[]` = running min **in PSRAM** — a second
-  64 KB `.bss` array fails the *link*), so a combination reading +3.1 early and −3.4 later keeps
-  both and appears on both lists. `publish_extreme()` runs two passes over `results[]`, taking the
-  high-side lists then the low-side ones, because every selector downstream reads that one field.
-  ⚠ **The published extreme CLIMBS with loop count under the null** — it is the max of k draws.
-  `comparisons = runs_total × k` for exactly that reason, so **read the Bonferroni line, never the
-  raw Z**. Verified end-to-end 2026-07-30: over two loops best_z went 1.8082 → 1.9908 (never
-  decreasing) with comparisons 20 → 40.
-- **RANK_CUMULATIVE (1)** — pool locked after loop 0, ranks by Stouffer Z = Σz/√k over the fixed
-  set (`publish_cumulative()`, no in-place sort of results[] so combo↔index stays stable). A real
-  effect d grows as d√k; an isolated extreme regresses toward 0 as loops accumulate. `comparisons`
-  stays runs_total. **This is the mode that accumulates evidence** — the user's own observation that
-  a −3 became −2 in a later loop was this working as designed, not a fault.
-- **RANK_EXTREME_RAW (3)** — EXTREME, but `studentize()` does **not** rewrite the z's (user
-  request, 2026-07-30, to see what the correction was doing). `loop_sigma`, the loop mean and the
-  drift regression are still computed; only the rewrite is skipped, so no diagnostic dies.
-  ⚠ The published Z is then **not N(0,1)** — it keeps the loop's own offset and raw σ (measured
-  0.85–0.99 in the verification run) — so the corrected p is uncalibrated, and the results line
-  says so. Two consequences that are easy to miss: the master's `zm = zraw − baseline_mean`
-  subtraction **stops being inert** and becomes a live, master-only correction; and `loop_sigma`
-  stops being a diagnostic and becomes the scale the numbers are actually on. **Never pool a raw
-  session with a studentized one.**
-- **RANK_PEAK (0)** — best single-run z across loops via `absorb_loop()`, and the odd one out: it
-  **re-scores the pool every loop**, so `do_score` is true each loop and (with `?confirm=1`) both
-  attended gates fire every loop. The retained extreme may belong to a draw never measured again.
-Coverage sets are published by the two **locked-pool** modes, not by PEAK.
-Top-10/Bottom-10 + frequency published after every loop so /status shows intermediate results.
-Optional Runs cap (g_status.runs_limit) shortens Phase 2 for quick tests.
+**No loops, no ranking modes (v3).** The session is ONE pass; each item's z is its own single
+raw measurement, so the four v2 ranking rules (`RANK_PEAK/CUMULATIVE/EXTREME/EXTREME_RAW`) had
+nothing left to differ about and were deleted with their accumulators (`s_zsum`/`s_zmin`),
+`publish_cumulative/extreme/coverage/frequency` and `absorb_loop`. `?rank=` (like `?loops=` and
+`?runs=`) answers **400**. Top-10/Bottom-10 are updated after **every item**, so /status always
+shows the live intermediate ranking; `comparisons = items_done` keeps the Bonferroni line honest
+while the pass is still running.
 
 Modes: Eurojackpot (5 of 50 + 2 of 12, 7920 combinations) and 6 of 49 (5005 combinations).
 
