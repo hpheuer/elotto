@@ -947,16 +947,17 @@ Minimum Supported ESP32-P4 Revision → v0.0
 cd D:\E-Lotto\elotto
 .\build.ps1 build                        # master
 .\build.ps1 -C ../elotto_slave build     # slave
-.\build.ps1 -C ota_firmware build        # recovery updater
+.\build.ps1 -C ota_firmware build        # recovery updater (factory image)
 
-curl http://192.168.178.100/update --data-binary @build/elotto.bin
-curl http://192.168.178.145/update --data-binary @../elotto_slave/build/elotto_slave.bin
+# OTA — normal path (abort any running session first; /update returns 409 if busy)
+curl.exe -X POST --data-binary "@build/elotto.bin" http://192.168.178.100/update
+curl.exe -X POST --data-binary "@../elotto_slave/build/elotto_slave.bin" http://192.168.178.103/update
+# same for .145 and .155
 ```
 
-~730 KB in ~3 s. The node writes the **inactive** slot, reboots, and marks itself valid only
+~750 KB in ~4 s. The node writes the **inactive** slot, reboots, and marks itself valid only
 once its own webserver answers — so a failed transfer or a dead image cannot strand it.
-`/update` answers **409** while a measurement is running, which is a real gain over USB, where
-nothing but discipline stopped a flash from destroying a session in progress.
+Confirm with `GET /otainfo` (`fw_sha`, `fw_slot`; `fw_boot_fails` clears after ~30 s healthy uptime).
 
 Always build through `build.ps1`: it pins the VS Code extension's Python venv. Mixing it with
 `export.ps1`'s interpreter pins the build directory to the wrong one and fails with
@@ -1130,7 +1131,7 @@ elotto_slave/  — separate repo: https://github.com/hpheuer/elotto_slave  (must
 
 | Version | Description |
 |---|---|
-| **v3.0** | **The single-pass session (2026-08-02, docs/PLAN.md §2).** No Focus item is ever measured twice: every combination in the confirmed pool is measured **exactly once**, ~3.4 s + ~1 s gap, in one Fisher–Yates random order (Euro 12+5 → 7920 items ≈ 10 h; 6-of-49 pool 15 → 5005 ≈ 6.5 h; attended, Pause/Abort at the operator's judgment). **No loops, no Runs cap, no ranking modes** — `?loops=`/`?runs=`/`?rank=` answer 400; Coverage sets and the most-frequent row are gone. Published z is **RAW**; studentization survives as a display-only checkbox (`(z−m)/σ` over the items measured so far, stored data untouched). Baseline is drift-reference only (`zm` subtraction deleted). Every ~15 min (`?calint=`) the pass parks for a **sweep + baseline insertion**; the boundary closes a **block** — the new unit for `/loops` rows, the drift regression and the pairwise fold. Results: Top-10 / Bottom-10 by z, Bonferroni line with `comparisons = items_done`, item counter, and **`GET /results.csv`** streaming every measured item live mid-session (RAM only — pull periodically). ⚠ v3 data must never be pooled with any v2.x session. Sections below describing loops/ranking/Coverage are historical. |
+| **v3.0** | **The single-pass session (2026-08-02…03, docs/PLAN.md §2).** No Focus item is ever measured twice: every combination in the confirmed pool is measured **exactly once**, one continuous window per item, Fisher–Yates order. **Measuring Time (s)** is a session parameter (UI + `?run=` / `?gap=`; default 5 s, gap auto ≈ 40 % of run). Segment count from live cal (`RUN_SEGS_REF`/`RUN_MS_REF`); wall time is **`focus_win_ms`** (camera duty-cycle can stretch long windows — that is the limit, not RAM). Stable live: 5 s → ~4.7 s; 7 s + 3 s gap → ~6.4 s; zero stalls. **No loops / Runs cap / ranking modes** (`?loops=`/`?runs=`/`?rank=` → 400). Published z is **RAW**; Top/Bottom tables show **numeric two-sided p** (erfc). Blocks every ~15 min (`?calint=`). **`GET /results.csv`** live mid-session. Firmware: **OTA only** in normal use (`POST /update`); USB only for factory recovery. ⚠ v3 data must never be pooled with any v2.x session. |
 | v1.0 | GCP webserver, Eurojackpot + 6-of-49, live progress, abort, Top-10 |
 | v1.1 | Browser reconnect: page restores state after reload |
 | v1.2 | 200K TRNG values/run, popcount optimization, configurable runs (max 8000) |

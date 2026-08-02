@@ -7,33 +7,40 @@
 - Target: **esp32p4**
 - Build system: idf.py via ESP-IDF Extension
 
-## v3.0 (2026-08-02) — the single-pass session. READ THIS BEFORE THE REST.
-**PLAN.md §2 is the contract; implemented and flashed 2026-08-02.** The core rule — no Focus
-item is ever measured twice — now covers Phase 2: **every combination in the confirmed pool is
-measured exactly ONCE**, ~3.4 s (`SCORE_SEGMENTS`) + ~1 s gap, in one Fisher–Yates random order.
+## v3.0+ (2026-08-02…03) — the single-pass session. READ THIS BEFORE THE REST.
+**PLAN.md §2 is the contract; implemented 2026-08-02, run timing made configurable 2026-08-03.**
+The core rule — no Focus item is ever measured twice — covers Phase 2: **every combination in the
+confirmed pool is measured exactly ONCE**, in one Fisher–Yates random order, with **one continuous
+window per Focus item** (scoring, baseline and measurement share the same length).
 Consequences, stated once:
 - **No loops, no loop counter, no Runs cap, no ranking modes.** `?loops=`, `?runs=`, `?rank=`
   answer **400**. The combobox, `RANK_*`, Stouffer/extreme accumulators, Coverage sets and the
   most-frequent row are deleted. The progress bar's 100 % is the full combination space
   (Euro 12+5 → 7920, 6-of-49 pool 15 → 5005; `NUM_RUNS` 8000 is the hard cap).
+- **Measuring time is a session parameter** (UI: **Measuring Time (s)** · per Focus item;
+  `?run=<s>` default **5**, `?gap=<s>` default **40 % of run**). Segment count is derived from a
+  live cal (`RUN_SEGS_REF` / `RUN_MS_REF` in `sensor.h`). Actual wall time is **`focus_win_ms`** —
+  long windows can stretch when the camera rate collapses under high duty cycle (that is the
+  limit, not RAM). Stable live: **5 s request → ~4.7 s**, **7 s + 3 s gap → ~6.4 s**, zero stalls.
 - **Stored z is RAW** — no studentize rewrite, no `zm = zraw − baseline_mean` (baseline is
-  drift-reference ONLY now). Studentize survives as a **display checkbox** (default off):
-  `(z − pass_mean)/pass_sigma` from `/status`, computed client-side; monotonic, so the ranking
-  never changes, only the scale. **Never pool v3 data with any v2.x session.**
-- **Blocks replace loops as the statistics unit**: every `cal_interval_ms` (default now
+  drift-reference ONLY now). Top/Bottom tables show **numeric two-sided p** from erfc(|z|/√2),
+  not n.s. buckets. **Never pool v3 data with any v2.x session.**
+- **Blocks replace loops as the statistics unit**: every `cal_interval_ms` (default
   **15 min**, `?calint=`, 0 = no mid-pass insertions) the pass parks for **sweep + baseline
   together**; the boundary closes a block → `/loops` row, drift point, pairwise fold.
-  ~38 blocks per Euro pass. With raw z, **drift is the first diagnostic to read**.
+  With raw z, **drift is the first diagnostic to read**.
 - **`results[]` is in MEASUREMENT order** (`.index` = combination id, `.block` stamped), so the
   prefix is always complete: aborts need no compaction, and **`GET /results.csv`** streams every
-  measured item (raw z) live mid-session. ⚠ RAM only — pull it periodically over a ~10 h pass;
+  measured item (raw z) live mid-session. ⚠ RAM only — pull it periodically over a long pass;
   a master reboot loses unrepeatable measurements.
-- Session lengths: Euro ≈ 9.6 h measuring (~10.2 h with insertions), 6-of-49 ≈ 6.5 h. Attended
-  by assumption; Pause stops the clock, Abort publishes the measured prefix.
-- UI: Top-10/Bottom-10 by z (device-computed `top[]`/`low[]` in `/status`), significance line
-  with `comparisons = items_done`, item counter + block badge, Save CSV → `/results.csv`.
-Paragraphs below describing loops/ranking/Coverage are **historical (v2.x)** where they
-contradict this section.
+- Session wall time scales with `run`/`gap` and combination count. Attended by assumption;
+  Pause stops the clock, Abort publishes the measured prefix.
+- UI: Top-5/Bottom-5 by z (device `top[]`/`low[]` in `/status`), significance line with
+  `comparisons = items_done`, item counter + block badge, Save CSV → `/results.csv`.
+  Firmware is delivered **over OTA only** in normal workflow (`POST /update`); `build.ps1`
+  documents build, not serial flash.
+Paragraphs below describing loops/ranking/Coverage or fixed 3.4 s windows are **historical**
+where they contradict this section.
 
 ## Project structure
 - main/elotto.c   – app_main, Ethernet, webserver, HTML/JS UI. Endpoints: `/` `/status` `/start`
@@ -228,10 +235,10 @@ so a fresh session does not need them.
 - Each node has its **own** OV5647 camera (never shared — sharing one would break
   independence by construction). Entropy = non-overlapping frame pairs, diff = f[2k+1]−f[2k]
   per pixel (cancels FPN exactly), LSB packed, XOR-folded. ~3 Mbit/s per node.
-- One source, **ONE segment count since v3.0**: `SCORE_SEGMENTS` = 35850 (**~3370 ms**) for
-  baseline, Phase 0 scoring AND the measurement pass, all behind `SCORE_GAP_MS` ≈ 1 s
-  (`CAM_SEGMENTS` = 11950 survives only as the base constant; `RUN_GAP_MS`/`run_gap()` are
-  gone). z stays N(0,1) at any length, being normalised by √segments.
+- One source, **session segment count since v3.0+**: `g_status.run_segments` from `?run=`
+  (default 5 s → segs via `RUN_SEGS_REF`/`RUN_MS_REF`) for baseline, Phase 0 scoring AND the
+  measurement pass, all behind `g_status.gap_ms` (default 40 % of run). z stays N(0,1) at any
+  length, being normalised by √segments.
 - ✅ **The segment count travels on the wire** (`M<seg>`, `B<runs>,<seg>`), so the constant
   lives in `main/sensor.c` only. A slave that is *told* the length cannot disagree about it.
   `slave.c` keeps `CAM_SEGMENTS` **only** as the fallback for a pre-Phase-5 master, and logs
@@ -341,14 +348,11 @@ unattended sessions must never be pooled**; run matched no-focus controls.
   credits an effect to the wrong combination — mislabeling, not blur). `POST /pause?on=1|0`
   holds **between** runs only; state stays `running`, Σz and the permutation resume where they
   left off, and paused time is excluded from `elapsed_ms` (`paused_ms` records it).
-- **Every display window is 3370 ms with a 1010 ms blank** (`SCORE_SEGMENTS` / `SCORE_GAP_MS` —
-  v3 unified baseline, scoring and measurement on one cycle). ~77 % duty, which is the property
-  that matters: a shorter blank starves the camera extraction task the loop consumes from
-  (measured cliff past ~80 %), and conscious noticing smears over ~100–300 ms, so a wide blank
-  keeps attention to item N out of N+1's sampling. Cycle ≈ 4.4 s per item.
-- ⚠ **The window is set by a segment count and the conversion is not stable** — the achievable
-  window moved 1.75× across one afternoon under identical settings. Check
-  `focus_win_ms`/`focus_gap_ms` in /status rather than assuming the constants still hold.
+- **Every display window equals the session measuring time** (`?run=` / UI field; default 5 s)
+  with intentional blank `?gap=` (default 40 % of run). Scoring, baseline and measurement share
+  one cycle. Duty cycle is the property that matters: a short blank starves the camera extraction
+  task (cliff past ~75–80 %). Check **`focus_win_ms` / `focus_gap_ms`** live — segment→wall ms is
+  nonlinear under load.
 - ⚠ `camera_get_stats()` is cumulative **since the last `camera_stats_reset()`**, i.e. since the
   last sweep — with the v3 default that is one block (~15 min). In a `?cal=0` session there is
   no reset and they are lifetime averages — a falling `mbit_s` is then not evidence of live
@@ -424,14 +428,13 @@ exactly like a working one). Abort first, then start.
 `/update` returns **409** while a measurement runs — no need to check `/status` first, though
 `/status` still shows `fw_version`, `fw_sha` and `fw_slot` to confirm what is actually running.
 
-**USB is now only for:** the partition table, the bootloader, or a node whose recovery updater
-is gone. Those are the cases OTA cannot repair — the P4 has no
-`SOC_RECOVERY_BOOTLOADER_SUPPORTED`. Installing the updater on a fresh board:
-`.\build.ps1 -C ota_firmware -p COM6 erase-flash` then `... -p COM6 flash`.
+**USB is only for:** a fresh board (bootloader + partition table + factory updater), or a node
+whose recovery updater is gone. OTA cannot repair those. Example (replace COMx after listing ports):
+`.\build.ps1 -C ota_firmware -p COMx erase-flash` then `... -p COMx flash`.
+**COM ports are not stable** — never trust a number written in a table; list ports first.
 
 | Action                  | VS Code shortcut |
 |-------------------------|------------------|
-| Build + Flash + Monitor | F3               |
 | Build only              | Ctrl+Shift+B     |
 | Menuconfig              | Ctrl+E G         |
 

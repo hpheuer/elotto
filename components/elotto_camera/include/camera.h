@@ -76,10 +76,6 @@ bool camera_stats_settled(void);
 bool camera_set_exposure(uint32_t exposure, uint32_t gain);
 void camera_get_exposure(uint32_t *exposure, uint32_t *gain);
 
-// The XOR fold is a *processing* parameter, so calibration may choose it too:
-// it halves the bit rate to square away the raw LSB bias, so a setting whose
-// raw bias already passes is worth twice the stream. Kconfig sets the default.
-void camera_set_xor_fold(bool on);
 bool camera_get_xor_fold(void);
 
 /* ── The sweep (docs/PLAN.md Task 1 §1.4) ──────────────────────────────────

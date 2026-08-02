@@ -643,7 +643,6 @@ void camera_get_exposure(uint32_t *exposure, uint32_t *gain)
     if (gain)     *gain     = ((g0 & 0x03) << 8) | (g1 & 0xFF);
 }
 
-void camera_set_xor_fold(bool on) { s_xor_fold = on; }
 bool camera_get_xor_fold(void)    { return s_xor_fold; }
 
 /* ── The sweep (PLAN.md Task 1) ────────────────────────────────────────────
@@ -846,9 +845,7 @@ bool camera_calibrate(int budget_ms, bool (*abort_cb)(void), camera_cal_t *out)
      * across ten minutes is dominated by exactly that drift.
      *
      * So a 3 s window cannot certify fold-off; it can only get lucky. The fold
-     * squares the bias away and is left permanently on, as Kconfig sets it.
-     * camera_set_xor_fold() stays for deliberate experiments; calibration no
-     * longer touches it. */
+     * squares the bias away and is left permanently on, as Kconfig sets it. */
     out->nsteps = n;
 
     /* Selection: only gated candidates are eligible, LOWEST |bias-0.5| wins.
@@ -874,9 +871,8 @@ bool camera_calibrate(int budget_ms, bool (*abort_cb)(void), camera_cal_t *out)
      *
      * ── SIGMA MARGIN (added 2026-07-27, PLAN.md §1.17) ────────────────────
      * Bias alone is not enough, because bias is NOT the property that hurts.
-     * studentize() removes each loop's offset exactly, so a bias that survives
-     * calibration is largely corrected downstream; an over-dispersed node is
-     * not corrected — it just costs SNR, and it is what drives loop_sigma.
+     * A bias that survives calibration directly degrades the measurement, and
+     * an over-dispersed node costs SNR and drives loop_sigma.
      *
      * Measured, over a 200-loop session: node .145 sat on exposure 32 in 91 of
      * 127 logged loops and produced every sigma excursion there (per-loop sigma

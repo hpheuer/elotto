@@ -73,8 +73,8 @@
  * source in a starved regime trades physics for cosmetics — that regime is
  * where PLAN_4NODE's open item 3 lives.
  *
- * v3: one window (~3.4 s) and one gap (SCORE_GAP_MS) for every phase, so the
- * fixed-length run_gap() is gone — every caller passes the length. */
+ * v3: one window (~5 s) and one gap (SCORE_GAP_MS = 2 s) for every phase, so
+ * the fixed-length run_gap() is gone — every caller passes the length. */
 void run_gap_ms(int ms)
 {
     if (ms < 0) ms = 0;

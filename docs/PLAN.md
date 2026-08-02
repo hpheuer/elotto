@@ -473,3 +473,31 @@ with the first session on it — the ladder is the record of what the new optics
 **Deferred by the user — do not start unasked:** the attended-vs-unattended (focus) comparison.
 **Dropped by decision — do not re-propose:** node-drop test, camera-fault/reboot path,
 camera-stall abort, restoring the master to USB power.
+
+---
+
+### 1.16 Configurable measuring time + duty-cycle limit (2026-08-02…03)
+
+**Decision:** one continuous attention window per Focus item (scoring, baseline, measurement);
+length is operator-set, not a compile-time constant. Default **5 s**, intentional blank **~40 %**
+of that (5 → 2 s, 7 → ~3 s). UI label: **Measuring Time (s)** · per Focus item. API:
+`POST /start?run=<s>&gap=<s>`.
+
+**Why not arbitrary length:** wall time is segment-count × instantaneous camera rate. Rate falls
+when the measurement task starves the extraction task (duty-cycle cliff). Longer segment counts
+are **non-linear** in wall ms — a linear “5× for 5 s” overshot to ~7.5 s and ~79 % duty. The
+practical limit is therefore **not RAM**; it is “does `focus_win_ms` stay near the request with
+zero stalls?”
+
+**Live cal (4-node array, `cal=0`):**
+
+| request | intentional gap | mean `focus_win_ms` | measured gap | stalls / faults | nodes |
+|---|---|---|---|---|---|
+| 5 s (66000 segs, ref) | 2 s | **~4680 ms** | ~3.7 s (blank + collect) | 0 | 4/4 |
+| 7 s (`?run=7&gap=3`) | 3 s | **~6400 ms** | ~6.2 s | 0 | 4/4 |
+| 78350 segs (failed linear 5 s) | 2 s | **~7535 ms** (collapsed rate) | ~2.0 s | 0 | 4/4 |
+
+Segment mapping uses `RUN_SEGS_REF=66000` ↔ `RUN_MS_REF=4680` in `sensor.h`. Re-check
+`focus_win_ms` after any camera/rate change. Top/Bottom tables show **numeric p** (erfc), not
+n.s. buckets. Normal firmware delivery is **OTA only** (`build.ps1` docs no longer advertise COM
+flash as the workflow).

@@ -26,11 +26,9 @@ ElottoStatus g_status = { .state = ELOTTO_IDLE };
  * Running sums instead, two scopes:
  *  - the BLOCK (between two sweep+baseline insertions) feeds the per-block σ,
  *    the /loops row and the drift regression;
- *  - the PASS (all items so far) feeds pass_mean/pass_sigma, the inputs of the
- *    UI's display-side studentization checkbox. */
+ * No cross-item accumulator changes a measured value. */
 static double s_blk_sum, s_blk_sumsq;
 static int    s_blk_n;
-static double s_pass_sum, s_pass_sumsq;
 
 // Random measurement order for the pass (Fisher–Yates, once per session) —
 // decouples slow source drift from the combination enumeration, so drift
@@ -116,31 +114,18 @@ static void prng_seed(void)
 #define CAM_SEGMENTS   11950          // 2.4 Mbit/run ≈ 1000 ms (measured: 1027 ms
                                       // at the 350 ms gap, +2.7 % of target)
 
-/* Phase 0 (number scoring) runs THREE TIMES as long — one continuous ~3 s window
- * per candidate number instead of the ~1 s the measurement phase uses (user
- * decision, 2026-07-30).
- *
- * Why longer at all: the observer is meant to hold one number in attention, and
- * a 1 s presentation is barely time to arrive at it. Why one long run rather
- * than three short ones (which is what this replaces): repeating a target back
- * to back means the second and third windows have no onset, and onset is the
- * payload — the operator asked specifically to avoid an immediately repeated
- * target. Statistically the two are the SAME thing: one 3 s run is
- * Σdeviations/√(3N), which is exactly the Stouffer combination of three 1 s
- * runs. Nothing is gained or lost in the arithmetic; what changes is that the
- * attention window is continuous.
- *
- * ⚠ THE GAP HAS TO GROW WITH IT — see SCORE_GAP_MS in focus.h. Duty cycle, not
- * window length, is what starves the extraction task, and 3 s against the
- * ordinary 350 ms blank would be 89.6 % duty, well past the ~75 % this rig is
- * tuned to and into the regime where the achievable window stretches instead of
- * obeying the count.
- *
- * ⚠ 3 s is a TARGET, not a setting. The count→milliseconds conversion is
- * empirical and has moved before (open item 4), so this is 3× the measurement
- * count as a starting point: read the SCORING window from focus_win_ms in
- * /status — focus.c accumulates it separately per phase — and trim here. */
-#define SCORE_SEGMENTS (CAM_SEGMENTS * 3)   // ≈ 3000 ms, verify against focus_win_ms
+/* Segment count for a requested wall window. Uses the 2026-08-02 live cal
+ * (66000 segs ↔ 4680 ms). Longer requests may stretch past the target: the
+ * camera rate falls under sustained load (duty-cycle cliff) — that stretch IS
+ * the limit the operator is probing with the ?run= field. */
+static int segs_from_run_ms(int run_ms)
+{
+    if (run_ms < 100) run_ms = 100;
+    long long n = ((long long)run_ms * RUN_SEGS_REF + RUN_MS_REF / 2) / RUN_MS_REF;
+    if (n < 500) n = 500;
+    if (n > 200000) n = 200000;   /* slave SEG_MAX */
+    return (int)n;
+}
 
 // Called once per session, after discovery, before any measurement.
 static void camera_source_begin(void)
@@ -162,13 +147,24 @@ static const char *p_label(double absZ)
 }
 
 /* Segments for one run. v3: ONE count for every phase — baseline, scoring and
- * the measurement pass all run SCORE_SEGMENTS (~3370 ms) behind SCORE_GAP_MS
- * (~1 s). The count still travels on the wire (`M<seg>`, `B<runs>,<seg>`) so a
- * slave cannot disagree about it; the slave accepts anything between its
- * SEG_MIN and SEG_MAX, so no slave change was needed. The baseline runs at
- * this length for the same-instrument rule: it estimates the offset of the
- * runs around it, so it has to BE one of those runs, down to duty cycle. */
-static int segments_for(void)         { return SCORE_SEGMENTS; }
+ * the measurement pass all use g_status.run_segments behind g_status.gap_ms.
+ * The count still travels on the wire (`M<seg>`, `B<runs>,<seg>`) so a slave
+ * cannot disagree about it. Baseline uses the same length for the
+ * same-instrument rule. Defaults are filled in on /start if unset. */
+static int segments_for(void)
+{
+    if (g_status.run_segments <= 0)
+        g_status.run_segments = segs_from_run_ms(
+            g_status.run_target_ms > 0 ? g_status.run_target_ms
+                                       : RUN_S_DEFAULT * 1000);
+    return g_status.run_segments;
+}
+
+static int gap_for(void)
+{
+    if (g_status.gap_ms <= 0) return SCORE_GAP_MS;
+    return g_status.gap_ms;
+}
 
 /* One run, via the shared primitive in components/elotto_gcp — the same object
  * code the slaves run, so no node can compute z differently from another.
@@ -271,24 +267,9 @@ static void score_and_build_pool(int max_val, int pool_size, uint8_t *pool,
     for (int i = 0; i < n_keep; i++)
         if (keep[i] >= 1 && keep[i] <= max_val) skip[keep[i]] = true;
 
-    /* ONE run per candidate number, ~3 s long (SCORE_SEGMENTS), in a fresh
-     * random order — every number exactly once, never twice in a row.
-     *
-     * This is the third form this phase has taken, and the reasoning is worth
-     * keeping because two of them were rejected on the same grounds:
-     *   - 5 short reps in place (until 2026-07-25) — the display froze for ~6.9 s
-     *     and only the first window had an onset.
-     *   - 1 short run (2026-07-25 → 2026-07-30) — every window a genuine onset,
-     *     but ~1 s is barely time for the observer to arrive at the number.
-     *   - 3 short reps in place (briefly, 2026-07-30) — bought the SE back and
-     *     immediately reintroduced the repeated-target problem.
-     *   - ONE LONG run (now) — a single continuous ~3 s attention window per
-     *     number, and still exactly one onset per number.
-     *
-     * The last two are arithmetically IDENTICAL: one 3 s run is Σdev/√(3N),
-     * which is the Stouffer combination of three 1 s runs. Per-number SE is
-     * 1/√(k·3) ≈ 0.29 at four nodes either way. The only difference is what the
-     * observer experiences, which is the whole point of the phase.
+    /* ONE run per candidate number (g_status.run_segments), in a fresh
+     * random order — every number exactly once, never twice in a row (onset
+     * is the payload; no back-to-back reps of the same target).
      *
      * fast_rng() deliberately, not the camera: measurement order is
      * administrative randomness, not measured data, and must not spend
@@ -317,19 +298,12 @@ static void score_and_build_pool(int max_val, int pool_size, uint8_t *pool,
         int k = order[idx];
         // On screen before the run starts and until it ends — display and
         // bits cover the same interval, or the panel is decoration. ONE window
-        // per number, ~3 s long (SCORE_SEGMENTS): the number is held, not
-        // flashed three times, so every appearance is a genuine onset.
+        // per number (session run_segments): genuine onset, held once.
         focus_show_number(k, euro_pool);
         scores[k] = score_one_run();
         g_status.scoring_done++;
-        // Scoring never updated the clock, so elapsed_ms (and with it the ETA)
-        // froze for the whole phase. That was survivable when scoring was a
-        // preamble; Phase 5 makes it attended screen time with a pause button,
-        // so the clock has to run here too.
         g_status.elapsed_ms = elapsed_ms_now();
-        // SCORE_GAP_MS, not RUN_GAP_MS: this phase's run is ~3× longer, and it
-        // is the duty CYCLE that starves the extraction task.
-        run_gap_ms(SCORE_GAP_MS);
+        run_gap_ms(gap_for());
     }
     /* The kept numbers take the first slots, carrying the score that chose them
      * (they were not re-measured, so there is no new one to carry). */
@@ -553,7 +527,7 @@ static double combine_z(double z_master, int *n_used)
  * common to every number and scoring only ranks them. */
 static double score_one_run(void)
 {
-    int nseg = segments_for();               // ~3.4 s, same as every other phase
+    int nseg = segments_for();               // session window, all phases
     slave_trigger(nseg);
     double zm = 0.0;
     bool   ok = gcp_zscore_ok(nseg, &zm);
@@ -587,11 +561,9 @@ static void compute_significance(int comparisons)
 }
 
 /* Publish one just-measured item (v3): fold it into the Top-N / Bottom-N
- * lists, update the pass-wide mean/σ that the UI's studentize checkbox reads,
- * and refresh the significance line with comparisons = items measured so far.
- * Stored z is RAW and stays raw — studentization is a display transform now,
- * and it is monotonic, so the ranking these lists hold is the same either way.
- * Runs after EVERY item (O(TOP_N)), so /status always shows the live ranking. */
+ * lists and refresh the significance line with comparisons = items measured so
+ * far. Stored z is RAW and remains independent of every other item. Runs after
+ * EVERY item (O(TOP_N)), so /status always shows the live ranking. */
 static void publish_result(const RunResult *r, int items_done)
 {
     int tn = g_status.result_count;
@@ -613,15 +585,6 @@ static void publish_result(const RunResult *r, int items_done)
         }
         g_status.low[p] = *r;
         g_status.low_count = ln;
-    }
-
-    s_pass_sum   += r->z_score;
-    s_pass_sumsq += r->z_score * r->z_score;
-    if (items_done >= 4) {
-        double m = s_pass_sum / items_done;
-        double v = (s_pass_sumsq - items_done * m * m) / (items_done - 1);
-        g_status.pass_mean  = m;
-        g_status.pass_sigma = v > 0.0 ? sqrt(v) : 0.0;
     }
 
     compute_significance(items_done);
@@ -902,7 +865,7 @@ static bool baseline_run(void)
             node_camera_failed(0, "stalled during baseline");
             break;
         }
-        run_gap_ms(SCORE_GAP_MS);   // same duty cycle as the runs around it
+        run_gap_ms(gap_for());      // same duty cycle as the runs around it
         g_status.baseline_done = i + 1;
         g_status.elapsed_ms    = elapsed_ms_now();
     }
@@ -915,7 +878,7 @@ static bool baseline_run(void)
 /* ── The session (v3.0, PLAN.md §2): ONE pass, no loops ────────────────
  *
  * calibrate + baseline → observer gate → Phase 0 scoring → pool confirm →
- * every combination in the confirmed pool measured EXACTLY ONCE, ~3.4 s per
+ * every combination in the confirmed pool measured EXACTLY ONCE, ~5 s per
  * item, in one Fisher–Yates random order. Every cal_interval_ms (default
  * 15 min) the pass parks for a sweep + baseline insertion; that boundary
  * closes a block, the unit the drift/pairwise diagnostics run on.
@@ -940,8 +903,6 @@ void elotto_task(void *pvParam)
     g_status.p_corrected     = 1.0;
     g_status.comparisons     = 0;
     g_status.loop_sigma      = 0.0;
-    g_status.pass_mean       = 0.0;
-    g_status.pass_sigma      = 0.0;
     g_status.loops_done      = 0;
     g_status.loop_hist_n     = 0;
     g_status.drift_slope     = 0.0;
@@ -958,7 +919,6 @@ void elotto_task(void *pvParam)
     calibrate_forget();
     memset(&s_drift, 0, sizeof(s_drift));
     s_blk_sum = s_blk_sumsq = 0.0;  s_blk_n = 0;
-    s_pass_sum = s_pass_sumsq = 0.0;
     // focus_mode is set by /start and NOT reset here — it is the session's tag.
     focus_reset();
     // Block history lives in PSRAM: results[] already fills internal RAM. Kept
@@ -1158,7 +1118,7 @@ void elotto_task(void *pvParam)
         g_status.runs_completed = j + 1;  // AFTER the row is complete: readers
                                           // (/status, /results.csv) trust the prefix
         g_status.elapsed_ms     = elapsed_ms_now();
-        run_gap_ms(SCORE_GAP_MS);
+        run_gap_ms(gap_for());
     }
     close_block(block);                   // the pass's final block
     goto finalize;
