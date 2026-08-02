@@ -1,8 +1,9 @@
 # idf.py wrapper — sets the ESP-IDF environment and forwards all arguments.
 #
 #   .\build.ps1 build
-#   .\build.ps1 -p COM4 flash
-#   .\build.ps1 -C ota_firmware -p COM6 flash      # -C selects another project
+#   .\build.ps1 -C ota_firmware build      # -C selects another project
+#
+# Firmware is delivered over OTA; do not flash over serial from this script.
 #
 # WHY THIS EXISTS: env vars do not survive between shell invocations, so every
 # call would otherwise have to re-export IDF_PATH, the venv and the tool paths.

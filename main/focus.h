@@ -27,22 +27,12 @@
 
 #include "sensor.h"
 
-/* THE dark time after every run — baseline, scoring and measurement alike
- * (v3: all three phases run the same ~3.4 s window), and independently of
- * focus_mode, so a matched no-focus control differs in the display and
- * nothing else.
- *
- * ~1000 ms because what starves the camera extraction task is the DUTY
- * CYCLE, not the window length: a 3.4 s run behind the old 350 ms blank
- * would sit at ~90 % duty — past the cliff, where the achievable window
- * stretches instead of obeying the segment count. 1000 ms holds the cycle at
- * ~77 % (measured: window 3370 ms, gap 1010 ms, duty 76.9 %, zero stalls),
- * the same ratio the old 1 s / 350 ms cycle was tuned to. It also does the
- * attention job the old 350 ms did with margin: conscious noticing smears
- * over ~100–300 ms, and a 1 s blank cleanly separates target N from N+1. */
-#define SCORE_GAP_MS 1000
+/* Default intentional blank when a session does not override ?gap=. Live
+ * sessions use g_status.gap_ms (set on /start); this is only the compile-time
+ * default matching RUN_S_DEFAULT × 0.4. */
+#define SCORE_GAP_MS 2000
 
-// The blank between runs, `ms` long (every caller passes SCORE_GAP_MS now).
+// The blank between runs, `ms` long (callers pass g_status.gap_ms).
 void run_gap_ms(int ms);
 
 /* ── Session clock ─────────────────────────────────────────────────── */

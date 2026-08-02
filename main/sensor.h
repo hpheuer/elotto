@@ -9,7 +9,7 @@
  * internal RAM, which is full — a few KB more of .bss fails the LINK, not the
  * run. Both pools below fit under it by construction. */
 #define NUM_RUNS      8000
-#define TOP_N           10
+#define TOP_N            5
 #define POOL_MAIN_49    15   // C(15,6) = 5005 combinations
 #define POOL_MAIN_50    12   // C(12,5) =  792 combinations
 #define POOL_EURO_12     5   // C(5,2)  =   10 combinations
@@ -49,6 +49,21 @@
  * zero control that still matters is "no re-tuning mid-pass". */
 #define CAL_INTERVAL_DEFAULT_MS  900000
 #define CAL_INTERVAL_MAX_MS     3600000
+/* Per-run window (one continuous attention window per focus element) and the
+ * intentional blank after it. Both are session parameters on /start (?run= &
+ * ?gap=), defaults match the 2026-08-02 live cal. Gap defaults to 40 % of the
+ * window (5 s → 2 s, 7 s → 2.8 s ≈ 3 s) so duty stays ~70 % of the intentional
+ * cycle; measured focus_gap_ms is larger because it also includes slave collect.
+ * Segment count is derived from run_s via the segs↔ms cal — wall time can stretch
+ * if the camera rate collapses at long windows (that IS the limit). */
+#define RUN_S_DEFAULT            5
+#define RUN_S_MIN                1
+#define RUN_S_MAX               15
+#define GAP_S_MIN              0.5
+#define GAP_S_MAX               10
+/* Live 4-node cal 2026-08-02: 66000 segs → mean focus_win_ms 4680. */
+#define RUN_SEGS_REF         66000
+#define RUN_MS_REF            4680
 
 /* Diagnostic thresholds that appear in more than one place. */
 #define PAIR_FLAG_T            3.0   // |r|·√n above this = nodes not independent
@@ -96,12 +111,8 @@ bool elotto_pool_reply(PoolAction act,
 /* v3.0: NO ranking modes any more (user decision, 2026-08-02, PLAN.md §2).
  * With every combination measured exactly once there is nothing for the four
  * old rules to differ ABOUT — each item's published Z is its own single raw
- * measurement, stored in results[] untouched: no studentize rewrite, no
- * baseline subtraction, no cross-loop accumulation. Studentization survives
- * only as a DISPLAY transform: /status publishes pass_mean/pass_sigma over the
- * items measured so far and the UI checkbox applies (z−m)/σ client-side, so
- * both views of the same stored data exist at once and the ranking (which is
- * monotonic under that transform) is identical either way. */
+ * measurement, stored in results[] untouched: no rewrite, no baseline
+ * subtraction and no cross-item normalization. */
 
 /* ENTROPY IS PHOTONS, AND ONLY PHOTONS (user decision, 2026-07-26).
  *
@@ -191,12 +202,12 @@ typedef struct {
 // needs — raw offsets and σ per node, plus camera health at that moment — and
 // /loops serves the whole table, one row per block. With raw z published,
 // slow drift is the one thing that widens the extremes, so this table and the
-// drift regression on it matter MORE than they did under studentization.
+// drift regression on it matter because raw values remain uncorrected.
 #define LOOP_HIST 128            // blocks kept in the table; the drift regression
                                  // runs on running sums and is exact beyond it
 typedef struct {
     float    base;         // master baseline_mean of this loop = raw per-run z offset
-    float    mean;         // combined per-run z mean over the loop (pre-studentize)
+    float    mean;         // combined per-run raw z mean over the loop
     float    sigma;        // combined per-run σ (== loop_sigma), ideal 1.0
     uint8_t  nodes;        // nodes contributing to this loop (master included)
     // Per node, index 0 = master. A node that did not take part leaves zeros,
@@ -208,7 +219,7 @@ typedef struct {
     uint32_t t_s;          // elapsed seconds at loop end
     // Camera settings this loop was MEASURED AT (PLAN.md Task 1 §1.5.2, and
     // mandatory there rather than optional). Per-loop re-tuning is what tracks
-    // thermal drift, and studentize() makes it safe for the statistics — but a
+    // thermal drift, and recording the setting keeps the statistics auditable — but a
     // per-loop change nobody logged is indistinguishable from drift in the data,
     // so the setting travels with the loop it produced.
     uint32_t cam_exp[MAX_NODES];    // 0 = not calibrated this loop
@@ -245,11 +256,6 @@ typedef struct {
     double           p_corrected;         // Bonferroni-corrected two-sided p of best_z
     int              comparisons;         // == items measured so far (one draw per item)
     double           loop_sigma;          // per-run σ of the LAST CLOSED BLOCK (1.0 = ideal)
-    // Whole-pass mean and σ over every item measured so far — the display-side
-    // studentization inputs (v3). The UI checkbox computes (z − pass_mean) /
-    // pass_sigma from these; the stored z stays raw either way.
-    double           pass_mean;
-    double           pass_sigma;
     int              loops_done;          // BLOCKS closed and folded into the drift stats
     int              loop_hist_n;         // entries valid in loop_hist[] (<= LOOP_HIST)
     double           drift_slope;         // z-offset change per block (linear regression on
@@ -294,6 +300,9 @@ typedef struct {
     float            focus_gap_ms;        // measured mean dark gap between runs —
                                           // the gate asks whether the ~200 ms was
                                           // free (existing overhead) or paid for
+    int              run_target_ms;       // requested window (from ?run=), for status
+    int              gap_ms;              // intentional blank between runs (?gap=)
+    int              run_segments;        // segment count derived for this session
     FocusState       focus;
     bool             slave_connected;     // at least one slave answered discovery
     int              node_count;          // nodes discovered, master included (>= 1)
