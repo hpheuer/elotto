@@ -634,6 +634,14 @@ static void pairs_add_run(const double *z, const bool *have)
         s_nacc[i].s  += z[i];
         s_nacc[i].ss += z[i] * z[i];
         s_nacc[i].n++;
+        /* Live session mean for the node table (Z / p columns). Online update
+         * so /status always has a number during a long block, not only after
+         * pairs_fold_loop closes it. */
+        {
+            NodeStatus *N = &g_status.nodes[i];
+            N->z_n++;
+            N->z_mean += (z[i] - N->z_mean) / (double)N->z_n;
+        }
         for (int j = i + 1; j < g_status.node_count; j++) {
             if (!have[j]) continue;
             PairAcc *p = &s_pair[i][j];

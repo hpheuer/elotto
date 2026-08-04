@@ -150,7 +150,7 @@ static const char HTML[] =
 "<div class='frow'>"
 "<label for='numRunS'>Measuring Time (s):</label>"
 "<span style='display:flex;align-items:center;gap:8px'>"
-"<input id='numRunS' class='fin' type='number' style='flex:1;min-width:0'"
+"<input id='numRunS' class='fin' type='number'"
 " value='" EL_STR(RUN_S_DEFAULT) "' min='" EL_STR(RUN_S_MIN) "'"
 " max='" EL_STR(RUN_S_MAX) "' step='0.5'>"
 "<span style='color:#8fae8f;font-size:.85em;white-space:nowrap'>per Focus item</span>"
@@ -772,12 +772,12 @@ static const char HTML[] =
 "if(c.mbit_s>0){nodeHealth[i]=nodeHealth[i]||{};nodeHealth[i].mbit=c.mbit_s;if(mb)mb.textContent=c.mbit_s.toFixed(2);}"
 "}).catch(function(){});})(d.nodes[i],i);}"
 "}"
-// Per-node row: camera sigma, rate, stalls and missed replies. The combined z
-// averages these differences away, so a node that quietly degraded is invisible
-// anywhere else.
+// Per-node row: session mean Z + p, camera sigma, rate, stalls, lost. The
+// combined z averages node differences away, so each arm has to be visible.
 "if(d.nodes&&d.nodes.length){"
 "var s3='<table style=\"width:100%;font-size:.82em;margin-top:6px\">'"
 "+'<tr style=\"color:#90ee90\"><th align=left>node</th>'"
+"+'<th align=left>Z</th><th align=left>p</th>'"
 "+'<th align=left>cam \\u03c3</th><th align=left>Mbit/s</th><th align=left>exp</th>'"
 "+'<th align=left>stalls</th>'"
 "+'<th align=left>lost</th></tr>';"
@@ -797,7 +797,14 @@ static const char HTML[] =
 // it; '!' marks a node that certified nothing and kept its previous setting.
 "var ex='\\u2013';"
 "if(N.cam_exp>0)ex=N.cam_exp+(N.cam_fold?'\\u2295':'')+(N.cam_cal?'':'!');"
+/* Z = session mean of this node's raw per-run z. p tests mean≠0 via
+   Stouffer: |mean|·√n against N(0,1) (each run z is already unit-normal). */
+"var zn=N.z_n||0,zm=(zn>0)?N.z:0;"
+"var zTxt=(zn>0)?zm.toFixed(4):'\\u2013';"
+"var pTxt=(zn>0)?pfmt(p2(zm*Math.sqrt(zn))):'\\u2013';"
 "s3+='<tr style=\"opacity:'+(N.ok?1:.55)+'\"><td>'+nm+st+'</td>'"
+"+'<td title=\"mean raw z over '+zn+' runs\">'+zTxt+'</td>'"
+"+'<td title=\"two-sided p of mean (Stouffer)\">'+pTxt+'</td>'"
 "+'<td id=\"nodeSig'+i+'\">'+(H.sigma>0?H.sigma.toFixed(3):(N.sigma>0?N.sigma.toFixed(3):'\\u2013'))+'</td>'"
 "+'<td id=\"nodeMbit'+i+'\">'+(H.mbit>0?H.mbit.toFixed(2):(N.cam_mbit>0?N.cam_mbit.toFixed(2):'\\u2013'))+'</td>'"
 "+'<td title=\"exposure chosen by this loop\\u2019s calibration\">'+ex+'</td>'"
@@ -1016,13 +1023,14 @@ static esp_err_t status_handler(httpd_req_t *req)
     for (int i = 0; i < g_status.node_count && i < MAX_NODES; i++) {
         const NodeStatus *N = &g_status.nodes[i];
         pos += snprintf(buf + pos, sizeof(buf) - pos,
-            "%s{\"id\":%d,\"ip\":\"%s\",\"ok\":%s,\"sigma\":%.4f,"
+            "%s{\"id\":%d,\"ip\":\"%s\",\"ok\":%s,"
+            "\"z\":%.4f,\"z_n\":%lu,\"sigma\":%.4f,"
             "\"lost\":%lu,\"cam_mbit\":%.3f,\"cam_stalls\":%lu,"
             "\"cam_fault\":%d,\"reboots\":%lu,"
             "\"cam_exp\":%lu,\"cam_gain\":%d,\"cam_fold\":%d,\"cam_cal\":%d,"
             "\"cam_bias\":%.6f,\"cam_cal_mbit\":%.3f}",
             i ? "," : "", i, i ? N->ip : "self", N->ok ? "true" : "false",
-            N->sigma,
+            N->z_mean, (unsigned long)N->z_n, N->sigma,
             (unsigned long)N->lost, N->cam_mbit, (unsigned long)N->cam_stalls,
             (int)N->cam_fault, (unsigned long)N->reboots,
             (unsigned long)N->cam_exp, (int)N->cam_gain, (int)N->cam_fold,
@@ -1295,20 +1303,9 @@ static esp_err_t start_handler(httpd_req_t *req)
         g_status.run_segments   = 0;   // filled below after parsing
         // No ?src= any more: the camera is the only source this firmware has
         // (sensor.h). A session that cannot run on photons does not run.
-        /* Per-loop camera calibration (PLAN.md Task 1). **10 s since 2026-07-30
-         * (user decision)**, down from 30 s.
-         *
-         * The budget is a CAP that is divided evenly over the 9 candidates, so
-         * this is not a 3× saving on a fixed measurement — it is 3× less DATA
-         * per rung: ~1.1 s per candidate instead of ~3.3 s. Each rung's bias and
-         * σ are therefore estimated from about a third of the bits, and the gate
-         * decisions get correspondingly noisier (the per-candidate bias SE was
-         * ~1.7e-4 at the old budget). Rungs near a gate boundary will flip
-         * between sweeps more often than they did — which is exactly the failure
-         * §1.17's σ-margin rule was added to contain.
-         * ?cal=0 turns it off — the matched control a calibrated session has to
-         * be compared against, and the only way to measure what the sweep costs.
-         * ?cal=<ms> restores any other budget without a reflash. */
+        /* Camera calibration sweep budget (PLAN.md Task 1). Default 5 s
+         * (user 2026-08-04), split over the exposure ladder. ?cal=0 disables;
+         * ?cal=<ms> overrides without a reflash. */
         g_status.cal_budget_ms  = CAL_BUDGET_DEFAULT_MS;
         // v3: the interval IS the block length — every cal_interval_ms the
         // pass parks for a sweep + baseline insertion and the boundary closes
