@@ -37,7 +37,7 @@
 #define BASELINE_MIN            10
 #define BASELINE_MAX          5000
 #define BASELINE_STEP           10
-#define CAL_BUDGET_DEFAULT_MS  5000      // exposure-sweep CAP, split over 9 rungs
+#define CAL_BUDGET_DEFAULT_MS 10000      // exposure-sweep CAP, split over 9 rungs
 #define CAL_BUDGET_MAX_MS   120000
 /* v3: the interval is the BLOCK length. Every cal_interval_ms the pass parks,
  * runs sweep + baseline together, and the boundary closes a block — the unit
