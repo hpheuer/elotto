@@ -1303,9 +1303,9 @@ static esp_err_t start_handler(httpd_req_t *req)
         g_status.run_segments   = 0;   // filled below after parsing
         // No ?src= any more: the camera is the only source this firmware has
         // (sensor.h). A session that cannot run on photons does not run.
-        /* Camera calibration sweep budget (PLAN.md Task 1). Default 5 s
-         * (user 2026-08-04), split over the exposure ladder. ?cal=0 disables;
-         * ?cal=<ms> overrides without a reflash. */
+        /* Camera calibration sweep budget (PLAN.md Task 1). Default 10 s,
+         * split over the exposure ladder. 5 s was too short in warm/long runs
+         * (no rung certified). ?cal=0 disables; ?cal=<ms> overrides. */
         g_status.cal_budget_ms  = CAL_BUDGET_DEFAULT_MS;
         // v3: the interval IS the block length — every cal_interval_ms the
         // pass parks for a sweep + baseline insertion and the boundary closes

@@ -364,7 +364,8 @@ node's `OK:<exp>,<gain>,<fold>,<bias>,<mbit_s>,<G|U>`. Each node keeps the setti
 **lowest |bias − 0.5| among candidates clearing the σ gate with margin** (see above); if none
 passes it keeps the one it had and reports `U`. The budget is a *cap*, not a target, so progress
 must never be estimated against it — at the old 30 s cap a sweep measured **~24 s**.
-⚠ **The default cap is 5 s since 2026-08-04 (user decision; was 10 s).** This is NOT a 3× saving on a fixed
+⚠ **The default cap is 10 s** (5 s was too short: long warm run 2026-08-05 left all
+nodes with cam_cal=0). This is NOT a 3× saving on a fixed
 measurement: the cap is divided evenly over the 9 candidates, so each rung is now scored on about
 a **third of the bits** (~1.1 s instead of ~3.3 s). Per-rung bias/σ are correspondingly noisier —
 the per-candidate bias SE was ~1.7e-4 at 30 s — so rungs sitting near a gate boundary will flip
