@@ -412,3 +412,24 @@ uint32_t fast_rng(void);
  * bias-vs-exposure CURVE, and a single chosen point cannot show whether bias
  * responded to exposure at all. Served by GET /calibrate. */
 const camera_cal_t *elotto_last_calibration(void);
+
+/* The `cap` measured items sitting CLOSEST TO THE PASS MEAN, i.e. the least
+ * remarkable measurements of the session — the third published group beside
+ * Top-N and Bottom-N. Writes up to `cap` entries to out[] (nearest first) and
+ * returns how many; *out_mean / *out_sigma receive the pass statistics the
+ * selection was made against (sample σ, df = n−1), or 0 when n < 2.
+ *
+ * ⚠ Nearest the MEAN, not nearest raw zero. Raw z carries the array's common
+ * offset — the 2026-08-05 pass ran at mean −1.82 — so |z_raw| ≈ 0 would select
+ * items about +1.8σ ABOVE the array's own centre: the opposite of neutral.
+ * Ordering by |z − m| is identical to ordering by the studentized |z − m|/σ,
+ * so σ only scales what is displayed, never which items are chosen.
+ *
+ * Computed on demand from results[0..runs_completed) rather than maintained
+ * incrementally: the mean moves as the pass proceeds, so an item admitted or
+ * discarded against an early mean would be judged on a number that no longer
+ * exists. A full scan is exact at any moment, and at O(n) per call on the HTTP
+ * task it never touches the measurement path. Safe against the running session
+ * for the same reason /results.csv is: runs_completed is bumped only after a
+ * row is complete, so the prefix a reader sees is never half-written. */
+int results_near_mean(RunResult *out, int cap, double *out_mean, double *out_sigma);

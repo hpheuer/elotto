@@ -377,11 +377,15 @@ counter, no `Runs` cap.** The progress bar's 100 % is the full combination count
 **items counter** (`items_done / full_combos`) replaces the loop badge. The two attended gates
 are **kept** — they are the protocol, not the ranking.
 
-- **Window/gap: `SCORE_SEGMENTS` (~3370 ms) and `SCORE_GAP_MS` (1010 ms) for Phase 2 too.**
-  One cycle ≈ 4.38 s. The duty-cycle reasoning of §1.20 already covers this shape; the segment
-  count travels on the wire, so this is a master-only change — no slave reflash.
-- **Session length**: Eurojackpot 7920 items ≈ 9.6 h measuring (~10.2 h with insertions);
-  6-of-49 5005 items ≈ 6.1 h (~6.5 h). **Attended by assumption** (user, 2026-08-02): the
+- **Window/gap: the same one every phase uses.** ⚠ Superseded by §1.16 three weeks later: the
+  fixed `SCORE_SEGMENTS` (~3370 ms) / `SCORE_GAP_MS` (1010 ms) pair became the operator-set
+  `?run=` (default 5 s) and `?gap=` (default 40 % of run), so one cycle is ~7 s at the default,
+  not 4.38 s. The duty-cycle reasoning of §1.20 still covers the shape; the segment count travels
+  on the wire, so this stayed a master-only change — no slave reflash.
+- **Session length**: at the ORIGINAL 4.38 s cycle, Eurojackpot 7920 items ≈ 9.6 h measuring
+  (~10.2 h with insertions); 6-of-49 5005 items ≈ 6.1 h (~6.5 h). ⚠ Scale these by the configured
+  cycle — measured live, a 6-of-49 pass at the 5 s default runs **~14 h** (2026-08-05).
+  **Attended by assumption** (user, 2026-08-02): the
   observer peeks, lets the rest run subconscious, and uses **Pause** (clock stops, excluded
   from `elapsed_ms` as today) or **Abort** (partial results published from the measured
   prefix — `compact_partial()` already does this) at their own judgment. No time budget.
@@ -410,14 +414,21 @@ at measurement length, 3370 + 1010 ms each, plus the sweep).
   `RANK_*`, the combobox, `s_zsum`/`s_zmin`, `accum_reset()`, `publish_cumulative()`,
   `publish_extreme()`, `absorb_loop()`, Stouffer — all deleted. With one measurement per item
   the four rules collapse to one: the item's own z.
-- **Studentize is a DISPLAY toggle, default OFF** (checkbox): recompute (z − m)/σ over all
-  items measured so far at publish time, never rewriting stored z. Flippable mid- and
-  post-session — both views of the same data, which is what "I will test it" needs.
-  `loop_sigma`-equivalent (per-block σ) and per-block mean stay published; without them the
-  corrected p is uninterpretable after the fact.
-- **Results view: Top-10 / Bottom-10 by z** (the existing `top[]`/`low[]`, displayed again)
-  plus the Bonferroni line with `comparisons = items_done`. **Coverage and the most-frequent
+- ⚠ **The studentize checkbox specified here was NEVER BUILT** (noticed 2026-08-08). What exists
+  instead: `/status` publishes `pass_mean` and `pass_sigma`, and the nearest-zero table shows a
+  **`Z*` column** — (z − m)/σ, recomputed at publish time, never rewriting stored z — and takes
+  its p from that value. The CSV summary carries the same `z_std`. So both views are still
+  derivable from either file forever; only the global flip-a-checkbox UI is absent. Do not cite
+  the checkbox as a feature, and decide it on its merits before building it.
+- **Results view: Top-5, Bottom-5 and Nearest-zero-5** (`top[]`/`low[]`/`near[]`) plus the
+  Bonferroni line with `comparisons = items_done`. **Coverage and the most-frequent
   row are deleted** (`publish_coverage()`, `cover[]`/`cover_low[]`, `fm`/`fe` histograms).
+  ⚠ **Nearest-zero is nearest the PASS MEAN, not nearest raw 0** (2026-08-08, user decision):
+  raw z carries the array's common offset — the 08-05 pass ran at mean −1.82 — so |z_raw| ≈ 0
+  would select items ~1.8 σ *above* the array's own centre. `results_near_mean()` picks by
+  |z − mean|, which orders identically to |z − mean|/σ, and recomputes on demand rather than
+  accumulating: the mean moves as the pass proceeds, so an item admitted against an early mean
+  would be judged against a number that no longer exists.
   Per-block `drift_t` gets surfaced on the results screen, not only in `/loops`: with raw z,
   slow drift is the one thing that widens the extremes, and random order only stops it
   *attaching* to particular numbers.
@@ -428,13 +439,26 @@ at measurement length, 3370 + 1010 ms each, plus the sweep).
 
 ### 2.4 Export and API
 
-- **`GET /results.csv`** on the master: streams every item measured so far — header comment
-  (mode, focus, studentize-view, items_done/total, fw), then
-  `idx,n1..n6,e1,e2,z_raw,block,order`. Live mid-session, still there after an abort.
+- **`GET /results.csv?all=1`** on the master: streams every item measured so far — header comment
+  (mode, focus, items_done/total, blocks, `pass_mean`, `pass_sigma`), then
+  `order;item;n1..n6;e1;e2;z_raw;block`. Live mid-session, still there after an abort.
   ⚠ RAM only: a master reboot loses it, so pull it periodically during a long session.
+- **Bare `GET /results.csv` is the 15-row summary** (2026-08-08, user decision): the three
+  published groups — `high` / `low` / `zero`, five each — as
+  `group;rank;item;n1..n6;e1;e2;z_raw;z_std;block`. The Save button on the page fetches this;
+  `?all=1` sits below it as a plain link, deliberately. ⚠ **The summary is not the record.**
+  Fifteen rows cannot be re-derived into a pass and no item is ever re-measured, so the archival
+  pull stays the operator's explicit act rather than a side effect of clicking Save.
+- **German CSV throughout**: `;` separator AND `,` decimal. Both halves are the decision — with a
+  decimal point in the cell, German Excel reads the whole column as text, so the separator alone
+  would have fixed nothing.
 - **Removed params answer 400**, not silence: `?loops=`, `?rank=`, `?runs=` — the
   ignored-parameter-that-looks-like-a-working-one bug class is already on the record.
-  `?mode=`, `?baseline=`, `?cal=`, `?calint=`, `?focus=`, `?confirm=` stay.
+  `?mode=`, `?baseline=`, `?cal=`, `?calint=`, `?focus=`, `?run=`, `?gap=`, `?confirm=` stay.
+  ⚠ **`?mode=` is `1` for 6-of-49 and ANYTHING ELSE for Eurojackpot** — it tests `val[0]=='1'`.
+  So `?mode=649` silently starts a Eurojackpot session (walked into 2026-08-08). That is the
+  same bug class this bullet is about; it is documented rather than fixed only because the UI
+  sends the right value and changing the encoding would break a curl script written against it.
 - The slot→combo stride mapping (`nth_combination` spreading a capped run) goes with the cap:
   uncapped, slot i **is** combination i.
 

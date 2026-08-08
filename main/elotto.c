@@ -297,13 +297,24 @@ static const char HTML[] =
 "<table><thead id='resHead'></thead>"
 "<tbody id='resBody'></tbody></table>"
 "<div style='text-align:center;margin-top:14px'>"
-"<button id='btnSave' class='btn' onclick='doSave()' style='display:none;background:#2e7d32;color:#fff;padding:10px 28px'>&#128190; Save CSV (all items)</button>"
+"<button id='btnSave' class='btn' onclick='doSave()' style='display:none;background:#2e7d32;color:#fff;padding:10px 28px'>&#128190; Save CSV (the 15 rows)</button>"
+// The archival pull, deliberately a plain link and not a second big button:
+// the summary cannot be re-derived into a pass, so the full file has to stay
+// reachable — but reaching for it is the operator's explicit act.
+"<div id='saveAll' style='display:none;margin-top:8px;font-size:.8em'>"
+"<a href='/results.csv?all=1' style='color:#90ee90'>full pass, every item &#8594; /results.csv?all=1</a></div>"
 "</div>"
 "</div>"
 "<div class='card' id='resCardLow' style='display:none'>"
 "<h3 id='resTitleLow' style='color:#e8a0a0;margin-bottom:4px'></h3>"
 "<table><thead id='resHeadLow'></thead>"
 "<tbody id='resBodyLow'></tbody></table>"
+"</div>"
+"<div class='card' id='resCardZero' style='display:none'>"
+"<h3 id='resTitleZero' style='color:#c0c0a0;margin-bottom:4px'></h3>"
+"<div id='zeroNote' style='color:#a0c0a0;font-size:.78em;margin-bottom:4px'></div>"
+"<table><thead id='resHeadZero'></thead>"
+"<tbody id='resBodyZero'></tbody></table>"
 "</div>"
 "</div>"
 "<script>"
@@ -426,8 +437,10 @@ static const char HTML[] =
 "pausePendUntil=0;setPauseBtn(false);"
 "if(foc)startFocus();else stopFocus();"
 "document.getElementById('btnSave').style.display='none';"
+"document.getElementById('saveAll').style.display='none';"
 "document.getElementById('resCard').style.display='none';"
 "document.getElementById('resCardLow').style.display='none';"
+"document.getElementById('resCardZero').style.display='none';"
 "document.getElementById('itemBadge').style.display='none';"
 "document.getElementById('msg').textContent='';"
 "setMode(mode);"
@@ -847,7 +860,9 @@ static const char HTML[] =
 "document.getElementById('resBody').innerHTML="
 "'<tr><td style=\"color:#d0b0b0;padding:10px\">No items measured yet.</td></tr>';"
 "document.getElementById('btnSave').style.display='none';"
+"document.getElementById('saveAll').style.display='none';"
 "document.getElementById('resCardLow').style.display='none';"
+"document.getElementById('resCardZero').style.display='none';"
 "return;}"
 "lastDisplayed=d.top;"
 "document.getElementById('resTitle').innerHTML="
@@ -855,11 +870,17 @@ static const char HTML[] =
 "+(isEuro?' \\u2014 Eurojackpot':' \\u2014 6-of-49')+' (highest z)';"
 "renderRunTable('resHead','resBody',d.top,isEuro,d);"
 "document.getElementById('btnSave').style.display='';"
+"document.getElementById('saveAll').style.display='';"
 "showLow(d);"
+"showNear(d);"
 "}"
-"function renderRunTable(headId,bodyId,res,isEuro,d){"
+// `st` = {m,s}: render the studentized column too, and take p from THAT value.
+// Only the near-zero table passes it — for the extremes the raw z is the
+// published quantity, and adding a second p to those rows invites reading
+// whichever of the two looks better.
+"function renderRunTable(headId,bodyId,res,isEuro,d,st){"
 "document.getElementById(headId).innerHTML="
-"'<tr><th>#</th><th>Item</th><th>Z</th><th>p</th><th>Numbers</th>'"
+"'<tr><th>#</th><th>Item</th><th>Z</th>'+(st?'<th>Z*</th>':'')+'<th>p</th><th>Numbers</th>'"
 "+(isEuro?'<th>Bonus</th>':'')+'</tr>';"
 "var tb=document.getElementById(bodyId);tb.innerHTML='';"
 "for(var i=0;i<res.length;i++){"
@@ -870,9 +891,10 @@ static const char HTML[] =
 "if(isEuro&&r.euro&&r.euro.length)"
 "for(var j=0;j<r.euro.length;j++)"
 "estr+='<span class=\"num euro\">'+r.euro[j]+'</span>';"
-"var z=r.z;"
+"var z=r.z,zs=(st&&st.s>0)?(z-st.m)/st.s:0;"
 "tb.innerHTML+='<tr><td>'+(i+1)+'</td><td>'+r.run+'</td>"
-"<td>'+z.toFixed(4)+'</td><td>'+pfmt(p2(z))+'</td><td>'+nums+'</td>"
+"<td>'+z.toFixed(4)+'</td>'+(st?'<td>'+zs.toFixed(3)+'</td>':'')+'"
+"<td>'+pfmt(p2(st?zs:z))+'</td><td>'+nums+'</td>"
 "'+(isEuro?'<td>'+estr+'</td>':'')+'</tr>';"
 "}"
 "}"
@@ -884,9 +906,27 @@ static const char HTML[] =
 "renderRunTable('resHeadLow','resBodyLow',res,isEuro,d);"
 "document.getElementById('resCardLow').style.display='block';"
 "}"
-/* The export moved to the device (v3): /results.csv streams EVERY measured
-   item with its raw z — not just the ten rows on screen — and works
-   mid-session too. The browser only navigates to it. */
+// The third group: the items that did the LEAST. Nearest the pass mean, not
+// nearest raw zero -- raw z carries the array's common offset, so |z| ~ 0 would
+// pick items well above the array's own centre. The note states the centre it
+// was measured against, because without it the reader cannot tell the two apart.
+"function showNear(d){"
+"var res=d.near,isEuro=d.mode==='euro';"
+"if(!res||res.length===0){document.getElementById('resCardZero').style.display='none';return;}"
+"var st={m:d.pass_mean||0,s:d.pass_sigma||0};"
+"document.getElementById('resTitleZero').innerHTML="
+"'\\u25CE Nearest zero '+res.length+' (least remarkable)';"
+"document.getElementById('zeroNote').innerHTML="
+"'Z* = (Z \\u2212 mean)/\\u03c3 over the '+d.comparisons+' items measured'"
+"+' \\u00b7 mean '+st.m.toFixed(3)+' \\u00b7 \\u03c3 '+st.s.toFixed(3)"
+"+' \\u2014 ranked by |Z*|, not by |Z|';"
+"renderRunTable('resHeadZero','resBodyZero',res,isEuro,d,st);"
+"document.getElementById('resCardZero').style.display='block';"
+"}"
+/* The export moved to the device (v3) and the browser only navigates to it.
+   The button takes the SUMMARY — the same fifteen rows that are on screen,
+   German CSV. The full pass is one link below, at ?all=1; it is the only copy
+   of data that is never re-measured, so it is worth the separate click. */
 "function doSave(){window.location='/results.csv';}"
 "</script></body></html>";
 
@@ -911,8 +951,10 @@ static int emit_run(char *buf, int cap, const RunResult *r, bool euro)
 /* ── /status JSON ─────────────────────────────────────────────────── */
 static esp_err_t status_handler(httpd_req_t *req)
 {
-    // 20 full top/low entries (~110 B each) on top of the fixed head; 6144
-    // was sized for 10 coverage picks and would sit within ~600 B of the cap.
+    // 30 full top/low/near entries (~110 B each) on top of the fixed head;
+    // 6144 was sized for 10 coverage picks and would sit within ~600 B of the
+    // cap. A measured 4-node /status is ~3 KB, so the third group fits with
+    // room to spare — but it IS the third, so check this again before a fourth.
     static char buf[8192];
     int  pos = 0;
     const char *state_str =
@@ -1073,6 +1115,23 @@ static esp_err_t status_handler(httpd_req_t *req)
         if (i) pos += snprintf(buf+pos, sizeof(buf)-pos, ",");
         pos += emit_run(buf+pos, sizeof(buf)-pos, &g_status.low[i], euro);
     }
+
+    // The third group: the items closest to the pass mean — the least
+    // remarkable measurements, published beside the two extremes so the
+    // ranking is read against its own centre rather than against 0. Selected
+    // here rather than in the measurement path (see results_near_mean).
+    // pass_mean/pass_sigma travel with them: without the centre and the scale
+    // the studentized column on screen is uninterpretable after the fact.
+    RunResult near[TOP_N];
+    double pmean = 0.0, psigma = 0.0;
+    int nshow = results_near_mean(near, TOP_N, &pmean, &psigma);
+    pos += snprintf(buf+pos, sizeof(buf)-pos,
+                    "],\"pass_mean\":%.4f,\"pass_sigma\":%.4f,\"near\":[",
+                    pmean, psigma);
+    for (int i = 0; i < nshow; i++) {
+        if (i) pos += snprintf(buf+pos, sizeof(buf)-pos, ",");
+        pos += emit_run(buf+pos, sizeof(buf)-pos, &near[i], euro);
+    }
     pos += snprintf(buf+pos, sizeof(buf)-pos, "]}");
 
     httpd_resp_set_type(req, "application/json");
@@ -1138,49 +1197,127 @@ static esp_err_t loops_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* ── /results.csv GET – every item measured so far (v3) ───────────────
- * The periodic-export half of PLAN.md §2: one row per measured item, RAW z,
- * in measurement order, live at any moment of the pass and still there after
- * an abort. The prefix [0..runs_completed) is complete by construction —
- * runs_completed is bumped only after a row is fully written.
+/* One double in German notation. The ';' separator is only half the decision —
+ * a decimal point in the cell makes Excel read the whole column as text, which
+ * is exactly the failure the separator was changed to avoid. */
+static const char *de_num(char *dst, size_t cap, double v, int prec)
+{
+    snprintf(dst, cap, "%.*f", prec, v);
+    for (char *p = dst; *p; p++) if (*p == '.') { *p = ','; break; }
+    return dst;
+}
+
+/* One summary row: which group it belongs to, its rank inside that group, and
+ * both views of its z. `z_std` is the studentized value against the pass
+ * statistics in the header — for the `zero` group it IS the selection key, so
+ * omitting it would leave the reader unable to check the choice. */
+static int csv_row(char *buf, size_t cap, const char *group, int rank,
+                   const RunResult *r, double mean, double sigma)
+{
+    char zb[32], sb[32];
+    double zs = (sigma > 0.0) ? (r->z_score - mean) / sigma : 0.0;
+    return snprintf(buf, cap,
+        "%s;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%s;%s;%d\n",
+        group, rank, r->index,
+        r->nums[0], r->nums[1], r->nums[2],
+        r->nums[3], r->nums[4], r->nums[5],
+        r->euro[0], r->euro[1],
+        de_num(zb, sizeof(zb), r->z_score, 6),
+        de_num(sb, sizeof(sb), zs, 4),
+        (int)r->block);
+}
+
+/* ── /results.csv GET – the three published groups; ?all=1 for everything ──
+ * Default is the SUMMARY the results screen shows: Top-5 by raw z, Bottom-5,
+ * and the 5 closest to the pass mean — fifteen rows, one file, `group` naming
+ * which is which. `GET /results.csv?all=1` streams the full pass instead: one
+ * row per measured item, RAW z, in measurement order, live at any moment and
+ * still there after an abort. The prefix [0..runs_completed) is complete by
+ * construction — runs_completed is bumped only after a row is fully written.
  *
- * ⚠ RAM only. A master reboot loses the whole record and no item is ever
- * re-measured, so on a long session pull this periodically.
+ * ⚠ RAM only, and ⚠ the summary is not the record. Fifteen rows cannot be
+ * re-derived into a pass, no item is ever re-measured, and a master reboot
+ * loses everything: on a long session pull `?all=1` periodically. The Save
+ * button on the page deliberately fetches the summary — the archival pull is
+ * the operator's separate, explicit act.
  *
- * Fixed columns for both modes (n6 = 0, e1 = e2 = 0 where not applicable) so
- * a parser never has to sniff the mode from the width. `z_raw` is exactly
+ * German CSV throughout (user decision): ';' separator, ',' decimal. Fixed
+ * columns for both modes (n6 = 0, e1 = e2 = 0 where not applicable) so a
+ * parser never has to sniff the mode from the width. `z_raw` is exactly
  * results[].z_score; the studentized view is (z_raw − pass_mean)/pass_sigma
  * with the pass_* values from the header line, so both views are derivable
- * from this one file forever. */
+ * from either file forever. */
 static esp_err_t results_csv_handler(httpd_req_t *req)
 {
-    char buf[224];
+    char buf[224], qry[64], val[8];
+    bool all = false;
+    if (httpd_req_get_url_query_str(req, qry, sizeof(qry)) == ESP_OK &&
+        httpd_query_key_value(qry, "all", val, sizeof(val)) == ESP_OK)
+        all = (val[0] != '0');
+
     httpd_resp_set_type(req, "text/csv");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
 
     int n = g_status.runs_completed;
     if (n > NUM_RUNS) n = NUM_RUNS;
 
+    RunResult near[TOP_N];
+    double mean = 0.0, sigma = 0.0;
+    int nn = results_near_mean(near, TOP_N, &mean, &sigma);
+
+    char mb[32], sb[32];
     int len = snprintf(buf, sizeof(buf),
-        "# elotto v3 mode=%s focus=%s items=%d/%d blocks=%d paused_ms=%lld\n"
-        "order,item,n1,n2,n3,n4,n5,n6,e1,e2,z_raw,block\n",
+        "# elotto v3 mode=%s focus=%s items=%d/%d blocks=%d paused_ms=%lld "
+        "pass_mean=%s pass_sigma=%s\n",
         g_status.mode == MODE_EUROJACKPOT ? "euro" : "649",
         g_status.focus_mode ? "on" : "off",
         n, g_status.runs_total, g_status.loops_done,
-        (long long)g_status.paused_ms);
+        (long long)g_status.paused_ms,
+        de_num(mb, sizeof(mb), mean, 6), de_num(sb, sizeof(sb), sigma, 6));
     httpd_resp_send_chunk(req, buf, len);
 
-    for (int j = 0; j < n; j++) {
-        const RunResult *r = &g_status.results[j];
+    if (all) {
         len = snprintf(buf, sizeof(buf),
-            "%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%.6f,%d\n",
-            j + 1, r->index,
-            r->nums[0], r->nums[1], r->nums[2],
-            r->nums[3], r->nums[4], r->nums[5],
-            r->euro[0], r->euro[1],
-            r->z_score, (int)r->block);
+            "order;item;n1;n2;n3;n4;n5;n6;e1;e2;z_raw;block\n");
+        httpd_resp_send_chunk(req, buf, len);
+        for (int j = 0; j < n; j++) {
+            const RunResult *r = &g_status.results[j];
+            char zb[32];
+            len = snprintf(buf, sizeof(buf),
+                "%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%s;%d\n",
+                j + 1, r->index,
+                r->nums[0], r->nums[1], r->nums[2],
+                r->nums[3], r->nums[4], r->nums[5],
+                r->euro[0], r->euro[1],
+                de_num(zb, sizeof(zb), r->z_score, 6), (int)r->block);
+            httpd_resp_send_chunk(req, buf, len);
+        }
+        httpd_resp_send_chunk(req, NULL, 0);
+        return ESP_OK;
+    }
+
+    len = snprintf(buf, sizeof(buf),
+        "group;rank;item;n1;n2;n3;n4;n5;n6;e1;e2;z_raw;z_std;block\n");
+    httpd_resp_send_chunk(req, buf, len);
+
+    int tn = g_status.result_count; if (tn > TOP_N) tn = TOP_N;
+    for (int i = 0; i < tn; i++) {
+        len = csv_row(buf, sizeof(buf), "high", i + 1,
+                      &g_status.top[i], mean, sigma);
         httpd_resp_send_chunk(req, buf, len);
     }
+    int ln = g_status.low_count; if (ln > TOP_N) ln = TOP_N;
+    for (int i = 0; i < ln; i++) {
+        len = csv_row(buf, sizeof(buf), "low", i + 1,
+                      &g_status.low[i], mean, sigma);
+        httpd_resp_send_chunk(req, buf, len);
+    }
+    for (int i = 0; i < nn; i++) {
+        len = csv_row(buf, sizeof(buf), "zero", i + 1,
+                      &near[i], mean, sigma);
+        httpd_resp_send_chunk(req, buf, len);
+    }
+
     httpd_resp_send_chunk(req, NULL, 0);
     return ESP_OK;
 }

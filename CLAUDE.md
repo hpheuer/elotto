@@ -30,13 +30,23 @@ Consequences, stated once:
   together**; the boundary closes a block → `/loops` row, drift point, pairwise fold.
   With raw z, **drift is the first diagnostic to read**.
 - **`results[]` is in MEASUREMENT order** (`.index` = combination id, `.block` stamped), so the
-  prefix is always complete: aborts need no compaction, and **`GET /results.csv`** streams every
-  measured item (raw z) live mid-session. ⚠ RAM only — pull it periodically over a long pass;
-  a master reboot loses unrepeatable measurements.
+  prefix is always complete: aborts need no compaction, and **`GET /results.csv?all=1`** streams
+  every measured item (raw z) live mid-session. ⚠ RAM only — pull it periodically over a long
+  pass; a master reboot loses unrepeatable measurements. **Bare `/results.csv` is the 15-row
+  summary, NOT the record** — it cannot be re-derived into a pass (2026-08-08).
 - Session wall time scales with `run`/`gap` and combination count. Attended by assumption;
   Pause stops the clock, Abort publishes the measured prefix.
-- UI: Top-5/Bottom-5 by z (device `top[]`/`low[]` in `/status`), significance line with
-  `comparisons = items_done`, item counter + block badge, Save CSV → `/results.csv`.
+- UI: **three tables of five** — Top-5 and Bottom-5 by raw z (`top[]`/`low[]`) and **Nearest-zero-5
+  (`near[]`, 2026-08-08)**, plus significance line with `comparisons = items_done`, item counter +
+  block badge, Save CSV → `/results.csv`.
+  ⚠ **Nearest zero means nearest the PASS MEAN, not nearest raw 0.** Raw z carries the array's
+  common offset (the 05-08 pass sat at −1.82), so |z_raw| ≈ 0 would select items ~1.8 σ *above*
+  the array's own centre — the opposite of neutral. `results_near_mean()` picks by |z − mean|,
+  which orders identically to the studentized |z − mean|/σ; `/status` publishes `pass_mean` and
+  `pass_sigma` so the choice is checkable. The table shows a **Z\*** column and takes its p from
+  that value, not from raw z.
+  CSV is **German**: `;` separator, `,` decimal (user decision 2026-08-08) — a decimal point makes
+  Excel read the whole column as text, so the separator alone would not have fixed anything.
   Firmware is delivered **over OTA only** in normal workflow (`POST /update`); `build.ps1`
   documents build, not serial flash.
 Paragraphs below describing loops/ranking/Coverage or fixed 3.4 s windows are **historical**
@@ -294,32 +304,38 @@ always sends it; **curl never does**, so scripted runs and the `?cal=0` control 
   ⚠ **15-minute timeout** accepts the proposal unchanged and records `pool_auto=1`. Verified firing.
   v3: this choice commits the whole single pass — there is nothing after it that re-scores.
 
-Phase 0: score individual numbers 1..N with **exactly one node-combined run each, but a LONG one
-(~3370 ms, `SCORE_SEGMENTS`)**, sweeping the numbers in a **fresh random order (Fisher–Yates, no
-repeats)** — `score_one_run()`. Per-number SE = 1/√(k·3) ≈ **0.29** at four nodes.
+Phase 0: score individual numbers 1..N with **exactly one node-combined run each, but a LONG
+one** — the session window, `segments_for()`, default 5 s — sweeping the numbers in a **fresh
+random order (Fisher–Yates, no repeats)** — `score_one_run()`. Per-number SE ≈ **0.29** at four
+nodes. ⚠ `SCORE_SEGMENTS` no longer exists: the fixed ~3370 ms window became the operator-set
+`?run=` in §1.16, and only `SCORE_GAP_MS` survives, as the **default blank of 2 s** (`focus.h`).
 ⚠ **Never repeat a target in place**, in any form. The phase has been through four shapes and two
 were rejected on the same ground: 5 short reps (until 2026-07-25) froze the panel ~6.9 s and only
 the first window had an onset; 3 short reps (briefly, 2026-07-30) reintroduced exactly that. One
 long run gives the same arithmetic — a 3× run is Σdev/√(3N), i.e. the Stouffer combination of
 three 1× runs — while keeping **one onset per number**, which is the payload.
-⚠ **The gap scales with it: `SCORE_GAP_MS` = 1000** (v3: `RUN_GAP_MS` no longer exists — every
-phase runs this window and this gap). Duty cycle, not window length, is what starves the
-extraction task; 3.4 s behind a 350 ms blank would be ~90 %. Measured at the real settings:
-window **3370 ms ± 1.5 ms across 62 numbers**, gap 1010 ms, duty 76.9 %, rate 3.37–3.38 Mbit/s
-(collapsed regime is 2.68), zero stalls, `net_lost` 0.
+⚠ **The gap scales with the window** — `?gap=`, default 40 % of `?run=`; every phase runs the
+same window and the same gap. Duty cycle, not window length, is what starves the extraction task;
+3.4 s behind a 350 ms blank would be ~90 %. Measured at the old fixed settings: window **3370 ms
+± 1.5 ms across 62 numbers**, gap 1010 ms, duty 76.9 %, rate 3.37–3.38 Mbit/s (collapsed regime
+is 2.68), zero stalls, `net_lost` 0. See §1.16 for the live cal at the configurable settings.
 ⚠ `LINK_MEAS_MS` is gone — the reply window is now `LINK_MEAS_MS_FOR(nseg)`. The old flat 4000 ms
 was headroom for a 1 s run and a **deadline** for a 3.4 s one: every slave would still be
 measuring when it expired, all would look silent, and after `NODE_MISS_LIMIT` they would be
 DROPPED, leaving a solo session that still looked healthy. Deliberately generous (user decision):
 a late drop costs nothing here, a false drop costs an arm of data measured at √(k−1) unnoticed.
-Scoring costs ~4.6 min for 62 numbers, once per session. It changes only *which* numbers enter
-the pool, never the statistics measured on them.
+Scoring runs once per session and costs 62 numbers × (window + gap) — ~4.6 min at the old fixed
+3.4 s, ~9 min at the 5 s default. It changes only *which* numbers enter the pool, never the
+statistics measured on them.
 Phase 2 (v3): **ONE pass over the whole combination space** in one Fisher–Yates random order
-(s_perm[], drift immunity), each item measured exactly once at the same 3.4 s window.
-`results[]` fills in **measurement order** (`.index` = combination id, `.block` stamped), so the
-prefix is always the complete record — no slot-indexing, no stride mapping, no compaction on
-abort. z is stored **raw**; `publish_result()` maintains Top-N/Bottom-N and `pass_mean`/
-`pass_sigma` after every item, and `comparisons = items_done` feeds the Bonferroni line.
+(s_perm[], drift immunity), each item measured exactly once at the **same session window as every
+other phase**. `results[]` fills in **measurement order** (`.index` = combination id, `.block`
+stamped), so the prefix is always the complete record — no slot-indexing, no stride mapping, no
+compaction on abort. z is stored **raw**; `publish_result()` maintains Top-N/Bottom-N after every
+item and `comparisons = items_done` feeds the Bonferroni line. **Pass mean/σ are NOT accumulated**
+— `results_near_mean()` recomputes them from the measured prefix when `/status` or the CSV asks,
+because the mean moves as the pass proceeds and an item judged against an early mean would be
+judged against a number that no longer exists.
 Node independence: PairAcc[i][j] accumulates per-**block**-centered moments for EVERY node pair
 (6 at n=4), only over runs where both nodes contributed → the full Pearson matrix plus per-node
 σ in /status (⚠ if |r|·√n > 3). **Check per-block combined σ as well** — a pooled pairwise max
@@ -332,9 +348,11 @@ offsets/σ per node + camera health (LoopStat, PSRAM, first LOOP_HIST=128 blocks
 sums, exact past 128) → drift_slope / drift_t in /status; |t| > 3 flags real drift; the UI shows
 the drift line on the results screen. The slave's per-block camera numbers come from the `D`
 command, queried at block close while it is idle — a missing reply is diagnostics-only.
-Results in the browser UI: **Top-10 and Bottom-10 by z** (served as `top[]`/`low[]` in /status),
-the Bonferroni significance line, and the **studentized-view checkbox** (display-only transform;
-see the v3 section). Save CSV navigates to `/results.csv`. Coverage and most-frequent are gone.
+Results in the browser UI: **Top-5, Bottom-5 and Nearest-zero-5** (served as `top[]`/`low[]`/
+`near[]` in /status) plus the Bonferroni significance line. Save CSV navigates to `/results.csv`.
+Coverage and most-frequent are gone. ⚠ The **studentized-view checkbox specified in PLAN.md §2.3
+was never built** — the studentized value exists only as the `Z*` column of the nearest-zero
+table. Do not cite it as a feature (noted 2026-08-08).
 
 **Focus display (Phase 5)**: a "Focus:" card shows the current target in
 large type for exactly the window its bits are collected in — the candidate number while
@@ -449,14 +467,17 @@ whose recovery updater is gone. OTA cannot repair those. Example (replace COMx a
   `ESP32P4_REV_MIN_0=y` — the latter depends on it, and without it the choice silently falls
   back to rev v3.1 and the binary refuses to boot on these v1.3 boards.
 
-## Where things stand (2026-07-29) — read this first
+## Where things stand (2026-08-08) — read this first
 
-⚠ **THE HARDWARE IS BEING CHANGED — lighting above all (user, 2026-07-29).** Everything below the
-software line was measured on the *old* optics. Treat every number in this file and in PLAN.md as
-describing an instrument that no longer exists: the exposure ladders, `mean_px` ceilings, per-node
-biases, σ figures and the `.145` weak-node finding all have to be re-measured. `docs/data/` was
-emptied for the same reason (open item 2). **Nothing recorded before the change may be pooled with
-anything recorded after it.** The software, its gates and their reasoning are unaffected.
+⚠ **THE HARDWARE WAS CHANGED on 2026-07-29 — lighting above all (user).** Every number in this
+file and in PLAN.md dated before that describes an instrument that no longer exists: the exposure
+ladders, `mean_px` ceilings, per-node biases, σ figures and the `.145` weak-node finding all have
+to be re-measured. **Nothing recorded before the change may be pooled with anything recorded
+after it.** The software, its gates and their reasoning are unaffected.
+
+**`docs/data/` holds post-change sessions again** (it was emptied on 07-29 for the reason above):
+two 07-30 ladder sets, the **2026-08-05 complete 6-of-49 pass** (5005 items, ~14 h) and the
+**2026-08-08 pass aborted at 3404 items** with all four ladders. Both v3 passes are usable.
 
 **The instrument is sound.** In a 200-loop session the master and `.155` had per-loop σ SD of
 0.097 and 0.085 against the **0.089 that sampling alone predicts** — indistinguishable from ideal.
@@ -469,16 +490,16 @@ instrument produces.
 1. **`.103`'s load degradation** — the only unexplained instrument fault. Clean on idle sweeps,
    per-loop σ SD 0.24 over 78 loops. The free diagnostic is to **swap `.103`'s camera with
    `.155`'s**: if the fault follows the camera it is the sensor, if it stays it is the board.
-2. ~~An unanalysed 89-loop dataset in `docs/data/`.~~ **`docs/data/` WAS EMPTIED 2026-07-29** (user
-   decision) — **the lighting and other hardware are being changed, so nothing recorded before that
-   change is comparable to anything recorded after it.** Every archived session went: the 89-loop
-   and 54-loop aborted 400s, the 200-loop session, the control pair, all four ladder sets. The
-   tracked ones survive in git history only (`git show 56b204a:docs/data/…`); the 54-loop set
-   captured on 07-29 was never committed and is **gone**. Do not plan analyses against any of it,
-   and do not pool a post-change session with a pre-change number quoted in these documents. The
-   *conclusions* drawn from that data are still recorded in PLAN.md / PLAN_HISTORY.md — but they
-   describe the old optics, and §1.16's `.145` ceiling, §1.13's exposure choice and §1.17's
-   σ-margin evidence all have to be re-established on the new hardware before they are trusted.
+2. **The 08-05 pass's extremes are BLOCK-CLUSTERED — read this before ranking anything.** In the
+   complete 5005-item 6-of-49 pass, all five top items fell in block 6 and all five bottom items
+   in block 40. That is drift expressing itself as extremes, exactly as §2.3 predicted, not a
+   per-combination effect: `drift_t` was **−4.34** (flag threshold 3) and the pass ran at mean
+   **−1.82** with σ **2.19** — more than twice the σ ≈ 1 a clean combine should give, with `.155`
+   at 1.494 and `.103` at 1.231 individually while all six pairwise |r| stayed ≤ 0.04. **σ, not
+   correlation, is where this array fails**, which is the old open item 1's rule paying out.
+   ⚠ That session also ran with `cal_budget_ms` 5000 and came out with **`cam_cal=0` on all four
+   nodes** — no rung was certified all session. The default is back at 10 s (`673a86d`), so a
+   repeat under a working sweep is the first thing to measure.
 3. **`CAL_MAX_MEAN_PX` = 100 is binding on the master** (its exposure-32 rung fails on light at
    104.65 with σ 1.0394). A decision, not a measurement.
 4. **Does calibration reduce the RATE of bad loops?** §1.14/§1.15 only ever asked "does it add
@@ -494,65 +515,37 @@ otherwise (two nodes at sampling limits, autocorr 10–50× inside tolerance). T
 frame pair; more megapixels would *lower* the bit rate. If it is ever tried, buy **one** and run a
 matched pair, not four.
 
-## Open items (2026-07-25) — deferred by decision, not forgotten
+## Old open items (2026-07-25) — closed, and what survives them
 
-1. ~~**Inter-node correlation grows during a session.**~~ **DOES NOT REPRODUCE (2026-07-26).**
-   The 10-loop calibrated session held combined σ at **1.015 ± 0.012** with every one of the six
-   pairs at |r| ≤ 0.0145 over 4300 runs (worst |r|√n = 0.95 vs threshold 3). The original
-   finding was σ 1.038 → 1.083 → 1.182 with a pooled worst pair of +0.064 — same array, same
-   power topology (master on USB, three slaves on one PoE rail), 10× the runs.
-   **Not yet proof the ×√n gain is established**: the mechanism behind the original growth was
-   never identified, so a differing condition rather than a fix is still possible. But do not
-   plan around the old numbers. See `docs/PLAN_HISTORY.md` §1.10.
-   ⚠ **PARTIALLY BACK under the sealed-dark enclosure (§1.12).** A 5-loop arm ran σ =
-   **1.0795 ± 0.0222** (3.6 SE above unity) with worst pair |r|√n = **2.92** — under the flag
-   threshold of 3, so the pairwise check stayed silent while σ went to 1.15. Not the original
-   *growth* pattern (it does not climb monotonically), and it is specific to the sealed box: the
-   master's raw offset drifted −0.334 z/loop at t = −4.75, against −0.0054 at t = −0.20 on the
-   open bench. Best reading is **thermal**, not electrical — see §1.12's rail test. Unresolved
-   under the now-lit box, which has not been measured over a full session.
-2. ~~**Node-drop test never run.**~~ **DROPPED BY DECISION (user, 2026-07-26) — do not
-   re-propose.** The node-drop test (unplug a node mid-run, expect degrade to √3 with a UI flag
-   and no crash) and the camera-fault/reboot path (`E:` reply → drop → `R` → `esp_restart()`)
-   will **not** be tested. This is a research instrument, not a commercial application, and the
-   cost of exercising these paths is not worth it here. The code exists and has been reasoned
-   about; treat it as **unverified by choice**, not as an outstanding task.
-3. **Camera bias degrades under sustained load** — `.103` went from 0.499307 idle to 0.497884
-   after a session, outside PLAN_4NODE Phase 0's 1e-3 gate. Was thought to share a cause with
-   (1); with (1) gone that link is dead. Per-loop calibration now resets the statistics every
-   loop, so the numbers in `/loops` are per-window rather than lifetime, and every 10-loop
-   per-node bias sat within 1e-3 of 0.5. **The enclosure now exists (see above), so the light
-   confound is gone and this is finally chaseable** — but note §1.11: in the dark the *level* of
-   bias is worse everywhere (best −4.6e-4 vs −7.8e-5 on the bench), so a fresh idle-vs-loaded
-   baseline has to be taken under the enclosure before any load effect can be read off.
+⚠ Compressed 2026-08-08. Every number below was measured on the **pre-07-29 optics**, so it
+describes an instrument that no longer exists (see "Where things stand"). What is kept here is
+the *reasoning* that still applies; the measurements live in `docs/PLAN_HISTORY.md`.
 
-4. ~~**The Focus run window drifts.**~~ **DOES NOT REPRODUCE (2026-07-26).** Over the 10-loop
-   calibrated session the window held **1102.0–1115.1 ms (spread 1.2 %)** and the gap
-   **347.9–348.2 ms** against the 350 ms constant, across 4300 runs and 2 h 14 min. The original
-   finding was 1.75× variation across a day and 8.3 % creep over 1700 runs.
-   Also resolved with a mechanism: exposures ran from **4 to 512 across nodes simultaneously**
-   and the gap never moved, because **the bit rate is CPU-bound, not exposure-bound**. Only the
-   XOR fold shifted it, by genuinely doubling one node's rate — one of the two reasons the fold
-   is out of the calibration sweep. `focus_win_ms`/`focus_gap_ms` are now measured in **every**
-   session (attended or not) and recorded per loop in `/loops`.
-5. **The master's camera bias is ~1.2e-3, outside Phase 0's 1e-3 gate** and ~9× the Phase 1
-   figure — visible as a raw per-run offset of −2.69 z/run. `studentize()` removes it exactly
-   and σ stayed ≈1 in both loops, so nothing downstream is affected. Related to item 3, now with
-   a number. Phase 5 is not the cause: it *lowered* duty cycle from ~99.5% to 71%.
-   **Largely explained, 2026-07-26**: the exposure sweep shows bias is a steep function of
-   exposure, and the Kconfig default of 16 lines sat an order of magnitude worse than 128
-   (−3.8e-4 vs −7.8e-5 in a clean 8 Mbit window). Per-loop calibration now moves it off 16. That
-   does not explain the *load* dependence in item 3, only the level.
-   ⚠ **Revised under the enclosure (§1.11): "a steep function of exposure" was a function of
-   LIGHT.** In the dark the curve is shallow and U-shaped — 16 gives −1.14e-3 and the best rung
-   (128) gives −4.6e-4, a factor of 2.5, not the order of magnitude seen on the bench. Calibration
-   still moves the master off 16 and still helps; it just helps less than this item claims.
+1. **Inter-node correlation growing during a session** — did not reproduce on the open bench
+   (§1.10), came partially back under the sealed-dark box at σ 1.0795 ± 0.0222 with the worst
+   pair at |r|√n = 2.92, i.e. *below* the flag threshold of 3 while σ ran to 1.15 (§1.12).
+   **The standing lesson is the diagnostic rule, not the numbers: judge a session on per-block
+   combined σ AND the full pairwise matrix, never on `pair_r` alone** — a pooled worst pair
+   stayed silent through exactly this. The mechanism was never identified (best reading:
+   thermal, unproven), so the ×√n gain is still **not established**.
+2. **Node-drop test, camera-fault/reboot path, camera-stall abort** — **DROPPED BY DECISION
+   (user, 2026-07-26), do not re-propose.** This is a research instrument, not a commercial
+   application. The code exists and has been reasoned about: treat it as **unverified by
+   choice**, not as an outstanding task.
+3. **Camera bias degrades under sustained load** — **still open**, and the one item here that is
+   not archaeology. `.103` went 0.499307 idle → 0.497884 after a session, outside the 1e-3 gate.
+   Per-block calibration resets the statistics each block, so `/loops` numbers are per-window
+   rather than lifetime. ⚠ A fresh idle-vs-loaded baseline must be taken on the **current**
+   optics before any load effect can be read off — the *level* of bias moves with the light, so
+   an old idle figure is not a valid reference. Related: the master's own bias level, which
+   calibration largely explains by moving it off the Kconfig default of 16 lines.
+4. **The Focus run window drifts** — did not reproduce; mechanism found. **The bit rate is
+   CPU-bound, not exposure-bound**: exposures ran 4→512 across nodes simultaneously and the gap
+   never moved. Only the XOR fold shifted it, by genuinely doubling one node's rate — one of the
+   two reasons the fold is out of the calibration sweep. `focus_win_ms`/`focus_gap_ms` are
+   measured in **every** session and recorded per block in `/loops`; check them after any
+   camera/rate change, since segment→wall ms is nonlinear under load.
 
-The **camera-stall abort has never been observed firing** (PLAN_4NODE's "Remaining work" item 1)
-— Phase C proved the UDP abort path; this is the *source-loss* path. **Covered by the same
-decision as open item 2: unverified by choice, not a task.**
-
-**Phase 5 (Focus display) is DONE** (2026-07-25), gate passed except the 10 min loop budget
-(10.5 min, item 4 above). A matched no-focus control session was recorded alongside it; the
-comparison itself — whether attention shows up in the statistics — is the experiment, not a
-gate, and has not been analysed.
+**Phase 5 (Focus display) is DONE** (2026-07-25). A matched no-focus control session was recorded
+alongside it; the comparison itself — whether attention shows up in the statistics — is the
+experiment, not a gate, and has not been analysed. It is **deferred by the user**.

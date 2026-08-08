@@ -590,6 +590,51 @@ static void publish_result(const RunResult *r, int items_done)
     compute_significance(items_done);
 }
 
+/* The items closest to the pass mean — the "nothing happened here" group.
+ * Contract and the reason it is recomputed rather than accumulated are in
+ * sensor.h; this is the plain two-pass implementation of it. */
+int results_near_mean(RunResult *out, int cap, double *out_mean, double *out_sigma)
+{
+    if (out_mean)  *out_mean  = 0.0;
+    if (out_sigma) *out_sigma = 0.0;
+    if (!out || cap <= 0) return 0;
+
+    int n = g_status.runs_completed;
+    if (n > NUM_RUNS) n = NUM_RUNS;
+    if (n <= 0) return 0;
+
+    double sum = 0.0;
+    for (int j = 0; j < n; j++) sum += g_status.results[j].z_score;
+    double mean = sum / n;
+
+    // Sample σ (df = n−1), as everywhere else in this file: the mean it is
+    // taken about was estimated from the same data.
+    double ss = 0.0;
+    for (int j = 0; j < n; j++) {
+        double d = g_status.results[j].z_score - mean;
+        ss += d * d;
+    }
+    double sigma = (n > 1 && ss > 0.0) ? sqrt(ss / (n - 1)) : 0.0;
+
+    if (out_mean)  *out_mean  = mean;
+    if (out_sigma) *out_sigma = sigma;
+
+    // Insertion sort by |z − mean|, keeping the `cap` smallest. Same shape as
+    // publish_result()'s top/low maintenance, one pass, no allocation.
+    int got = 0;
+    for (int j = 0; j < n; j++) {
+        double d = fabs(g_status.results[j].z_score - mean);
+        if (got == cap && d >= fabs(out[got - 1].z_score - mean)) continue;
+        if (got < cap) got++;
+        int p = got - 1;
+        while (p > 0 && fabs(out[p - 1].z_score - mean) > d) {
+            out[p] = out[p - 1]; p--;
+        }
+        out[p] = g_status.results[j];
+    }
+    return got;
+}
+
 /* Independence diagnostics over every pair of nodes — free bookkeeping that
  * verifies the √n combine assumption. At n=4 there are six pairs, i.e. six ways
  * for the assumption to be false, and ONE correlated pair invalidates the
