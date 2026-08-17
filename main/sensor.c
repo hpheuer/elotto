@@ -137,15 +137,6 @@ static void camera_source_begin(void)
         node_camera_failed(0, "not streaming at session start");
 }
 
-static const char *p_label(double absZ)
-{
-    if (absZ > 3.29) return "p&lt;0.001";
-    if (absZ > 2.58) return "p&lt;0.01";
-    if (absZ > 1.96) return "p&lt;0.05";
-    if (absZ > 1.28) return "p&lt;0.10";
-    return "n.s.";
-}
-
 /* Segments for one run. v3: ONE count for every phase — baseline, scoring and
  * the measurement pass all use g_status.run_segments behind g_status.gap_ms.
  * The count still travels on the wire (`M<seg>`, `B<runs>,<seg>`) so a slave
@@ -207,20 +198,66 @@ static void nth_combination(const uint8_t *pool, int n, int r, int k, uint8_t *o
 }
 
 // Scores each number 1..max_val with exactly ONE node-combined run (÷√k, like
-// Phase 2), sweeping the numbers in random order, then picks the top pool_size
-// (sorted ascending). The pool is locked for the whole cumulative session, so
-// this is where selection confidence matters most — and one run per number is
-// the weakest this has ever been: per-number SE = 1/√k over k nodes, i.e. 0.50
-// at four nodes, against 0.22 for the 5 reps it replaced and 1.0 for a single
-// master-only run.
+// Phase 2), sweeping the numbers in random order, then picks pool_size numbers
+// by the pre-registered score_dir (high / low / |z|). The pool is locked for
+// the whole pass, so this is where selection confidence matters most.
 //
-// Stated as a consequence rather than buried, because it is a real cost. It
-// changes only WHICH numbers enter the pool, never the Phase-2 statistics
-// measured on them — the same caveat the old SCORE_REPS always carried. A
-// session whose pool choice must be trusted on its own wants several full
-// random passes; it must NOT go back to repeats in place, which is what broke
-// the Focus display (see score_and_build_pool).
+// ⚠ Under H₀ the combined z is already N(0,1): its SE is 1.0, not 1/√k. The
+// old "SE = 0.50 at four nodes" reading confused the per-node mean with the
+// Stouffer statistic actually stored. Ranking 50/62 unit-noise draws is
+// therefore very noisy — a real cost, stated once. It changes only WHICH
+// numbers enter the pool, never the Phase-2 statistics measured on them.
+// A session whose pool choice must be trusted on its own wants several full
+// random passes; it must NOT go back to repeats in place (onset is the payload).
 static double score_one_run(void);   // forward (defined after the slave link block)
+
+/* Per-item node-z archive (PSRAM). results[j] stays lean; re-analysis needs
+ * the per-node series to recombine, drop a soft-failed node, or recompute r. */
+static float *s_node_z;   // [NUM_RUNS * MAX_NODES], NaN = did not contribute
+
+static void node_z_store(int j, const double *znode, const bool *have)
+{
+    if (!s_node_z || j < 0 || j >= NUM_RUNS) return;
+    float *row = s_node_z + (size_t)j * MAX_NODES;
+    for (int i = 0; i < MAX_NODES; i++)
+        row[i] = (have && have[i]) ? (float)znode[i] : NAN;
+}
+
+bool results_node_z(int j, float out[MAX_NODES])
+{
+    if (!out || !s_node_z || j < 0 || j >= g_status.runs_completed || j >= NUM_RUNS)
+        return false;
+    const float *row = s_node_z + (size_t)j * MAX_NODES;
+    for (int i = 0; i < MAX_NODES; i++) out[i] = row[i];
+    return true;
+}
+
+/* Running pass sums over RANKED items only (k > 0, !skip_rank). Ranking and
+ * Bonferroni recompute from results[] after every valid item so studentized
+ * Top/Bottom track the live mean/σ rather than an early snapshot. */
+static double s_pass_sum, s_pass_sumsq;
+static int    s_pass_n;
+
+/* Which nodes actually entered the combine during the block center_block() last
+ * looked at. Set there because it already walks that block's rows, and read by
+ * record_loop() immediately afterwards to decide whether a trip could have
+ * contaminated anything. */
+static uint8_t s_blk_contrib;
+
+/* Consecutive clean blocks while a node is soft_down (sticky clear). */
+static uint8_t s_soft_clean[MAX_NODES];
+
+/* Brief ring flush before an attended measurement window so pre-onset bits
+ * do not enter the run the observer is about to watch. Master-only: slaves
+ * have no settle command on the wire; calibration already settles every node. */
+static void attended_onset_settle(void)
+{
+    if (!g_status.focus_mode) return;
+    camera_stats_reset(1);
+    int64_t limit = esp_timer_get_time() + 500000LL;   /* 500 ms cap */
+    while (!camera_stats_settled() && esp_timer_get_time() < limit)
+        vTaskDelay(1);
+}
 
 /* ── Attended pool confirmation ────────────────────────────────────────
  * The session parks at PHASE_POOL_CONFIRM and spins here until the operator
@@ -319,10 +356,23 @@ static void score_and_build_pool(int max_val, int pool_size, uint8_t *pool,
         pool[i] = keep[i];
         if (keep[i] >= 1 && keep[i] <= max_val) used[keep[i]] = true;
     }
+    /* Pick by pre-registered score_dir. HIGH = largest z (historical default);
+     * LOW = smallest z; ABS = largest |z|. Direction is a session parameter
+     * (?score=) so the hypothesis is on the record before the pass. */
     for (int i = n_keep; i < pool_size; i++) {
-        int b = 0; double bs = -1e18;
-        for (int j = 1; j <= max_val; j++)
-            if (!used[j] && !skip[j] && scores[j] > bs) { b = j; bs = scores[j]; }
+        int b = 0;
+        double bs = 0.0;
+        bool first = true;
+        for (int j = 1; j <= max_val; j++) {
+            if (used[j] || skip[j]) continue;
+            double s = scores[j], key;
+            switch (g_status.score_dir) {
+            case SCORE_DIR_LOW: key = -s;           break;
+            case SCORE_DIR_ABS: key = fabs(s);      break;
+            default:            key = s;            break;  /* HIGH */
+            }
+            if (first || key > bs) { b = j; bs = key; first = false; }
+        }
         pool[i] = (uint8_t)b;
         if (b) used[b] = true;
     }
@@ -372,9 +422,10 @@ static void pool_scores_for(const uint8_t *sel, int n_sel,
 /* ── The observer gate (PHASE_READY) ───────────────────────────────────
  * Same one-word handshake as the pool prompt: the webserver task sets the flag,
  * elotto_task spins on it. No timeout, deliberately — there is no sensible
- * default action here (the pool prompt has one: take the proposal), and an
- * unattended session never reaches this gate because it is gated on
- * `pool_confirm`. A session parked here waits as long as the operator needs. */
+ * default action here (the pool prompt has one: take the proposal). A session
+ * parked here waits as long as the operator needs, which is only safe because
+ * the caller arms it on `focus_mode`: an unattended run has nobody to press
+ * Start, so for it the wait would never end. */
 static volatile bool s_ready_go = false;
 
 /* Dark time between the operator pressing Start and the first target appearing.
@@ -505,21 +556,52 @@ static void pool_confirm_wait(bool euro, int mx, int *io_pool_nm, int *io_pool_n
     *io_pool_ne = pool_ne;
 }
 
-/* Combine this run's per-node z into one N(0,1) value: Σz / √k over the k nodes
- * that actually contributed. k varies run to run when a node is dropped, and
- * that is fine — each combined z is still unit-variance under the null, which
- * is the only property the statistics above depend on. Returns k via *n_used. */
-static double combine_z(double z_master, int *n_used)
+/* Gather per-node z for this round and Stouffer-combine. Soft-downweighted
+ * nodes stay in `have[]` (pairwise diagnostics still see them) but are
+ * skipped in the combine when that still leaves k ≥ 2; otherwise they are
+ * used (never force a solo combine that would collapse the scientific floor).
+ * Returns k; k == 0 means VOID — caller must not publish as a result.
+ * *out_mask receives the bit mask of nodes that actually entered the combine. */
+static int gather_and_combine(double z_master, bool master_ok,
+                              double znode[MAX_NODES], bool have[MAX_NODES],
+                              double *out_z, uint8_t *out_mask)
 {
+    for (int i = 0; i < MAX_NODES; i++) {
+        znode[i] = 0.0;
+        have[i]  = false;
+    }
+    if (master_ok && g_status.nodes[0].ok) {
+        znode[0] = z_master;
+        have[0]  = true;
+    }
+    for (int s = 0; s < nodes_slave_count(); s++) {
+        double zs = 0.0;
+        if (!g_status.nodes[s + 1].ok || !node_take_z(s, &zs)) continue;
+        znode[s + 1] = zs;
+        have[s + 1]  = true;
+    }
+
+    /* Soft-exclude only when at least NODE_SOFT_MIN_COMBINE non-soft nodes
+     * answered this run — never collapse the array below three arms. */
+    int n_soft = 0;
+    for (int i = 0; i < g_status.node_count && i < MAX_NODES; i++) {
+        if (have[i] && !g_status.nodes[i].soft_down) n_soft++;
+    }
+    bool use_soft = (n_soft >= NODE_SOFT_MIN_COMBINE);
+
     double sum = 0.0;
     int    k   = 0;
-    if (g_status.nodes[0].ok) { sum += z_master; k++; }
-    for (int i = 0; i < nodes_slave_count(); i++) {
-        double zs = 0.0;
-        if (g_status.nodes[i + 1].ok && node_take_z(i, &zs)) { sum += zs; k++; }
+    uint8_t mask = 0;
+    for (int i = 0; i < g_status.node_count && i < MAX_NODES; i++) {
+        if (!have[i]) continue;
+        if (use_soft && g_status.nodes[i].soft_down) continue;
+        sum += znode[i];
+        k++;
+        mask |= (uint8_t)(1u << i);
     }
-    if (n_used) *n_used = k;
-    return k > 0 ? sum / sqrt((double)k) : 0.0;
+    if (out_mask) *out_mask = mask;
+    if (out_z) *out_z = (k > 0) ? sum / sqrt((double)k) : 0.0;
+    return k;
 }
 
 /* One scoring run, node-combined like Phase 2: trigger every node, measure
@@ -528,6 +610,7 @@ static double combine_z(double z_master, int *n_used)
 static double score_one_run(void)
 {
     int nseg = segments_for();               // session window, all phases
+    attended_onset_settle();
     slave_trigger(nseg);
     double zm = 0.0;
     bool   ok = gcp_zscore_ok(nseg, &zm);
@@ -538,61 +621,217 @@ static double score_one_run(void)
     // Timeout from THIS run's length: at the scoring length the old flat 4 s
     // would expire while every slave was still measuring.
     if (nodes_have_slaves()) nodes_collect(LINK_MEAS_MS_FOR(nseg), true);
-    return combine_z(zm, NULL);
+    double znode[MAX_NODES];
+    bool   have[MAX_NODES];
+    double z = 0.0;
+    uint8_t mask = 0;
+    int k = gather_and_combine(zm, ok, znode, have, &z, &mask);
+    (void)mask;
+    return (k > 0) ? z : 0.0;   /* void scores as 0 for ranking noise only */
 }
 
-/* Bonferroni-corrected significance of the most extreme |Z| in the published
- * ranking — honest about the multiple-comparison search over `comparisons`. */
-static void compute_significance(int comparisons)
+/* Effective variance of the Stouffer combine under the measured per-node σ
+ * and pairwise r: Var(Σz_i/√k) = (Σσ_i² + 2 Σ_{i<j} r_ij σ_i σ_j) / k.
+ * Equals 1 when every node is unit-variance and independent. */
+static double compute_v_eff(void)
 {
-    if (comparisons <= 0) {
-        g_status.best_z = 0.0; g_status.p_corrected = 1.0; g_status.comparisons = 0;
+    int n = g_status.node_count;
+    if (n < 1) return 1.0;
+    /* Active (ok and not soft-down) nodes only. */
+    int idx[MAX_NODES], k = 0;
+    double sig[MAX_NODES];
+    for (int i = 0; i < n && i < MAX_NODES; i++) {
+        if (!g_status.nodes[i].ok || g_status.nodes[i].soft_down) continue;
+        idx[k] = i;
+        sig[k] = g_status.nodes[i].sigma > 0.0 ? g_status.nodes[i].sigma : 1.0;
+        k++;
+    }
+    if (k < 1) return 1.0;
+    if (k == 1) return sig[0] * sig[0];
+    double num = 0.0;
+    for (int a = 0; a < k; a++) {
+        num += sig[a] * sig[a];
+        for (int b = a + 1; b < k; b++) {
+            int i = idx[a], j = idx[b];
+            double r = (i < j) ? g_status.pair_r[i][j] : g_status.pair_r[j][i];
+            num += 2.0 * r * sig[a] * sig[b];
+        }
+    }
+    double v = num / (double)k;
+    return (v > 1e-12) ? v : 1.0;
+}
+
+/* Refresh null_flags from the current pass health + drift + pair gates. */
+static void update_null_flags(void)
+{
+    uint8_t f = 0;
+    int n = g_status.pass_n_valid;
+    double sig = g_status.pass_sigma;
+    if (n >= PASS_NULL_MIN_N && sig > 0.0) {
+        if (sig < PASS_SIGMA_LO || sig > PASS_SIGMA_HI) f |= NULL_FLAG_SIGMA;
+        /* χ²/n = (Σz²)/n; under H₀ ≈ 1. Same band as σ when mean≈0; when mean
+         * is large, σ can look fine while Σz² is inflated — catch that too. */
+        double chi2_over_n = g_status.pass_chi2 / (double)n;
+        if (chi2_over_n < PASS_SIGMA_LO * PASS_SIGMA_LO ||
+            chi2_over_n > PASS_SIGMA_HI * PASS_SIGMA_HI)
+            f |= NULL_FLAG_CHI2;
+    }
+    if (g_status.loops_done >= 6 && fabs(g_status.drift_t) > DRIFT_FLAG_T)
+        f |= NULL_FLAG_DRIFT;
+    if (g_status.pair_n > 1) {
+        double rz = fabs(g_status.pair_r_max) * sqrt((double)g_status.pair_n);
+        if (rz > PAIR_FLAG_T) f |= NULL_FLAG_PAIR;
+    }
+    g_status.null_flags = f;
+}
+
+/* True if this row enters pass mean/σ and Top/Bottom. Void and quarantined
+ * trigger-block rows stay in results[] / CSV but not in the ranking. */
+/* The value every pass statistic and every ranking runs on: the block-centred
+ * combine, not the raw z. One accessor so the choice is made in exactly one
+ * place — mixing the two silently would be indistinguishable from a result. */
+static double rank_z(const RunResult *r) { return (double)r->z_ctr; }
+
+static bool result_ranked(const RunResult *r)
+{
+    return r && r->k > 0 && !r->skip_rank;
+}
+
+/* Recompute pass mean/σ/χ², studentized Top-N / Bottom-N, and Bonferroni p
+ * from the ranked prefix. O(n·TOP_N) after each valid item — exact against
+ * the live mean, which is the whole point of Z*. */
+static void recompute_pass_ranks(void)
+{
+    int ntot = g_status.runs_completed;
+    if (ntot > NUM_RUNS) ntot = NUM_RUNS;
+
+    double sum = 0.0, sumsq = 0.0;
+    int    nv  = 0, nvoid = 0, nexcl = 0;
+    for (int j = 0; j < ntot; j++) {
+        const RunResult *r = &g_status.results[j];
+        if (r->k == 0) { nvoid++; continue; }
+        if (r->skip_rank) { nexcl++; continue; }
+        double z = rank_z(r);
+        sum += z;
+        sumsq += z * z;
+        nv++;
+    }
+    g_status.pass_n_valid = nv;
+    g_status.pass_n_void  = nvoid;
+    g_status.pass_n_excl  = nexcl;
+    g_status.pass_chi2    = sumsq;
+    if (nv <= 0) {
+        g_status.pass_mean = g_status.pass_sigma = g_status.pass_stouffer = 0.0;
+        g_status.result_count = g_status.low_count = 0;
+        g_status.best_z = 0.0;
+        g_status.p_corrected = 1.0;
+        g_status.comparisons = 0;
+        update_null_flags();
         return;
     }
-    double zt = (g_status.result_count > 0) ? fabs(g_status.top[0].z_score) : 0.0;
-    double zb = (g_status.low_count   > 0) ? fabs(g_status.low[0].z_score) : 0.0;
-    double zmax = zt > zb ? zt : zb;
-    double p1 = erfc(zmax / 1.41421356237);   // two-sided single-test tail prob
-    double pc = (double)comparisons * p1;      // Bonferroni
-    if (pc > 1.0) pc = 1.0;
-    g_status.best_z      = zmax;
-    g_status.p_corrected = pc;
-    g_status.comparisons = comparisons;
+    double mean = sum / (double)nv;
+    double ss = sumsq - (double)nv * mean * mean;
+    double sigma = (nv > 1 && ss > 0.0) ? sqrt(ss / (double)(nv - 1)) : 0.0;
+    g_status.pass_mean     = mean;
+    g_status.pass_sigma    = sigma;
+    g_status.pass_stouffer = mean * sqrt((double)nv);
+
+    /* Ranking key is the centred z itself — subtracting the pass mean and
+     * dividing by σ is monotone, so it reorders nothing; it only sets the scale
+     * the UI prints. zmax_abs is kept studentized because the Bonferroni line
+     * needs a standard normal deviate.
+     *
+     * Built into LOCAL lists and published at the end: /status and
+     * /results.csv read top[]/low[] from the HTTP task, and zeroing the counts
+     * before refilling them let a poll land on an empty or half-built table.
+     * The counts still move last, so a racing reader sees either the old list
+     * or the new one, never a partial one. */
+    RunResult ltop[TOP_N], llow[TOP_N];
+    int       ltn = 0, lln = 0;
+    double zmax_abs = 0.0;
+
+    for (int j = 0; j < ntot; j++) {
+        const RunResult *r = &g_status.results[j];
+        if (!result_ranked(r)) continue;
+        double z  = rank_z(r);
+        double zs = (sigma > 0.0) ? (z - mean) / sigma : (z - mean);
+        if (fabs(zs) > zmax_abs) zmax_abs = fabs(zs);
+
+        if (ltn < TOP_N || z > rank_z(&ltop[ltn - 1])) {
+            if (ltn < TOP_N) ltn++;
+            int p = ltn - 1;
+            while (p > 0 && rank_z(&ltop[p - 1]) < z) {
+                ltop[p] = ltop[p - 1];
+                p--;
+            }
+            ltop[p] = *r;
+        }
+
+        if (lln < TOP_N || z < rank_z(&llow[lln - 1])) {
+            if (lln < TOP_N) lln++;
+            int p = lln - 1;
+            while (p > 0 && rank_z(&llow[p - 1]) > z) {
+                llow[p] = llow[p - 1];
+                p--;
+            }
+            llow[p] = *r;
+        }
+    }
+
+    for (int i = 0; i < ltn; i++) g_status.top[i] = ltop[i];
+    for (int i = 0; i < lln; i++) g_status.low[i] = llow[i];
+    g_status.result_count = ltn;
+    g_status.low_count    = lln;
+
+    /* Bonferroni on |Z*|, comparisons = ranked items only. */
+    g_status.comparisons = nv;
+    g_status.best_z      = zmax_abs;
+    if (nv > 0 && zmax_abs > 0.0) {
+        double p1 = erfc(zmax_abs / 1.41421356237);
+        double pc = (double)nv * p1;
+        if (pc > 1.0) pc = 1.0;
+        g_status.p_corrected = pc;
+    } else {
+        g_status.p_corrected = 1.0;
+    }
+    update_null_flags();
 }
 
-/* Publish one just-measured item (v3): fold it into the Top-N / Bottom-N
- * lists and refresh the significance line with comparisons = items measured so
- * far. Stored z is RAW and remains independent of every other item. Runs after
- * EVERY item (O(TOP_N)), so /status always shows the live ranking. */
-static void publish_result(const RunResult *r, int items_done)
+/* Quarantine every measured item in `block_idx` from pass ranking. CSV keeps
+ * the rows (skip_rank=1). Called when that block *triggered* a soft-down. */
+static void quarantine_block(int block_idx)
 {
-    int tn = g_status.result_count;
-    if (tn < TOP_N || r->z_score > g_status.top[tn - 1].z_score) {
-        if (tn < TOP_N) tn++;
-        int p = tn - 1;
-        while (p > 0 && g_status.top[p - 1].z_score < r->z_score) {
-            g_status.top[p] = g_status.top[p - 1]; p--;
+    int ntot = g_status.runs_completed;
+    if (ntot > NUM_RUNS) ntot = NUM_RUNS;
+    int n = 0;
+    for (int j = 0; j < ntot; j++) {
+        if ((int)g_status.results[j].block == block_idx &&
+            g_status.results[j].k > 0 &&
+            !g_status.results[j].skip_rank) {
+            g_status.results[j].skip_rank = 1;
+            n++;
         }
-        g_status.top[p] = *r;
-        g_status.result_count = tn;   // entries before count, for a racing reader
     }
-    int ln = g_status.low_count;
-    if (ln < TOP_N || r->z_score < g_status.low[ln - 1].z_score) {
-        if (ln < TOP_N) ln++;
-        int p = ln - 1;
-        while (p > 0 && g_status.low[p - 1].z_score > r->z_score) {
-            g_status.low[p] = g_status.low[p - 1]; p--;
-        }
-        g_status.low[p] = *r;
-        g_status.low_count = ln;
-    }
+    if (n > 0)
+        printf("pass: quarantine block %d (%d items) — soft-down trigger\n",
+               block_idx, n);
+}
 
-    compute_significance(items_done);
+/* Fold one VALID item into the pass (running sums kept for convenience;
+ * ranks always recompute from results[] so mean/σ stay exact). */
+static void publish_valid(const RunResult *r)
+{
+    if (result_ranked(r)) {
+        s_pass_sum   += r->z_score;
+        s_pass_sumsq += r->z_score * r->z_score;
+        s_pass_n++;
+    }
+    recompute_pass_ranks();
 }
 
 /* The items closest to the pass mean — the "nothing happened here" group.
  * Contract and the reason it is recomputed rather than accumulated are in
- * sensor.h; this is the plain two-pass implementation of it. */
+ * sensor.h; this is the plain two-pass implementation of it. Voids skipped. */
 int results_near_mean(RunResult *out, int cap, double *out_mean, double *out_sigma)
 {
     if (out_mean)  *out_mean  = 0.0;
@@ -604,30 +843,37 @@ int results_near_mean(RunResult *out, int cap, double *out_mean, double *out_sig
     if (n <= 0) return 0;
 
     double sum = 0.0;
-    for (int j = 0; j < n; j++) sum += g_status.results[j].z_score;
-    double mean = sum / n;
+    int    nv  = 0;
+    for (int j = 0; j < n; j++) {
+        if (!result_ranked(&g_status.results[j])) continue;
+        sum += rank_z(&g_status.results[j]);
+        nv++;
+    }
+    if (nv <= 0) return 0;
+    double mean = sum / (double)nv;
 
     // Sample σ (df = n−1), as everywhere else in this file: the mean it is
     // taken about was estimated from the same data.
     double ss = 0.0;
     for (int j = 0; j < n; j++) {
-        double d = g_status.results[j].z_score - mean;
+        if (!result_ranked(&g_status.results[j])) continue;
+        double d = rank_z(&g_status.results[j]) - mean;
         ss += d * d;
     }
-    double sigma = (n > 1 && ss > 0.0) ? sqrt(ss / (n - 1)) : 0.0;
+    double sigma = (nv > 1 && ss > 0.0) ? sqrt(ss / (double)(nv - 1)) : 0.0;
 
     if (out_mean)  *out_mean  = mean;
     if (out_sigma) *out_sigma = sigma;
 
-    // Insertion sort by |z − mean|, keeping the `cap` smallest. Same shape as
-    // publish_result()'s top/low maintenance, one pass, no allocation.
+    // Insertion sort by |z − mean|, keeping the `cap` smallest.
     int got = 0;
     for (int j = 0; j < n; j++) {
-        double d = fabs(g_status.results[j].z_score - mean);
-        if (got == cap && d >= fabs(out[got - 1].z_score - mean)) continue;
+        if (!result_ranked(&g_status.results[j])) continue;
+        double d = fabs(rank_z(&g_status.results[j]) - mean);
+        if (got == cap && d >= fabs(rank_z(&out[got - 1]) - mean)) continue;
         if (got < cap) got++;
         int p = got - 1;
-        while (p > 0 && fabs(out[p - 1].z_score - mean) > d) {
+        while (p > 0 && fabs(rank_z(&out[p - 1]) - mean) > d) {
             out[p] = out[p - 1]; p--;
         }
         out[p] = g_status.results[j];
@@ -754,6 +1000,8 @@ static void publish_pair_stats(void)
     g_status.pair_r_j   = bj;
     g_status.pair_n     = bn;
     g_status.pair_count = count;
+    g_status.v_eff      = compute_v_eff();
+    update_null_flags();   /* pair flag may have changed */
 }
 
 /* ── Cross-block drift instrumentation ─────────────────────────────────
@@ -792,6 +1040,7 @@ static void drift_add(double x, double y)
     double var_b = resid / (n - 2.0) / sxx;    // SE(slope)²
     g_status.drift_slope = b;
     g_status.drift_t     = (var_b > 0.0) ? b / sqrt(var_b) : 0.0;
+    update_null_flags();   /* drift gate may have flipped */
 }
 
 /* Append one closed block to the health table. Must run BEFORE
@@ -870,8 +1119,191 @@ static void record_loop(double loop_mean, int loop_idx)
     g_status.loops_done++;
 
     drift_add((double)loop_idx, raw_off);
+
+    /* Soft downweight — sticky, min-k protected, trigger-block quarantine.
+     *
+     * Trip (either wire): σ > NODE_SIGMA_SOFT  OR  |mean| > NODE_MEAN_SOFT.
+     * Clear: NODE_SOFT_CLEAR_BLOCKS consecutive clean blocks (not one lucky
+     * block — the 2026-08-11 full pass re-admitted the master after quiet
+     * blocks and then block 9 poisoned the ranking).
+     * Floor: never soft-exclude so many that fewer than NODE_SOFT_MIN_COMBINE
+     * ok nodes remain eligible; keep the least-bad among candidates.
+     * Quarantine: the block that *triggered* a new soft-down is excluded from
+     * pass mean/σ/Top-Bottom (CSV still holds every row). Never reboots. */
+    bool   want[MAX_NODES] = {false};
+    double score[MAX_NODES] = {0};   /* higher = worse; for triage when floor binds */
+    bool   have_stats[MAX_NODES] = {false};
+    double mean_i[MAX_NODES] = {0}, sig_i[MAX_NODES] = {0};
+    bool   any_trip = false;
+
+    for (int i = 0; i < g_status.node_count && i < MAX_NODES; i++) {
+        const NodeAcc *a = &s_nacc[i];
+        if (a->n < NODE_SOFT_MIN_N) continue;
+        double n = (double)a->n, m_i = a->s / n;
+        double v = (a->ss - n * m_i * m_i) / (n - 1.0);
+        double sig = v > 0.0 ? sqrt(v) : 0.0;
+        mean_i[i] = m_i;
+        sig_i[i]  = sig;
+        have_stats[i] = true;
+        bool bad_sig  = (sig > NODE_SIGMA_SOFT);
+        bool bad_mean = (fabs(m_i) > NODE_MEAN_SOFT);
+        if (bad_sig || bad_mean) {
+            want[i] = true;
+            double sm = bad_mean ? fabs(m_i) / NODE_MEAN_SOFT : 0.0;
+            double ss = bad_sig  ? sig / NODE_SIGMA_SOFT : 0.0;
+            score[i] = sm > ss ? sm : ss;
+        }
+    }
+
+    /* How many ok nodes would remain if every want[] were soft-downed? */
+    int n_ok = 0;
+    for (int i = 0; i < g_status.node_count && i < MAX_NODES; i++)
+        if (g_status.nodes[i].ok) n_ok++;
+    int n_want = 0;
+    for (int i = 0; i < g_status.node_count && i < MAX_NODES; i++)
+        if (want[i] && g_status.nodes[i].ok) n_want++;
+    int remain = n_ok - n_want;
+    /* Already-soft nodes that are not in want stay soft; count them out. */
+    for (int i = 0; i < g_status.node_count && i < MAX_NODES; i++) {
+        if (g_status.nodes[i].ok && g_status.nodes[i].soft_down && !want[i])
+            remain--;
+    }
+    if (remain < NODE_SOFT_MIN_COMBINE && n_want > 0) {
+        /* Keep the least-bad among want[] until remain >= floor. */
+        int need_keep = NODE_SOFT_MIN_COMBINE - remain;
+        while (need_keep > 0) {
+            int best = -1;
+            double best_sc = 1e300;
+            for (int i = 0; i < g_status.node_count && i < MAX_NODES; i++) {
+                if (!want[i]) continue;
+                if (score[i] < best_sc) { best_sc = score[i]; best = i; }
+            }
+            if (best < 0) break;
+            want[best] = false;
+            need_keep--;
+        }
+    }
+
+    for (int i = 0; i < g_status.node_count && i < MAX_NODES; i++) {
+        if (!have_stats[i] && !g_status.nodes[i].soft_down) continue;
+
+        if (want[i]) {
+            /* Quarantine on every trip that could actually have contaminated
+             * this block — i.e. the node was IN the combine while it misbehaved
+             * (2026-08-13, corrected same day). Two failure modes, both real:
+             *
+             *  - Only-the-first-trip (the original rule) waved through every
+             *    later bad block, because the node was already soft_down and
+             *    nothing re-fired.
+             *  - Every-trip-unconditionally quarantines every block for as long
+             *    as a sticky node keeps failing its gate — measured live: 33 of
+             *    33 items excluded per block, three blocks running, pass σ 0.000,
+             *    nothing left to rank at all.
+             *
+             * A soft-excluded node's excursion never entered the numbers, so
+             * there is nothing to quarantine; one that was still combining did
+             * contaminate them. s_blk_contrib is the mask of nodes that really
+             * entered this block's combines. */
+            bool contaminated = (s_blk_contrib & (1u << i)) != 0;
+            printf("node %d: soft-down %s (block mean=%.3f σ=%.3f)%s\n", i,
+                   g_status.nodes[i].soft_down ? "still tripped" : "tripped (sticky)",
+                   mean_i[i], sig_i[i],
+                   contaminated ? " — block quarantined" : " — was already out, block kept");
+            if (contaminated) any_trip = true;
+            g_status.nodes[i].soft_down = 1;
+            s_soft_clean[i] = 0;
+        } else if (g_status.nodes[i].soft_down && have_stats[i]) {
+            bool clean = (sig_i[i] > 0.0 && sig_i[i] <= NODE_SOFT_CLEAR_SIG &&
+                          fabs(mean_i[i]) <= NODE_SOFT_CLEAR_MEAN);
+            if (clean) {
+                if (s_soft_clean[i] < 255) s_soft_clean[i]++;
+                if (s_soft_clean[i] >= NODE_SOFT_CLEAR_BLOCKS) {
+                    printf("node %d: soft-down cleared after %d clean blocks "
+                           "(mean=%.3f σ=%.3f)\n",
+                           i, (int)s_soft_clean[i], mean_i[i], sig_i[i]);
+                    g_status.nodes[i].soft_down = 0;
+                    s_soft_clean[i] = 0;
+                } else {
+                    printf("node %d: soft-down clean %d/%d (mean=%.3f σ=%.3f)\n",
+                           i, (int)s_soft_clean[i], NODE_SOFT_CLEAR_BLOCKS,
+                           mean_i[i], sig_i[i]);
+                }
+            } else {
+                s_soft_clean[i] = 0;   /* streak broken */
+            }
+        }
+    }
+
+    if (any_trip) {
+        quarantine_block(loop_idx);
+        recompute_pass_ranks();
+    }
 }
 
+
+/* Re-derive z_ctr for every item of a just-finished block by subtracting each
+ * node's own mean over that block, then recombining over the SAME nodes that
+ * produced z_score (have_mask, so k is unchanged and the √k scaling still
+ * holds). Runs once per block close, while s_nacc still holds this block's
+ * per-node sums and before pairs_fold_loop() clears them.
+ *
+ * Centring is what the 08-13 pass argued for: inside a block every node sat at
+ * σ ≈ 1.0, but the block offsets moved by several z. Subtracting a mean
+ * estimated from ~103 items costs one degree of freedom per node per block —
+ * negligible — and removes the offset exactly.
+ *
+ * A node with fewer than 2 runs in the block gets no correction (its mean would
+ * be the single value itself, which would zero that node's contribution). If
+ * the PSRAM archive is missing there is nothing to recompute from, and z_ctr
+ * simply stays at the provisional raw value. */
+static void center_block(int block_idx)
+{
+    /* Contribution mask first: it comes from have_mask in results[], not from
+     * the archive, so it is still correct when PSRAM was unavailable and no
+     * centring can happen. */
+    int nt = g_status.runs_completed;
+    if (nt > NUM_RUNS) nt = NUM_RUNS;
+    s_blk_contrib = 0;
+    for (int j = 0; j < nt; j++) {
+        const RunResult *r = &g_status.results[j];
+        if ((int)r->block == block_idx && r->k > 0) s_blk_contrib |= r->have_mask;
+    }
+
+    if (!s_node_z) return;
+
+    double m[MAX_NODES] = {0};
+    bool   ok[MAX_NODES] = {false};
+    for (int i = 0; i < g_status.node_count && i < MAX_NODES; i++) {
+        if (s_nacc[i].n >= 2) {
+            m[i]  = s_nacc[i].s / (double)s_nacc[i].n;
+            ok[i] = true;
+        }
+    }
+
+    int ntot = g_status.runs_completed;
+    if (ntot > NUM_RUNS) ntot = NUM_RUNS;
+    int n = 0;
+    for (int j = 0; j < ntot; j++) {
+        RunResult *r = &g_status.results[j];
+        if ((int)r->block != block_idx || r->k == 0) continue;
+        const float *row = s_node_z + (size_t)j * MAX_NODES;
+        double sum = 0.0;
+        int    kk  = 0;
+        for (int i = 0; i < MAX_NODES; i++) {
+            if (!(r->have_mask & (1u << i))) continue;
+            if (isnan(row[i])) continue;
+            sum += (double)row[i] - (ok[i] ? m[i] : 0.0);
+            kk++;
+        }
+        if (kk > 0) {
+            r->z_ctr = (float)(sum / sqrt((double)kk));
+            n++;
+        }
+    }
+    if (n > 0)
+        printf("block %d: centred %d items (node means %+.3f %+.3f %+.3f %+.3f)\n",
+               block_idx, n, m[0], m[1], m[2], m[3]);
+}
 
 /* ── Block close (v3) ──────────────────────────────────────────────────
  * A block is the span between two sweep+baseline insertions. Closing one
@@ -888,7 +1320,12 @@ static void close_block(int block_idx)
         s = v > 0.0 ? sqrt(v) : 0.0;
     }
     g_status.loop_sigma = s;             // "last closed block" in /status
+    /* Centre first: record_loop may quarantine this block and re-rank, and the
+     * ranking must already see the centred values. Both read s_nacc, which
+     * pairs_fold_loop() clears, so both must run before it. */
+    center_block(block_idx);
     record_loop(m, block_idx);           // before the fold clears the sums
+    recompute_pass_ranks();              // centring moved every item in the block
     pairs_fold_loop();
     publish_pair_stats();
     s_blk_sum = s_blk_sumsq = 0.0;
@@ -955,6 +1392,16 @@ void elotto_task(void *pvParam)
     g_status.best_z          = 0.0;
     g_status.p_corrected     = 1.0;
     g_status.comparisons     = 0;
+    g_status.pass_mean       = 0.0;
+    g_status.pass_sigma      = 0.0;
+    g_status.pass_chi2       = 0.0;
+    g_status.pass_stouffer   = 0.0;
+    g_status.pass_n_valid    = 0;
+    g_status.pass_n_void     = 0;
+    g_status.pass_n_excl     = 0;
+    g_status.v_eff           = 1.0;
+    g_status.null_flags      = 0;
+    memset(s_soft_clean, 0, sizeof(s_soft_clean));
     g_status.loop_sigma      = 0.0;
     g_status.loops_done      = 0;
     g_status.loop_hist_n     = 0;
@@ -972,6 +1419,15 @@ void elotto_task(void *pvParam)
     calibrate_forget();
     memset(&s_drift, 0, sizeof(s_drift));
     s_blk_sum = s_blk_sumsq = 0.0;  s_blk_n = 0;
+    s_pass_sum = s_pass_sumsq = 0.0; s_pass_n = 0;
+    /* Per-node z archive in PSRAM (results[] is full of internal RAM). */
+    if (!s_node_z)
+        s_node_z = heap_caps_malloc((size_t)NUM_RUNS * MAX_NODES * sizeof(float),
+                                    MALLOC_CAP_SPIRAM);
+    if (s_node_z) {
+        for (size_t i = 0; i < (size_t)NUM_RUNS * MAX_NODES; i++)
+            s_node_z[i] = NAN;
+    }
     // focus_mode is set by /start and NOT reset here — it is the session's tag.
     focus_reset();
     // Block history lives in PSRAM: results[] already fills internal RAM. Kept
@@ -1034,8 +1490,15 @@ void elotto_task(void *pvParam)
      * Everything up to here is the instrument preparing itself, with nothing
      * displayed and nothing to attend to. Scoring is the first phase whose
      * bits are collected while a target is on screen, so it is where the
-     * protocol actually begins. Only when a human asked for it. */
-    if (g_status.pool_confirm && !g_status.abort_requested) {
+     * protocol actually begins. Only when a human asked for it.
+     *
+     * ⚠ Requires focus_mode, not just pool_confirm. This gate has NO timeout
+     * by design — there is no sensible default for "did the observer start
+     * attending?" — so arming it without an observer parks the pass forever.
+     * The web UI sends confirm=1 unconditionally, which is what put a 5005-item
+     * unattended run behind a Start button nobody was there to press. No
+     * observer, no observer gate. */
+    if (g_status.pool_confirm && g_status.focus_mode && !g_status.abort_requested) {
         ready_wait();
         if (g_status.abort_requested) goto done;
         /* Settle. The phase moves off PHASE_READY *first*: the UI re-raises
@@ -1063,8 +1526,17 @@ void elotto_task(void *pvParam)
      * Stop and show the operator what scoring chose, before ~10 h are spent
      * measuring it. Only when the session asked for it (confirm=1). */
     if (g_status.pool_confirm) {
-        pool_confirm_wait(euro, mx, &pool_nm, &pool_ne,
-                          pool_main, pool_euro, nm);
+        /* Unattended: take the proposal at once instead of burning the 15-minute
+         * timeout waiting for an operator who is not there. Recorded as
+         * pool_auto=1, exactly as the timeout path records it — the CSV must not
+         * be able to claim a human approved this pool. */
+        if (!g_status.focus_mode) {
+            g_status.pool_auto = 1;
+            printf("pool: unattended session — proposal taken unchanged\n");
+        } else {
+            pool_confirm_wait(euro, mx, &pool_nm, &pool_ne,
+                              pool_main, pool_euro, nm);
+        }
         if (g_status.abort_requested) goto done;
         /* The operator may have removed numbers, so recompute everything
          * derived from the pool sizes — at the minimum (pool == draw size)
@@ -1132,8 +1604,10 @@ void elotto_task(void *pvParam)
 
         // One broadcast starts every node, then measure locally — all of
         // them integrate the same window, which is the premise the sqrt(n)
-        // combine rests on.
+        // combine rests on. Attended sessions flush the ring first so
+        // pre-onset bits do not enter the window.
         int nseg = segments_for();
+        attended_onset_settle();
         slave_trigger(nseg);
         double zraw = 0.0;
         bool   zok  = gcp_zscore_ok(nseg, &zraw);
@@ -1141,35 +1615,39 @@ void elotto_task(void *pvParam)
         if (!zok) node_camera_failed(0, "stalled mid-run");
         if (nodes_have_slaves()) nodes_collect(LINK_MEAS_MS_FOR(nseg), true);
 
-        // Per-node values for the independence check, gathered before the
-        // combine so a dropped node is excluded from both consistently.
-        // znode[0] is zraw itself: v3 subtracts NOTHING from the master.
-        double znode[MAX_NODES] = {0};
-        bool   have[MAX_NODES]  = {false};
-        double sum = 0.0;
-        int    k   = 0;
-        if (zok && g_status.nodes[0].ok) {
-            znode[0] = zraw; have[0] = true; sum += zraw; k++;
-        }
-        for (int s = 0; s < nodes_slave_count(); s++) {
-            double zs = 0.0;
-            if (!g_status.nodes[s + 1].ok || !node_take_z(s, &zs)) continue;
-            znode[s + 1] = zs; have[s + 1] = true;
-            sum += zs; k++;
-        }
+        double znode[MAX_NODES];
+        bool   have[MAX_NODES];
+        double z = 0.0;
+        uint8_t mask = 0;
+        int k = gather_and_combine(zraw, zok, znode, have, &z, &mask);
+
+        /* Archive every node that produced a z (including soft-down ones),
+         * so post-hoc recombine is possible. */
+        node_z_store(j, znode, have);
         pairs_add_run(znode, have);
-        double z = (k > 0) ? sum / sqrt((double)k) : 0.0;
 
-        r->index   = i + 1;
-        r->block   = (uint16_t)block;
-        r->z_score = z;
-        r->chi_sq  = z * z;
-        r->p_value = p_label(fabs(z));
+        r->index     = i + 1;
+        r->block     = (uint16_t)block;
+        r->k         = (uint8_t)k;
+        r->have_mask = mask;
+        r->skip_rank = 0;   /* quarantine only at block close on soft-down trip */
+        if (k > 0) {
+            r->z_score = z;
+            /* Provisional: the block's node means are not known until it
+             * closes, so the live ranking uses the uncentred value and
+             * center_block() replaces it a few minutes later. */
+            r->z_ctr   = (float)z;
+            s_blk_sum += z;  s_blk_sumsq += z * z;  s_blk_n++;
+        } else {
+            /* VOID: incomplete combine. Archived with k=0, never enters
+             * ranking, Bonferroni, pass mean/σ, or block σ. */
+            r->z_score = 0.0;
+            r->z_ctr   = 0.0f;
+        }
 
-        s_blk_sum += z;  s_blk_sumsq += z * z;  s_blk_n++;
-        publish_result(r, j + 1);         // top/low + pass stats + Bonferroni
         g_status.runs_completed = j + 1;  // AFTER the row is complete: readers
                                           // (/status, /results.csv) trust the prefix
+        if (k > 0) publish_valid(r);      // studentized top/low + pass health
         g_status.elapsed_ms     = elapsed_ms_now();
         run_gap_ms(gap_for());
     }
@@ -1184,7 +1662,7 @@ done:
      * describes a full between-insertions span. */
     pairs_fold_loop();
     publish_pair_stats();
-    compute_significance(g_status.runs_completed);
+    recompute_pass_ranks();   /* studentized ranks + null_flags from valid prefix */
 
 finalize:
     focus_off();

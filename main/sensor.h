@@ -68,6 +68,42 @@
 /* Diagnostic thresholds that appear in more than one place. */
 #define PAIR_FLAG_T            3.0   // |r|·√n above this = nodes not independent
 #define DRIFT_FLAG_T           3.0   // |drift_t| above this = real cross-block drift
+/* Pass-level null gates (GCP-first). Ranking is secondary while any of these
+ * fire: the published Stouffer z is only N(0,1) under unit variance and no
+ * drift. Soft node downweight trips on block σ OR |mean| excursion — the
+ * 2026-08-11 pass had master mean −7 / .145 +4.6 with σ≈1, which the σ-only
+ * rule silently kept in the combine. */
+#define PASS_SIGMA_LO          0.85  // pass sample σ below this → null broken
+#define PASS_SIGMA_HI          1.15  // pass sample σ above this → null broken
+#define PASS_NULL_MIN_N       30     // need this many valid items before σ gate
+#define NODE_SIGMA_SOFT        1.25  // block per-node σ above this → soft-exclude
+#define NODE_MEAN_SOFT         1.50  // |block mean z| above this → soft-exclude
+#define NODE_SOFT_MIN_N       20     // min runs in the block before soft-exclude
+#define NODE_SOFT_CLEAR_MEAN   0.50  // |mean| must be ≤ this to count a "clean" block
+#define NODE_SOFT_CLEAR_SIG    1.05  // σ must be ≤ this to count a "clean" block
+#define NODE_SOFT_CLEAR_BLOCKS 4     // consecutive clean blocks required to lift soft-down
+/* Never soft-exclude below this many live nodes. ⚠ 1, not 3 (2026-08-13): at
+ * four nodes a floor of 3 allowed exactly ONE exclusion, so when two nodes
+ * misbehaved at once the second stayed in the combine. The 08-13 full pass is
+ * the proof — .145 was excluded, the master (block means down to −6.33) was
+ * kept, and blocks 4/14/33 landed in the results at −3.4 with the master's
+ * offset intact: (−6.33 + 0.27 + 0.22)/√3 = −3.38, exactly the published value.
+ * A bad arm in the combine costs more than a small k does (user, 2026-08-13). */
+#define NODE_SOFT_MIN_COMBINE  1     // never soft-exclude below this many live nodes
+/* null_flags bits (also published in /status). */
+#define NULL_FLAG_SIGMA        0x01  // pass_σ outside [PASS_SIGMA_LO, PASS_SIGMA_HI]
+#define NULL_FLAG_DRIFT        0x02  // |drift_t| > DRIFT_FLAG_T
+#define NULL_FLAG_CHI2         0x04  // Σz²/n far from 1 (same band as σ, large n)
+#define NULL_FLAG_PAIR         0x08  // worst |r|·√n > PAIR_FLAG_T
+
+/* Phase-0 scoring direction (pre-registered). Only affects WHICH numbers enter
+ * the pool — never the Phase-2 measurement statistics. Default HIGH matches
+ * the historical "largest positive z" rule. */
+typedef enum {
+    SCORE_DIR_HIGH = 0,   // pick largest raw z
+    SCORE_DIR_LOW  = 1,   // pick smallest raw z
+    SCORE_DIR_ABS  = 2,   // pick largest |z|
+} ScoreDir;
 
 /* Stringify, so the HTML/JS copies of the numbers above are the SAME token the
  * C code compiles. Two levels are required: the inner one would otherwise
@@ -130,10 +166,27 @@ bool elotto_pool_reply(PoolAction act,
 
 typedef struct {
     int        index;      // combination id (1-based slot in the enumeration)
-    double     z_score;    // RAW combined z — never rewritten (v3)
-    double     chi_sq;
-    const char *p_value;
+    double     z_score;    // RAW combined Stouffer z (Σz_i/√k) — never rewritten
+    /* BLOCK-CENTRED combine: Σ(z_i − m_i,block)/√k over the same nodes that
+     * entered z_score, where m_i,block is node i's own mean over this block.
+     * This is what the ranking, pass mean/σ and Bonferroni run on (2026-08-13).
+     *
+     * Why: the 08-13 pass showed per-node σ ≈ 1.0 INSIDE every block while the
+     * per-block offsets jumped (master −6.33, .145 +24.13 in single blocks).
+     * The noise was fine; the zero point moved. Centring removes exactly that
+     * and left the pass at σ 0.995 with max|z| 3.92 against the 4.13 expected
+     * for 5005 draws — a clean null instead of a table of block artefacts.
+     *
+     * ⚠ It also removes any real effect that is CONSTANT across a whole block,
+     * which is a pre-registration decision, not a detail: what this instrument
+     * can still see is an effect that varies BETWEEN items inside a block.
+     * z_score stays raw and untouched, so the uncentred view survives in the
+     * CSV forever. Provisional (= z_score) until the block closes. */
+    float      z_ctr;
     uint16_t   block;      // which block this item was measured in (v3)
+    uint8_t    k;          // nodes that entered the combine; 0 = VOID (incomplete)
+    uint8_t    have_mask;  // bit i set ⇒ node i contributed (master = bit 0)
+    uint8_t    skip_rank;  // 1 = exclude from pass mean/σ/Top-Bottom (trigger block)
     uint8_t    nums[6];
     uint8_t    euro[2];
 } RunResult;
@@ -183,6 +236,9 @@ typedef struct {
     double   z_mean;        // online mean of this node's raw per-run z
     uint32_t z_n;           // runs behind z_mean (for SE = 1/√n)
     uint32_t lost;          // runs this node failed to answer in time
+    uint8_t  soft_down;     // 1 = excluded from combine after a block σ excursion
+                            // (quality collapse, not a hard camera stall). Cleared
+                            // when a later block is clean. Never reboots.
     float    cam_mbit;      // camera rate at the last per-loop 'D' query
     uint32_t cam_stalls;
     // What this node's camera calibration chose at the start of the current loop
@@ -254,9 +310,23 @@ typedef struct {
     int64_t          elapsed_ms;
     volatile int     scoring_done;
     int              scoring_total;
-    double           best_z;              // most extreme |Z| in the published ranking (raw)
-    double           p_corrected;         // Bonferroni-corrected two-sided p of best_z
-    int              comparisons;         // == items measured so far (one draw per item)
+    double           best_z;              // most extreme |Z*| in the studentized ranking
+    double           p_corrected;         // Bonferroni two-sided p of best_z (on Z*)
+    int              comparisons;         // == VALID items so far (voids excluded)
+    /* ── Pass-level health (GCP primary endpoints) ─────────────────────
+     * Under H₀ with a working instrument: mean ≈ 0, σ ≈ 1, Σz² ≈ n.
+     * Ranking is secondary; when null_flags ≠ 0 the extremes are not
+     * decisive. Updated after every valid item from the valid prefix. */
+    double           pass_mean;           // mean of valid raw z so far
+    double           pass_sigma;          // sample σ (df = n−1) of valid raw z
+    double           pass_chi2;           // Σ z² over valid items (≈ χ²(n) under H₀)
+    double           pass_stouffer;       // mean · √n — test of a common offset
+    int              pass_n_valid;        // ranked items (k>0 and not skip_rank)
+    int              pass_n_void;         // incomplete combines (k=0), archived only
+    int              pass_n_excl;         // k>0 but skip_rank (trigger-block quarantine)
+    double           v_eff;               // Var(Σz_i/√k) under measured σ and r
+                                          // (1.0 = independent unit nodes)
+    uint8_t          null_flags;          // NULL_FLAG_* — non-zero ⇒ ranking not decisive
     double           loop_sigma;          // per-run σ of the LAST CLOSED BLOCK (1.0 = ideal)
     int              loops_done;          // BLOCKS closed and folded into the drift stats
     int              loop_hist_n;         // entries valid in loop_hist[] (<= LOOP_HIST)
@@ -265,6 +335,7 @@ typedef struct {
     double           drift_t;             // slope / SE(slope); |t| > 3 = real drift, not noise
     double           off_first, off_last; // master raw per-run z offset, first / latest block
     double           sigma_lo, sigma_hi;  // min / max per-block combined σ across the session
+    ScoreDir         score_dir;           // Phase-0 pool selection rule (pre-registered)
     // Independence check across ALL node pairs (6 of them at n=4). Only the
     // worst is published as a scalar: the √n gain fails if ANY pair correlates,
     // so the maximum is the number that decides, not an average that would
@@ -413,7 +484,7 @@ uint32_t fast_rng(void);
  * responded to exposure at all. Served by GET /calibrate. */
 const camera_cal_t *elotto_last_calibration(void);
 
-/* The `cap` measured items sitting CLOSEST TO THE PASS MEAN, i.e. the least
+/* The `cap` VALID items sitting CLOSEST TO THE PASS MEAN, i.e. the least
  * remarkable measurements of the session — the third published group beside
  * Top-N and Bottom-N. Writes up to `cap` entries to out[] (nearest first) and
  * returns how many; *out_mean / *out_sigma receive the pass statistics the
@@ -425,11 +496,14 @@ const camera_cal_t *elotto_last_calibration(void);
  * Ordering by |z − m| is identical to ordering by the studentized |z − m|/σ,
  * so σ only scales what is displayed, never which items are chosen.
  *
- * Computed on demand from results[0..runs_completed) rather than maintained
- * incrementally: the mean moves as the pass proceeds, so an item admitted or
- * discarded against an early mean would be judged on a number that no longer
- * exists. A full scan is exact at any moment, and at O(n) per call on the HTTP
- * task it never touches the measurement path. Safe against the running session
- * for the same reason /results.csv is: runs_completed is bumped only after a
- * row is complete, so the prefix a reader sees is never half-written. */
+ * Void rows (k == 0) are skipped. Computed on demand from the measured prefix
+ * rather than maintained incrementally: the mean moves as the pass proceeds.
+ * Safe against the running session: runs_completed is bumped only after a row
+ * is complete. */
 int results_near_mean(RunResult *out, int cap, double *out_mean, double *out_sigma);
+
+/* Per-node raw z for measured item j (measurement order). Returns false if
+ * the archive is missing or j is out of range. out[MAX_NODES] gets NaN for
+ * nodes that did not contribute that run. Lives in PSRAM so results[] itself
+ * stays lean. */
+bool results_node_z(int j, float out[MAX_NODES]);

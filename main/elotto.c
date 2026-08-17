@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
@@ -168,6 +169,15 @@ static const char HTML[] =
 "&#127919; Focus display (attended session)</label>"
 "</span>"
 "</div>"
+"<div class='frow'>"
+"<label for='selScore' title='Pre-registered Phase-0 pool rule. Only affects "
+"which numbers enter the pool, never the measurement pass.'>Score direction:</label>"
+"<select id='selScore' class='fin' style='padding:4px 6px'>"
+"<option value='high' selected>highest z (default)</option>"
+"<option value='low'>lowest z</option>"
+"<option value='abs'>largest |z|</option>"
+"</select>"
+"</div>"
 "<button class='btn btn-euro' style='width:100%' onclick='doStart(0)'>&#127808; Euro-Lotto</button>"
 "<button class='btn btn-649' style='width:100%' onclick='doStart(1)'>&#127808; 6 of 49</button>"
 "</div>"
@@ -293,16 +303,17 @@ static const char HTML[] =
 "</div>"
 "<div class='card' id='resCard' style='display:none'>"
 "<h3 id='resTitle' style='color:#6ab0e8;margin-bottom:4px'></h3>"
+"<div id='nullBanner' style='display:none;color:#ff9c6e;font-weight:700;"
+"font-size:.9em;margin-bottom:8px;padding:8px;border:1px solid #ff9c6e;"
+"border-radius:6px;background:rgba(255,100,50,.12)'></div>"
 "<div id='sigLine' style='color:#a0c0a0;font-size:.82em;margin-bottom:4px'></div>"
 "<table><thead id='resHead'></thead>"
 "<tbody id='resBody'></tbody></table>"
 "<div style='text-align:center;margin-top:14px'>"
-"<button id='btnSave' class='btn' onclick='doSave()' style='display:none;background:#2e7d32;color:#fff;padding:10px 28px'>&#128190; Save CSV (the 15 rows)</button>"
-// The archival pull, deliberately a plain link and not a second big button:
-// the summary cannot be re-derived into a pass, so the full file has to stay
-// reachable — but reaching for it is the operator's explicit act.
+/* Full pass is the archival record (never re-measured). Summary is secondary. */
+"<button id='btnSave' class='btn' onclick='doSave()' style='display:none;background:#2e7d32;color:#fff;padding:10px 28px'>&#128190; Save full pass CSV</button>"
 "<div id='saveAll' style='display:none;margin-top:8px;font-size:.8em'>"
-"<a href='/results.csv?all=1' style='color:#90ee90'>full pass, every item &#8594; /results.csv?all=1</a></div>"
+"<a href='/results.csv' style='color:#90ee90'>summary only (15 rows) &#8594; /results.csv</a></div>"
 "</div>"
 "</div>"
 "<div class='card' id='resCardLow' style='display:none'>"
@@ -411,6 +422,7 @@ static const char HTML[] =
 "var gapS=Math.round(runS*0.4*10)/10;"
 "if(gapS<0.5)gapS=0.5;if(gapS>10)gapS=10;"
 "var foc=document.getElementById('chkFocus').checked?1:0;"
+"var score=document.getElementById('selScore').value||'high';"
 "document.getElementById('runsErr').textContent='';"
 "document.getElementById('sCalTotal').textContent=base;"
 "document.getElementById('pfScore').style.width='0%';"
@@ -418,7 +430,7 @@ static const char HTML[] =
 "document.getElementById('measArea').style.display='none';"
 "fetch('/start?mode='+mode+'&baseline='+base"
 "+'&run='+runS+'&gap='+gapS"
-"+'&focus='+foc+'&confirm=1',{method:'POST'})"
+"+'&focus='+foc+'&score='+score+'&confirm=1',{method:'POST'})"
 ".then(function(r){if(!r.ok){"
 "document.getElementById('runsErr').textContent="
 "'\\u26a0 a session is already running \\u2014 abort it first';"
@@ -441,6 +453,7 @@ static const char HTML[] =
 "document.getElementById('resCard').style.display='none';"
 "document.getElementById('resCardLow').style.display='none';"
 "document.getElementById('resCardZero').style.display='none';"
+"document.getElementById('nullBanner').style.display='none';"
 "document.getElementById('itemBadge').style.display='none';"
 "document.getElementById('msg').textContent='';"
 "setMode(mode);"
@@ -741,21 +754,45 @@ static const char HTML[] =
 "function showResults(d){"
 "var isEuro=d.mode==='euro';"
 "var sl=document.getElementById('sigLine');"
-/* Significance on the DISPLAYED scale: the same Bonferroni the device
-   computes, re-derived client-side so the studentized view corrects its own
-   extremes rather than borrowing the raw ones. */
+"var nb=document.getElementById('nullBanner');"
+/* Null-broken banner: ranking is not decisive while the instrument null fails. */
+"var nf=d.null_flags||0;"
+"if(nf){"
+"var bits=[];"
+"if(nf&1)bits.push('pass \\u03c3 = '+(d.pass_sigma||0).toFixed(3)+' (want ~1)');"
+"if(nf&4)bits.push('\\u03a3z\\u00b2/n off unit');"
+"if(nf&2)bits.push('drift |t| = '+Math.abs(d.drift_t||0).toFixed(1));"
+"if(nf&8)bits.push('node pair correlated');"
+"nb.style.display='block';"
+"nb.innerHTML='\\u26a0 NULL BROKEN \\u2014 Top/Bottom are NOT decisive: '+bits.join(' \\u00b7 ')"
+"+'. Read pass health first.';"
+"}else{nb.style.display='none';nb.innerHTML='';}"
+/* Pass health is the GCP primary endpoint; ranking is secondary. */
+"var ph='';"
+"if((d.pass_n_valid||0)>0){"
+"ph='pass mean '+(d.pass_mean||0).toFixed(3)"
+"+' \\u00b7 \\u03c3 '+(d.pass_sigma||0).toFixed(3)"
+"+' \\u00b7 \\u03a3z\\u00b2/n '+((d.pass_chi2||0)/(d.pass_n_valid||1)).toFixed(3)"
+"+' \\u00b7 Stouffer '+(d.pass_stouffer||0).toFixed(2)"
+"+' \\u00b7 v_eff '+(d.v_eff||1).toFixed(3)"
+"+' \\u00b7 ranked '+(d.pass_n_valid||0)"
+"+((d.pass_n_excl>0)?(' \\u00b7 excl '+d.pass_n_excl):'')"
+"+((d.pass_n_void>0)?(' \\u00b7 void '+d.pass_n_void):'');"
+"}"
+/* Significance on studentized |Z*|; Bonferroni comparisons = valid items. */
 "if(d.comparisons>0&&d.top&&d.top.length){"
 "var zx=Math.abs(d.best_z||0),pcv=d.p_corr||0;"
 "var pc=pcv<0.001?pcv.toExponential(1):pcv.toFixed(3);"
-"var sig=pcv<0.05?'significant':'consistent with chance';"
-"sl.innerHTML='Independent raw measurement per item'"
-"+' \\u00b7 most extreme |Z| = '+zx.toFixed(2)"
-"+' \\u00b7 corrected p = '+pc+' over '+d.comparisons+' comparisons ('+sig+')';"
-"}else sl.innerHTML='';"
+"var sig=nf?'ranking suspended':(pcv<0.05?'significant':'consistent with chance');"
+"sl.innerHTML=(ph?ph+'<br>':'')+'Studentized ranking (|Z*|)'"
+"+' \\u00b7 most extreme |Z*| = '+zx.toFixed(2)"
+"+' \\u00b7 corrected p = '+pc+' over '+d.comparisons+' valid ('+sig+')';"
+"}else sl.innerHTML=ph||'';"
 "var s2='';"
 // Which condition produced these numbers. An attended session is not equivalent
 // to an unattended one, so the two must never be pooled later.
 "s2+=(s2?' \\u00b7 ':'')+(d.focus?'\\uD83C\\uDFAF attended (focus)':'unattended (control)');"
+"if(d.score_dir)s2+=' \\u00b7 score='+d.score_dir;"
 // Carried into the results line because the Focus card — where these normally
 // live — is hidden once the session ends. `missed` is a gate, not a curiosity:
 // a skipped window credits an effect to the wrong combination, so it has to
@@ -803,7 +840,7 @@ static const char HTML[] =
 // A camera fault is named, not merely reflected in a shrunken node count: the
 // operator has to know WHICH node died and that it was rebooted.
 "var st=N.cam_fault?' \\u26a0 CAMERA FAULT \\u2013 rebooted'+(N.reboots>1?' x'+N.reboots:'')"
-":(N.ok?'':' \\u26a0 dropped');"
+":(N.soft_down?' \\u26a0 soft-down (\\u03c3 excursion)':(N.ok?'':' \\u26a0 dropped'));"
 // Each node calibrates its own camera and they WILL differ — different physical
 // sensors, which is why one measured cleaner than the other at identical
 // settings. So the setting is shown per node, with the fold state that goes with
@@ -865,22 +902,20 @@ static const char HTML[] =
 "document.getElementById('resCardZero').style.display='none';"
 "return;}"
 "lastDisplayed=d.top;"
+"var st={m:d.pass_mean||0,s:d.pass_sigma||0};"
 "document.getElementById('resTitle').innerHTML="
-"'\\uD83C\\uDFC6 Top '+d.top.length+' of '+d.comparisons+' measured'"
-"+(isEuro?' \\u2014 Eurojackpot':' \\u2014 6-of-49')+' (highest z)';"
-"renderRunTable('resHead','resBody',d.top,isEuro,d);"
+"'\\uD83C\\uDFC6 Top '+d.top.length+' of '+d.comparisons+' valid'"
+"+(isEuro?' \\u2014 Eurojackpot':' \\u2014 6-of-49')+' (highest Z*)';"
+"renderRunTable('resHead','resBody',d.top,isEuro,d,st);"
 "document.getElementById('btnSave').style.display='';"
 "document.getElementById('saveAll').style.display='';"
 "showLow(d);"
 "showNear(d);"
 "}"
-// `st` = {m,s}: render the studentized column too, and take p from THAT value.
-// Only the near-zero table passes it — for the extremes the raw z is the
-// published quantity, and adding a second p to those rows invites reading
-// whichever of the two looks better.
+// Always show Z and Z* when pass σ is available; p is from Z* (studentized).
 "function renderRunTable(headId,bodyId,res,isEuro,d,st){"
 "document.getElementById(headId).innerHTML="
-"'<tr><th>#</th><th>Item</th><th>Z</th>'+(st?'<th>Z*</th>':'')+'<th>p</th><th>Numbers</th>'"
+"'<tr><th>#</th><th>Item</th><th>Z</th>'+(st?'<th>Z*</th>':'')+'<th>p</th><th>k</th><th>Numbers</th>'"
 "+(isEuro?'<th>Bonus</th>':'')+'</tr>';"
 "var tb=document.getElementById(bodyId);tb.innerHTML='';"
 "for(var i=0;i<res.length;i++){"
@@ -891,19 +926,23 @@ static const char HTML[] =
 "if(isEuro&&r.euro&&r.euro.length)"
 "for(var j=0;j<r.euro.length;j++)"
 "estr+='<span class=\"num euro\">'+r.euro[j]+'</span>';"
-"var z=r.z,zs=(st&&st.s>0)?(z-st.m)/st.s:0;"
+// pass_mean/pass_sigma are computed over the CENTRED values, so Z* has to be
+// built from z_ctr. The Z column still shows the raw z next to it.
+"var z=r.z,zc=(r.z_ctr===undefined?z:r.z_ctr);"
+"var zs=(st&&st.s>0)?(zc-st.m)/st.s:0;"
 "tb.innerHTML+='<tr><td>'+(i+1)+'</td><td>'+r.run+'</td>"
 "<td>'+z.toFixed(4)+'</td>'+(st?'<td>'+zs.toFixed(3)+'</td>':'')+'"
-"<td>'+pfmt(p2(st?zs:z))+'</td><td>'+nums+'</td>"
+"<td>'+pfmt(p2(st?zs:z))+'</td><td>'+(r.k||'')+'</td><td>'+nums+'</td>"
 "'+(isEuro?'<td>'+estr+'</td>':'')+'</tr>';"
 "}"
 "}"
 "function showLow(d){"
 "var res=d.low,isEuro=d.mode==='euro';"
 "if(!res||res.length===0){document.getElementById('resCardLow').style.display='none';return;}"
+"var st={m:d.pass_mean||0,s:d.pass_sigma||0};"
 "document.getElementById('resTitleLow').innerHTML="
-"'\\u2B07 Bottom '+res.length+' (lowest z)';"
-"renderRunTable('resHeadLow','resBodyLow',res,isEuro,d);"
+"'\\u2B07 Bottom '+res.length+' (lowest Z*)';"
+"renderRunTable('resHeadLow','resBodyLow',res,isEuro,d,st);"
 "document.getElementById('resCardLow').style.display='block';"
 "}"
 // The third group: the items that did the LEAST. Nearest the pass mean, not
@@ -923,11 +962,8 @@ static const char HTML[] =
 "renderRunTable('resHeadZero','resBodyZero',res,isEuro,d,st);"
 "document.getElementById('resCardZero').style.display='block';"
 "}"
-/* The export moved to the device (v3) and the browser only navigates to it.
-   The button takes the SUMMARY — the same fifteen rows that are on screen,
-   German CSV. The full pass is one link below, at ?all=1; it is the only copy
-   of data that is never re-measured, so it is worth the separate click. */
-"function doSave(){window.location='/results.csv';}"
+/* Full pass is the record (never re-measured). Summary is a secondary link. */
+"function doSave(){window.location='/results.csv?all=1';}"
 "</script></body></html>";
 
 /* Serialize one RunResult as a JSON object; returns chars written. */
@@ -935,15 +971,15 @@ static int emit_run(char *buf, int cap, const RunResult *r, bool euro)
 {
     if (euro)
         return snprintf(buf, cap,
-            "{\"run\":%d,\"z\":%.4f,\"p\":\"%s\","
+            "{\"run\":%d,\"z\":%.4f,\"z_ctr\":%.4f,\"k\":%d,"
             "\"nums\":[%d,%d,%d,%d,%d],\"euro\":[%d,%d]}",
-            r->index, r->z_score, r->p_value,
+            r->index, r->z_score, (double)r->z_ctr, (int)r->k,
             r->nums[0], r->nums[1], r->nums[2], r->nums[3], r->nums[4],
             r->euro[0], r->euro[1]);
     return snprintf(buf, cap,
-        "{\"run\":%d,\"z\":%.4f,\"p\":\"%s\","
+        "{\"run\":%d,\"z\":%.4f,\"z_ctr\":%.4f,\"k\":%d,"
         "\"nums\":[%d,%d,%d,%d,%d,%d],\"euro\":[]}",
-        r->index, r->z_score, r->p_value,
+        r->index, r->z_score, (double)r->z_ctr, (int)r->k,
         r->nums[0], r->nums[1], r->nums[2],
         r->nums[3], r->nums[4], r->nums[5]);
 }
@@ -971,11 +1007,18 @@ static esp_err_t status_handler(httpd_req_t *req)
         g_status.phase == PHASE_POOL_CONFIRM ? "poolconfirm" :
         g_status.phase == PHASE_READY        ? "ready"       :
                                                "measuring";
+    const char *score_str =
+        g_status.score_dir == SCORE_DIR_LOW ? "low" :
+        g_status.score_dir == SCORE_DIR_ABS ? "abs" : "high";
     pos += snprintf(buf+pos, sizeof(buf)-pos,
         "{\"state\":\"%s\",\"mode\":\"%s\",\"phase\":\"%s\","
         "\"slave\":%s,"
         "\"src\":\"camera\",\"src_stalled\":%s,\"fault\":\"%s\","
         "\"best_z\":%.4f,\"p_corr\":%.6g,\"comparisons\":%d,"
+        "\"pass_mean\":%.4f,\"pass_sigma\":%.4f,\"pass_chi2\":%.4f,"
+        "\"pass_stouffer\":%.4f,\"pass_n_valid\":%d,\"pass_n_void\":%d,"
+        "\"pass_n_excl\":%d,"
+        "\"v_eff\":%.4f,\"null_flags\":%d,\"score_dir\":\"%s\","
         "\"loop_sigma\":%.4f,"
         "\"pair_r\":%.4f,\"pair_n\":%d,"
         "\"pair_i\":%d,\"pair_j\":%d,\"pair_count\":%d,"
@@ -998,6 +1041,10 @@ static esp_err_t status_handler(httpd_req_t *req)
         g_status.slave_connected ? "true" : "false",
         g_status.noise_stalled ? "true" : "false", g_status.fault,
         g_status.best_z, g_status.p_corrected, g_status.comparisons,
+        g_status.pass_mean, g_status.pass_sigma, g_status.pass_chi2,
+        g_status.pass_stouffer, g_status.pass_n_valid, g_status.pass_n_void,
+        g_status.pass_n_excl,
+        g_status.v_eff, (int)g_status.null_flags, score_str,
         g_status.loop_sigma,
         g_status.pair_r_max, g_status.pair_n,
         g_status.pair_r_i, g_status.pair_r_j, g_status.pair_count,
@@ -1065,13 +1112,14 @@ static esp_err_t status_handler(httpd_req_t *req)
     for (int i = 0; i < g_status.node_count && i < MAX_NODES; i++) {
         const NodeStatus *N = &g_status.nodes[i];
         pos += snprintf(buf + pos, sizeof(buf) - pos,
-            "%s{\"id\":%d,\"ip\":\"%s\",\"ok\":%s,"
+            "%s{\"id\":%d,\"ip\":\"%s\",\"ok\":%s,\"soft_down\":%s,"
             "\"z\":%.4f,\"z_n\":%lu,\"sigma\":%.4f,"
             "\"lost\":%lu,\"cam_mbit\":%.3f,\"cam_stalls\":%lu,"
             "\"cam_fault\":%d,\"reboots\":%lu,"
             "\"cam_exp\":%lu,\"cam_gain\":%d,\"cam_fold\":%d,\"cam_cal\":%d,"
             "\"cam_bias\":%.6f,\"cam_cal_mbit\":%.3f}",
             i ? "," : "", i, i ? N->ip : "self", N->ok ? "true" : "false",
+            N->soft_down ? "true" : "false",
             N->z_mean, (unsigned long)N->z_n, N->sigma,
             (unsigned long)N->lost, N->cam_mbit, (unsigned long)N->cam_stalls,
             (int)N->cam_fault, (unsigned long)N->reboots,
@@ -1117,17 +1165,13 @@ static esp_err_t status_handler(httpd_req_t *req)
     }
 
     // The third group: the items closest to the pass mean — the least
-    // remarkable measurements, published beside the two extremes so the
-    // ranking is read against its own centre rather than against 0. Selected
-    // here rather than in the measurement path (see results_near_mean).
-    // pass_mean/pass_sigma travel with them: without the centre and the scale
-    // the studentized column on screen is uninterpretable after the fact.
+    // remarkable measurements. pass_mean/pass_sigma are already in the head
+    // (session fields); near[] is selected here (see results_near_mean).
     RunResult near[TOP_N];
     double pmean = 0.0, psigma = 0.0;
     int nshow = results_near_mean(near, TOP_N, &pmean, &psigma);
-    pos += snprintf(buf+pos, sizeof(buf)-pos,
-                    "],\"pass_mean\":%.4f,\"pass_sigma\":%.4f,\"near\":[",
-                    pmean, psigma);
+    (void)pmean; (void)psigma;   /* already published as g_status.pass_* */
+    pos += snprintf(buf+pos, sizeof(buf)-pos, "],\"near\":[");
     for (int i = 0; i < nshow; i++) {
         if (i) pos += snprintf(buf+pos, sizeof(buf)-pos, ",");
         pos += emit_run(buf+pos, sizeof(buf)-pos, &near[i], euro);
@@ -1214,17 +1258,21 @@ static const char *de_num(char *dst, size_t cap, double v, int prec)
 static int csv_row(char *buf, size_t cap, const char *group, int rank,
                    const RunResult *r, double mean, double sigma)
 {
-    char zb[32], sb[32];
-    double zs = (sigma > 0.0) ? (r->z_score - mean) / sigma : 0.0;
+    char zb[32], sb[32], ab[32];
+    /* Studentized against the pass statistics, which are themselves computed
+     * over the CENTRED values — so this must studentize z_ctr, not the raw z.
+     * Mixing the two would put a raw value over a centred mean and σ. */
+    double zs = (sigma > 0.0) ? ((double)r->z_ctr - mean) / sigma : 0.0;
     return snprintf(buf, cap,
-        "%s;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%s;%s;%d\n",
+        "%s;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%s;%s;%s;%d;%d\n",
         group, rank, r->index,
         r->nums[0], r->nums[1], r->nums[2],
         r->nums[3], r->nums[4], r->nums[5],
         r->euro[0], r->euro[1],
         de_num(zb, sizeof(zb), r->z_score, 6),
         de_num(sb, sizeof(sb), zs, 4),
-        (int)r->block);
+        de_num(ab, sizeof(ab), (double)r->z_ctr, 4),
+        (int)r->block, (int)r->k);
 }
 
 /* ── /results.csv GET – the three published groups; ?all=1 for everything ──
@@ -1265,40 +1313,80 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
     double mean = 0.0, sigma = 0.0;
     int nn = results_near_mean(near, TOP_N, &mean, &sigma);
 
-    char mb[32], sb[32];
-    int len = snprintf(buf, sizeof(buf),
-        "# elotto v3 mode=%s focus=%s items=%d/%d blocks=%d paused_ms=%lld "
-        "pass_mean=%s pass_sigma=%s\n",
+    char mb[32], sb[32], cb[32], vb[32], stb[32];
+    const char *score_str =
+        g_status.score_dir == SCORE_DIR_LOW ? "low" :
+        g_status.score_dir == SCORE_DIR_ABS ? "abs" : "high";
+    /* Node identity in the header: discovery order is not stable across
+     * sessions, so map columns z0..z3 through this IP list. */
+    int nlen = snprintf(buf, sizeof(buf),
+        "# elotto v3 mode=%s focus=%s score=%s items=%d/%d ranked=%d excl=%d void=%d "
+        "blocks=%d paused_ms=%lld pass_mean=%s pass_sigma=%s pass_chi2=%s "
+        "pass_stouffer=%s v_eff=%s null_flags=%d drift_t=%.2f\n"
+        "# nodes=",
         g_status.mode == MODE_EUROJACKPOT ? "euro" : "649",
-        g_status.focus_mode ? "on" : "off",
-        n, g_status.runs_total, g_status.loops_done,
-        (long long)g_status.paused_ms,
-        de_num(mb, sizeof(mb), mean, 6), de_num(sb, sizeof(sb), sigma, 6));
-    httpd_resp_send_chunk(req, buf, len);
+        g_status.focus_mode ? "on" : "off", score_str,
+        n, g_status.runs_total, g_status.pass_n_valid, g_status.pass_n_excl,
+        g_status.pass_n_void,
+        g_status.loops_done, (long long)g_status.paused_ms,
+        de_num(mb, sizeof(mb), g_status.pass_mean, 6),
+        de_num(sb, sizeof(sb), g_status.pass_sigma, 6),
+        de_num(cb, sizeof(cb), g_status.pass_chi2, 4),
+        de_num(stb, sizeof(stb), g_status.pass_stouffer, 4),
+        de_num(vb, sizeof(vb), g_status.v_eff, 4),
+        (int)g_status.null_flags, g_status.drift_t);
+    httpd_resp_send_chunk(req, buf, nlen);
+    for (int i = 0; i < g_status.node_count && i < MAX_NODES; i++) {
+        nlen = snprintf(buf, sizeof(buf), "%s%s",
+                        i ? "," : "",
+                        i ? g_status.nodes[i].ip : "master");
+        httpd_resp_send_chunk(req, buf, nlen);
+    }
+    httpd_resp_send_chunk(req, "\n", 1);
 
     if (all) {
-        len = snprintf(buf, sizeof(buf),
-            "order;item;n1;n2;n3;n4;n5;n6;e1;e2;z_raw;block\n");
+        int len = snprintf(buf, sizeof(buf),
+            "order;item;n1;n2;n3;n4;n5;n6;e1;e2;z_raw;z_ctr;block;k;skip_rank;"
+            "z0;z1;z2;z3\n");
         httpd_resp_send_chunk(req, buf, len);
         for (int j = 0; j < n; j++) {
             const RunResult *r = &g_status.results[j];
-            char zb[32];
+            char zb[32], ab[32], nz[MAX_NODES][32];
+            float nodez[MAX_NODES];
+            if (!results_node_z(j, nodez)) {
+                for (int i = 0; i < MAX_NODES; i++) nodez[i] = NAN;
+            }
+            for (int i = 0; i < MAX_NODES; i++) {
+                if (isnan((double)nodez[i]))
+                    nz[i][0] = '\0';
+                else
+                    de_num(nz[i], sizeof(nz[i]), (double)nodez[i], 6);
+            }
             len = snprintf(buf, sizeof(buf),
-                "%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%s;%d\n",
+                "%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%s;%s;%d;%d;%d;%s;%s;%s;%s\n",
                 j + 1, r->index,
                 r->nums[0], r->nums[1], r->nums[2],
                 r->nums[3], r->nums[4], r->nums[5],
                 r->euro[0], r->euro[1],
-                de_num(zb, sizeof(zb), r->z_score, 6), (int)r->block);
+                de_num(zb, sizeof(zb), r->z_score, 6),
+                de_num(ab, sizeof(ab), (double)r->z_ctr, 4),
+                (int)r->block, (int)r->k, (int)r->skip_rank,
+                nz[0], nz[1], nz[2], nz[3]);
             httpd_resp_send_chunk(req, buf, len);
         }
         httpd_resp_send_chunk(req, NULL, 0);
         return ESP_OK;
     }
 
-    len = snprintf(buf, sizeof(buf),
-        "group;rank;item;n1;n2;n3;n4;n5;n6;e1;e2;z_raw;z_std;block\n");
+    int len = snprintf(buf, sizeof(buf),
+        "group;rank;item;n1;n2;n3;n4;n5;n6;e1;e2;z_raw;z_std;z_ctr;block;k\n");
     httpd_resp_send_chunk(req, buf, len);
+    /* Prefer live pass_* over the recomputed near-mean (identical when
+     * voids are skipped, but pass_* is the published contract). */
+    if (g_status.pass_n_valid > 0) {
+        mean  = g_status.pass_mean;
+        sigma = g_status.pass_sigma;
+    }
 
     int tn = g_status.result_count; if (tn > TOP_N) tn = TOP_N;
     for (int i = 0; i < tn; i++) {
@@ -1455,6 +1543,7 @@ static esp_err_t start_handler(httpd_req_t *req)
         // This flag is the session's record of which condition produced its
         // numbers — attended and unattended runs must never be pooled later.
         g_status.focus_mode     = false;
+        g_status.score_dir      = SCORE_DIR_HIGH;
         g_status.pool_confirm   = 0;
         g_status.pool_auto      = 0;
         if (httpd_req_get_url_query_str(req, qry, sizeof(qry)) == ESP_OK) {
@@ -1502,6 +1591,16 @@ static esp_err_t start_handler(httpd_req_t *req)
             // no-focus control must be identical in every other respect.
             if (httpd_query_key_value(qry, "focus", val, sizeof(val)) == ESP_OK)
                 g_status.focus_mode = (val[0] == '1');
+            // ?score=high|low|abs — pre-registered Phase-0 pool selection.
+            // Default high (historical). Does not touch Phase-2 statistics.
+            if (httpd_query_key_value(qry, "score", val, sizeof(val)) == ESP_OK) {
+                if (val[0] == 'l' || val[0] == 'L')
+                    g_status.score_dir = SCORE_DIR_LOW;
+                else if (val[0] == 'a' || val[0] == 'A')
+                    g_status.score_dir = SCORE_DIR_ABS;
+                else
+                    g_status.score_dir = SCORE_DIR_HIGH;
+            }
             // ?cal=<ms> -> sweep budget per loop; 0 = do not calibrate.
             if (httpd_query_key_value(qry, "cal", val, sizeof(val)) == ESP_OK) {
                 int c = atoi(val);
