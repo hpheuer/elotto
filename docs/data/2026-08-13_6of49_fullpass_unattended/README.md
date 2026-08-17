@@ -8,6 +8,14 @@ Zentrierung. Alle Zahlen hier sind damit uncentriert.
 ⚠ Diese Daten lagen bis zum 17.08. nur in einem Temp-Verzeichnis. Der Master
 wurde seither mehrfach neu geflasht; im RAM ist der Lauf längst weg.
 
+⚠ **Die Kommentar-Kopfzeile von `results.csv` ist abgeschnitten** und trägt
+dahinter ein paar Fremdbytes: der Header lief über seinen 224-Byte-Puffer, und
+die Länge ging ungeprüft an `httpd_resp_send_chunk()` (behoben 2026-08-17).
+Verloren ist dadurch `drift_t` und das `# nodes=`-Präfix; die IP-Liste in
+Spaltenreihenfolge steht noch da und ist gültig. **Die Datenzeilen sind nicht
+betroffen** — sie blieben immer deutlich unter der Puffergröße. Dasselbe gilt
+für `_live_*` und `_short_*`.
+
 | Datei | Inhalt |
 |---|---|
 | `results.csv` | der Datensatz — 5005 Items, roh, in Messreihenfolge, mit `z0..z3` pro Node |

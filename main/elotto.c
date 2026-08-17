@@ -1184,6 +1184,18 @@ static esp_err_t status_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* snprintf returns the length it WOULD have written, not the length it did.
+ * Feeding that straight to httpd_resp_send_chunk() sends whatever follows the
+ * buffer in memory: the CSV header overran its 224 bytes, so every archived
+ * file carries a truncated header followed by a slice of adjacent memory.
+ * Clamp once, here, rather than at eleven call sites. */
+static void send_chunk(httpd_req_t *req, const char *buf, int len, size_t cap)
+{
+    if (len < 0) return;
+    if ((size_t)len >= cap) len = (int)cap - 1;
+    httpd_resp_send_chunk(req, buf, len);
+}
+
 /* ── /loops GET – per-BLOCK health table (endpoint name is historical) ─
  * The long-run drift record: one row per closed block (the span between two
  * sweep+baseline insertions) with the raw per-run offsets and σ per node,
@@ -1206,7 +1218,7 @@ static esp_err_t loops_handler(httpd_req_t *req)
         g_status.loops_done, n, LOOP_HIST,
         g_status.drift_slope, g_status.drift_t,
         g_status.sigma_lo, g_status.sigma_hi);
-    httpd_resp_send_chunk(req, buf, len);
+    send_chunk(req, buf, len, sizeof(buf));
 
     for (int i = 0; i < n; i++) {
         const LoopStat *L = &g_status.loop_hist[i];
@@ -1219,7 +1231,7 @@ static esp_err_t loops_handler(httpd_req_t *req)
             i ? "," : "", i + 1, (unsigned long)L->t_s,
             L->base, L->mean_n[0], L->mean, L->sigma, (int)L->cal_ms,
             L->win_ms, L->gap_ms, nn);
-        httpd_resp_send_chunk(req, buf, len);
+        send_chunk(req, buf, len, sizeof(buf));
         for (int k = 0; k < nn; k++) {
             // cam_exp/gain/fold are the operating point this loop was MEASURED
             // AT, not a diagnostic: per-loop re-tuning is only defensible
@@ -1232,7 +1244,7 @@ static esp_err_t loops_handler(httpd_req_t *req)
                 (unsigned long)L->cam_stalls[k], (unsigned long)L->cam_exp[k],
                 (int)L->cam_gain[k], (int)L->cam_fold[k], (int)L->cam_cal_ok[k],
                 L->cam_bias[k]);
-            httpd_resp_send_chunk(req, buf, len);
+            send_chunk(req, buf, len, sizeof(buf));
         }
         httpd_resp_send_chunk(req, "]}", 2);
     }
@@ -1297,7 +1309,9 @@ static int csv_row(char *buf, size_t cap, const char *group, int rank,
  * from either file forever. */
 static esp_err_t results_csv_handler(httpd_req_t *req)
 {
-    char buf[224], qry[64], val[8];
+    /* 384: the header comment alone runs past 300 characters with the German
+     * six-decimal pass statistics in it. It used to be 224 — see send_chunk(). */
+    char buf[384], qry[64], val[8];
     bool all = false;
     if (httpd_req_get_url_query_str(req, qry, sizeof(qry)) == ESP_OK &&
         httpd_query_key_value(qry, "all", val, sizeof(val)) == ESP_OK)
@@ -1335,12 +1349,12 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
         de_num(stb, sizeof(stb), g_status.pass_stouffer, 4),
         de_num(vb, sizeof(vb), g_status.v_eff, 4),
         (int)g_status.null_flags, g_status.drift_t);
-    httpd_resp_send_chunk(req, buf, nlen);
+    send_chunk(req, buf, nlen, sizeof(buf));
     for (int i = 0; i < g_status.node_count && i < MAX_NODES; i++) {
         nlen = snprintf(buf, sizeof(buf), "%s%s",
                         i ? "," : "",
                         i ? g_status.nodes[i].ip : "master");
-        httpd_resp_send_chunk(req, buf, nlen);
+        send_chunk(req, buf, nlen, sizeof(buf));
     }
     httpd_resp_send_chunk(req, "\n", 1);
 
@@ -1348,7 +1362,7 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
         int len = snprintf(buf, sizeof(buf),
             "order;item;n1;n2;n3;n4;n5;n6;e1;e2;z_raw;z_ctr;block;k;skip_rank;"
             "z0;z1;z2;z3\n");
-        httpd_resp_send_chunk(req, buf, len);
+        send_chunk(req, buf, len, sizeof(buf));
         for (int j = 0; j < n; j++) {
             const RunResult *r = &g_status.results[j];
             char zb[32], ab[32], nz[MAX_NODES][32];
@@ -1372,7 +1386,7 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
                 de_num(ab, sizeof(ab), (double)r->z_ctr, 4),
                 (int)r->block, (int)r->k, (int)r->skip_rank,
                 nz[0], nz[1], nz[2], nz[3]);
-            httpd_resp_send_chunk(req, buf, len);
+            send_chunk(req, buf, len, sizeof(buf));
         }
         httpd_resp_send_chunk(req, NULL, 0);
         return ESP_OK;
@@ -1380,7 +1394,7 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
 
     int len = snprintf(buf, sizeof(buf),
         "group;rank;item;n1;n2;n3;n4;n5;n6;e1;e2;z_raw;z_std;z_ctr;block;k\n");
-    httpd_resp_send_chunk(req, buf, len);
+    send_chunk(req, buf, len, sizeof(buf));
     /* Prefer live pass_* over the recomputed near-mean (identical when
      * voids are skipped, but pass_* is the published contract). */
     if (g_status.pass_n_valid > 0) {
@@ -1392,18 +1406,18 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
     for (int i = 0; i < tn; i++) {
         len = csv_row(buf, sizeof(buf), "high", i + 1,
                       &g_status.top[i], mean, sigma);
-        httpd_resp_send_chunk(req, buf, len);
+        send_chunk(req, buf, len, sizeof(buf));
     }
     int ln = g_status.low_count; if (ln > TOP_N) ln = TOP_N;
     for (int i = 0; i < ln; i++) {
         len = csv_row(buf, sizeof(buf), "low", i + 1,
                       &g_status.low[i], mean, sigma);
-        httpd_resp_send_chunk(req, buf, len);
+        send_chunk(req, buf, len, sizeof(buf));
     }
     for (int i = 0; i < nn; i++) {
         len = csv_row(buf, sizeof(buf), "zero", i + 1,
                       &near[i], mean, sigma);
-        httpd_resp_send_chunk(req, buf, len);
+        send_chunk(req, buf, len, sizeof(buf));
     }
 
     httpd_resp_send_chunk(req, NULL, 0);
