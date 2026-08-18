@@ -176,6 +176,158 @@ simultaneously, which the old floor of 3 could not have done.
 
 ---
 
+## 4 Unlimited Mode — rounds instead of one pass (specified and implemented 2026-08-18)
+
+Requested by the user on 2026-08-18. **A session that does not end with a combination space.**
+Opt-in: UI checkbox **"∞ Unlimited mode (rounds until Abort)"** with a **Runs per round** field
+(default **100**), on the wire `POST /start?unlimited=1&maxruns=<n>`.
+
+### 4.1 The round
+
+score every number → **keep only as many of the best-scoring as fit `maxruns` measurement runs** →
+measure that whole (small) space once, fresh Fisher–Yates → score again → repeat.
+
+It stops on **Abort**, or when `results[]` reaches `NUM_RUNS` = 8000, which finishes the session
+DONE with the reason in `fault`. There is no other terminating condition, by design.
+
+Compared with §2.1 the shape is otherwise unchanged: the same window/gap for every phase, the same
+`?run=`/`?gap=`, the same observer gate (once, at session start, attended only). The pool
+confirmation gate is **skipped** — choosing the pool by score is what the mode is — and recorded as
+`pool_auto=1`, exactly like every other selection no human approved.
+
+Rounds after the first re-run **sweep + baseline before scoring** (skipped at `?calint=0`): the
+scoring runs are what choose the pool, so they must not sit on a sweep from an hour ago.
+
+### 4.2 Pool sizing: maximise the combinations measured
+
+`unlimited_pool_sizes()` in `sensor.c`. **The objective is the combination count, and only that.**
+
+⚠ **A weighted rule shipped first and was withdrawn the same day** (2026-08-18) after the user
+asked whether it could hurt the draw probability. It can, and the arithmetic settles it:
+
+```
+P(pool contains the real draw) = C(p,5)/C(50,5) · C(q,2)/C(12,2)
+                               = [C(p,5)·C(q,2)] / 139 838 160
+                               = combinations measured / combinations that exist
+```
+
+The main/bonus split **cancels out completely** — only the product survives, and the product is
+the run count. So any pool rule is neutral exactly when it spends the budget, and harmful exactly
+in proportion to the runs it leaves unspent. It costs twice over: a short round also reaches its
+next 62-run scoring pass sooner, so the scoring overhead per measured item rises too.
+
+The withdrawn rule maximised universe coverage `p/50 + q/12` = `12p + 50q`, a bonus number weighted
+~4× because there are only 12 against 50. It pinned q at 5 for every cap ≥ 10 and lost badly:
+
+| cap | withdrawn rule | current rule | coverage lost |
+|---|---|---|---|
+| 50 | 5+5 → 10 | 6+4 → 36 | **3,6×** |
+| 100 | 6+5 → 60 | 7+3 → 63 | 1,05× |
+| 250 | 7+5 → 210 | 7+5 → 210 | — |
+| 500 | 7+5 → 210 | 11+2 → 462 | **2,2×** |
+| 1000 | 8+5 → 560 | 12+2 → 792 | 1,41× |
+| 2000 | 9+5 → 1260 | 10+4 → 1512 | 1,20× |
+| 7920 | 12+5 → 7920 | 12+5 → 7920 | — |
+
+**The bonus-number preference survives as the TIE-BREAK**, and only there: equal combination count
+→ larger bonus pool, then larger main pool. At an equal count P is identical, so the preference is
+free — which is precisely why it is a tie-break and not the objective.
+
+**6-of-49 was never affected**: with no second pool, more combinations *is* more numbers, so the
+same objective yields the same answer it always did (cap 100 → 9 numbers, 84 combinations).
+
+Current values:
+
+| cap | Eurojackpot | 6-of-49 |
+|---|---|---|
+| 50 | 6+4 → 36 runs | 8 → 28 runs |
+| 100 | 7+3 → 63 runs | 9 → 84 runs |
+| 500 | 11+2 → 462 runs | 11 → 462 runs |
+| 2000 | 10+4 → 1512 runs | 13 → 1716 runs |
+| 7920 | 12+5 → 7920 runs | 15 → 5005 runs |
+
+At a large enough cap the mode degenerates into **repeated full passes**, which is the correct
+limiting behaviour.
+
+**Stated once, for scale**: even the full 7920-combination pool covers 1 draw in ~17 700. No pool
+rule changes that order of magnitude; what is at stake here is a factor of 2–3 inside a very small
+number, and the reason to take it is that it is free.
+
+### 4.3 Results accumulate; the "once" rule is relaxed across rounds
+
+`results[]` is **never cleared between rounds**. Top-5 / Bottom-5 / Nearest-zero, pass mean/σ/χ²
+and the Bonferroni line all run on the union of every round so far, so a later round's items sort
+straight into the same tables — which is the point of the feature.
+
+⚠ **This is the one place v3's core rule is relaxed, and it is a pre-registration decision.** Inside
+a round every combination is still measured exactly once. **Across** rounds a combination can
+recur, because a later scoring pass may pick overlapping numbers. Each recurrence gets its own row;
+nothing is averaged, merged or overwritten. Consequences that must not be forgotten later:
+
+- `index` (combination id) is meaningful **only within its round** — the pool it enumerates changes
+  every round. The identity is **(round, index)**; `n1..n6;e1;e2` is unambiguous either way.
+- `comparisons` for the Bonferroni line counts rows, so a repeated combination counts twice. It is
+  two measurements, but they are not two independent hypotheses.
+- **Never pool unlimited-mode data with a single-pass session** without splitting on `round`, and
+  never pool across rounds without deciding what repeated combinations mean for the analysis.
+
+**Every round closes its own block**, even at `?calint=0` — a round boundary has a full re-scoring
+sitting in it, so centring must never span one.
+
+### 4.4 API and export
+
+- `/status`: `unlimited`, `runs_cap`, `round`, `round_base`, `round_done`, `round_total`.
+  `completed` stays **session-wide** (the `results[]` prefix); `total` is the **current round**.
+  ⚠ A progress bar must use `round_done/round_total`, or its denominator moves under a growing
+  numerator. ETA is to the end of the **round**, which is the only end there is.
+- `/status` now publishes the pool being measured **for the whole of every running session**
+  (`pool_main`/`pool_euro`), not only while the confirmation gate asks about it — a session started
+  without `?confirm=` used to measure a pool `/status` never named.
+  ⚠ **`sensor.c` withdraws the pool at the ROUND BOUNDARY (`round++`), not when the scoring pass
+  begins, and at session start BEFORE `state` goes RUNNING.** Both were wrong on the first build
+  and both showed the same symptom — correct numbers under the wrong round. The sweep + baseline
+  insertion sits between `round++` and scoring and takes a minute or more with `round` already
+  advanced; and at session start the opening sweep, baseline and observer gate all run before any
+  scoring, so the PREVIOUS SESSION's pool was on screen for all of them.
+  The UI renders it as an info line **directly under the Number-scoring bar** — the same number
+  chips as the result tables and the Focus panel, so a bonus number reads as a star there too —
+  labelled `Round N numbers (9):` in unlimited mode and `Selected numbers (12+5):` otherwise.
+- CSV header gains `unlimited=on|off runs_cap=<n> rounds=<n>`, and `items=` reads
+  `<measured>/<end of the current round>` so it stays monotone.
+- `?all=1` gains a **`round` column, APPENDED last** — the existing columns keep their positions so
+  an analysis script written against an older file still parses.
+- `?runs=` still answers **400**; the message now names `unlimited=1&maxruns=` as the replacement.
+
+### 4.5 Verified on hardware (2026-08-18)
+
+`mode=649&run=1&gap=0.5&baseline=10&cal=0&calint=0&unlimited=1&maxruns=20&focus=0`, four nodes.
+Cap 20 → **7 numbers, C(7,6) = 7 combinations** per round, as the rule predicts. Observed:
+
+- round 1 pool `18 21 28 40 45 46 48`, round 2 pool `20 26 27 29 31 32 39` — **re-scored, different**;
+- `completed` 7 → 14 across the boundary, `round_done` resetting to 0/7 each round, `blocks` 1 → 2;
+- the pool blanked in `/status` during each scoring phase and republished at the round start;
+- `?all=1` after round 2: 14 rows, 7 per round, `block` 0/1 matching `round` 1/2, every row `k=4`,
+  header `unlimited=on runs_cap=20 rounds=3`, `round` column last;
+- both closed blocks centred → `pass_mean` **−0,000000**, `null_flags` 0, 0 void, 0 quarantined;
+- Abort during round 3's scoring kept all 14 measured items.
+
+Third run, after the pool rule was corrected — **Eurojackpot** at `maxruns=50`, the sharpest
+discriminator there is (the withdrawn weighted rule answers 5+5 = 10 combinations, the current one
+6+4 = 36). The device sized the round at **`round_total` 36, `pool_main` 6 numbers, `pool_euro` 4**,
+i.e. the corrected rule, and the served page's `unlimPool()` carries the same objective and
+tie-break with no weights left in it.
+
+Second run after the pool info line was added: the line was **blank through every scoring pass**,
+showed `17 32 33 34 36 40 48` while round 1 measured, blanked again at the round boundary, and came
+back as `6 8 17 25 26 35 44` for round 2 — a different pool, as it must be. `pool_main` is absent
+from `/status` once the session ends, so the line hides itself and the confirmation modal still
+cannot be raised over a dead session.
+
+**Not yet exercised:** a long unlimited run with real 15-minute blocks and `cal=1`, and the
+`results[]`-full stop at 8000 items.
+
+---
+
 ## Workflow
 
 Planning/architecture: Fable/Opus — this document is the contract. Implementation: Sonnet, one task

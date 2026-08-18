@@ -180,6 +180,55 @@ static int comb(int n, int r)
     return res;
 }
 
+/* ── Unlimited mode: how big a pool fits `cap` measurement runs ────────
+ *
+ * **Maximise the combinations measured**, and nothing else. The reason is in
+ * sensor.h and is worth repeating in one line: the chance that a round's pool
+ * contains the real draw is (combinations measured)/(combinations that exist) —
+ * the main/bonus split cancels out of it entirely — so leaving runs unspent is
+ * the ONLY way a pool rule can hurt, and it hurts twice over, because a short
+ * round also pays a full 62-run scoring pass sooner.
+ *
+ * 6-of-49 falls out of the same objective: with no second pool, more
+ * combinations is more numbers (cap 100 -> 9 numbers, 84 combinations).
+ *
+ * Eurojackpot's C(p,5)·C(q,2) <= cap does have several splits reaching the same
+ * maximum, and there P is identical, so the choice is free — that is where the
+ * user's preference for bonus numbers lives (2026-08-18): **ties go to the
+ * larger bonus pool**, then to the larger main pool. It costs no coverage,
+ * which is the whole reason it is a tie-break and not the objective.
+ *
+ * The minimum (p = draw size, q = 2) is one combination, so any cap >= 1 has a
+ * solution. */
+static void unlimited_pool_sizes(bool euro, int nm, int cap,
+                                 int *out_nm, int *out_ne)
+{
+    int p_max = euro ? POOL_MAIN_50 : POOL_MAIN_49;
+    int q_min = euro ? 2 : 0;
+    int q_max = euro ? POOL_EURO_12 : 0;
+    int  best_p = nm, best_q = q_min;
+    long best_c = 0;
+
+    for (int p = nm; p <= p_max; p++) {
+        long cm = comb(p, nm);
+        for (int q = q_min; q <= q_max; q++) {
+            long total = cm * (euro ? comb(q, 2) : 1);
+            if (total > cap) continue;
+            /* Strictly more combinations wins; an equal count goes to the
+             * bigger bonus pool, then the bigger main pool. */
+            if (total > best_c ||
+                (total == best_c && (q > best_q ||
+                                     (q == best_q && p > best_p)))) {
+                best_c = total;
+                best_p = p;
+                best_q = q;
+            }
+        }
+    }
+    *out_nm = best_p;
+    if (out_ne) *out_ne = best_q;
+}
+
 // k-th combination (0-based, lexicographic) from sorted pool[0..n-1], r elements
 static void nth_combination(const uint8_t *pool, int n, int r, int k, uint8_t *out)
 {
@@ -1379,8 +1428,21 @@ static bool baseline_run(void)
  * directly, and no compaction step exists any more. */
 void elotto_task(void *pvParam)
 {
+    /* BEFORE the state goes RUNNING, which is the moment /status starts serving
+     * the pool: the previous SESSION's numbers must not survive into this one.
+     * Everything up to the first scoring pass — discovery, the opening sweep,
+     * the baseline, the observer gate — would otherwise show them, and there is
+     * nothing on screen to say they are stale. */
+    g_status.pool_n_main     = 0;
+    g_status.pool_n_euro     = 0;
+
     g_status.state           = ELOTTO_RUNNING;
     g_status.runs_completed  = 0;
+    // unlimited / runs_cap are session parameters from /start and are NOT reset
+    // here — they tag the session, exactly like focus_mode.
+    g_status.round           = 0;
+    g_status.round_base      = 0;
+    g_status.round_total     = 0;
     g_status.baseline_done   = 0;
     g_status.scoring_done    = 0;
     g_status.abort_requested = false;
@@ -1458,21 +1520,22 @@ void elotto_task(void *pvParam)
     bool euro    = (g_status.mode == MODE_EUROJACKPOT);
     int  nm      = euro ? 5 : 6;
     int  mx      = euro ? 50 : 49;
-    int  pool_nm = euro ? POOL_MAIN_50 : POOL_MAIN_49;
 
     g_status.scoring_total = mx + (euro ? 12 : 0);   // one run per number
 
     uint8_t pool_main[POOL_MAIN_49] = {0};   // 15 slots, enough for both modes
     uint8_t pool_euro[POOL_EURO_12] = {0};
-    // Both pool sizes are variables, not constants: attended confirmation can
-    // shrink either, and every count downstream is derived from them.
-    int     pool_ne     = euro ? POOL_EURO_12 : 0;
-    int     main_combos = comb(pool_nm, nm);
-    int     euro_combos = euro ? comb(pool_ne, 2) : 1;
-    int     full_combos = main_combos * euro_combos;
-    // Defensive only: both pools fit under NUM_RUNS by construction (7920 and
-    // 5005), and there is no Runs cap left to shrink this.
-    g_status.runs_total = full_combos > NUM_RUNS ? NUM_RUNS : full_combos;
+    // Pool sizes are variables, not constants: attended confirmation can shrink
+    // either, unlimited mode derives both from the per-round run cap, and every
+    // count downstream is derived from them.
+    int     pool_nm = euro ? POOL_MAIN_50 : POOL_MAIN_49;
+    int     pool_ne = euro ? POOL_EURO_12 : 0;
+    if (g_status.unlimited) {
+        if (g_status.runs_cap < 1 || g_status.runs_cap > UNLIM_RUNS_MAX)
+            g_status.runs_cap = UNLIM_RUNS_DEFAULT;
+        unlimited_pool_sizes(euro, nm, g_status.runs_cap, &pool_nm, &pool_ne);
+    }
+    g_status.runs_total = comb(pool_nm, nm) * (euro ? comb(pool_ne, 2) : 1);
 
     // Pairwise independence check across all nodes (per-block centered)
     pairs_reset();
@@ -1508,150 +1571,250 @@ void elotto_task(void *pvParam)
         g_status.elapsed_ms = elapsed_ms_now();
     }
 
-    /* ── Phase 0: individual number scoring, once per session ────────── */
-    g_status.phase = PHASE_SCORING;
-    // The WHOLE group's count, up front: 50 main + 12 bonus = 62 for
-    // Eurojackpot. Both passes fill one bar that counts to 62.
-    g_status.scoring_total = mx + (euro ? 12 : 0);
-    g_status.scoring_done  = 0;
-    score_and_build_pool(mx, pool_nm, pool_main, false,
-                         NULL, NULL, 0, g_status.pool_main_z);
-    if (g_status.abort_requested) goto done;
-    if (euro) score_and_build_pool(12, POOL_EURO_12, pool_euro, true,
-                                   NULL, NULL, 0, g_status.pool_euro_z);
-    if (g_status.abort_requested) goto done;
-    focus_off();
-
-    /* ── Attended pool confirmation ────────────────────────────────────
-     * Stop and show the operator what scoring chose, before ~10 h are spent
-     * measuring it. Only when the session asked for it (confirm=1). */
-    if (g_status.pool_confirm) {
-        /* Unattended: take the proposal at once instead of burning the 15-minute
-         * timeout waiting for an operator who is not there. Recorded as
-         * pool_auto=1, exactly as the timeout path records it — the CSV must not
-         * be able to claim a human approved this pool. */
-        if (!g_status.focus_mode) {
-            g_status.pool_auto = 1;
-            printf("pool: unattended session — proposal taken unchanged\n");
-        } else {
-            pool_confirm_wait(euro, mx, &pool_nm, &pool_ne,
-                              pool_main, pool_euro, nm);
-        }
-        if (g_status.abort_requested) goto done;
-        /* The operator may have removed numbers, so recompute everything
-         * derived from the pool sizes — at the minimum (pool == draw size)
-         * this is exactly ONE combination, measured exactly once. */
-        main_combos = comb(pool_nm, nm);
-        euro_combos = euro ? comb(pool_ne, 2) : 1;
-        full_combos = main_combos * euro_combos;
-        g_status.runs_total = full_combos > NUM_RUNS ? NUM_RUNS : full_combos;
-    }
-
-    /* ── The pass: every combination once, in random order ─────────────
-     * Fisher–Yates over the whole space, once. With a fixed order, slow
-     * drift over the ~10 h pass would map onto the enumeration order and
-     * read as structure in the numbers; randomized, it spreads evenly.
-     * fast_rng() deliberately, not the camera: measurement order is
-     * administrative randomness and must not spend camera entropy. */
-    for (int i = 0; i < g_status.runs_total; i++) s_perm[i] = (uint16_t)i;
-    for (int i = g_status.runs_total - 1; i > 0; i--) {
-        int j = (int)(fast_rng() % (uint32_t)(i + 1));
-        uint16_t t = s_perm[i]; s_perm[i] = s_perm[j]; s_perm[j] = t;
-    }
-
+    /* ── Rounds ────────────────────────────────────────────────────────
+     * An ordinary v3 session is ONE round: score, confirm the pool, measure
+     * every combination of it exactly once, done.
+     *
+     * Unlimited mode repeats that indefinitely (user, 2026-08-18). Each round
+     * re-scores every number from scratch and keeps only as many of the best as
+     * fit `runs_cap` measurement runs, so the pool is small and the whole space
+     * of THAT pool is measured before the next round re-picks it. Rounds stop
+     * on Abort or when results[] is full.
+     *
+     * results[] keeps filling across rounds — nothing is cleared between them —
+     * so every ranking, the pass mean/σ and the Bonferroni line run on the
+     * union of all rounds measured so far, which is what "new results are sorted
+     * in" means. Each round is closed as its own block (or blocks), so block
+     * centring never mixes items from either side of a re-scoring. */
     int     block          = 0;
+    int     round          = 0;
+    bool    space_full     = false;
     int64_t last_insert_us = esp_timer_get_time();
 
-    g_status.phase = PHASE_MEASURING;
-    for (int j = 0; j < g_status.runs_total; j++) {
-        if (g_status.abort_requested) { slave_abort(); goto done; }
-        // Between runs, never inside one: the run just finished is kept and
-        // j does not advance, so nothing is lost or duplicated.
-        pause_gate();
-        if (g_status.abort_requested) { slave_abort(); goto done; }
+    for (;;) {
+        round++;
+        g_status.round = round;
+        /* Withdraw the previous round's pool HERE, at the boundary — not further
+         * down where the scoring pass starts. The sweep + baseline insertion
+         * sits between the two and takes a minute or more, and `round` has
+         * already advanced: the info line would spend that whole time showing
+         * the PREVIOUS round's numbers under the NEW round number, which is
+         * exactly the reading error withholding it is meant to prevent. */
+        g_status.pool_n_main = g_status.pool_n_euro = 0;
 
-        /* ── Block boundary: sweep + baseline every cal_interval_ms ────
-         * Wall-clock, like the sweep trigger always was (§1.18) — 0 means
-         * no mid-pass insertions at all. Closing the block BEFORE the
-         * insertion keeps the /loops row describing items measured at ONE
-         * operating point; the insertion then opens the next block. */
-        if (j > 0 && g_status.cal_interval_ms > 0 &&
-            (esp_timer_get_time() - last_insert_us) / 1000
-                >= (int64_t)g_status.cal_interval_ms) {
-            close_block(block);
-            block++;
+        /* Rounds after the first re-establish the operating point before scoring,
+         * exactly as the session start does — the scoring runs choose the pool, so
+         * they should not be the ones measured on a stale sweep. Skipped when the
+         * operator turned mid-pass insertions off (?calint=0), which is that
+         * control's whole point. */
+        if (round > 1 && g_status.cal_interval_ms > 0) {
             g_status.cal_did_sweep = calibrate_all();
             if (g_status.abort_requested) { slave_abort(); goto done; }
             if (!baseline_run()) goto done;
-            last_insert_us = esp_timer_get_time();
-            g_status.phase = PHASE_MEASURING;
         }
 
-        /* Uncapped and unrepeated, so slot i IS combination i. */
-        int i  = s_perm[j];
-        int mi = i % main_combos;
-        int ei = euro ? (i / main_combos) : 0;
-        RunResult *r = &g_status.results[j];      // measurement order
-        nth_combination(pool_main, pool_nm, nm, mi, r->nums);
-        if (euro)
-            nth_combination(pool_euro, pool_ne, 2, ei, r->euro);
-        else
-            r->euro[0] = r->euro[1] = 0;
+        /* ── Phase 0: individual number scoring, once per round ──────────── */
+        g_status.phase = PHASE_SCORING;
+        // The WHOLE group's count, up front: 50 main + 12 bonus = 62 for
+        // Eurojackpot. Both passes fill one bar that counts to 62. Every number is
+        // scored regardless of how many the pool will keep, so this is the same
+        // work in unlimited mode as in a full pass.
+        g_status.scoring_total = mx + (euro ? 12 : 0);
+        g_status.scoring_done  = 0;
+        /* Unlimited: the pool sizes come from the run cap, and are re-derived every
+         * round because the cap is fixed while nothing else here is. */
+        if (g_status.unlimited)
+            unlimited_pool_sizes(euro, nm, g_status.runs_cap, &pool_nm, &pool_ne);
+        /* The pool is already withdrawn — at the top of the round, and at
+         * session start before the state went RUNNING. Nothing to clear here. */
+        memset(pool_main, 0, sizeof(pool_main));
+        memset(pool_euro, 0, sizeof(pool_euro));
+        score_and_build_pool(mx, pool_nm, pool_main, false,
+                             NULL, NULL, 0, g_status.pool_main_z);
+        if (g_status.abort_requested) goto done;
+        if (euro) score_and_build_pool(12, pool_ne, pool_euro, true,
+                                       NULL, NULL, 0, g_status.pool_euro_z);
+        if (g_status.abort_requested) goto done;
+        focus_off();
 
-        // The draw goes on screen BEFORE the trigger, so the observer is
-        // already attending when the first bit is sampled.
-        focus_publish(FOCUS_DRAW, r->nums, nm, r->euro, euro ? 2 : 0);
-
-        // One broadcast starts every node, then measure locally — all of
-        // them integrate the same window, which is the premise the sqrt(n)
-        // combine rests on. Attended sessions flush the ring first so
-        // pre-onset bits do not enter the window.
-        int nseg = segments_for();
-        attended_onset_settle();
-        slave_trigger(nseg);
-        double zraw = 0.0;
-        bool   zok  = gcp_zscore_ok(nseg, &zraw);
-        focus_off();          // sampling done; the reply wait is dark time
-        if (!zok) node_camera_failed(0, "stalled mid-run");
-        if (nodes_have_slaves()) nodes_collect(LINK_MEAS_MS_FOR(nseg), true);
-
-        double znode[MAX_NODES];
-        bool   have[MAX_NODES];
-        double z = 0.0;
-        uint8_t mask = 0;
-        int k = gather_and_combine(zraw, zok, znode, have, &z, &mask);
-
-        /* Archive every node that produced a z (including soft-down ones),
-         * so post-hoc recombine is possible. */
-        node_z_store(j, znode, have);
-        pairs_add_run(znode, have);
-
-        r->index     = i + 1;
-        r->block     = (uint16_t)block;
-        r->k         = (uint8_t)k;
-        r->have_mask = mask;
-        r->skip_rank = 0;   /* quarantine only at block close on soft-down trip */
-        if (k > 0) {
-            r->z_score = z;
-            /* Provisional: the block's node means are not known until it
-             * closes, so the live ranking uses the uncentred value and
-             * center_block() replaces it a few minutes later. */
-            r->z_ctr   = (float)z;
-            s_blk_sum += z;  s_blk_sumsq += z * z;  s_blk_n++;
-        } else {
-            /* VOID: incomplete combine. Archived with k=0, never enters
-             * ranking, Bonferroni, pass mean/σ, or block σ. */
-            r->z_score = 0.0;
-            r->z_ctr   = 0.0f;
+        if (g_status.unlimited) {
+            /* No confirmation gate: choosing the pool by score is what the mode
+             * IS, and a round boundary arrives every few minutes. Recorded as
+             * pool_auto=1, like every other selection no human approved. */
+            g_status.pool_auto = 1;
+        } else if (g_status.pool_confirm) {
+            /* ── Attended pool confirmation ────────────────────────────────
+             * Stop and show the operator what scoring chose, before ~10 h are
+             * spent measuring it. Only when the session asked for it.
+             *
+             * Unattended: take the proposal at once instead of burning the
+             * 15-minute timeout waiting for an operator who is not there.
+             * Recorded as pool_auto=1, exactly as the timeout path records it —
+             * the CSV must not be able to claim a human approved this pool. */
+            if (!g_status.focus_mode) {
+                g_status.pool_auto = 1;
+                printf("pool: unattended session — proposal taken unchanged\n");
+            } else {
+                pool_confirm_wait(euro, mx, &pool_nm, &pool_ne,
+                                  pool_main, pool_euro, nm);
+            }
+            if (g_status.abort_requested) goto done;
         }
 
-        g_status.runs_completed = j + 1;  // AFTER the row is complete: readers
-                                          // (/status, /results.csv) trust the prefix
-        if (k > 0) publish_valid(r);      // studentized top/low + pass health
-        g_status.elapsed_ms     = elapsed_ms_now();
-        run_gap_ms(gap_for());
+        /* Publish the pool that is actually about to be measured — EVERY path,
+         * not just the confirmation gate. It used to be written only while the
+         * operator was being asked about it, so a session started without
+         * ?confirm= measured a pool /status never named. The UI shows it under
+         * the scoring bar for the whole run, and in unlimited mode it is the one
+         * thing that changes from round to round. */
+        g_status.pool_need_main = (uint8_t)nm;
+        g_status.pool_need_euro = euro ? 2 : 0;
+        for (int i = 0; i < pool_nm; i++) g_status.pool_main[i] = pool_main[i];
+        for (int i = 0; i < pool_ne; i++) g_status.pool_euro[i] = pool_euro[i];
+        g_status.pool_n_main    = (uint8_t)pool_nm;
+        g_status.pool_n_euro    = (uint8_t)pool_ne;
+
+        /* Everything derived from the pool sizes — the operator may have removed
+         * numbers, and in unlimited mode the sizes are the cap's answer. At the
+         * minimum (pool == draw size) this is exactly ONE combination. */
+        int main_combos = comb(pool_nm, nm);
+        int euro_combos = euro ? comb(pool_ne, 2) : 1;
+        int full_combos = main_combos * euro_combos;
+
+        /* Where this round lands in results[], and how much room is left. The
+         * buffer is the hard stop for unlimited mode: a truncated round is still
+         * a valid measured prefix, but it is the last one. */
+        g_status.round_base = g_status.runs_completed;
+        int room = NUM_RUNS - g_status.round_base;
+        int round_total = full_combos;
+        if (round_total > room) { round_total = room; space_full = true; }
+        if (round_total <= 0) { space_full = true; break; }
+        g_status.round_total = round_total;
+        g_status.runs_total  = round_total;
+
+        /* ── The pass: every combination of THIS round's pool once, in random
+         * order ────────────────────────────────────────────────────────────
+         * Fisher–Yates over the round's space. With a fixed order, slow drift
+         * over the pass would map onto the enumeration order and read as
+         * structure in the numbers; randomized, it spreads evenly.
+         * fast_rng() deliberately, not the camera: measurement order is
+         * administrative randomness and must not spend camera entropy. */
+        for (int i = 0; i < round_total; i++) s_perm[i] = (uint16_t)i;
+        for (int i = round_total - 1; i > 0; i--) {
+            int j = (int)(fast_rng() % (uint32_t)(i + 1));
+            uint16_t t = s_perm[i]; s_perm[i] = s_perm[j]; s_perm[j] = t;
+        }
+
+        last_insert_us = esp_timer_get_time();
+        g_status.phase = PHASE_MEASURING;
+        for (int j = 0; j < round_total; j++) {
+            if (g_status.abort_requested) { slave_abort(); goto done; }
+            // Between runs, never inside one: the run just finished is kept and
+            // j does not advance, so nothing is lost or duplicated.
+            pause_gate();
+            if (g_status.abort_requested) { slave_abort(); goto done; }
+
+            /* ── Block boundary: sweep + baseline every cal_interval_ms ────
+             * Wall-clock, like the sweep trigger always was (§1.18) — 0 means
+             * no mid-pass insertions at all. Closing the block BEFORE the
+             * insertion keeps the /loops row describing items measured at ONE
+             * operating point; the insertion then opens the next block. */
+            if (j > 0 && g_status.cal_interval_ms > 0 &&
+                (esp_timer_get_time() - last_insert_us) / 1000
+                    >= (int64_t)g_status.cal_interval_ms) {
+                close_block(block);
+                block++;
+                g_status.cal_did_sweep = calibrate_all();
+                if (g_status.abort_requested) { slave_abort(); goto done; }
+                if (!baseline_run()) goto done;
+                last_insert_us = esp_timer_get_time();
+                g_status.phase = PHASE_MEASURING;
+            }
+
+            /* Uncapped and unrepeated within the round, so slot i IS this
+             * round's combination i. */
+            int i  = s_perm[j];
+            int mi = i % main_combos;
+            int ei = euro ? (i / main_combos) : 0;
+            int slot = g_status.round_base + j;       // measurement order, session-wide
+            RunResult *r = &g_status.results[slot];
+            nth_combination(pool_main, pool_nm, nm, mi, r->nums);
+            if (euro)
+                nth_combination(pool_euro, pool_ne, 2, ei, r->euro);
+            else
+                r->euro[0] = r->euro[1] = 0;
+
+            // The draw goes on screen BEFORE the trigger, so the observer is
+            // already attending when the first bit is sampled.
+            focus_publish(FOCUS_DRAW, r->nums, nm, r->euro, euro ? 2 : 0);
+
+            // One broadcast starts every node, then measure locally — all of
+            // them integrate the same window, which is the premise the sqrt(n)
+            // combine rests on. Attended sessions flush the ring first so
+            // pre-onset bits do not enter the window.
+            int nseg = segments_for();
+            attended_onset_settle();
+            slave_trigger(nseg);
+            double zraw = 0.0;
+            bool   zok  = gcp_zscore_ok(nseg, &zraw);
+            focus_off();          // sampling done; the reply wait is dark time
+            if (!zok) node_camera_failed(0, "stalled mid-run");
+            if (nodes_have_slaves()) nodes_collect(LINK_MEAS_MS_FOR(nseg), true);
+
+            double znode[MAX_NODES];
+            bool   have[MAX_NODES];
+            double z = 0.0;
+            uint8_t mask = 0;
+            int k = gather_and_combine(zraw, zok, znode, have, &z, &mask);
+
+            /* Archive every node that produced a z (including soft-down ones),
+             * so post-hoc recombine is possible. */
+            node_z_store(slot, znode, have);
+            pairs_add_run(znode, have);
+
+            r->index     = i + 1;
+            r->block     = (uint16_t)block;
+            r->round     = (uint16_t)round;
+            r->k         = (uint8_t)k;
+            r->have_mask = mask;
+            r->skip_rank = 0;   /* quarantine only at block close on soft-down trip */
+            if (k > 0) {
+                r->z_score = z;
+                /* Provisional: the block's node means are not known until it
+                 * closes, so the live ranking uses the uncentred value and
+                 * center_block() replaces it a few minutes later. */
+                r->z_ctr   = (float)z;
+                s_blk_sum += z;  s_blk_sumsq += z * z;  s_blk_n++;
+            } else {
+                /* VOID: incomplete combine. Archived with k=0, never enters
+                 * ranking, Bonferroni, pass mean/σ, or block σ. */
+                r->z_score = 0.0;
+                r->z_ctr   = 0.0f;
+            }
+
+            g_status.runs_completed = slot + 1;  // AFTER the row is complete: readers
+                                                 // (/status, /results.csv) trust the prefix
+            if (k > 0) publish_valid(r);      // studentized top/low + pass health
+            g_status.elapsed_ms     = elapsed_ms_now();
+            run_gap_ms(gap_for());
+        }
+        /* The round's final block. Always closed here, even with ?calint=0, so a
+         * round is never centred together with the one after it — the pool changed
+         * in between, and scoring sat between the two. */
+        close_block(block);
+        block++;
+
+        if (!g_status.unlimited) break;
+        if (g_status.abort_requested) break;
+        if (space_full || g_status.runs_completed >= NUM_RUNS) {
+            snprintf(g_status.fault, sizeof(g_status.fault),
+                     "unlimited: results buffer full (%d items) after round %d "
+                     "— session ended, pull /results.csv?all=1",
+                     g_status.runs_completed, round);
+            printf("%s\n", g_status.fault);
+            break;
+        }
     }
-    close_block(block);                   // the pass's final block
     goto finalize;
 
 done:

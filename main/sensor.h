@@ -65,6 +65,44 @@
 #define RUN_SEGS_REF         66000
 #define RUN_MS_REF            4680
 
+/* ── Unlimited mode (user, 2026-08-18) ────────────────────────────────────
+ * A session that does not end with the combination space. Instead of measuring
+ * ONE pool exhaustively, the pass runs in ROUNDS: score every number, keep only
+ * as many of the best as fit `runs_cap` measurement runs, measure that whole
+ * (smaller) space once, then score again and start the next round. It stops on
+ * Abort, or when results[] is full.
+ *
+ * ⚠ This relaxes the v3 core rule. Inside a round every combination is still
+ * measured exactly once; ACROSS rounds a combination can recur, because a later
+ * round's scoring may pick overlapping numbers. Each recurrence is a separate
+ * measurement and gets its own row — nothing is averaged or overwritten — so
+ * `round` is part of a row's identity and `index` (the combination id) is only
+ * meaningful WITHIN a round: the pool it enumerates changes every round.
+ * ⚠ Never pool unlimited-mode data with a single-pass session without splitting
+ * on the `round` column first. */
+#define UNLIM_RUNS_DEFAULT     100   // measurement runs per round
+#define UNLIM_RUNS_MIN          10
+#define UNLIM_RUNS_MAX    NUM_RUNS
+#define UNLIM_RUNS_STEP         10
+/* ⚠ The pool split is NOT a free choice, and a weighted one was tried and
+ * withdrawn (2026-08-18, same day). The probability that a round's pool even
+ * CONTAINS the real draw is
+ *
+ *     P = C(p,5)/C(50,5) · C(q,2)/C(12,2) = [C(p,5)·C(q,2)] / 139838160
+ *       = (combinations measured) / (combinations that exist)
+ *
+ * — the split cancels completely, leaving only the product, and the product IS
+ * the run count. So a pool rule is neutral exactly when it SPENDS THE BUDGET,
+ * and harmful exactly in proportion to the runs it leaves unspent. The first
+ * attempt maximised universe coverage p/50 + q/12 (a bonus number weighted ~4×
+ * because there are only 12 of them); it pinned q at 5 and measured 210 of a
+ * 500-run budget where 462 were available — a 2.2× loss of coverage, and a
+ * shorter round, so proportionally MORE scoring overhead per measured item.
+ *
+ * The rule is therefore: maximise the combinations measured. The bonus-number
+ * preference survives only as the TIE-BREAK, where P is identical and it is
+ * free. No weights — see unlimited_pool_sizes(). */
+
 /* Diagnostic thresholds that appear in more than one place. */
 #define PAIR_FLAG_T            3.0   // |r|·√n above this = nodes not independent
 #define DRIFT_FLAG_T           3.0   // |drift_t| above this = real cross-block drift
@@ -184,6 +222,11 @@ typedef struct {
      * CSV forever. Provisional (= z_score) until the block closes. */
     float      z_ctr;
     uint16_t   block;      // which block this item was measured in (v3)
+    /* Which ROUND measured it (unlimited mode; 1 for an ordinary single-pass
+     * session). The pool is re-scored every round, so `index` enumerates a
+     * DIFFERENT combination space per round — the pair (round, index) is the
+     * identity, and nums[]/euro[] are what a reader should actually key on. */
+    uint16_t   round;
     uint8_t    k;          // nodes that entered the combine; 0 = VOID (incomplete)
     uint8_t    have_mask;  // bit i set ⇒ node i contributed (master = bit 0)
     uint8_t    skip_rank;  // 1 = exclude from pass mean/σ/Top-Bottom (trigger block)
@@ -302,8 +345,19 @@ typedef struct {
     ElottoState      state;
     ElottoPhase      phase;
     ElottoMode       mode;
-    volatile int     runs_completed;
-    int              runs_total;
+    volatile int     runs_completed;   // items in results[] over the WHOLE session,
+                                       // i.e. across every round
+    int              runs_total;       // combinations in the CURRENT round
+    /* ── Unlimited mode (see the block near the top of this file) ──────
+     * `unlimited` and `runs_cap` are session parameters written by /start and
+     * NOT reset by elotto_task — they are the session's tag, like focus_mode.
+     * The rest is per-round bookkeeping the UI and the CSV read. */
+    bool             unlimited;        // rounds repeat until Abort / results full
+    int              runs_cap;         // measurement runs a round may spend
+    int              round;            // 1-based; 0 before the first round starts
+    int              round_base;       // results[] index this round started at
+    int              round_total;      // == runs_total, published separately so a
+                                       // reader never has to know which one moved
     volatile int     baseline_done;
     int              baseline_total;
     double           baseline_mean;

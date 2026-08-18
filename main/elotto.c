@@ -169,6 +169,33 @@ static const char HTML[] =
 "&#127919; Focus display (attended session)</label>"
 "</span>"
 "</div>"
+/* Unlimited mode. The Runs field only appears when the box is ticked: it is
+   meaningless otherwise, and an always-visible number that sometimes does
+   nothing is the same trap as a silently ignored query parameter. */
+"<div class='frow'>"
+"<span></span>"
+"<span style='display:flex;align-items:center;gap:6px'>"
+"<input id='chkUnlim' type='checkbox' onchange='unlimToggle()' "
+"style='width:16px;height:16px'>"
+"<label for='chkUnlim' style='color:#6ab0e8;font-size:.9em' "
+"title='Repeat until Abort: score every number, keep the best that fit the run "
+"budget, measure that pool out, score again. Results from all rounds stay and "
+"rank together.'>&#8734; Unlimited mode (rounds until Abort)</label>"
+"</span>"
+"</div>"
+"<div class='frow' id='rowUnlim' style='display:none'>"
+"<label for='numUnlimRuns' title='Measurement runs ONE round may spend. The "
+"pool is sized so its whole combination space fits inside this.'>"
+"Runs per round:</label>"
+"<span style='display:flex;align-items:center;gap:8px'>"
+"<input id='numUnlimRuns' class='fin' type='number'"
+" value='" EL_STR(UNLIM_RUNS_DEFAULT) "' min='" EL_STR(UNLIM_RUNS_MIN) "'"
+" max='" EL_STR(UNLIM_RUNS_MAX) "' step='" EL_STR(UNLIM_RUNS_STEP) "'"
+" oninput='unlimHint()'>"
+"<span id='unlimHint' style='color:#8fae8f;font-size:.85em;white-space:nowrap'>"
+"</span>"
+"</span>"
+"</div>"
 "<div class='frow'>"
 "<label for='selScore' title='Pre-registered Phase-0 pool rule. Only affects "
 "which numbers enter the pool, never the measurement pass.'>Score direction:</label>"
@@ -232,6 +259,12 @@ static const char HTML[] =
 "<div style='color:#6ab0e8;font-size:.9em;text-align:center;margin-top:4px'>"
 "<span id='sScoreDone'>0</span> / <span id='sScoreTotal'>-</span> Runs "
 "(<span id='sScoreReps'>-</span>&times; per number, random order)</div>"
+/* The numbers scoring actually picked — directly under the bar that picked
+   them. In unlimited mode this is the one thing that changes from round to
+   round, and without it the Focus panel's draws come from a pool nobody saw
+   being chosen. Blank while a scoring pass is still running. */
+"<div id='poolBadge' style='display:none;color:#90ee90;font-size:.86em;"
+"text-align:center;margin-top:8px;line-height:1.6'></div>"
 "</div>"
 "<div id='measArea' style='display:none;margin-top:14px'>"
 "<div style='color:#90ee90;font-size:.88em;margin-bottom:4px'>&#128202; Measurement"
@@ -350,6 +383,34 @@ static const char HTML[] =
 "document.getElementById('sScoreReps').textContent="
 "d.scoring_total>0?Math.round(d.scoring_total/nn):'-';"
 "}"
+/* Unlimited mode: show what a given run budget actually buys, in both modes, as
+   the number is typed. The rule is sensor.c's unlimited_pool_sizes() — maximise
+   the combinations measured, ties to the larger bonus pool. The SEARCH is
+   restated here, but every constant in it comes through EL_STR from sensor.h,
+   so the pool caps cannot drift apart from the firmware's. A wrong pool size on
+   screen would be read as a wrong parameter. */
+"function nCk(n,k){if(k<0||k>n)return 0;if(k>n-k)k=n-k;var r=1;"
+"for(var i=0;i<k;i++)r=r*(n-i)/(i+1);return Math.round(r);}"
+"function unlimPool(euro,cap){"
+"var nm=euro?5:6,pmax=euro?" EL_STR(POOL_MAIN_50) ":" EL_STR(POOL_MAIN_49) ";"
+"var qmin=euro?2:0,qmax=euro?" EL_STR(POOL_EURO_12) ":0;"
+"var bp=nm,bq=qmin,bc=0;"
+"for(var p=nm;p<=pmax;p++){var cm=nCk(p,nm);"
+"for(var q=qmin;q<=qmax;q++){var t=cm*(euro?nCk(q,2):1);"
+"if(t>cap)continue;"
+"if(t>bc||(t===bc&&(q>bq||(q===bq&&p>bp)))){bc=t;bp=p;bq=q;}}}"
+"return {p:bp,q:bq,c:bc};}"
+"function unlimHint(){"
+"var c=parseInt(document.getElementById('numUnlimRuns').value)||0;"
+"var h=document.getElementById('unlimHint');"
+"if(!(c>=1)){h.textContent='';return;}"
+"var e=unlimPool(true,c),l=unlimPool(false,c);"
+"h.textContent='\\u2192 Euro '+e.p+'+'+e.q+' = '+e.c+' runs \\u00b7 6of49 '"
+"+l.p+' = '+l.c+' runs';}"
+"function unlimToggle(){"
+"document.getElementById('rowUnlim').style.display="
+"document.getElementById('chkUnlim').checked?'':'none';"
+"unlimHint();}"
 "function setMode(mode){"
 "document.getElementById('subtitle').textContent="
 "mode===0?'Eurojackpot • 5 of 50 + 2 bonus numbers':'6 of 49 Lotto';}"
@@ -369,7 +430,7 @@ static const char HTML[] =
 // A page loaded or reloaded while the device is parked at the observer gate
 // must show it too — the session is blocked until somebody presses Start.
 "if(d.phase==='ready')readyShow();"
-"updateItemBadge(d);"
+"updateItemBadge(d);updatePoolBadge(d);"
 "document.getElementById('sCalTotal').textContent=d.baseline_total;"
 "setScoreTotal(d);"
 "if(d.scoring_total>0){"
@@ -405,13 +466,43 @@ static const char HTML[] =
 /* Items measured / whole space, and which block the pass is in. The block
    number matters to the operator for one reason: it says how many /loops rows
    (drift points) exist so far. */
+/* Round-relative, because in unlimited mode `completed` counts the whole
+   session while `total` is only the current round's space — dividing one by the
+   other would move the denominator under a growing numerator. Falls back to the
+   session pair for a device on older firmware. */
+"function roundDone(d){"
+"return (d.round_done!==undefined)?d.round_done:(d.completed||0);}"
+"function roundTotal(d){"
+"return (d.round_total>0)?d.round_total:(d.total||0);}"
 "function updateItemBadge(d){"
 "var b=document.getElementById('itemBadge');"
-"if(d.state!=='running'&&d.state!=='done'&&d.state!=='aborted'){b.style.display='none';return;}"
-"if(!(d.total>0)){b.style.display='none';return;}"
+"if(d.state!=='running'&&d.state!=='done'&&d.state!=='aborted'){"
+"b.style.display='none';return;}"
+"var rt=roundTotal(d);"
+"if(!(rt>0)){b.style.display='none';return;}"
 "b.style.display='';"
-"b.textContent='\\uD83C\\uDFAF Item '+(d.completed||0)+' / '+d.total"
+"b.textContent='\\uD83C\\uDFAF Item '+roundDone(d)+' / '+rt"
+"+(d.unlimited?' \\u00b7 round '+(d.round||1)+' \\u00b7 '+(d.completed||0)"
+"+' measured total':'')"
 "+((d.loops_done>0)?' \\u00b7 block '+(d.loops_done+((d.state==='running')?1:0)):'');"
+"}"
+/* The numbers scoring picked, under the bar that picked them. Same chips as the
+   result tables and the Focus panel, so a bonus number reads as a star here too.
+   The device withholds the pool while a scoring pass is choosing the next one,
+   which is what makes this line honest rather than one poll behind. */
+"function updatePoolBadge(d){"
+"var pb=document.getElementById('poolBadge');"
+"if(d.state!=='running'||!d.pool_main||!d.pool_main.length){"
+"pb.style.display='none';return;}"
+"pb.style.display='';"
+"var h=\"<span style='color:#6ab0e8'>\""
+"+(d.unlimited?'Round '+(d.round||1)+' numbers':'Selected numbers')"
+"+' ('+d.pool_main.length+(d.pool_euro&&d.pool_euro.length"
+"?'+'+d.pool_euro.length:'')+\"):</span> \";"
+"d.pool_main.forEach(function(x){h+=\"<span class='num'>\"+x.n+\"</span>\";});"
+"if(d.pool_euro)d.pool_euro.forEach(function(x){"
+"h+=\"<span class='num euro'>\"+x.n+\"</span>\";});"
+"pb.innerHTML=h;"
 "}"
 "function doStart(mode){"
 "curMode=mode;"
@@ -422,6 +513,11 @@ static const char HTML[] =
 "var gapS=Math.round(runS*0.4*10)/10;"
 "if(gapS<0.5)gapS=0.5;if(gapS>10)gapS=10;"
 "var foc=document.getElementById('chkFocus').checked?1:0;"
+"var unl=document.getElementById('chkUnlim').checked?1:0;"
+"var mxr=parseInt(document.getElementById('numUnlimRuns').value)"
+"||" EL_STR(UNLIM_RUNS_DEFAULT) ";"
+"if(mxr<" EL_STR(UNLIM_RUNS_MIN) ")mxr=" EL_STR(UNLIM_RUNS_MIN) ";"
+"if(mxr>" EL_STR(UNLIM_RUNS_MAX) ")mxr=" EL_STR(UNLIM_RUNS_MAX) ";"
 "var score=document.getElementById('selScore').value||'high';"
 "document.getElementById('runsErr').textContent='';"
 "document.getElementById('sCalTotal').textContent=base;"
@@ -430,7 +526,8 @@ static const char HTML[] =
 "document.getElementById('measArea').style.display='none';"
 "fetch('/start?mode='+mode+'&baseline='+base"
 "+'&run='+runS+'&gap='+gapS"
-"+'&focus='+foc+'&score='+score+'&confirm=1',{method:'POST'})"
+"+'&focus='+foc+'&score='+score"
+"+'&unlimited='+unl+'&maxruns='+mxr+'&confirm=1',{method:'POST'})"
 ".then(function(r){if(!r.ok){"
 "document.getElementById('runsErr').textContent="
 "'\\u26a0 a session is already running \\u2014 abort it first';"
@@ -630,7 +727,7 @@ static const char HTML[] =
 "}"
 "function poll(){"
 "fetch('/status').then(function(r){return r.json();}).then(function(d){"
-"updateItemBadge(d);"
+"updateItemBadge(d);updatePoolBadge(d);"
 "updateFocusInfo(d);"
 // Raise the prompt as soon as the device parks on it, and take it down again
 // the moment it moves on (an answer from another browser tab, or the timeout).
@@ -692,19 +789,23 @@ static const char HTML[] =
 "if(d.phase==='measuring'||stDone||(d.completed>0)){"
 "document.getElementById('measArea').style.display='';"
 "if(!stDone)document.getElementById('measCheck').innerHTML='';"
-"var pct=d.total>0?Math.round(d.completed*100/d.total):0;"
+"var rd=roundDone(d),rt=roundTotal(d);"
+"var pct=rt>0?Math.round(rd*100/rt):0;"
 "document.getElementById('pf').style.width=pct+'%';"
-"document.getElementById('sDone').textContent=d.completed+'/'+d.total;"
+"document.getElementById('sDone').textContent=rd+'/'+rt;"
 "document.getElementById('sPct').textContent=pct+'%';"
 "document.getElementById('sTime').textContent=fmt(d.elapsed_ms);"
 "showSlaveBadge(d);"
 /* ETA from the measured per-item pace over what remains. The elapsed clock
    includes scoring/baseline, so the first items overestimate slightly and it
    converges as the pass runs — good enough for a wall-clock this long. */
-"if(d.completed>0&&d.elapsed_ms>0&&d.total>d.completed){"
+/* In unlimited mode this is the ETA to the END OF THIS ROUND — there is no
+   session end to count down to, which is the point of the mode. */
+"if(d.completed>0&&d.elapsed_ms>0&&rt>rd){"
 "var msPer=d.elapsed_ms/((d.baseline_done||0)+(d.scoring_done||0)+d.completed);"
-"var eta=Math.round(msPer*(d.total-d.completed));"
-"document.getElementById('sEta').textContent=fmtEta(eta);"
+"var eta=Math.round(msPer*(rt-rd));"
+"document.getElementById('sEta').textContent=fmtEta(eta)"
+"+(d.unlimited?' (round)':'');"
 "}else document.getElementById('sEta').textContent='-';"
 "}"
 "if(d.state==='running'&&d.top&&d.top.length)showResults(d);"
@@ -1035,6 +1136,12 @@ static esp_err_t status_handler(httpd_req_t *req)
         "\"scoring_done\":%d,\"scoring_total\":%d,"
         "\"baseline_done\":%d,\"baseline_total\":%d,\"baseline_mean\":%.4f,"
         "\"completed\":%d,\"total\":%d,\"elapsed_ms\":%lld,"
+        /* `completed` is session-wide (the results[] prefix); `total` is the
+         * CURRENT round's combination space. In an ordinary session there is
+         * one round and the two are the old pair. In unlimited mode a progress
+         * bar has to use round_done/round_total, or its denominator moves. */
+        "\"unlimited\":%s,\"runs_cap\":%d,\"round\":%d,"
+        "\"round_base\":%d,\"round_done\":%d,\"round_total\":%d,"
         "\"pool_confirm\":%d,\"pool_auto\":%d,"
         "\"pool_need_main\":%d,\"pool_need_euro\":%d,",
         state_str, mode_str, phase_str,
@@ -1069,6 +1176,11 @@ static esp_err_t status_handler(httpd_req_t *req)
         g_status.baseline_done, g_status.baseline_total, g_status.baseline_mean,
         g_status.runs_completed, g_status.runs_total,
         (long long)g_status.elapsed_ms,
+        g_status.unlimited ? "true" : "false", g_status.runs_cap,
+        g_status.round, g_status.round_base,
+        g_status.runs_completed > g_status.round_base
+            ? g_status.runs_completed - g_status.round_base : 0,
+        g_status.round_total,
         g_status.pool_confirm, g_status.pool_auto,
         g_status.pool_need_main, g_status.pool_need_euro);
 
@@ -1081,8 +1193,13 @@ static esp_err_t status_handler(httpd_req_t *req)
      * reading poolconfirm/aborted indefinitely. Both UI call sites gate on
      * `pool_main` being present, so withholding it here is what stops the modal
      * being raised over a session that is already gone. */
-    if (g_status.phase == PHASE_POOL_CONFIRM &&
-        g_status.state == ELOTTO_RUNNING) {
+    /* Published for the whole run now, not only while the gate asks about it:
+     * the UI shows the pool under the scoring bar, and in unlimited mode it is
+     * re-scored every round, so "which numbers are being measured" is live
+     * state. sensor.c clears the count while a scoring pass is choosing the
+     * next one, so a stale pool is never served under a running bar. */
+    if (g_status.state == ELOTTO_RUNNING &&
+        (g_status.phase == PHASE_POOL_CONFIRM || g_status.pool_n_main > 0)) {
         pos += snprintf(buf+pos, sizeof(buf)-pos, "\"pool_main\":[");
         for (int i = 0; i < g_status.pool_n_main; i++)
             pos += snprintf(buf+pos, sizeof(buf)-pos, "%s{\"n\":%d,\"z\":%.2f}",
@@ -1309,9 +1426,10 @@ static int csv_row(char *buf, size_t cap, const char *group, int rank,
  * from either file forever. */
 static esp_err_t results_csv_handler(httpd_req_t *req)
 {
-    /* 384: the header comment alone runs past 300 characters with the German
-     * six-decimal pass statistics in it. It used to be 224 — see send_chunk(). */
-    char buf[384], qry[64], val[8];
+    /* 448: the header comment alone runs past 340 characters with the German
+     * six-decimal pass statistics and the unlimited-mode fields in it. It used
+     * to be 224 — see send_chunk(). */
+    char buf[448], qry[64], val[8];
     bool all = false;
     if (httpd_req_get_url_query_str(req, qry, sizeof(qry)) == ESP_OK &&
         httpd_query_key_value(qry, "all", val, sizeof(val)) == ESP_OK)
@@ -1333,14 +1451,21 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
         g_status.score_dir == SCORE_DIR_ABS ? "abs" : "high";
     /* Node identity in the header: discovery order is not stable across
      * sessions, so map columns z0..z3 through this IP list. */
+    /* items=<measured>/<planned>. In unlimited mode "planned" is the end of the
+     * CURRENT round — there is no session total by construction — so it stays
+     * monotone instead of reading 1234/84. */
+    int planned = g_status.unlimited
+                ? g_status.round_base + g_status.round_total
+                : g_status.runs_total;
     int nlen = snprintf(buf, sizeof(buf),
         "# elotto v3 mode=%s focus=%s score=%s items=%d/%d ranked=%d excl=%d void=%d "
         "blocks=%d paused_ms=%lld pass_mean=%s pass_sigma=%s pass_chi2=%s "
-        "pass_stouffer=%s v_eff=%s null_flags=%d drift_t=%.2f\n"
+        "pass_stouffer=%s v_eff=%s null_flags=%d drift_t=%.2f "
+        "unlimited=%s runs_cap=%d rounds=%d\n"
         "# nodes=",
         g_status.mode == MODE_EUROJACKPOT ? "euro" : "649",
         g_status.focus_mode ? "on" : "off", score_str,
-        n, g_status.runs_total, g_status.pass_n_valid, g_status.pass_n_excl,
+        n, planned, g_status.pass_n_valid, g_status.pass_n_excl,
         g_status.pass_n_void,
         g_status.loops_done, (long long)g_status.paused_ms,
         de_num(mb, sizeof(mb), g_status.pass_mean, 6),
@@ -1348,7 +1473,8 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
         de_num(cb, sizeof(cb), g_status.pass_chi2, 4),
         de_num(stb, sizeof(stb), g_status.pass_stouffer, 4),
         de_num(vb, sizeof(vb), g_status.v_eff, 4),
-        (int)g_status.null_flags, g_status.drift_t);
+        (int)g_status.null_flags, g_status.drift_t,
+        g_status.unlimited ? "on" : "off", g_status.runs_cap, g_status.round);
     send_chunk(req, buf, nlen, sizeof(buf));
     for (int i = 0; i < g_status.node_count && i < MAX_NODES; i++) {
         nlen = snprintf(buf, sizeof(buf), "%s%s",
@@ -1359,9 +1485,15 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
     httpd_resp_send_chunk(req, "\n", 1);
 
     if (all) {
+        /* `round` is APPENDED, not inserted: the existing columns keep their
+         * positions so an analysis script written against an older file still
+         * parses. ⚠ `item` is the combination id WITHIN its round — the pool is
+         * re-scored every round in unlimited mode, so the same id names a
+         * different draw in a different round. Key on (round, item), or simply
+         * on n1..n6/e1;e2, which are unambiguous either way. */
         int len = snprintf(buf, sizeof(buf),
             "order;item;n1;n2;n3;n4;n5;n6;e1;e2;z_raw;z_ctr;block;k;skip_rank;"
-            "z0;z1;z2;z3\n");
+            "z0;z1;z2;z3;round\n");
         send_chunk(req, buf, len, sizeof(buf));
         for (int j = 0; j < n; j++) {
             const RunResult *r = &g_status.results[j];
@@ -1377,7 +1509,7 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
                     de_num(nz[i], sizeof(nz[i]), (double)nodez[i], 6);
             }
             len = snprintf(buf, sizeof(buf),
-                "%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%s;%s;%d;%d;%d;%s;%s;%s;%s\n",
+                "%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%s;%s;%d;%d;%d;%s;%s;%s;%s;%d\n",
                 j + 1, r->index,
                 r->nums[0], r->nums[1], r->nums[2],
                 r->nums[3], r->nums[4], r->nums[5],
@@ -1385,7 +1517,7 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
                 de_num(zb, sizeof(zb), r->z_score, 6),
                 de_num(ab, sizeof(ab), (double)r->z_ctr, 4),
                 (int)r->block, (int)r->k, (int)r->skip_rank,
-                nz[0], nz[1], nz[2], nz[3]);
+                nz[0], nz[1], nz[2], nz[3], (int)r->round);
             send_chunk(req, buf, len, sizeof(buf));
         }
         httpd_resp_send_chunk(req, NULL, 0);
@@ -1528,9 +1660,13 @@ static esp_err_t start_handler(httpd_req_t *req)
     {
         // read mode from query string (?mode=0 or ?mode=1). Sized for the full
         // set the UI sends — a truncated query silently drops trailing keys.
-        char qry[192] = "";
+        char qry[256] = "";
         g_status.mode           = MODE_EUROJACKPOT;
         g_status.runs_total     = 0;   // computed in elotto_task from combinatorics
+        /* Unlimited mode: rounds repeat until Abort. Off unless asked for, and
+         * the cap only means anything when it is on. */
+        g_status.unlimited      = false;
+        g_status.runs_cap       = UNLIM_RUNS_DEFAULT;
         // One definition, shared with the form field (sensor.h), so a
         // curl-started session and a browser-started one are the same
         // experiment. ?baseline= still overrides either way.
@@ -1573,8 +1709,19 @@ static esp_err_t start_handler(httpd_req_t *req)
                 httpd_resp_set_status(req, "400 Bad Request");
                 httpd_resp_sendstr(req,
                     "v3: loops/runs/rank no longer exist -- one pass, every "
-                    "combination once, raw z");
+                    "combination once, raw z. For repeated rounds over a "
+                    "score-sized pool use unlimited=1&maxruns=<n>");
                 return ESP_OK;
+            }
+            /* ?unlimited=1 -> rounds repeat until Abort (or results[] full):
+             * score, keep the best numbers that fit ?maxruns=<n> measurement
+             * runs, measure that pool out, score again. The cap is per ROUND;
+             * results accumulate across rounds and rank together. */
+            if (httpd_query_key_value(qry, "unlimited", val, sizeof(val)) == ESP_OK)
+                g_status.unlimited = (val[0] == '1');
+            if (httpd_query_key_value(qry, "maxruns", val, sizeof(val)) == ESP_OK) {
+                int m = atoi(val);
+                if (m >= 1 && m <= UNLIM_RUNS_MAX) g_status.runs_cap = m;
             }
             if (httpd_query_key_value(qry, "mode", val, sizeof(val)) == ESP_OK)
                 g_status.mode = (val[0] == '1') ? MODE_LOTTO_649 : MODE_EUROJACKPOT;

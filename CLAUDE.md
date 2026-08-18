@@ -14,7 +14,8 @@ item** (scoring, baseline and measurement share the same length).
 
 - **No loops, no loop counter, no Runs cap, no ranking modes.** `?loops=`, `?runs=`, `?rank=`
   answer **400**. The progress bar's 100 % is the full combination space (Euro 12+5 → 7920,
-  6-of-49 pool 15 → 5005; `NUM_RUNS` 8000 is the hard cap).
+  6-of-49 pool 15 → 5005; `NUM_RUNS` 8000 is the hard cap). The one sanctioned exception is
+  **Unlimited Mode** below, which is per-ROUND rather than a loop counter.
 - **Measuring time is a session parameter** (UI: **Measuring Time (s)** · per Focus item;
   `?run=<s>` default **5**, `?gap=<s>` default **40 % of run**). Segment count is derived from a
   live cal (`RUN_SEGS_REF` / `RUN_MS_REF` in `sensor.h`). Actual wall time is **`focus_win_ms`** —
@@ -30,6 +31,66 @@ item** (scoring, baseline and measurement share the same length).
   closes a block → `/loops` row, drift point, pairwise fold, **and the block centring below**.
 - Session wall time scales with `run`/`gap` and combination count. Pause stops the clock, Abort
   publishes the measured prefix.
+
+### Unlimited Mode — rounds instead of one pass (2026-08-18)
+UI checkbox **"∞ Unlimited mode (rounds until Abort)"** plus **Runs per round** (default **100**);
+`POST /start?unlimited=1&maxruns=<n>`. Bare `?runs=` still answers 400 — the v3 meaning is gone and
+the 400 now names `unlimited=1&maxruns=` instead.
+
+A **round** is: score every number → keep only as many of the best as fit `maxruns` measurement runs
+→ measure that whole (small) space once in a fresh Fisher–Yates order → score again. It never ends
+by itself: **Abort, or `results[]` full at `NUM_RUNS` 8000**, at which point the session finishes
+DONE with the reason in `fault`.
+
+- **Pool sizing (`unlimited_pool_sizes()`): MAXIMISE THE COMBINATIONS MEASURED, nothing else.**
+  ⚠ This is not a style choice and a weighted rule was tried and **withdrawn the same day**. The
+  chance that a round's pool contains the real draw is
+  `C(p,5)/C(50,5) · C(q,2)/C(12,2)` = `[C(p,5)·C(q,2)] / 139838160` = **(combinations measured) /
+  (combinations that exist)** — the main/bonus split cancels out completely. So a pool rule is
+  neutral exactly when it spends the budget and harmful exactly in proportion to the runs it
+  leaves unspent, and it costs twice, because a short round also reaches its next 62-run scoring
+  pass sooner. The first rule maximised universe coverage `p/50 + q/12` (a bonus number weighted
+  ~4×, there being only 12): it pinned q at 5 and measured **210 of a 500-run budget where 462
+  were available — 2,2× less coverage**.
+  The bonus-number preference survives **only as the tie-break** — equal combination count → larger
+  bonus pool, then larger main pool — where P is identical and it is free.
+  cap 100 → Euro **7+3 = 63**, 6-of-49 **9 numbers = 84**; cap 500 → Euro **11+2 = 462**, 6-of-49
+  **11 = 462**; cap 7920 → the full 12+5 space, i.e. the mode degenerates into repeated full passes.
+  6-of-49 has no split, so more combinations is simply more numbers and it was never affected.
+- **Results ACCUMULATE across rounds.** `results[]` is never cleared; Top-5 / Bottom-5 /
+  Nearest-zero, pass mean/σ/χ², and the Bonferroni line all run on the union of every round
+  measured so far, so a later round's items sort straight into the same tables.
+- ⚠ **This relaxes the "measured exactly ONCE" rule.** Inside a round it still holds; **across**
+  rounds a combination can recur, because a later scoring pass may pick overlapping numbers. Each
+  recurrence is its own row — nothing is averaged or overwritten. `index` (combination id) is only
+  meaningful **within** a round, since the pool it enumerates changes; the identity is
+  **(round, index)**, and `n1..n6;e1;e2` is unambiguous either way.
+- **Every round closes its own block**, even at `?calint=0`, so centring never mixes items from
+  either side of a re-scoring. Rounds after the first re-run **sweep + baseline before scoring**
+  (skipped at `?calint=0`) — the scoring runs choose the pool and must not sit on a stale sweep.
+- **No pool-confirmation gate** (choosing by score is what the mode is); recorded `pool_auto=1`.
+  The observer gate still fires **once** at session start when attended.
+- **`/status` now publishes `pool_main`/`pool_euro` for the whole of EVERY running session**, not
+  only during `poolconfirm` — a `?confirm=`-less session used to measure a pool `/status` never
+  named. ⚠ **`sensor.c` withdraws it at the ROUND BOUNDARY (`round++`) and at session start before
+  `state` goes RUNNING** — not when the scoring pass begins. Clearing it at the scoring pass leaves
+  the previous round's numbers on screen for the whole sweep+baseline insertion with `round`
+  already advanced, and the previous SESSION's numbers on screen through the opening sweep,
+  baseline and observer gate. The UI shows it as an info line **under the Number-scoring bar**,
+  as number chips: `Round 3 numbers (9): …` in unlimited mode, `Selected numbers (12+5): …` else.
+- `/status`: `unlimited`, `runs_cap`, `round`, `round_base`, `round_done`, `round_total`.
+  `completed` stays session-wide, `total` is the CURRENT round — a progress bar must use
+  **round_done/round_total** or its denominator moves. ETA is to the end of the round.
+- CSV: header gains `unlimited=on|off runs_cap=<n> rounds=<n>`, `items=<measured>/<end of current
+  round>`, and `?all=1` gains a **`round` column, APPENDED last** so older parsers still line up.
+- ⚠ **Never pool unlimited-mode data with a single-pass session** without splitting on `round`
+  first, and never pool across rounds without deciding what to do about repeated combinations.
+
+Verified on hardware 2026-08-18: three rounds at `maxruns=20` 6-of-49 (7 numbers/7 combinations per
+round, pools re-scored between rounds, 14 items accumulated, both blocks centred to `pass_mean`
+−0,000000, abort kept the prefix), and Eurojackpot at `maxruns=50` sizing the round at **6+4 = 36**
+— the corrected rule, where the withdrawn weighted one answers 5+5 = 10.
+**Not yet exercised:** a long run with real 15-minute blocks, and the `results[]`-full stop at 8000.
 
 ### Stored z is RAW; RANKING is block-centred (2026-08-13)
 Two different values, and the distinction is the whole point:
