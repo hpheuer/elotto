@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "camera.h"
+#include "elotto_link.h"
 
 /* v3.0 (PLAN.md §2): ONE pass, every combination measured exactly ONCE.
  * results[] holds the pass in MEASUREMENT order, so NUM_RUNS is the hard cap
@@ -56,14 +57,68 @@
  * cycle; measured focus_gap_ms is larger because it also includes slave collect.
  * Segment count is derived from run_s via the segs↔ms cal — wall time can stretch
  * if the camera rate collapses at long windows (that IS the limit). */
+/* ⚠ 1..5 s, FIXED (user, 2026-08-18): the measurement window is never shorter
+ * than a second and never longer than five, so nothing outside that should be
+ * reachable — not in the form, not on the query string. RUN_S_MAX was 15, which
+ * after the 08-18 recalibration could no longer be delivered at all: 15 s asks
+ * for 391304 segments against a wire limit of 200000, and the request came back
+ * as a silent 7,7 s window. Capping the input removes that failure mode by
+ * construction rather than reporting it. */
 #define RUN_S_DEFAULT            5
 #define RUN_S_MIN                1
-#define RUN_S_MAX               15
+#define RUN_S_MAX                5
 #define GAP_S_MIN              0.5
 #define GAP_S_MAX               10
-/* Live 4-node cal 2026-08-02: 66000 segs → mean focus_win_ms 4680. */
-#define RUN_SEGS_REF         66000
-#define RUN_MS_REF            4680
+/* Live 4-node cal. ⚠ THIS PAIR IS A MEASUREMENT, and it must be re-measured
+ * after anything that changes the extraction rate — otherwise the window the
+ * operator asks for and the window the observer actually gets drift apart
+ * silently, which is the one thing the Focus protocol cannot tolerate.
+ *
+ *   2026-08-02: 66000 segs ↔ 4680 ms  (extraction at ~3,4 Mbit/s)
+ *   2026-08-18: 70513 segs ↔ 2703 ms  (word-wise extraction, ~5,7 Mbit/s)
+ *
+ * The 08-18 pair was measured the same way as the first: a live 4-node session
+ * at ?run=5, reading focus_win_ms off /status after a dozen runs. At the new
+ * rate a 5 s window buys ~130500 segments instead of ~70500 — 1,85× the bits
+ * per item, i.e. √1,85 ≈ 1,36× the sensitivity at the SAME wall time.
+ *
+ * ⚠ Sessions before and after 2026-08-18 are not the same instrument: same
+ * nominal ?run=, different bit count per item. Do not pool them. */
+#define RUN_SEGS_REF         70513
+#define RUN_MS_REF            2703
+/* The wire caps the segment count at EL_SEG_MAX, and a receiver does NOT clamp
+ * an out-of-range value — it falls back to its own default, which would put the
+ * nodes on different window lengths without anything looking wrong. The master
+ * must therefore never ASK for more than the wire allows. With RUN_S_MAX at 5 s
+ * that holds with room to spare (130435 of 200000), and the assertion below
+ * makes the compiler re-check it after any future recalibration instead of
+ * leaving it to whoever edits RUN_MS_REF next. */
+_Static_assert(((long long)RUN_S_MAX * 1000 * RUN_SEGS_REF) / RUN_MS_REF <= EL_SEG_MAX,
+               "RUN_S_MAX x the segs<->ms calibration exceeds the wire's EL_SEG_MAX: "
+               "the longest window the UI offers cannot be delivered. Lower "
+               "RUN_S_MAX, or raise EL_SEG_MAX in BOTH firmwares and fix "
+               "seg_from_cmd() to reject rather than silently substitute.");
+
+/* ── Wall time of ONE measured item, for the pre-start estimate ────────
+ * The UI has to answer "how long will a round take?" BEFORE anything runs, so
+ * it needs a model; once a session is live, /status carries the measured pace
+ * and the ETA comes from that instead. This is the model, and it is a FIT to
+ * two live 4-node measurements, not arithmetic on the requested numbers:
+ *
+ *   run=5 / gap=2 : window 4,48-4,55 s, gap 4,29 s -> cycle ~8,8 s
+ *   run=1 / gap=.5: cycle ~1,8-1,9 s (2026-08-18 smoke tests)
+ *
+ * Two effects, both proportional to the requested window: the window itself
+ * comes out ~10 % SHORT, and the inter-run gap carries the slave collect on top
+ * of the requested blank (~46 % of the window — every node integrates the same
+ * length, so the wait scales with it). Together:
+ *
+ *   cycle_ms ~= CYCLE_RUN_PCT/100 * run_ms + gap_ms
+ *
+ * 1,36*5000 + 2000 = 8800 and 1,36*1000 + 500 = 1860 — both fit.
+ * ⚠ An ESTIMATE. Long windows stretch further when the camera rate collapses
+ * under duty cycle, which is exactly what ?run= is there to probe. */
+#define CYCLE_RUN_PCT          136
 
 /* ── Unlimited mode (user, 2026-08-18) ────────────────────────────────────
  * A session that does not end with the combination space. Instead of measuring

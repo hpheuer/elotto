@@ -19,6 +19,7 @@
 #include "esp_cam_sensor_xclk.h"
 #include "esp_http_server.h"
 #include "camera.h"
+#include "extract.h"
 
 // OV5647 dark-frame noise source (docs/PLAN_4NODE.md).
 // Extraction: non-overlapping frame pairs, diff = f[2k+1] - f[2k] per pixel
@@ -58,6 +59,8 @@ static volatile uint32_t s_consumer_waits = 0;
 static volatile uint32_t s_stalls = 0;
 
 #define CAM_STALL_TIMEOUT_MS  2000
+/* Frame pairs between idle-task yields; see camera_task(). */
+#define CAM_YIELD_PAIRS       4
 static uint64_t s_bits_extracted = 0, s_ones_count = 0;
 static uint64_t s_run_ones = 0, s_run_bits = 0;
 static double   s_z_mean = 0.0, s_z_m2 = 0.0;
@@ -146,7 +149,7 @@ static void process_word(uint32_t w)
 
     // Statistics cover every extracted word, including dropped ones: /diag must
     // characterise the source itself, not whichever subset got consumed.
-    int ones = __builtin_popcount(w);
+    int ones = (int)cam_popcount32(w);
     s_bits_extracted += 32;
     s_ones_count += ones;
 
@@ -167,25 +170,23 @@ static void process_word(uint32_t w)
     // boundary are skipped -- that drops 4 of every 32 pairs but keeps the
     // estimator unbiased and the hot loop cheap.
     for (int L = 1; L <= 4; L++) {
-        s_autocorr_both1[L - 1] += (uint64_t)__builtin_popcount(w & (w << L));
+        s_autocorr_both1[L - 1] += (uint64_t)cam_popcount32(w & (w << L));
         s_autocorr_pairs[L - 1] += (uint64_t)(32 - L);
     }
 }
 
-static void accumulate_pixel_level(const uint8_t *frame, uint32_t n)
-{
-    for (uint32_t i = 0; i < n; i += 16) {
-        s_pixel_sum += frame[i];
-        s_pixel_n++;
-    }
-}
+/* accumulate_pixel_level() is GONE. It walked the first frame of every pair
+ * with a stride of 16 to sample 40000 pixels for mean_pixel_level — but a
+ * stride inside 64-byte cache lines still pulls every line, so those samples
+ * cost a full 625 KB of PSRAM traffic (~7 ms per pair, ~13 % of the budget) on
+ * top of the two frames the diff already reads. The sum now rides along inside
+ * the extractor, out of words it has in registers anyway (extract.h). */
 
 // diff = b - a per pixel (mod 256), LSB packed. Non-overlapping: caller never
 // reuses a or b as the other side of the next pair.
-static uint32_t s_bitacc = 0;
-static int      s_bitacc_n = 0;
-static uint32_t s_fold_pending = 0;
-static bool     s_fold_have = false;
+/* Packer state, owned by the extractor (components/elotto_camera/extract.h).
+ * It persists across frame pairs because a pair boundary can land mid-word. */
+static cam_pack_t s_pack;
 static volatile bool s_xor_fold =
 #if CONFIG_ELOTTO_CAM_XOR_FOLD
     true;
@@ -201,47 +202,34 @@ static volatile bool s_xor_fold =
  * statistics when it reaches 0, so the window starts clean. */
 static volatile int s_settle_pairs = 0;
 
+static void emit_word_cb(uint32_t w, void *ctx) { (void)ctx; process_word(w); }
+
+/* One frame pair. The extraction itself lives in extract.c as two
+ * implementations the on-target self-test holds against each other; this picks
+ * one and does the frame-level bookkeeping around it.
+ *
+ * ⚠ `s_xor_fold` is read ONCE here instead of once per pixel. It is volatile,
+ * so the per-pixel read could never be hoisted by the compiler, and it can only
+ * change between windows anyway (calibration, which also clears the half-pair
+ * state through camera_stats_reset). Reading it per frame additionally makes a
+ * mid-frame change impossible, which is the behaviour that was always intended. */
 static void diff_and_extract(const uint8_t *a, const uint8_t *b, uint32_t n)
 {
-    uint8_t any_diff = 0;
-    uint32_t zeros = 0;
-    for (uint32_t i = 0; i < n; i++) {
-        uint8_t d = (uint8_t)(b[i] - a[i]);
-        any_diff |= d;
-        if (d == 0) zeros++;
-        uint32_t bit = d & 1u;
+    uint32_t zeros = 0, any = 0, psum = 0;
+    /* The WORD-WISE path. cam_extract_ref() is still compiled in and is still
+     * the definition of correct: GET /camtest runs both over six cases on this
+     * silicon and compares the emitted words, the zero count, the stuck verdict
+     * and the leftover packer state. Do not switch this line without it. */
+    cam_extract_fast(a, b, n, s_xor_fold, &s_pack, emit_word_cb, NULL, &zeros, &any, &psum);
 
-        // Runtime, not #if: the XOR fold is a *processing* parameter the
-        // per-loop calibration is allowed to choose (PLAN.md Task 1). It halves
-        // the rate to square away the raw LSB bias, so if a calibrated exposure
-        // makes the raw bias pass on its own, turning the fold off doubles the
-        // stream. Kconfig still sets the power-on default.
-        if (s_xor_fold) {
-            // Adjacent pixels are different Bayer channels, so folding them also
-            // averages out per-channel LSB structure rather than just squaring a
-            // single channel's bias.
-            if (!s_fold_have) {
-                s_fold_pending = bit;
-                s_fold_have = true;
-                continue;
-            }
-            bit ^= s_fold_pending;
-            s_fold_have = false;
-        }
-
-        s_bitacc = (s_bitacc << 1) | bit;
-        if (++s_bitacc_n == 32) {
-            process_word(s_bitacc);
-            s_bitacc = 0;
-            s_bitacc_n = 0;
-        }
-    }
     s_zero_diffs += zeros;
     s_diff_n += n;
+    s_pixel_sum += psum;
+    s_pixel_n   += n;
 
     xSemaphoreTake(s_mutex, portMAX_DELAY);
     s_stats.frame_pairs++;
-    if (!any_diff) s_stats.stuck_frame_count++;
+    if (!any) s_stats.stuck_frame_count++;
     xSemaphoreGive(s_mutex);
 }
 
@@ -299,8 +287,7 @@ static void stats_reset_locked(void)
     for (int L = 0; L < 4; L++) { s_autocorr_both1[L] = 0; s_autocorr_pairs[L] = 0; }
     s_pixel_sum = 0; s_pixel_n = 0;
     s_zero_diffs = 0; s_diff_n = 0;
-    s_bitacc = 0; s_bitacc_n = 0;
-    s_fold_have = false;                 // a half-folded pair must not straddle
+    memset(&s_pack, 0, sizeof(s_pack));  // a half-folded pair must not straddle
     s_ring_tail = s_ring_head;           // drop unread old-setting words
     s_stream_start_us = esp_timer_get_time();
 
@@ -340,6 +327,7 @@ static void camera_task(void *arg)
     // while we hold 2.
     struct v4l2_buffer first;
     bool have_first = false;
+    int  yield_ctr = 0;
     s_stream_start_us = esp_timer_get_time();
 
     while (1) {
@@ -361,7 +349,6 @@ static void camera_task(void *arg)
         if (!have_first) {
             first = buf;
             have_first = true;
-            accumulate_pixel_level(s_bufs[buf.index], s_frame_size);
             continue;               // keep this buffer; do not requeue yet
         }
 
@@ -389,12 +376,18 @@ static void camera_task(void *arg)
         ioctl(s_fd, VIDIOC_QBUF, &buf);
         have_first = false;         // next pair starts fresh -- non-overlapping
 
-        // Frames arrive faster than a 640 KB PSRAM-to-PSRAM diff can consume
-        // them, so this loop never blocks on DQBUF and would starve the idle
-        // task (task watchdog). Yield once per frame: cheap relative to the
-        // per-frame work, and the dropped frames cost nothing -- pairs are
-        // non-overlapping anyway, and entropy is rate-limited by extraction.
-        vTaskDelay(1);
+        /* Frames arrive faster than the diff can consume them, so this loop
+         * never blocks on DQBUF and would starve the idle task (task watchdog)
+         * without a yield. But vTaskDelay(1) sleeps to the next TICK, and at
+         * CONFIG_FREERTOS_HZ = 100 that is 0..10 ms, ~5 ms on average. Once per
+         * pair that was ~9 % of a 56 ms budget — free when a pair cost 94 ms,
+         * expensive now that the extraction is 1,67x faster.
+         *
+         * So yield every CAM_YIELD_PAIRS pairs instead. ~200 ms between yields
+         * is nowhere near the 5 s task watchdog, and every task that matters
+         * runs ABOVE this one (elotto_task at 5, the network stack far higher);
+         * only the idle task is below, and it has nothing to do but exist. */
+        if (++yield_ctr >= CAM_YIELD_PAIRS) { yield_ctr = 0; vTaskDelay(1); }
     }
 }
 
@@ -1007,7 +1000,7 @@ void camera_get_stats(camera_stats_t *out)
 esp_err_t camera_cal_send_json(void *httpd_req, const camera_cal_t *c)
 {
     httpd_req_t *req = (httpd_req_t *)httpd_req;
-    char buf[320];
+    char buf[480];
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
@@ -1112,5 +1105,45 @@ esp_err_t camera_expose_handle(void *httpd_req, bool busy)
              (unsigned long)want_e, (unsigned long)want_g,
              (unsigned long)got_e, (unsigned long)got_g,
              applied ? "" : "(DID NOT LATCH)");
+    return ESP_OK;
+}
+
+esp_err_t camera_selftest_handle(void *httpd_req, bool busy)
+{
+    httpd_req_t *req = (httpd_req_t *)httpd_req;
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    if (busy) {
+        httpd_resp_set_status(req, "409 Conflict");
+        httpd_resp_sendstr(req, "{\"err\":\"measuring\"}");
+        return ESP_OK;
+    }
+
+    cam_selftest_t t;
+    char buf[320];
+    if (!cam_extract_selftest(&t)) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_sendstr(req, "{\"err\":\"no psram for the test buffers\"}");
+        return ESP_OK;
+    }
+    /* ns_* are nanoseconds per PIXEL; cyc_* the same at the configured CPU
+     * clock, which is the number that compares against "an XOR and a shift". */
+    double mhz = (double)CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ;
+    snprintf(buf, sizeof(buf),
+        "{\"equal\":%s,\"cases\":%d,\"failed_case\":%d,\"words\":%lu,"
+        "\"ns_read\":%.3f,\"ns_ref\":%.3f,\"ns_fast\":%.3f,\"ns_stats\":%.3f,"
+        "\"cyc_read\":%.1f,\"cyc_ref\":%.1f,\"cyc_fast\":%.1f,\"cyc_stats\":%.1f,"
+        "\"speedup\":%.2f,\"cpu_mhz\":%d,"
+        "\"what\":%d,\"bad_at\":%lu,\"ref_w\":\"%08lx\",\"fast_w\":\"%08lx\","
+        "\"ref_z\":%lu,\"fast_z\":%lu}",
+        t.equal ? "true" : "false", t.cases, t.failed_case, (unsigned long)t.words,
+        t.ns_read, t.ns_ref, t.ns_fast, t.ns_stats,
+        t.ns_read * mhz / 1000.0, t.ns_ref * mhz / 1000.0,
+        t.ns_fast * mhz / 1000.0, t.ns_stats * mhz / 1000.0,
+        t.ns_stats > 0.0f ? t.ns_ref / t.ns_stats : 0.0, (int)mhz,
+        t.what, (unsigned long)t.bad_at,
+        (unsigned long)t.ref_w, (unsigned long)t.fast_w,
+        (unsigned long)t.ref_z, (unsigned long)t.fast_z);
+    httpd_resp_sendstr(req, buf);
     return ESP_OK;
 }

@@ -1,6 +1,7 @@
 idf_component_register(
     SRCS
         "camera.c"
+        "extract.c"
     INCLUDE_DIRS
         "include"
     REQUIRES

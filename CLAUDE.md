@@ -17,10 +17,15 @@ item** (scoring, baseline and measurement share the same length).
   6-of-49 pool 15 → 5005; `NUM_RUNS` 8000 is the hard cap). The one sanctioned exception is
   **Unlimited Mode** below, which is per-ROUND rather than a loop counter.
 - **Measuring time is a session parameter** (UI: **Measuring Time (s)** · per Focus item;
-  `?run=<s>` default **5**, `?gap=<s>` default **40 % of run**). Segment count is derived from a
+  `?run=<s>` **fixed to 1–5 s, default 5** (user, 2026-08-18) — the form offers nothing else and
+  an out-of-range `?run=` answers **400**, it does NOT fall back to the default. `?gap=<s>`
+  defaults to **40 % of run**. Segment count is derived from a
   live cal (`RUN_SEGS_REF` / `RUN_MS_REF` in `sensor.h`). Actual wall time is **`focus_win_ms`** —
   long windows stretch when the camera rate collapses under high duty cycle (that is the limit,
-  not RAM). Measured live at `run=5`/`gap=2`: window **4,48–4,55 s**, gap **4,29 s**, cycle ~8,8 s.
+  not RAM). ⚠ Re-measured **2026-08-18** after the extraction speed-up: at `run=5`/`gap=2` the
+  window is **5,05 s**, gap **5,52 s**, cycle **~10,6 s** — and it now carries **130.435 segments
+  instead of 70.513**, i.e. 1,85× the bits per item. The pre-08-18 figures (4,5 s window, 8,8 s
+  cycle, 70.513 segments) describe a DIFFERENT instrument; see the extraction section below.
 - **`results[]` is in MEASUREMENT order** (`.index` = combination id, `.block` stamped), so the
   prefix is always complete: aborts need no compaction, and **`GET /results.csv?all=1`** streams
   every measured item live mid-session. ⚠ RAM only — pull it periodically over a long pass; a
@@ -78,6 +83,14 @@ DONE with the reason in `fault`.
   already advanced, and the previous SESSION's numbers on screen through the opening sweep,
   baseline and observer gate. The UI shows it as an info line **under the Number-scoring bar**,
   as number chips: `Round 3 numbers (9): …` in unlimited mode, `Selected numbers (12+5): …` else.
+- The **Runs per round** field shows, to its right, what each budget buys AND **how long one round
+  takes** at the current parameters, both modes: `Euro 7+3 = 63 runs · ≈ 19 min/round` /
+  `6of49 9 = 84 runs · ≈ 21 min/round`. Recomputes as run window and baseline count are typed.
+  Model = `CYCLE_RUN_PCT` in `sensor.h`: `cycle_ms ≈ 1,36 · run_ms + gap_ms`, fitted to two live
+  4-node points (8,8 s at `run=5`/`gap=2`; ~1,86 s at `run=1`/`gap=0,5`). A round = scoring sweep
+  + the pool's combinations + one sweep/baseline insertion + one more per `calint` of MEASURING
+  time. Checked against the `maxruns=20` smoke test: model 2 min, measured ~2 min. ⚠ Estimate only
+  — long windows stretch further under duty cycle; the live ETA uses the device's measured pace.
 - `/status`: `unlimited`, `runs_cap`, `round`, `round_base`, `round_done`, `round_total`.
   `completed` stays session-wide, `total` is the CURRENT round — a progress bar must use
   **round_done/round_total** or its denominator moves. ETA is to the end of the round.
@@ -116,6 +129,13 @@ items per block — so σ(z_ctr) sits slightly under 1 by construction, not from
 ⚠ **Never pool v3 data with any v2.x session**, and never pool pre- with post-centring passes
 without recomputing both the same way.
 
+- UI: a **parameter line at the top of the progress area**, for EVERY session — mode, measuring
+  time, gap, segments, seconds per run, measured window/gap, baseline runs, sweep budget +
+  interval, score direction, attended/unattended, and the unlimited cap. Built from `/status`, not
+  from the form, so a curl-started run and a reloaded page both label themselves. "per run" is the
+  measured pace (`elapsed / all runs of all phases`) once ≥ 5 runs exist, otherwise the
+  `CYCLE_RUN_PCT` estimate, and it says which. ⚠ The measured value reads high early — `elapsed_ms`
+  also contains the opening sweep, which is not a run.
 - UI: **three tables of five** — Top-5 and Bottom-5 and **Nearest-zero-5** (`top[]`/`low[]`/
   `near[]`), plus significance line, item counter + block badge, Save CSV.
   ⚠ **Nearest zero means nearest the PASS MEAN, not nearest raw 0.** `results_near_mean()` picks
@@ -166,7 +186,7 @@ the pass it already makes. Both simpler rules are wrong and both were measured:
   Omitting `gain` keeps the gain in force.
   ⚠ `cfg.max_uri_handlers` must exceed **(count here) + 5 from elotto_ota**; registration past the
   cap fails and the return value is checked nowhere, so an endpoint just 404s silently.
-  Currently 15 + 5 = 20 against a cap of 24.
+  Currently 16 + 5 = 21 against a cap of 24 (`/camtest` added 2026-08-18).
 - main/sensor.c   – GCP analysis, scoring/pooling, baseline, the single pass, blocks, centring,
   drift, soft-down, publishing
 - main/nodes.c    – **the array**: UDP link, discovery, calibration handshake, per-node health,
@@ -213,6 +233,60 @@ CSV header is what makes `z0..z3` decodable — never map by column position.
 **COM ports are not stable** — the same slave has enumerated as COM6, COM8 and COM9. Always list
 the ports before an `erase-flash`; a wrong port wipes a working node. Node addresses are
 informational: the master finds slaves by UDP broadcast, so a dynamic lease works like a static one.
+
+### Extraction speed — measured, and where the ceiling is (2026-08-18)
+**3,42 → 5,71 Mbit/s per node, ×1,67, all four**, bit-for-bit the same stream. Three changes, each
+measured separately because the first guess was wrong twice:
+
+| step | Mbit/s | note |
+|---|---|---|
+| baseline (`-Og`) | 3,42 | 52,8 CPU cycles per pixel |
+| `-O2` (`COMPILER_OPTIMIZATION_PERF`, both projects) | 3,81 | ×1,11 — the compiler was **not** the problem |
+| inline popcount | 4,60 | ×1,21 — see below |
+| word-wise extraction | **5,71** | ×1,24 |
+
+- ⚠ **These cores have no Zbb: `__builtin_popcount` compiles to a CALL to `__popcountsi2`**
+  (confirmed with objdump). `process_word()` ran it **five times per 32 pixels** — one for the bias,
+  four for the autocorrelation gate. `cam_popcount32()` in `extract.h` is the inline SWAR
+  replacement. This single change beat `-O2`.
+- **`LSB(b − a) ≡ LSB(a) ⊕ LSB(b)`** — bit 0 of a subtraction never depends on a borrow, so the
+  per-pixel subtraction is unnecessary and 4 pixels are one XOR of two 32-bit loads.
+  ⚠ The usual `haszero` SWAR trick **counts wrong** (a zero byte borrows into the next and flags it
+  too); `zero_diff` uses the borrow-free form. The self-test caught the fold bug that shipped with
+  the first draft.
+- **`GET /camtest`** runs the byte-wise reference and the word-wise path over six cases on the node's
+  own silicon and compares emitted words, zero count, stuck verdict and leftover packer state.
+  `cam_extract_ref()` stays compiled in as the definition of correct. ⚠ **Do not change the live
+  extractor without it.** 409 while measuring.
+- ⚠ **Autocorrelation must NOT be subsampled** — `autocorr_max` is a calibration gate
+  (`CAL_AUTOC_TOL` 0,01), so a noisier estimator would change which exposure rung is chosen.
+- **The ceiling is the sensor, not the code**: RAW8 800×800 @50 fps → 25 non-overlapping pairs/s ×
+  320.000 bit = **8,0 Mbit/s**. At 5,71 we are at **71 %**, so at most 1,4× remains. **The
+  second-core split was dropped for that reason** — it cannot beat a frame-rate limit. The measured
+  PSRAM read floor is 8,0 cycles/pixel against 20,9 for extraction+statistics.
+- **The wire's segment bound is now ONE definition**: `EL_SEG_MIN`/`EL_SEG_MAX` in
+  `components/elotto_link/include/elotto_link.h`, compiled into both firmwares. It used to be a
+  bare `200000` twice in the master plus the slave's own `SEG_MAX`.
+  ⚠ **A receiver does NOT clamp an out-of-range segment count** — `seg_from_cmd()` falls back to
+  the slave's own `CAM_SEGMENTS` (8000) and logs it to a serial port nobody watches. Master at
+  260869 segments and slaves at 8000 would be combined as if they had integrated the same window,
+  and **no gate would fire**: each z is normalised by its own √segments and stays N(0,1). Raising
+  `EL_SEG_MAX` therefore means fixing that fallback to REJECT, in both firmwares, together.
+  With `RUN_S_MAX` at 5 s the master can never ask for more than 130435 of 200000, and a
+  `_Static_assert` in `sensor.h` re-checks that against the calibration at every build — verified
+  to fire by temporarily setting `RUN_S_MAX` back to 15.
+- ⚠ **Two changes that should have worked and did not** (2026-08-18): `mean_pixel` folded into the
+  diff loop — removing `accumulate_pixel_level()`, a full extra 625 KB PSRAM pass per frame pair —
+  and the per-pair `vTaskDelay(1)` (0..10 ms at `FREERTOS_HZ` 100) thinned to every 4th pair.
+  Predicted ~13 % + ~9 %; **measured 0,0 %**, 5,707 → 5,707 Mbit/s. Kept, because both are verified
+  bit-identical and one pass less over the frame is simpler, but **the reasoning was wrong and the
+  reason is still open.** `/camtest` prices the loop at 22,9 cycles/pixel = 40,7 ms per pair against
+  a live cycle of 55,9 ms, so ~14 ms sits outside anything measured. ⚠ **Suspect the harness first:
+  it benchmarks 2×256 KB buffers where the real frames are 2×640 KB.** Do not price another
+  micro-optimisation against it until that is settled.
+- ⚠ **Verification trap, hit twice**: `until curl http://node/` succeeds *immediately* because the
+  node still serves the OLD image while the OTA writes. Two measurements were taken from the
+  previous binary before this was noticed. **Poll `fw_sha` in `/status` until it changes.**
 
 ### Illumination — standing rules
 The enclosure is **LIT, not dark**. "Controlled light" was always the goal; it is not the same as
@@ -275,7 +349,7 @@ sub-millisecond remainder would hang the session — this already happened once.
   from the camera** once per session. It never enters a z-score.
 - Each node has its **own** OV5647 (never shared — sharing would break independence by
   construction). Entropy = non-overlapping frame pairs, diff = f[2k+1]−f[2k] per pixel (cancels FPN
-  exactly), LSB packed, XOR-folded. ~3 Mbit/s per node.
+  exactly), LSB packed, XOR-folded. **~5,7 Mbit/s per node since 2026-08-18** (was ~3,4).
 - One source, **session segment count**: `g_status.run_segments` from `?run=` for baseline,
   scoring AND the measurement pass, all behind `g_status.gap_ms`. z stays N(0,1) at any length,
   being normalised by √segments.
@@ -459,14 +533,14 @@ recovery updater is gone. OTA cannot repair those.
   `ESP32P4_REV_MIN_0=y` — the latter depends on it, and without it the choice silently falls back to
   rev v3.1 and the binary refuses to boot on these v1.3 boards.
 
-## Where things stand (2026-08-17) — read this first
+## Where things stand (2026-08-18) — read this first
 
 **The instrument is sound and every result so far is null**, which is what a working null instrument
 produces. `main/` is split four ways (elotto/sensor/nodes/focus) and the z-score primitive is shared
 with the slave via `components/elotto_gcp`.
 
 **Hardware, current:** all four nodes lit and healthy at idle — bias within 3,1e-4 of 0,5, σ 0,999
-to 1,002, autocorr ≈ 0, 3,4 Mbit/s each. **slave1's and slave2's cameras were swapped on
+to 1,002, autocorr ≈ 0, **5,71 Mbit/s each since the 2026-08-18 extraction work** (was 3,4). **slave1's and slave2's cameras were swapped on
 2026-08-17** to test whether slave1's fault follows the sensor or stays with the board; that
 question is **open and needs a loaded run to answer**, since neither node shows anything wrong at
 idle. Settled light at exp 128: master 34,5 · slave0 27,9 · slave1 27,0 · slave2 19,5, stable to
@@ -485,7 +559,21 @@ may be pooled with anything after it.
 | `_short_*` | a 1995/5005 partial, 57 blocks at `calint` 5 min |
 | `_analyze_*.py` | the operator's own analysis scripts |
 
+**Uncommitted as of 2026-08-18.** The working tree carries a full day of work across BOTH repos —
+`components/elotto_camera/extract.{c,h}` are new files, and `elotto_camera` + `elotto_link` changed,
+so `elotto` and `elotto_slave` must be committed and flashed together. All four nodes are already
+flashed with it. Commit before anything else.
+
 **Open, in the order I would pick them up:**
+0. **Why did the last two extraction changes buy nothing?** Folding `mean_pixel` into the diff loop
+   (removing a whole extra 625 KB pass per pair) and yielding every 4th frame pair instead of every
+   one were predicted at ~22 % together and measured at **0,0 %** — 5,707 → 5,707 Mbit/s. Both are
+   verified bit-identical and the quality is untouched, so they are kept, but the model behind them
+   is wrong. What is known: `/camtest` prices extraction+statistics at 22,9 cycles/pixel = 40,7 ms
+   per pair, the live pair cycle is 55,9 ms, and ~14 ms is unaccounted for. First suspect: the
+   benchmark runs on 2×256 KB buffers while real frames are 2×640 KB, so the harness may simply not
+   reproduce the memory behaviour it is being used to price. Fix the harness before trusting any
+   further micro-optimisation — that is the lesson of the whole day (see the extraction section).
 1. **Does slave1's fault follow the camera?** The swap is done; only a loaded run answers it. Both
    nodes are clean at idle, and slave1's block-mean excursions (+24,13 in one block) never showed
    up in an idle reading.

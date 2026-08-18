@@ -123,7 +123,7 @@ static int segs_from_run_ms(int run_ms)
     if (run_ms < 100) run_ms = 100;
     long long n = ((long long)run_ms * RUN_SEGS_REF + RUN_MS_REF / 2) / RUN_MS_REF;
     if (n < 500) n = 500;
-    if (n > 200000) n = 200000;   /* slave SEG_MAX */
+    if (n > EL_SEG_MAX) n = EL_SEG_MAX;   /* the wire's limit, elotto_link.h */
     return (int)n;
 }
 

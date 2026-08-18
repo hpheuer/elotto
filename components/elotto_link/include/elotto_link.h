@@ -10,6 +10,20 @@
  * here and nowhere else — two hand-written parsers that disagree about framing
  * would produce a transport bug that looks exactly like a statistics bug.
  *
+ * SEGMENT COUNT BOUNDS: the run length travels on the wire (`M<seg>`,
+ * `B<runs>,<seg>`) precisely so a node cannot disagree about it, which only
+ * holds while both ends accept the same range. The bounds therefore belong to
+ * the wire definition, here, and not to one parser each — the master used to
+ * carry the upper bound as a bare 200000 in two places and the slave as its own
+ * SEG_MAX, three copies that nothing forced to agree.
+ *
+ * ⚠ A value outside this range is NOT clamped by the receiver; see
+ * seg_from_cmd() in the slave. Keep the master's ?run= validation inside it.
+ */
+#define EL_SEG_MIN      100
+#define EL_SEG_MAX   200000
+
+/*
  * FRAME:  "EL1 <seq> <payload>"      (plain ASCII, one command per datagram)
  *
  * The payload is the *unchanged* UART command/reply text — "M", "B100", "D",

@@ -95,6 +95,16 @@ the centring noisier; lengthening it does the reverse.
   fetches this; `?all=1` sits below it as a plain link, deliberately. ⚠ **The summary is not the
   record.** Fifteen rows cannot be re-derived into a pass and no item is ever re-measured, so the
   archival pull stays the operator's explicit act rather than a side effect of clicking Save.
+- **The session's parameters stay on screen while it runs.** The form is hidden once a session
+  starts and a curl-started one never had a form, so the progress area carries a read-only
+  parameter line: mode, `run_s`, `gap_s`, `run_segs`, seconds per run, measured `focus_win_ms` /
+  `focus_gap_ms`, `baseline_total`, `cal_budget_ms` + `cal_interval_ms`, `score_dir`, focus, and
+  the unlimited cap. Sourced from `/status` so the device's numbers are what is shown, and kept
+  after `done`/`aborted` so a screenshot can be matched to its CSV. Seconds per run is MEASURED
+  (`elapsed_ms / (baseline_done + scoring_done + completed)`) once ≥ 5 runs exist and the
+  `CYCLE_RUN_PCT` estimate before that, labelled either way. Live check 2026-08-18 against a
+  running 6-of-49 session: `per run 8,6 s measured`, `window/gap 4491 / 4288 ms` — against the
+  model's 8,8 s, which is the second confirmation of `CYCLE_RUN_PCT`.
 - **German CSV throughout**: `;` separator AND `,` decimal. Both halves are the decision — with a
   decimal point in the cell, German Excel reads the whole column as text.
 - **Removed params answer 400**, not silence: `?loops=`, `?rank=`, `?runs=`. `?mode=`, `?baseline=`,
@@ -292,6 +302,21 @@ sitting in it, so centring must never span one.
   The UI renders it as an info line **directly under the Number-scoring bar** — the same number
   chips as the result tables and the Focus panel, so a bonus number reads as a star there too —
   labelled `Round N numbers (9):` in unlimited mode and `Selected numbers (12+5):` otherwise.
+- The **Runs per round** field carries a live estimate to its right: the pool each budget buys AND
+  **how long one round takes** at the parameters currently in the form, both modes, two lines —
+  `Euro 7+3 = 63 runs · ≈ 19 min/round` / `6of49 9 = 84 runs · ≈ 21 min/round`. The operator sets a
+  run BUDGET, not a duration, and 100 runs is ~20 min at `run=5` but over an hour at `run=15`; in
+  this mode there is no session end to discover that from afterwards. It re-computes as the run
+  window and the baseline count are typed, not only the budget.
+  The model is `CYCLE_RUN_PCT` in `sensor.h` — `cycle_ms ≈ 1,36 · run_ms + gap_ms`, a FIT to two
+  live 4-node measurements (`run=5`/`gap=2` → 8,8 s; `run=1`/`gap=0,5` → ~1,86 s), because the
+  window comes out ~10 % short and the gap carries the slave collect (~46 % of the window) on top
+  of the requested blank. A round = scoring sweep (49 or 62 runs) + the pool's combinations + one
+  sweep+baseline insertion at the boundary + one more per `calint` of MEASURING time (which is what
+  the device's block timer counts). Checked against the `maxruns=20` smoke test: model 2 min,
+  measured ~2 min. ⚠ An estimate — long windows stretch further as the camera rate falls under
+  duty cycle, which is what `?run=` exists to probe. Once a session is live the ETA comes from the
+  device's measured pace instead.
 - CSV header gains `unlimited=on|off runs_cap=<n> rounds=<n>`, and `items=` reads
   `<measured>/<end of the current round>` so it stays monotone.
 - `?all=1` gains a **`round` column, APPENDED last** — the existing columns keep their positions so

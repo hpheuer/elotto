@@ -146,14 +146,15 @@ static const char HTML[] =
 "<label for='numBaseline'>Baseline runs:</label>"
 "<input id='numBaseline' class='fin' type='number'"
 " value='" EL_STR(BASELINE_DEFAULT) "' min='" EL_STR(BASELINE_MIN) "'"
-" max='" EL_STR(BASELINE_MAX) "' step='" EL_STR(BASELINE_STEP) "'>"
+" max='" EL_STR(BASELINE_MAX) "' step='" EL_STR(BASELINE_STEP) "'"
+" oninput='unlimHint()'>"
 "</div>"
 "<div class='frow'>"
 "<label for='numRunS'>Measuring Time (s):</label>"
 "<span style='display:flex;align-items:center;gap:8px'>"
 "<input id='numRunS' class='fin' type='number'"
 " value='" EL_STR(RUN_S_DEFAULT) "' min='" EL_STR(RUN_S_MIN) "'"
-" max='" EL_STR(RUN_S_MAX) "' step='0.5'>"
+" max='" EL_STR(RUN_S_MAX) "' step='0.5' oninput='unlimHint()'>"
 "<span style='color:#8fae8f;font-size:.85em;white-space:nowrap'>per Focus item</span>"
 "</span>"
 "</div>"
@@ -192,7 +193,7 @@ static const char HTML[] =
 " value='" EL_STR(UNLIM_RUNS_DEFAULT) "' min='" EL_STR(UNLIM_RUNS_MIN) "'"
 " max='" EL_STR(UNLIM_RUNS_MAX) "' step='" EL_STR(UNLIM_RUNS_STEP) "'"
 " oninput='unlimHint()'>"
-"<span id='unlimHint' style='color:#8fae8f;font-size:.85em;white-space:nowrap'>"
+"<span id='unlimHint' style='color:#8fae8f;font-size:.85em;line-height:1.55'>"
 "</span>"
 "</span>"
 "</div>"
@@ -225,6 +226,15 @@ static const char HTML[] =
 "<button class='btn btn-abort' id='btnAbort' onclick='doAbort()'>&#9632; Abort</button>"
 "</div>"
 "<div id='progArea' style='display:none'>"
+/* The parameters this session is actually running on. The form is hidden while a
+   session runs, and a session started by curl never showed one — so without this
+   the operator can see the bars move but not what produced them, and an archived
+   screenshot cannot be matched to its CSV. Read from /status (the DEVICE's
+   numbers), so a curl-started run labels itself correctly too. */
+"<div id='paramBadge' style='display:none;font-size:.8em;line-height:1.9;"
+"text-align:center;margin-bottom:12px;padding:8px 10px;"
+"border:1px solid rgba(144,238,144,.18);border-radius:8px;"
+"background:rgba(144,238,144,.05)'></div>"
 /* The item counter replaced the loop counter (v3): items measured out of the
    whole combination space, plus which block the pass is in. Fed from /status
    (the DEVICE's numbers), so a session started by curl still labels itself. */
@@ -400,13 +410,35 @@ static const char HTML[] =
 "if(t>cap)continue;"
 "if(t>bc||(t===bc&&(q>bq||(q===bq&&p>bp)))){bc=t;bp=p;bq=q;}}}"
 "return {p:bp,q:bq,c:bc};}"
+/* Wall time of ONE round at the parameters currently in the form. The operator
+   sets a run BUDGET, not a duration, and 100 runs is ~20 min at run=5 but over
+   an hour at run=15 — and in this mode there is no session end to discover that
+   from later. Model in sensor.h (CYCLE_RUN_PCT); once a session is live the ETA
+   comes from the device's measured pace instead. A round is: the scoring sweep
+   (49 or 62 runs), the pool's combinations, one sweep+baseline insertion at the
+   round boundary, plus one more per calint of MEASURING time — which is what
+   the device's block timer actually counts. */
+"function roundMs(euro,combos){"
+"var runS=parseFloat(document.getElementById('numRunS').value);"
+"if(!(runS>=" EL_STR(RUN_S_MIN) "))runS=" EL_STR(RUN_S_DEFAULT) ";"
+"if(runS>" EL_STR(RUN_S_MAX) ")runS=" EL_STR(RUN_S_MAX) ";"
+"var gapS=Math.round(runS*0.4*10)/10;"
+"if(gapS<0.5)gapS=0.5;if(gapS>10)gapS=10;"
+"var base=parseInt(document.getElementById('numBaseline').value)"
+"||" EL_STR(BASELINE_DEFAULT) ";"
+"var cyc=(" EL_STR(CYCLE_RUN_PCT) "/100*runS+gapS)*1000;"
+"var meas=combos*cyc;"
+"var ins=" EL_STR(CAL_BUDGET_DEFAULT_MS) "+base*cyc;"
+"var nins=1+Math.floor(meas/" EL_STR(CAL_INTERVAL_DEFAULT_MS) ");"
+"return (euro?62:49)*cyc+meas+nins*ins;}"
 "function unlimHint(){"
 "var c=parseInt(document.getElementById('numUnlimRuns').value)||0;"
 "var h=document.getElementById('unlimHint');"
-"if(!(c>=1)){h.textContent='';return;}"
+"if(!(c>=1)){h.innerHTML='';return;}"
 "var e=unlimPool(true,c),l=unlimPool(false,c);"
-"h.textContent='\\u2192 Euro '+e.p+'+'+e.q+' = '+e.c+' runs \\u00b7 6of49 '"
-"+l.p+' = '+l.c+' runs';}"
+"h.innerHTML='Euro '+e.p+'+'+e.q+' = '+e.c+' runs \u00b7 \u2248 '"
+"+fmt(roundMs(true,e.c))+'/round<br>6of49 '+l.p+' = '+l.c"
+"+' runs \u00b7 \u2248 '+fmt(roundMs(false,l.c))+'/round';}"
 "function unlimToggle(){"
 "document.getElementById('rowUnlim').style.display="
 "document.getElementById('chkUnlim').checked?'':'none';"
@@ -430,7 +462,7 @@ static const char HTML[] =
 // A page loaded or reloaded while the device is parked at the observer gate
 // must show it too — the session is blocked until somebody presses Start.
 "if(d.phase==='ready')readyShow();"
-"updateItemBadge(d);updatePoolBadge(d);"
+"updateItemBadge(d);updatePoolBadge(d);updateParamBadge(d);"
 "document.getElementById('sCalTotal').textContent=d.baseline_total;"
 "setScoreTotal(d);"
 "if(d.scoring_total>0){"
@@ -474,6 +506,43 @@ static const char HTML[] =
 "return (d.round_done!==undefined)?d.round_done:(d.completed||0);}"
 "function roundTotal(d){"
 "return (d.round_total>0)?d.round_total:(d.total||0);}"
+/* Every session parameter, from /status rather than from the form: a curl-started
+   run has no form, and after a reload the form is gone anyway. "per run" is the
+   MEASURED pace once enough runs exist (elapsed / every run of every phase) and
+   falls back to the CYCLE_RUN_PCT estimate before that — marked, because the two
+   are not the same claim. The measured value runs high early: elapsed_ms also
+   contains the opening sweep, which is not a run. */
+"function pItem(k,v){return \"<span style='color:#7a9a7a'>\"+k"
+"+\"</span> <span style='color:#cfe8cf;font-weight:600'>\"+v+\"</span>\";}"
+"function updateParamBadge(d){"
+"var b=document.getElementById('paramBadge');"
+"if(d.state!=='running'&&d.state!=='done'&&d.state!=='aborted'){"
+"b.style.display='none';return;}"
+"b.style.display='';"
+"var p=[];"
+"p.push(pItem('Mode',d.mode==='euro'?'Eurojackpot 5+2':'6 of 49'));"
+"p.push(pItem('Measuring',(d.run_s||0).toFixed(1)+' s'));"
+"p.push(pItem('Gap',(d.gap_s||0).toFixed(1)+' s'));"
+"p.push(pItem('Segments',d.run_segs||0));"
+"var n=(d.baseline_done||0)+(d.scoring_done||0)+(d.completed||0);"
+"if(n>=5&&d.elapsed_ms>0)"
+"p.push(pItem('per run',(d.elapsed_ms/n/1000).toFixed(1)+' s measured'));"
+"else p.push(pItem('per run','\u2248 '+("
+EL_STR(CYCLE_RUN_PCT) "/100*(d.run_s||0)+(d.gap_s||0)).toFixed(1)+' s est.'));"
+"if(d.focus_win_ms>0)p.push(pItem('window/gap',Math.round(d.focus_win_ms)"
+"+' / '+Math.round(d.focus_gap_ms||0)+' ms'));"
+"p.push(pItem('Baseline',(d.baseline_total||0)+' runs'));"
+"p.push(pItem('Sweep',d.cal_budget_ms>0"
+"?((d.cal_budget_ms/1000)+' s'+(d.cal_interval_ms>0"
+"?' every '+Math.round(d.cal_interval_ms/60000)+' min':' at start only'))"
+":'off'));"
+"p.push(pItem('Score',d.score_dir||'high'));"
+"p.push(pItem('Focus',d.focus?'attended':'unattended'));"
+"if(d.unlimited)p.push(pItem('Unlimited',(d.runs_cap||0)+' runs/round'"
+"+((d.round_total>0)?' \u2192 '+d.round_total+' combos':'')));"
+"if(d.paused_ms>0)p.push(pItem('Paused',fmt(d.paused_ms)+' (excluded)'));"
+"b.innerHTML=p.join(\" <span style='opacity:.3'>\u00b7</span> \");"
+"}"
 "function updateItemBadge(d){"
 "var b=document.getElementById('itemBadge');"
 "if(d.state!=='running'&&d.state!=='done'&&d.state!=='aborted'){"
@@ -727,7 +796,7 @@ static const char HTML[] =
 "}"
 "function poll(){"
 "fetch('/status').then(function(r){return r.json();}).then(function(d){"
-"updateItemBadge(d);updatePoolBadge(d);"
+"updateItemBadge(d);updatePoolBadge(d);updateParamBadge(d);"
 "updateFocusInfo(d);"
 // Raise the prompt as soon as the device parks on it, and take it down again
 // the moment it moves on (an answer from another browser tab, or the timeout).
@@ -1429,7 +1498,7 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
     /* 448: the header comment alone runs past 340 characters with the German
      * six-decimal pass statistics and the unlimited-mode fields in it. It used
      * to be 224 — see send_chunk(). */
-    char buf[448], qry[64], val[8];
+    char buf[512], qry[64], val[8];
     bool all = false;
     if (httpd_req_get_url_query_str(req, qry, sizeof(qry)) == ESP_OK &&
         httpd_query_key_value(qry, "all", val, sizeof(val)) == ESP_OK)
@@ -1445,7 +1514,7 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
     double mean = 0.0, sigma = 0.0;
     int nn = results_near_mean(near, TOP_N, &mean, &sigma);
 
-    char mb[32], sb[32], cb[32], vb[32], stb[32];
+    char mb[32], sb[32], cb[32], vb[32], stb[32], rb[32], gb[32];
     const char *score_str =
         g_status.score_dir == SCORE_DIR_LOW ? "low" :
         g_status.score_dir == SCORE_DIR_ABS ? "abs" : "high";
@@ -1461,7 +1530,13 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
         "# elotto v3 mode=%s focus=%s score=%s items=%d/%d ranked=%d excl=%d void=%d "
         "blocks=%d paused_ms=%lld pass_mean=%s pass_sigma=%s pass_chi2=%s "
         "pass_stouffer=%s v_eff=%s null_flags=%d drift_t=%.2f "
-        "unlimited=%s runs_cap=%d rounds=%d\n"
+        "unlimited=%s runs_cap=%d rounds=%d "
+        /* ⚠ The window in BOTH units. Seconds alone are not enough: the
+         * segs<->ms calibration is a MEASUREMENT and was re-measured on
+         * 2026-08-18, so the same run_s=5 means 70513 segments before it and
+         * 130435 after — 1,85x the bits per item. Without run_segs an archived
+         * pass cannot be told apart from one taken on the other instrument. */
+        "run_s=%s run_segs=%d gap_s=%s\n"
         "# nodes=",
         g_status.mode == MODE_EUROJACKPOT ? "euro" : "649",
         g_status.focus_mode ? "on" : "off", score_str,
@@ -1474,7 +1549,10 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
         de_num(stb, sizeof(stb), g_status.pass_stouffer, 4),
         de_num(vb, sizeof(vb), g_status.v_eff, 4),
         (int)g_status.null_flags, g_status.drift_t,
-        g_status.unlimited ? "on" : "off", g_status.runs_cap, g_status.round);
+        g_status.unlimited ? "on" : "off", g_status.runs_cap, g_status.round,
+        de_num(rb, sizeof(rb), g_status.run_target_ms / 1000.0, 2),
+        g_status.run_segments,
+        de_num(gb, sizeof(gb), g_status.gap_ms / 1000.0, 2));
     send_chunk(req, buf, nlen, sizeof(buf));
     for (int i = 0; i < g_status.node_count && i < MAX_NODES; i++) {
         nlen = snprintf(buf, sizeof(buf), "%s%s",
@@ -1733,8 +1811,19 @@ static esp_err_t start_handler(httpd_req_t *req)
             // Wall time is measured as focus_win_ms; long values may stretch.
             if (httpd_query_key_value(qry, "run", val, sizeof(val)) == ESP_OK) {
                 double rs = atof(val);
-                if (rs >= RUN_S_MIN && rs <= RUN_S_MAX)
-                    g_status.run_target_ms = (int)(rs * 1000.0 + 0.5);
+                /* 400, not a silent fall-back to the default. The window is
+                 * fixed at 1..5 s (sensor.h) and a request outside it is a
+                 * different experiment from the one that would run — exactly
+                 * the class of bug the 409-on-running and the 400 on
+                 * loops/runs/rank exist to prevent. */
+                if (!(rs >= RUN_S_MIN && rs <= RUN_S_MAX)) {
+                    httpd_resp_set_status(req, "400 Bad Request");
+                    httpd_resp_sendstr(req,
+                        "run= must be between " EL_STR(RUN_S_MIN) " and "
+                        EL_STR(RUN_S_MAX) " seconds");
+                    return ESP_OK;
+                }
+                g_status.run_target_ms = (int)(rs * 1000.0 + 0.5);
             }
             // ?gap=<seconds> — intentional blank. Absent: 40 % of ?run=.
             if (httpd_query_key_value(qry, "gap", val, sizeof(val)) == ESP_OK) {
@@ -1787,7 +1876,7 @@ static esp_err_t start_handler(httpd_req_t *req)
             if (run_ms < 100) run_ms = 100;
             long long n = ((long long)run_ms * RUN_SEGS_REF + RUN_MS_REF / 2) / RUN_MS_REF;
             if (n < 500) n = 500;
-            if (n > 200000) n = 200000;
+            if (n > EL_SEG_MAX) n = EL_SEG_MAX;
             g_status.run_segments = (int)n;
         }
         xTaskCreate(elotto_task, "elotto", 8192, NULL, 5, NULL);
@@ -2161,6 +2250,15 @@ static esp_err_t expose_handler(httpd_req_t *req)
     return camera_expose_handle(req, g_status.state == ELOTTO_RUNNING);
 }
 
+/* GET /camtest -- the extraction self-test. Proves on THIS silicon that the
+ * word-wise extractor emits the same bits as the byte-wise reference, and
+ * prices both against the bare PSRAM read. Refused while a session measures:
+ * it competes with the extraction task for the same core. */
+static esp_err_t camtest_handler(httpd_req_t *req)
+{
+    return camera_selftest_handle(req, g_status.state == ELOTTO_RUNNING);
+}
+
 /* ── GET / ────────────────────────────────────────────────────────── */
 static esp_err_t root_handler(httpd_req_t *req)
 {
@@ -2207,6 +2305,7 @@ static void start_webserver(void)
         {"/ready", HTTP_POST, ready_handler, NULL},
         {"/probe", HTTP_POST, probe_handler, NULL},
         {"/expose", HTTP_POST, expose_handler, NULL},
+        {"/camtest", HTTP_GET, camtest_handler, NULL},
     };
     for (int i = 0; i < (int)(sizeof(uris) / sizeof(uris[0])); i++)
         httpd_register_uri_handler(srv, &uris[i]);

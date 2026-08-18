@@ -184,6 +184,12 @@ esp_err_t camera_cal_send_json(void *httpd_req, const camera_cal_t *c);
  * and a request the sensor refused must not be reported as applied. */
 esp_err_t camera_expose_handle(void *httpd_req, bool busy);
 
+/* GET handler for the extraction self-test + micro-benchmark, served by every
+ * node for its own silicon. Answers 409 while a session is measuring: it burns
+ * CPU on the same core as the extraction task and allocates ~600 KB of PSRAM.
+ * See extract.h for what it actually proves. */
+esp_err_t camera_selftest_handle(void *httpd_req, bool busy);
+
 // Priority of the extraction task created by camera_init().
 #define ELOTTO_CAM_TASK_PRIO 4
 
