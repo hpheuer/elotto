@@ -310,11 +310,28 @@ were tested:
   so it sees an idle CPU): **36,11 and 36,22 fps** on two runs → a pair every **55,2–55,4 ms**
   against a live **56,0 ms**. We are within **1,4 %** of the sensor's own cadence.
 
-⚠ So the 1,67× speed-up ran the extraction right down to the frame-rate wall and stopped there.
-**The extraction path is finished as an optimisation target.** Reopen it only if the sensor is
-reconfigured to deliver more frames — and note that raising the rate would push a 5 s window past
-**182.000 segments**, close to `EL_SEG_MAX` 200000, and would once again split the archive into
-pre- and post- instruments.
+⚠ **All of the above is the IDLE loop. Under measurement load it is the other way round**
+(measured 2026-08-18 during a loaded 6-of-49 run, all four nodes):
+
+| | idle | loaded |
+|---|---|---|
+| `ms_pair` | 56,0 | **85,4** |
+| `ms_wait` | 14,6 | 13,0 |
+| `ms_extract` | 39,5 | **69,8** |
+| `mbit_s` | 5,71 | **3,76** |
+
+The GCP consumer runs above `ELOTTO_CAM_TASK_PRIO`, so extraction is preempted and a pair costs 70 ms
+of wall time instead of 39,5. The sensor still offers one every 55,4 ms; the loop takes 85 and drops
+frames. **So during a session the rate IS compute-bound, and extraction time maps almost 1:1 onto
+bit rate.** This is the mechanism behind "the camera rate collapses under high duty cycle" — it is
+preemption, not the duty cycle as such.
+
+⚠ **Do not read the idle ceiling as "the extraction path is finished".** It is finished for the
+idle rate and only for that. The 1,67× bought its throughput where it counts, and a further
+speed-up would still pay during a session — the ~14 ms that started this investigation is simply
+not where it comes from. Two consequences before anyone tries: prove it with `ms_extract` under
+LOAD, never at idle; and raising the loaded rate would push a 5 s window toward **182.000 segments**
+against `EL_SEG_MAX` 200000, splitting the archive into pre- and post- instruments again.
 - ⚠ **Verification trap, hit twice**: `until curl http://node/` succeeds *immediately* because the
   node still serves the OLD image while the OTA writes. Two measurements were taken from the
   previous binary before this was noticed. **Poll `fw_sha` in `/status` until it changes.**
@@ -609,9 +626,11 @@ measurements were taken from the previous binary before this was noticed.
 4. **Does calibration reduce the RATE of bad blocks?** The control pair only ever asked "does it add
    variance?" (no). The tail question needs a count of excursions over many blocks, not a mean.
 
-**Closed 2026-08-18:** *why the last two extraction changes bought nothing.* The loop waits on the
-sensor, not on the CPU; the extraction path is at 98,5 % of the frame-rate wall. Full account in the
-extraction section. ⚠ **Do not reopen the extraction path for speed.**
+**Closed 2026-08-18:** *why the last two extraction changes bought nothing.* At IDLE the loop waits
+on the sensor, not on the CPU, and sits at 98,5 % of the frame-rate wall — which is where those two
+changes were measured. ⚠ **Under load the loop is compute-bound instead** (`ms_extract` 39,5 → 69,8
+ms/pair, rate 5,71 → 3,76), so extraction speed is not a closed subject; it was measured in the one
+regime where it does not matter. Full account in the extraction section.
 
 **Deferred by the user — do not start unasked:** the attended-vs-unattended (focus) comparison.
 **Dropped by decision — do not re-propose:** node-drop test, camera-fault/reboot path, camera-stall
