@@ -1,0 +1,1 @@
+{"src":"camera-only","cam":{"ready":true,"frame_pairs":7163,"bits":2292160000,"stuck_frames":0,"bias":0.499977,"sigma":0.9992,"sigma_n":716300,"autocorr":[-0.0000,-0.0000,-0.0000,-0.0000],"mean_pixel":17.60,"mbit_s":3.357,"zero_diff":0.0818,"drops":1071619348,"waits":188700,"stalls":0,"exposure":64,"gain":1023,"fold":true}}
