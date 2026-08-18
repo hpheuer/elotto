@@ -91,8 +91,22 @@ typedef struct {
     float    ns_ref;         // reference extraction
     float    ns_fast;        // word-wise extraction
     float    ns_stats;       // word-wise + the per-word statistics of process_word
+    uint32_t bench_bytes;    // frame size the benchmark actually ran on
 } cam_selftest_t;
 
-/* Allocates ~600 KB of PSRAM for the duration. Safe to call while idle only:
- * it is pure computation on its own buffers and touches no camera state. */
-bool cam_extract_selftest(cam_selftest_t *out);
+/* `bytes` is the FRAME SIZE to benchmark, and the caller passes the live one.
+ *
+ * ⚠ It used to be a fixed 256 KB while the real frames are 640000 B, and the
+ * per-pixel cost it reported was then used to price the live loop -- two
+ * micro-optimisations were predicted off that number and both measured 0,0 %.
+ * A harness that does not run on the geometry it is pricing cannot settle that,
+ * so the size is now the caller's, and the value used comes back in
+ * `bench_bytes` so a reading can never again be mistaken for the wrong one.
+ *
+ * Buffers are 64-byte aligned, like the DMA capture buffers, so alignment is
+ * not a difference between the two either.
+ *
+ * Allocates 2*bytes + 2*(bytes/8) of PSRAM for the duration (~1,4 MB at the
+ * real frame size). Safe to call while idle only: it is pure computation on its
+ * own buffers and touches no camera state. */
+bool cam_extract_selftest(cam_selftest_t *out, uint32_t bytes);

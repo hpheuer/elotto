@@ -257,13 +257,22 @@ measured separately because the first guess was wrong twice:
 - **`GET /camtest`** runs the byte-wise reference and the word-wise path over six cases on the node's
   own silicon and compares emitted words, zero count, stuck verdict and leftover packer state.
   `cam_extract_ref()` stays compiled in as the definition of correct. ⚠ **Do not change the live
-  extractor without it.** 409 while measuring.
+  extractor without it.** 409 while measuring. Master only; the slaves run the identical extractor
+  and report the live split instead (below).
+  ⚠ **It benchmarks the CALLER'S frame size, 2×640000 B, 64-byte aligned like the DMA buffers**
+  (2026-08-18). It used to be a fixed 2×256 KB, and that number was then used to price the live
+  loop. `bench_bytes` and `frame_bytes` come back in the JSON so a reading can never again be
+  mistaken for the wrong geometry. ⚠ It runs **while the capture task is extracting**, so `ns_*`
+  varies ~10 % run to run; for the live cost read `ms_extract` from `/diagjson` instead.
 - ⚠ **Autocorrelation must NOT be subsampled** — `autocorr_max` is a calibration gate
   (`CAL_AUTOC_TOL` 0,01), so a noisier estimator would change which exposure rung is chosen.
-- **The ceiling is the sensor, not the code**: RAW8 800×800 @50 fps → 25 non-overlapping pairs/s ×
-  320.000 bit = **8,0 Mbit/s**. At 5,71 we are at **71 %**, so at most 1,4× remains. **The
-  second-core split was dropped for that reason** — it cannot beat a frame-rate limit. The measured
-  PSRAM read floor is 8,0 cycles/pixel against 20,9 for extraction+statistics.
+- **The ceiling is the sensor, and we are AT it — 98,5 %, not 71 %** (measured 2026-08-18, see
+  below). The old figure assumed 50 fps from the datasheet. `GET /camtest`'s **`fps_raw`** times the
+  sensor with the extraction stopped and every buffer queued: **36,1–36,2 fps**, i.e. 18,1
+  non-overlapping pairs/s × 320.000 bit = **5,80 Mbit/s**. We measure **5,71**. ⚠ **There is no
+  1,4× left. Nothing done to the extraction path can raise the bit rate.** The second-core split
+  stays dropped, now for a measured reason rather than an assumed one. The measured PSRAM read
+  floor is 7,1–7,9 cycles/pixel against ~21 for extraction+statistics.
 - **The wire's segment bound is now ONE definition**: `EL_SEG_MIN`/`EL_SEG_MAX` in
   `components/elotto_link/include/elotto_link.h`, compiled into both firmwares. It used to be a
   bare `200000` twice in the master plus the slave's own `SEG_MAX`.
@@ -275,15 +284,37 @@ measured separately because the first guess was wrong twice:
   With `RUN_S_MAX` at 5 s the master can never ask for more than 130435 of 200000, and a
   `_Static_assert` in `sensor.h` re-checks that against the calibration at every build — verified
   to fire by temporarily setting `RUN_S_MAX` back to 15.
-- ⚠ **Two changes that should have worked and did not** (2026-08-18): `mean_pixel` folded into the
-  diff loop — removing `accumulate_pixel_level()`, a full extra 625 KB PSRAM pass per frame pair —
-  and the per-pair `vTaskDelay(1)` (0..10 ms at `FREERTOS_HZ` 100) thinned to every 4th pair.
-  Predicted ~13 % + ~9 %; **measured 0,0 %**, 5,707 → 5,707 Mbit/s. Kept, because both are verified
-  bit-identical and one pass less over the frame is simpler, but **the reasoning was wrong and the
-  reason is still open.** `/camtest` prices the loop at 22,9 cycles/pixel = 40,7 ms per pair against
-  a live cycle of 55,9 ms, so ~14 ms sits outside anything measured. ⚠ **Suspect the harness first:
-  it benchmarks 2×256 KB buffers where the real frames are 2×640 KB.** Do not price another
-  micro-optimisation against it until that is settled.
+### ✅ Why the last two extraction changes bought nothing — ANSWERED 2026-08-18
+`mean_pixel` folded into the diff loop and the `vTaskDelay(1)` thinned to every 4th pair were
+predicted at ~13 % + ~9 % and measured **0,0 %** (5,707 → 5,707 Mbit/s). Both did exactly what was
+predicted **to the CPU**. The rate did not move because **the loop is not compute-bound: it spends
+its spare time blocked in `VIDIOC_DQBUF` waiting for frames**, and a CPU saving is absorbed there.
+
+The suspicion that the 256 KB harness was misreporting the extraction cost was **wrong**. Repaired
+to the real 2×640000 B geometry it says 37–41 ms per pair, against a live `ms_extract` of 39,5 ms —
+they agreed all along. The faulty step was the *inference*: the ~14 ms was assumed to be extraction
+overhead the benchmark had missed, and it is DQBUF wait.
+
+**`/diagjson` now publishes the split, on every node**, per frame pair and averaged over the current
+window: `ms_pair` (boundary to boundary, the ground truth) = `ms_wait` (blocked in DQBUF) +
+`ms_extract` + `ms_rest` (publish + the two QBUFs), and what is left over is the yield plus
+preemption. All four nodes, idle: **56,0 = 14,6 + 39,5 + 0,45**, remainder ~1,4 ms (the
+`vTaskDelay(1)` every 4th pair, ~5 ms/4 — the model was right, the headroom was not there to spend).
+
+Two candidate walls fit `ms_wait` equally well — a genuinely slower sensor, or a fast sensor whose
+frames cannot be written while the CPU hammers PSRAM — and they have opposite consequences. Both
+were tested:
+- **`CAM_BUF_COUNT` 4 → 8**: `ms_pair` stayed **56,0**, only the split moved (wait 15,1 → 11,9,
+  extraction 39,1 → 42,2). Reverted; it costs 2,5 MB of PSRAM and buys nothing.
+- **`fps_raw`, the frame-rate probe** (`camera_fps_probe()`, run by `/camtest` before the benchmark
+  so it sees an idle CPU): **36,11 and 36,22 fps** on two runs → a pair every **55,2–55,4 ms**
+  against a live **56,0 ms**. We are within **1,4 %** of the sensor's own cadence.
+
+⚠ So the 1,67× speed-up ran the extraction right down to the frame-rate wall and stopped there.
+**The extraction path is finished as an optimisation target.** Reopen it only if the sensor is
+reconfigured to deliver more frames — and note that raising the rate would push a 5 s window past
+**182.000 segments**, close to `EL_SEG_MAX` 200000, and would once again split the archive into
+pre- and post- instruments.
 - ⚠ **Verification trap, hit twice**: `until curl http://node/` succeeds *immediately* because the
   node still serves the OLD image while the OTA writes. Two measurements were taken from the
   previous binary before this was noticed. **Poll `fw_sha` in `/status` until it changes.**
@@ -539,8 +570,9 @@ recovery updater is gone. OTA cannot repair those.
 produces. `main/` is split four ways (elotto/sensor/nodes/focus) and the z-score primitive is shared
 with the slave via `components/elotto_gcp`.
 
-**Hardware, current:** all four nodes lit and healthy at idle — bias within 3,1e-4 of 0,5, σ 0,999
-to 1,002, autocorr ≈ 0, **5,71 Mbit/s each since the 2026-08-18 extraction work** (was 3,4). **slave1's and slave2's cameras were swapped on
+**Hardware, current:** all four nodes lit and healthy at idle — bias within 1,4e-4 of 0,5, σ 0,996
+to 1,003, autocorr ≈ 0, **5,71 Mbit/s each since the 2026-08-18 extraction work** (was 3,4), which
+is **98,5 % of what the sensor can deliver** — the rate is now a hardware constant, not a target. **slave1's and slave2's cameras were swapped on
 2026-08-17** to test whether slave1's fault follows the sensor or stays with the board; that
 question is **open and needs a loaded run to answer**, since neither node shows anything wrong at
 idle. Settled light at exp 128: master 34,5 · slave0 27,9 · slave1 27,0 · slave2 19,5, stable to
@@ -559,21 +591,13 @@ may be pooled with anything after it.
 | `_short_*` | a 1995/5005 partial, 57 blocks at `calint` 5 min |
 | `_analyze_*.py` | the operator's own analysis scripts |
 
-**Uncommitted as of 2026-08-18.** The working tree carries a full day of work across BOTH repos —
-`components/elotto_camera/extract.{c,h}` are new files, and `elotto_camera` + `elotto_link` changed,
-so `elotto` and `elotto_slave` must be committed and flashed together. All four nodes are already
-flashed with it. Commit before anything else.
+**Committed and flashed 2026-08-18.** `elotto` and `elotto_slave` share `components/elotto_camera`,
+so they are always built, flashed and committed **together**; all four nodes run the same code.
+⚠ **After every OTA, poll `fw_sha` in `/status` (or `/otainfo`) until it CHANGES.** A node serves the
+old image while the new one is being written, so `until curl http://node/` passes instantly — two
+measurements were taken from the previous binary before this was noticed.
 
 **Open, in the order I would pick them up:**
-0. **Why did the last two extraction changes buy nothing?** Folding `mean_pixel` into the diff loop
-   (removing a whole extra 625 KB pass per pair) and yielding every 4th frame pair instead of every
-   one were predicted at ~22 % together and measured at **0,0 %** — 5,707 → 5,707 Mbit/s. Both are
-   verified bit-identical and the quality is untouched, so they are kept, but the model behind them
-   is wrong. What is known: `/camtest` prices extraction+statistics at 22,9 cycles/pixel = 40,7 ms
-   per pair, the live pair cycle is 55,9 ms, and ~14 ms is unaccounted for. First suspect: the
-   benchmark runs on 2×256 KB buffers while real frames are 2×640 KB, so the harness may simply not
-   reproduce the memory behaviour it is being used to price. Fix the harness before trusting any
-   further micro-optimisation — that is the lesson of the whole day (see the extraction section).
 1. **Does slave1's fault follow the camera?** The swap is done; only a loaded run answers it. Both
    nodes are clean at idle, and slave1's block-mean excursions (+24,13 in one block) never showed
    up in an idle reading.
@@ -585,9 +609,13 @@ flashed with it. Commit before anything else.
 4. **Does calibration reduce the RATE of bad blocks?** The control pair only ever asked "does it add
    variance?" (no). The tail question needs a count of excursions over many blocks, not a mean.
 
+**Closed 2026-08-18:** *why the last two extraction changes bought nothing.* The loop waits on the
+sensor, not on the CPU; the extraction path is at 98,5 % of the frame-rate wall. Full account in the
+extraction section. ⚠ **Do not reopen the extraction path for speed.**
+
 **Deferred by the user — do not start unasked:** the attended-vs-unattended (focus) comparison.
 **Dropped by decision — do not re-propose:** node-drop test, camera-fault/reboot path, camera-stall
-abort, restoring the master to USB power.
+abort, restoring the master to USB power, raising `CAM_BUF_COUNT` (measured: no effect).
 
 ⚠ Superseded design notes, the pre-2026-07-29 optics measurements and the v2 loop/ranking era were
 removed from this file and from `docs/PLAN.md` on 2026-08-17. They remain in git history at commit

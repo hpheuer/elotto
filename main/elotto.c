@@ -2214,6 +2214,10 @@ static esp_err_t diagjson_handler(httpd_req_t *req)
         "\"autocorr\":[%.4f,%.4f,%.4f,%.4f],"
         "\"mean_pixel\":%.2f,\"mbit_s\":%.3f,\"zero_diff\":%.4f,"
         "\"drops\":%lu,\"waits\":%lu,\"stalls\":%lu,"
+        /* Where one frame pair's wall time goes. ms_wait is DQBUF, i.e. the
+         * loop waiting for the sensor; if that dominates, the extraction code
+         * is not what limits the bit rate. */
+        "\"ms_pair\":%.2f,\"ms_wait\":%.2f,\"ms_extract\":%.2f,\"ms_rest\":%.2f,"
         "\"exposure\":%lu,\"gain\":%lu,\"fold\":%s"
         "}"
         "}",
@@ -2225,6 +2229,7 @@ static esp_err_t diagjson_handler(httpd_req_t *req)
         cam.mean_pixel_level, cam.mbit_per_sec, cam.zero_diff_frac,
         (unsigned long)cam.ring_drops, (unsigned long)cam.consumer_waits,
         (unsigned long)cam.stalls,
+        cam.ms_pair, cam.ms_wait, cam.ms_extract, cam.ms_rest,
         (unsigned long)exp_now, (unsigned long)gain_now,
         camera_get_xor_fold() ? "true" : "false");
 

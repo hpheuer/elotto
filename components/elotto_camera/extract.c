@@ -166,11 +166,18 @@ void cam_extract_fast(const uint8_t *a, const uint8_t *b, uint32_t n, bool fold,
  * the only place the claim actually has to hold. A host test would prove
  * something about a different compiler and a different memory system.
  *
- * The benchmark buffers are 256 KB each, deliberately larger than the 128 KB L2
- * cache, so the read floor it reports is a real PSRAM figure rather than a
- * cache figure. */
-#define BENCH_BYTES   (256u * 1024u)
-#define BENCH_WORDS   (BENCH_BYTES / 32u + 8u)   /* worst case: fold off */
+ * ⚠ The buffers are the CALLER'S frame size, not a fixed 256 KB. Larger than
+ * the L2 cache was never the whole requirement: the number this produces is
+ * used to price the live pair loop, so it has to run on the live geometry --
+ * 2x640000 B, 64-byte aligned like the DMA buffers -- or the comparison is
+ * between two different memory systems. Two micro-optimisations were predicted
+ * against the 256 KB figure and both measured 0,0 %.
+ *
+ * BENCH_MIN/MAX only bound what a caller may ask for; nothing here assumes a
+ * particular size. */
+#define BENCH_MIN     (64u * 1024u)
+#define BENCH_MAX     (2048u * 1024u)
+#define BENCH_WORDS_FOR(n)   ((n) / 32u + 8u)    /* worst case: fold off */
 
 typedef struct { uint32_t *buf; uint32_t n, cap; } collect_t;
 
@@ -262,16 +269,30 @@ static bool case_equal(const uint8_t *a, const uint8_t *b, uint32_t n, bool fold
     return true;
 }
 
-bool cam_extract_selftest(cam_selftest_t *out)
+bool cam_extract_selftest(cam_selftest_t *out, uint32_t bytes)
 {
     if (!out) return false;
     memset(out, 0, sizeof(*out));
 
-    uint8_t  *a  = heap_caps_malloc(BENCH_BYTES, MALLOC_CAP_SPIRAM);
-    uint8_t  *b  = heap_caps_malloc(BENCH_BYTES, MALLOC_CAP_SPIRAM);
-    uint32_t *wa = heap_caps_malloc(BENCH_WORDS * 4, MALLOC_CAP_SPIRAM);
-    uint32_t *wb = heap_caps_malloc(BENCH_WORDS * 4, MALLOC_CAP_SPIRAM);
-    if (!a || !b || !wa || !wb) { free(a); free(b); free(wa); free(wb); return false; }
+    if (bytes < BENCH_MIN) bytes = BENCH_MIN;
+    if (bytes > BENCH_MAX) bytes = BENCH_MAX;
+    bytes &= ~63u;                       /* whole cache lines, like a frame */
+    const uint32_t BENCH_BYTES = bytes;
+    const uint32_t BENCH_WORDS = BENCH_WORDS_FOR(BENCH_BYTES);
+    out->bench_bytes = BENCH_BYTES;
+
+    /* 64-byte aligned, matching the V4L2 capture buffers. Unaligned starts would
+     * send the fast path through its byte-wise prologue and price a loop the
+     * live one never runs. */
+    uint8_t  *a  = heap_caps_aligned_alloc(64, BENCH_BYTES, MALLOC_CAP_SPIRAM);
+    uint8_t  *b  = heap_caps_aligned_alloc(64, BENCH_BYTES, MALLOC_CAP_SPIRAM);
+    uint32_t *wa = heap_caps_aligned_alloc(64, BENCH_WORDS * 4, MALLOC_CAP_SPIRAM);
+    uint32_t *wb = heap_caps_aligned_alloc(64, BENCH_WORDS * 4, MALLOC_CAP_SPIRAM);
+    if (!a || !b || !wa || !wb) {
+        heap_caps_free(a); heap_caps_free(b);
+        heap_caps_free(wa); heap_caps_free(wb);
+        return false;
+    }
 
     /* Realistic content: a dark frame plus a small independent perturbation, so
      * roughly the measured 8 % of pixels come out with diff == 0 like the real
@@ -343,6 +364,6 @@ bool cam_extract_selftest(cam_selftest_t *out)
 
     (void)sink;
     out->ran = true;
-    free(a); free(b); free(wa); free(wb);
+    heap_caps_free(a); heap_caps_free(b); heap_caps_free(wa); heap_caps_free(wb);
     return true;
 }

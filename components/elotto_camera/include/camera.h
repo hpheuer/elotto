@@ -28,6 +28,19 @@ typedef struct {
                                   // backpressure -- the GCP task outruns the sensor)
     uint32_t stalls;              // reads that gave up: the node is faulted and
                                   // rebooted, since there is no second source
+    /* Wall-time accounting for ONE frame pair, in milliseconds, averaged over
+     * the current window. ms_pair is measured boundary to boundary and is the
+     * ground truth; the other three are its parts, and what they do not add up
+     * to is the capture task's yield plus preemption from above it.
+     *
+     * ⚠ Read ms_wait first. It is the time the loop sat blocked in DQBUF, i.e.
+     * waiting for the sensor. If it is large, the pair rate is set by the frame
+     * rate and NOTHING done to the extraction code can raise it -- which is the
+     * one reading that explains two CPU savings measuring 0,0 %. */
+    double   ms_pair;
+    double   ms_wait;
+    double   ms_extract;
+    double   ms_rest;
 } camera_stats_t;
 
 // Bring up MIPI-CSI + OV5647, disable AEC/AGC, apply fixed exposure/gain from
@@ -77,6 +90,17 @@ bool camera_set_exposure(uint32_t exposure, uint32_t gain);
 void camera_get_exposure(uint32_t *exposure, uint32_t *gain);
 
 bool camera_get_xor_fold(void);
+
+/* Time `frames` frames with the extraction STOPPED and every buffer queued, and
+ * return the frames per second the sensor delivers on its own. Blocks for about
+ * frames/fps seconds; the capture task does the work.
+ *
+ * ⚠ This is the number that says whether the bit rate is walled by the sensor
+ * or by us. The live loop's ms_wait cannot: a fast sensor whose frames cannot
+ * be written while the CPU hammers PSRAM waits exactly like a slow one. Run
+ * with the CPU otherwise idle and compare against the live pair cycle.
+ * Restarts the statistics window, since the probe itself extracts nothing. */
+double camera_fps_probe(int frames, int timeout_ms);
 
 /* ── The sweep (docs/PLAN.md Task 1 §1.4) ──────────────────────────────────
  *

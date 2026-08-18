@@ -29,6 +29,10 @@
 
 static const char *TAG_CAM = "cam";
 
+/* 4, and raising it does nothing: measured at 8, the pair cycle stayed at
+ * 56,0 ms and only the split moved (wait 15,1 -> 11,9 ms, extraction 39,1 ->
+ * 42,2 ms). The loop is not short of buffers, it is short of frames -- see the
+ * frame-rate probe below. */
 #define CAM_BUF_COUNT       4
 #define RING_WORDS          16384          // 64 KB of uint32_t words
 #define WORDS_PER_MINIRUN   100            // 3200 bits/mini-run, Var(popcount)=800
@@ -74,6 +78,42 @@ static uint64_t s_autocorr_pairs[4] = { 0 };
 static uint64_t s_pixel_sum = 0, s_pixel_n = 0;
 static uint64_t s_zero_diffs = 0, s_diff_n = 0;
 static int64_t  s_stream_start_us = 0;
+
+/* ── Where a frame pair's wall time actually goes ──────────────────────────
+ * Producer-only, published per pair by publish_stats().
+ *
+ * ⚠ This exists because the extraction cost and the pair cycle stopped adding
+ * up: /camtest priced extraction+statistics at ~40 ms per pair while the live
+ * cycle was 55,9 ms, and two changes that removed real CPU work from the loop
+ * moved the rate by 0,0 %. Either answer is worth having and neither can be
+ * inferred from a microbenchmark -- a loop waiting on frames absorbs any CPU
+ * saving without changing its rate, and looks exactly like a loop that is
+ * compute-bound at a cost the benchmark underestimates.
+ *
+ * s_us_cycle is measured pair-completion to pair-completion, so it is the
+ * ground truth the three components have to add up to; whatever is left over is
+ * the yield and preemption by higher-priority tasks. */
+static uint64_t s_us_wait = 0;      // blocked in DQBUF, i.e. waiting for frames
+static uint64_t s_us_ext = 0;       // inside diff_and_extract()
+static uint64_t s_us_rest = 0;      // publish_stats() + the two QBUFs
+static uint64_t s_us_cycle = 0;     // whole pair, boundary to boundary
+static uint64_t s_acct_pairs = 0;
+static int64_t  s_last_pair_us = 0;
+
+/* ── Frame-rate probe ──────────────────────────────────────────────────────
+ * The accounting above says how the pair cycle is SPENT; it cannot say what
+ * the cycle would be if the CPU were free. Waiting in DQBUF is produced both
+ * by a sensor that is genuinely slower than assumed AND by a sensor that is
+ * fast but cannot get its frames written while the CPU is reading PSRAM. Those
+ * two have opposite consequences -- one is a wall, the other is headroom -- and
+ * no amount of staring at ms_wait separates them.
+ *
+ * So measure the cadence with the extraction stopped: every buffer queued,
+ * dequeue and requeue, time nothing else. That is the sensor's own rate. The
+ * capture task performs it (it owns the fd), triggered by a flag. */
+static volatile int    s_probe_req = 0;      // frames to time, 0 = idle
+static volatile bool   s_probe_done = false;
+static double          s_probe_fps = 0.0;
 
 static esp_err_t cam_reg_write(uint32_t regaddr, uint32_t value)
 {
@@ -254,6 +294,11 @@ static void publish_stats(void)
     s_stats.ring_drops        = s_ring_drops;
     s_stats.consumer_waits    = s_consumer_waits;
     s_stats.stalls            = s_stalls;
+    double np = (double)(s_acct_pairs ? s_acct_pairs : 1);
+    s_stats.ms_pair           = s_us_cycle / np / 1000.0;
+    s_stats.ms_wait           = s_us_wait  / np / 1000.0;
+    s_stats.ms_extract        = s_us_ext   / np / 1000.0;
+    s_stats.ms_rest           = s_us_rest  / np / 1000.0;
     // Pearson r for two Bernoulli(p) variables: (E[xy] - p^2) / (p(1-p))
     double var = bias * (1.0 - bias);
     for (int L = 0; L < 4; L++) {
@@ -287,6 +332,8 @@ static void stats_reset_locked(void)
     for (int L = 0; L < 4; L++) { s_autocorr_both1[L] = 0; s_autocorr_pairs[L] = 0; }
     s_pixel_sum = 0; s_pixel_n = 0;
     s_zero_diffs = 0; s_diff_n = 0;
+    s_us_wait = 0; s_us_ext = 0; s_us_rest = 0; s_us_cycle = 0;
+    s_acct_pairs = 0; s_last_pair_us = 0;
     memset(&s_pack, 0, sizeof(s_pack));  // a half-folded pair must not straddle
     s_ring_tail = s_ring_head;           // drop unread old-setting words
     s_stream_start_us = esp_timer_get_time();
@@ -315,6 +362,8 @@ static void stats_reset_locked(void)
     s_stats.mean_pixel_level  = 0.0;
     s_stats.mbit_per_sec      = 0.0;
     s_stats.zero_diff_frac    = 0.0;
+    s_stats.ms_pair = 0.0; s_stats.ms_wait = 0.0;
+    s_stats.ms_extract = 0.0; s_stats.ms_rest = 0.0;
     for (int L = 0; L < 4; L++) s_stats.autocorr_lag[L] = 0.0;
     xSemaphoreGive(s_mutex);
 }
@@ -328,6 +377,7 @@ static void camera_task(void *arg)
     struct v4l2_buffer first;
     bool have_first = false;
     int  yield_ctr = 0;
+    int64_t pair_wait_us = 0;       // DQBUF time for BOTH frames of this pair
     s_stream_start_us = esp_timer_get_time();
 
     while (1) {
@@ -335,7 +385,42 @@ static void camera_task(void *arg)
             .type   = V4L2_BUF_TYPE_VIDEO_CAPTURE,
             .memory = V4L2_MEMORY_MMAP,
         };
-        if (ioctl(s_fd, VIDIOC_DQBUF, &buf) != 0) {
+        if (s_probe_req > 0) {
+            /* Give the driver every buffer first: the point is to measure the
+             * sensor, so it must never be waiting on us for somewhere to put a
+             * frame. The first frame only starts the clock -- it may have been
+             * finished long before the probe began. */
+            if (have_first) { ioctl(s_fd, VIDIOC_QBUF, &first); have_first = false; }
+            int n = s_probe_req, got = 0;
+            int64_t tp0 = 0;
+            while (got <= n) {
+                struct v4l2_buffer pb = {
+                    .type   = V4L2_BUF_TYPE_VIDEO_CAPTURE,
+                    .memory = V4L2_MEMORY_MMAP,
+                };
+                if (ioctl(s_fd, VIDIOC_DQBUF, &pb) != 0) break;
+                if (pb.flags & V4L2_BUF_FLAG_DONE) {
+                    if (got == 0) tp0 = esp_timer_get_time();
+                    got++;
+                }
+                ioctl(s_fd, VIDIOC_QBUF, &pb);
+            }
+            int64_t dtp = esp_timer_get_time() - tp0;
+            s_probe_fps = (got > 1 && dtp > 0) ? (double)(got - 1) * 1e6 / (double)dtp : 0.0;
+            s_probe_req = 0;
+            /* The probe extracted nothing for ~n frame times, which would sit
+             * in mbit_s and in the pair accounting as a hole. Start the window
+             * again rather than publish a diluted one. */
+            stats_reset_locked();
+            pair_wait_us = 0;
+            s_probe_done = true;
+            continue;
+        }
+
+        int64_t t_dq = esp_timer_get_time();
+        int dq_rc = ioctl(s_fd, VIDIOC_DQBUF, &buf);
+        pair_wait_us += esp_timer_get_time() - t_dq;
+        if (dq_rc != 0) {
             ESP_LOGW(TAG_CAM, "DQBUF failed");
             vTaskDelay(pdMS_TO_TICKS(50));
             continue;
@@ -365,16 +450,38 @@ static void camera_task(void *arg)
             ioctl(s_fd, VIDIOC_QBUF, &first);
             ioctl(s_fd, VIDIOC_QBUF, &buf);
             have_first = false;
+            pair_wait_us = 0;       // a discarded pair times nothing
+            s_last_pair_us = 0;
             vTaskDelay(1);
             continue;
         }
 
+        int64_t t_ext0 = esp_timer_get_time();
         diff_and_extract(s_bufs[first.index], s_bufs[buf.index], s_frame_size);
+        int64_t t_ext1 = esp_timer_get_time();
+
         publish_stats();
 
         ioctl(s_fd, VIDIOC_QBUF, &first);
         ioctl(s_fd, VIDIOC_QBUF, &buf);
         have_first = false;         // next pair starts fresh -- non-overlapping
+
+        /* Book the pair. Committed together and only from the second pair on,
+         * so all four accumulators cover exactly the same set of pairs and
+         * ms_pair is comparable with ms_wait + ms_extract + ms_rest. The
+         * remainder is the yield below plus preemption by anything above this
+         * task -- it is not an error term to be explained away, it is the part
+         * of the cycle this loop does not own. */
+        int64_t t_end = esp_timer_get_time();
+        if (s_last_pair_us) {
+            s_us_cycle += (uint64_t)(t_end - s_last_pair_us);
+            s_us_wait  += (uint64_t)pair_wait_us;
+            s_us_ext   += (uint64_t)(t_ext1 - t_ext0);
+            s_us_rest  += (uint64_t)(t_end - t_ext1);
+            s_acct_pairs++;
+        }
+        s_last_pair_us = t_end;
+        pair_wait_us = 0;
 
         /* Frames arrive faster than the diff can consume them, so this loop
          * never blocks on DQBUF and would starve the idle task (task watchdog)
@@ -638,6 +745,21 @@ void camera_get_exposure(uint32_t *exposure, uint32_t *gain)
 
 bool camera_get_xor_fold(void)    { return s_xor_fold; }
 
+double camera_fps_probe(int frames, int timeout_ms)
+{
+    if (frames < 2) frames = 2;
+    if (frames > 200) frames = 200;
+    s_probe_done = false;
+    s_probe_fps  = 0.0;
+    s_probe_req  = frames;
+    for (int waited = 0; waited < timeout_ms; waited += 20) {
+        if (s_probe_done) return s_probe_fps;
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+    s_probe_req = 0;                 // give up; the task may still finish it
+    return 0.0;
+}
+
 /* ── The sweep (PLAN.md Task 1) ────────────────────────────────────────────
  *
  * Exposure ladder, in sensor line units (the integer part of regs
@@ -691,10 +813,13 @@ static const uint32_t s_cal_ladder[] = { 4, 8, 16, 32, 64, 128, 256, 512 };
  * protection; this is a coarse backstop. The measured value is reported per step
  * either way, so the choice stays auditable rather than implicit. */
 #define CAL_MAX_MEAN_PX     100.0
-/* Frame pairs discarded before a window opens. CAM_BUF_COUNT=4 means up to two
- * pairs already captured under the old setting can be queued; the rest gives the
- * sensor a few frames to actually apply the new one. */
-#define CAL_SETTLE_PAIRS    4
+/* Frame pairs discarded before a window opens. Up to CAM_BUF_COUNT/2 pairs
+ * already captured under the OLD setting can be sitting in the driver's queue,
+ * so the discard count has to exceed that and then leave the sensor a few more
+ * frames to actually apply the new one -- it is tied to the buffer count rather
+ * than written out, because raising one and forgetting the other would let a
+ * candidate be scored on its predecessor's frames. */
+#define CAL_SETTLE_PAIRS    (CAM_BUF_COUNT / 2 + 2)
 #define CAL_SETTLE_TIMEOUT_MS 4000
 
 static uint32_t cal_gate(const camera_cal_step_t *s)
@@ -1119,9 +1244,14 @@ esp_err_t camera_selftest_handle(void *httpd_req, bool busy)
         return ESP_OK;
     }
 
+    /* The probe FIRST, while this task is only sleeping: it has to see an idle
+     * CPU, or it measures the same contention the live loop already reports. */
+    double fps_raw = camera_fps_probe(60, 6000);
+
     cam_selftest_t t;
-    char buf[320];
-    if (!cam_extract_selftest(&t)) {
+    char buf[448];
+    /* THE LIVE FRAME SIZE, not a convenient one. See extract.h. */
+    if (!cam_extract_selftest(&t, s_frame_size)) {
         httpd_resp_set_status(req, "500 Internal Server Error");
         httpd_resp_sendstr(req, "{\"err\":\"no psram for the test buffers\"}");
         return ESP_OK;
@@ -1133,7 +1263,9 @@ esp_err_t camera_selftest_handle(void *httpd_req, bool busy)
         "{\"equal\":%s,\"cases\":%d,\"failed_case\":%d,\"words\":%lu,"
         "\"ns_read\":%.3f,\"ns_ref\":%.3f,\"ns_fast\":%.3f,\"ns_stats\":%.3f,"
         "\"cyc_read\":%.1f,\"cyc_ref\":%.1f,\"cyc_fast\":%.1f,\"cyc_stats\":%.1f,"
-        "\"speedup\":%.2f,\"cpu_mhz\":%d,"
+        "\"speedup\":%.2f,\"cpu_mhz\":%d,\"bench_bytes\":%lu,"
+        "\"frame_bytes\":%lu,\"ms_pair_ext\":%.1f,"
+        "\"fps_raw\":%.2f,\"ms_pair_raw\":%.1f,"
         "\"what\":%d,\"bad_at\":%lu,\"ref_w\":\"%08lx\",\"fast_w\":\"%08lx\","
         "\"ref_z\":%lu,\"fast_z\":%lu}",
         t.equal ? "true" : "false", t.cases, t.failed_case, (unsigned long)t.words,
@@ -1141,6 +1273,15 @@ esp_err_t camera_selftest_handle(void *httpd_req, bool busy)
         t.ns_read * mhz / 1000.0, t.ns_ref * mhz / 1000.0,
         t.ns_fast * mhz / 1000.0, t.ns_stats * mhz / 1000.0,
         t.ns_stats > 0.0f ? t.ns_ref / t.ns_stats : 0.0, (int)mhz,
+        (unsigned long)t.bench_bytes, (unsigned long)s_frame_size,
+        /* What the benchmark says one live pair of extraction+statistics should
+         * cost. Held next to /diagjson's measured ms_extract, this is the whole
+         * comparison the harness exists to make. */
+        t.ns_stats * (double)s_frame_size / 1e6,
+        /* The sensor's own cadence with the CPU idle, and what one PAIR would
+         * cost at it. If ms_pair_raw is close to the live ms_pair, the sensor
+         * is the wall and no amount of faster extraction moves the bit rate. */
+        fps_raw, fps_raw > 0.0 ? 2000.0 / fps_raw : 0.0,
         t.what, (unsigned long)t.bad_at,
         (unsigned long)t.ref_w, (unsigned long)t.fast_w,
         (unsigned long)t.ref_z, (unsigned long)t.fast_z);
