@@ -26,6 +26,7 @@
 #include "sensor.h"
 #include "nodes.h"
 #include "camera.h"
+#include "gcp.h"
 #include "elotto_link.h"
 
 /* Camera failure policy — REPORT AND REBOOT, never substitute.
@@ -403,11 +404,19 @@ void slave_baseline_wait(void)
  * parallel, then waits for every ack. Not pausable, for the same reason the
  * baseline is not — one 'K' sets every slave running autonomously, so a
  * master-side hold would desynchronise them rather than pause them. */
-static void slave_calibrate_start(int budget_ms)
+/* "K<budget_ms>,<segments>". The segment count travels for the same reason it
+ * travels on 'M' and 'B': the bias gate is scaled by it (camera_cal_set_z_scale),
+ * so a slave that guessed would apply a different gate to the same camera and
+ * nothing would look wrong. A slave too old to parse the second field falls back
+ * to its legacy fixed bar and says so on its own console -- tolerable ONLY
+ * because this field decides a rung, never a combine, and because the two
+ * firmwares are flashed together by policy. Do not copy the pattern to a field
+ * that feeds a z. */
+static void slave_calibrate_start(int budget_ms, int segments)
 {
     if (!s_slave_ok) return;
-    char cmd[24];
-    snprintf(cmd, sizeof(cmd), "K%d", budget_ms);
+    char cmd[32];
+    snprintf(cmd, sizeof(cmd), "K%d,%d", budget_ms, segments);
     nodes_send(cmd);
 }
 
@@ -476,6 +485,7 @@ static void calibrate_master(int budget_ms)
         s_cal = heap_caps_calloc(1, sizeof(camera_cal_t), MALLOC_CAP_SPIRAM);
     if (!s_cal) { printf("cal: no PSRAM for the sweep table -- skipped\n"); return; }
 
+    camera_cal_set_z_scale(gcp_z_per_bias(g_status.run_segments));
     bool ok = camera_calibrate(budget_ms, cal_abort_cb, s_cal);
     N->cam_exp      = s_cal->exposure;
     N->cam_gain     = (uint16_t)s_cal->gain;
@@ -528,7 +538,7 @@ bool calibrate_all(void)
     g_status.phase = PHASE_CALIBRATE;
     int64_t t0 = esp_timer_get_time();
     g_status.cal_start_us = t0;          // publishes the live bar; cleared below
-    slave_calibrate_start(g_status.cal_budget_ms);   // trigger first, then measure
+    slave_calibrate_start(g_status.cal_budget_ms, g_status.run_segments);  // trigger first, then measure
     calibrate_master(g_status.cal_budget_ms);
     if (!g_status.abort_requested) slave_calibrate_wait(g_status.cal_budget_ms);
     g_status.cal_ms = (int)((esp_timer_get_time() - t0) / 1000);
@@ -638,6 +648,16 @@ void slaves_diag(void)
                    &ready, &bias, &sigma, &mb, &st, &stuck) < 5) continue;
         N->cam_mbit   = mb;
         N->cam_stalls = (uint32_t)st;
+        /* ",fw=<16 hex>" = the node's image, the same 16 characters its own
+         * /status calls fw_sha. TAGGED and appended, so the field-order parse
+         * above cannot trip over it and a slave too old to send it is simply
+         * absent rather than misread — a positional last field would have had
+         * to be told apart from the stuck-frame count by shape alone. */
+        const char *fw = strstr(resp, ",fw=");
+        if (fw && strspn(fw + 4, "0123456789abcdef") == 16) {
+            memcpy(N->fw_sha, fw + 4, 16);
+            N->fw_sha[16] = '\0';
+        }
     }
     // A 'D' miss must not count toward the drop rule — it says nothing about
     // whether the node can still measure.

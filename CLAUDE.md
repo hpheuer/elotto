@@ -37,9 +37,19 @@ item** (scoring, baseline and measurement share the same length).
 - ⚠ **A requested window is not the wall time you get.** Measured 2026-08-19, undisturbed 4-node
   session at `?run=5`/`gap=2`: `focus_win_ms` **8721 ms** for a requested 5000, `focus_gap_ms` 2081
   for a requested 2000, cycle ~10,8 s. The CYCLE matches what was recorded on 08-18 (~10,6 s); only
-  the split moved, because the master is now the slowest node (3,48 Mbit/s against the slaves' 3,95)
-  where it used to finish first and wait ~3,5 s for them -- the same seconds, counted as gap then and
-  as window now. **The statistics do not depend on it**: the segment count is fixed and z is
+  the split moved, because at that moment the master was the slowest node (3,48 Mbit/s against the
+  slaves' 3,95) where it used to finish first and wait ~3,5 s for them -- the same seconds, counted
+  as gap then and as window now.
+  ⚠ **That ordering has since INVERTED and the split with it.** Measured 2026-08-19 mid-session:
+  master **5,72 Mbit/s** (`ms_extract` 39,8 ms/pair -- the IDLE rate, i.e. its extraction is not
+  being preempted) against all three slaves at **3,66-3,68** (72,5 ms). A run needs 10,4 Mbit, so the
+  master is done in ~1,8 s and the slaves in ~2,9 s: the master now waits ~1 s per run and the wait
+  lands in `focus_gap_ms` (2356 ms measured against 800 requested). Two consequences worth stating:
+  the run's wall time is set by the SLOWEST node, which is why the round-length model takes its rate
+  from `min(cam_mbit)`; and **the nodes do not integrate the same interval** -- the master's window
+  is a ~64 % prefix of the slaves'. Why the master escapes preemption is not established, and the
+  investigation below stays dropped. **The statistics do not depend on it**: the segment count is
+  fixed and z is
   normalised by the square root of it. What it sets is the Focus protocol's hold time, and
   `RUN_SEGS_REF`/`RUN_MS_REF` are deliberately NOT re-calibrated to it.
   ⚠ **Chasing this down is DROPPED BY DECISION (user, 2026-08-19, for time.)** The reading is kept
@@ -109,16 +119,31 @@ by itself: **Abort, or `results[]` full at `NUM_RUNS` 8000**, at which point the
 - The **Runs per round** field shows, to its right, what each budget buys AND **how long one round
   takes** at the current parameters, both modes: `Euro 7+3 = 63 runs · ≈ 19 min/round` /
   `6of49 9 = 84 runs · ≈ 21 min/round`. Recomputes as run window and baseline count are typed.
-  Model = `CYCLE_RUN_PCT` in `sensor.h`: `cycle_ms ≈ 1,36 · run_ms + gap_ms`, fitted to two live
-  4-node points (8,8 s at `run=5`/`gap=2`; ~1,86 s at `run=1`/`gap=0,5`). A round = scoring sweep
-  + the pool's combinations + one sweep/baseline insertion + one more per `calint` of MEASURING
-  time. Checked against the `maxruns=20` smoke test: model 2 min, measured ~2 min. ⚠ Estimate only
-  — long windows stretch further under duty cycle; the live ETA uses the device's measured pace.
+  Model in `sensor.h`: **`cycle_ms ≈ 200 · segments / rate + CYCLE_FIXED_MS + gap_ms`**, where the
+  rate is the SLOWEST node's `cam_mbit` from `/status` when there is one and `CYCLE_LOAD_MBIT_X100`
+  (3,66 Mbit/s, the measured per-node rate UNDER LOAD) as the cold start. A round = scoring sweep +
+  the pool's combinations + one sweep/baseline insertion + one more per `calint` of MEASURING time.
+  ⚠ **The old `CYCLE_RUN_PCT` (`1,36 · run_ms + gap_ms`) is GONE (2026-08-19)**, and not merely
+  re-fitted: it measured 4,43 s at `run=2`/`gap=0,8` where it predicted 3,52 — 21 % short — and a
+  percentage of the requested window is the wrong shape. What a run costs is the time the slowest
+  node needs to make its bits, so the bit count and the rate have to appear separately or a change
+  to either invalidates the constant silently. `CYCLE_FIXED_MS` (780 ms: flush, trigger, collect,
+  publish) was solved from that same point. The new form also fits the OTHER instrument generation,
+  which the old one could not: at `run=5`/`gap=2` and the ~3,48 Mbit/s of the pre-08-18 nodes it
+  gives 10,3 s against a measured ~10,6–10,8. ⚠ Still an estimate; the live ETA uses measured pace.
 - `/status`: `unlimited`, `runs_cap`, `round`, `round_base`, `round_done`, `round_total`.
   `completed` stays session-wide, `total` is the CURRENT round — a progress bar must use
   **round_done/round_total** or its denominator moves. ETA is to the end of the round.
 - CSV: header gains `unlimited=on|off runs_cap=<n> rounds=<n>`, `items=<measured>/<end of current
   round>`, and `?all=1` gains a **`round` column, APPENDED last** so older parsers still line up.
+- ⚠ **The CSV header names the INSTRUMENT since 2026-08-19**: `fw=<version>/<elf sha>` on line 1
+  for the master, plus a third line `# fw_nodes=<sha per node, in the same order as `# nodes=`>`
+  fed by each slave's `D` reply (`?` = never answered, or firmware older than the field). Before
+  that the identity lived only in `/status`, i.e. only while the master stayed up: a 6,6 h session
+  that ran on a `-dirty` build recorded nothing about which build. It is a separate line, not extra
+  fields on `# nodes=`, because that line is what maps `z0..z3` to a board. "All four run the same
+  code" is a POLICY, not a fact — on 2026-08-19 the master ran a 10:57 `-dirty` build and the
+  slaves a 09:59 one.
 - ⚠ **Never pool unlimited-mode data with a single-pass session** without splitting on `round`
   first, and never pool across rounds without deciding what to do about repeated combinations.
 
@@ -157,7 +182,7 @@ without recomputing both the same way.
   interval, score direction, attended/unattended, and the unlimited cap. Built from `/status`, not
   from the form, so a curl-started run and a reloaded page both label themselves. "per run" is the
   measured pace (`elapsed / all runs of all phases`) once ≥ 5 runs exist, otherwise the
-  `CYCLE_RUN_PCT` estimate, and it says which. ⚠ The measured value reads high early — `elapsed_ms`
+  rate-model estimate (`cycle_ms` above), and it says which. ⚠ The measured value reads high early — `elapsed_ms`
   also contains the opening sweep, which is not a run.
 - UI: **three tables of five** — Top-5 and Bottom-5 and **Nearest-zero-5** (`top[]`/`low[]`/
   `near[]`), plus significance line, item counter + block badge, Save CSV.
@@ -177,21 +202,46 @@ Under H₀ with a working instrument: mean ≈ 0, σ ≈ 1, Σz² ≈ n. **Ranki
 `PAIR` 0x08, published in `/status`.
 
 **Soft-down** (`nodes[].soft_down`) excludes a node from the combine after a block in which its
-σ > `NODE_SIGMA_SOFT` **or** |mean| > `NODE_MEAN_SOFT`. Sticky; cleared only after
-`NODE_SOFT_CLEAR_BLOCKS` consecutive clean blocks. It never reboots anything.
+σ > `NODE_SIGMA_SOFT`. Sticky; cleared only after `NODE_SOFT_CLEAR_BLOCKS` consecutive clean
+blocks. It never reboots anything.
 
-⚠ **The CLEAR bars are peer-referenced, not constants (2026-08-19).** They were fixed at σ ≤ 1,05
-and |mean| ≤ 0,50, and the fixed σ was the bug: measured over a 9 h four-node session the per-block
-σ of a HEALTHY arm here is 1,02–1,05, so 1,05 was the array's own median, not a health threshold.
-Meeting it four times running is ~6–15 %, so **a node that tripped once stayed down for the rest of
-the session whatever its condition** — slave1 tripped on ONE block (σ 1,290) 40 min in and was still
-excluded 5,9 h later with a running z of +0,0025, i.e. 90 % of that session combined over √3 in
-silence (`null_flags` 0, `fault` empty, `ok` true). The bar is now the peers' own median for that
-block × `NODE_SOFT_CLEAR_SIG_K`, floored at `NODE_SOFT_CLEAR_SIG` and capped below the trip bar; with
-no peers it falls back to the constants. Replayed over the same 29 blocks: slave1 clears after 5
-blocks, nobody else is ever put down. ⚠ **Replay a threshold change before believing it** — the
-first attempt kept 1,05 as the floor and changed *nothing at all*, because a floor pins the bar
+⚠ **σ ONLY — the |mean| trip wire was REMOVED 2026-08-19.** It excluded on |mean| >
+`NODE_MEAN_SOFT` until a live session ran 50 % of its items at k < 4 (the last 3,4 h at k = 2)
+with `null_flags` 0, `fault` empty, `ok` true and `nodes_ok` 4 — two of four arms out and nothing
+saying so. Three reasons it had to go, in order:
+1. **The offsets it fired on are made by the calibration sweep.** Per-block offset against the rung
+   chosen for that block: exp 4 → −1,86 · exp 8 → −0,78 · exp 16…128 → −0,05…+0,09; exp ≤ 8
+   averages −1,11 over 10 node-blocks against −0,03 over 106, **t = −4,0**. Five of the master's six
+   excursions sat on exposure 4 or 8. The dark gates below remove those rungs at the source.
+2. **Centring already removes it.** `center_block()` subtracts each node's own block mean and
+   everything ranked reads `z_ctr`, so a constant offset inside a block is gone from every number a
+   result comes from. Keeping a +0,5-offset arm costs ~0; dropping it costs 13 %.
+   ⚠ This is exactly why the σ-only rule was **wrong** on 2026-08-11 (master mean −7, slave1 +4,6,
+   σ ≈ 1, all kept) and is right now: that pass had no centring. Do not cite 08-11 against this.
+3. **It was not run-length invariant**: 1,50 in z is a bias of 2,3e-4 at `run=2` and 1,5e-4 at
+   `run=5`, so the same camera tripped or passed depending on `?run=`.
+`NODE_MEAN_REPORT` keeps the value as a **flag** — printed, and in the block's `/loops` row as
+`mflag` — because a big offset is still worth seeing; it is how the exposure story was found.
+Replayed over the same 29 blocks: **24 of 29 blocks at k = 4 instead of 12, none below k = 3**, and
+slave2's genuine σ trip still fires and still costs it 5 blocks.
+
+⚠ **The CLEAR bar is peer-referenced, not a constant (2026-08-19).** It was fixed at σ ≤ 1,05, and
+that was the bug: measured over a 9 h four-node session the per-block σ of a HEALTHY arm here is
+1,02–1,05, so 1,05 was the array's own median, not a health threshold. Meeting it four times running
+is ~6–15 %, so **a node that tripped once stayed down for the rest of the session whatever its
+condition** — slave1 tripped on ONE block (σ 1,290) 40 min in and was still excluded 5,9 h later
+with a running z of +0,0025, i.e. 90 % of that session combined over √3 in silence. The bar is now
+the peers' own median for that block × `NODE_SOFT_CLEAR_SIG_K`, floored at `NODE_SOFT_CLEAR_SIG` and
+capped below the trip bar; with no peers it falls back to the constant, and it is published per
+block as `clear_sig` in `/loops` because it MOVES. Replayed over the same 29 blocks: slave1 clears
+after 5 blocks, nobody else is ever put down. ⚠ **Replay a threshold change before believing it** —
+the first attempt kept 1,05 as the floor and changed *nothing at all*, because a floor pins the bar
 exactly at the value that was too tight.
+⚠ There is **no |mean| clear bar** any more either, and that is not tidying: a criterion that cannot
+trip a node must not be able to keep it down. The pair that stood there (floor 0,50, K 2,00) was the
+same defect a second time — the peer median |mean| runs 0,02–0,30, so the floor bound in nearly
+every block, and slave2 broke its streak three times on |mean| 0,52 / 0,65 / 0,74 while its σ never
+left 0,93–1,06.
 
 ⚠ **`NODE_SOFT_MIN_COMBINE` is 1, not 3 (2026-08-13).** At four nodes a floor of 3 allowed
 exactly ONE exclusion, so when two arms misbehaved the second stayed in. The 08-13 pass is the
@@ -210,7 +260,8 @@ the pass it already makes. Both simpler rules are wrong and both were measured:
 
 ## Project structure
 - main/elotto.c   – app_main, Ethernet, webserver, HTML/JS UI. Endpoints: `/` `/status` `/start`
-  `/abort` `/loops` (per-**block** health) `/results.csv` `/focus` `/pause` `/calibrate` `/pool`
+  `/abort` `/loops` (per-**block** health, incl. the block's own exclusion verdict:
+  `clear_sig`, `quar`, and `soft`/`trip`/`mflag` per node) `/results.csv` `/focus` `/pause` `/calibrate` `/pool`
   `/ready` `/probe` `/expose`, plus **`/diag` (a four-camera health PAGE, live, one row per
   node)** and `/diagjson` (the master's own stats). Slaves serve that same JSON at their `/diag`.
   **`POST /expose?exp=<lines>[&gain=<g>]` sets one node's operating point by hand** — served by
@@ -583,7 +634,7 @@ nothing statistically, so a session is merely **tagged**: `/start?focus=1`, `"fo
   last sweep. In a `?cal=0` session there is no reset and they are lifetime averages — a falling
   `mbit_s` is then not evidence of live degradation.
 
-**Camera calibration (per BLOCK)**: at every insertion the master broadcasts `K<budget_ms>`, sweeps
+**Camera calibration (per BLOCK)**: at every insertion the master broadcasts `K<budget_ms>,<segs>`, sweeps
 its own exposure ladder in parallel, and waits for every node's
 `OK:<exp>,<gain>,<fold>,<bias>,<mbit_s>,<G|U>`. Each node keeps the setting with the **lowest
 |bias − 0.5| among candidates clearing the σ gate with margin** (|σ−1| ≤ half the tolerance),
@@ -604,6 +655,32 @@ The chosen setting is recorded per block in `/loops` — mandatory, because a re
 indistinguishable from drift in the data.
 ⚠ `CAL_MAX_MEAN_PX` is **100.0**. It is a light-*leak* floor written when the cameras were meant to
 sit dark; the enclosure is deliberately lit, so a high `mean_px` means the lamp is on.
+
+⚠ **The DARK end of the ladder is gated too, since 2026-08-19: `CAL_MIN_MEAN_PX` 5,0 and
+`CAL_MAX_ZERO_DIFF` 0,125** (`CAM_CAL_FAIL_DARK` / `CAM_CAL_FAIL_ZDIFF`). The premise is that
+photons do the whitening, and the bottom rungs have none: at exposure 4 the frame sits at `mean_px`
+3,1–3,5 with **13,6–16,7 % of pixel differences exactly ZERO** against 6,7–7,1 % at 128, and a zero
+difference has a deterministic LSB. Those rungs are not a dimmer version of the same source, they
+are a partly frozen one — and they are what the |mean| soft-down trip was firing on (exp ≤ 8 →
+block offset −1,11 against −0,03 at exp ≥ 16, t = −4,0). Both gates are cut below the lowest rung
+that behaves (16) and above the highest that does not (8), and they are **deliberately redundant**:
+`mean_px` is the physical quantity, `zero_diff` the mechanism, and a rung must clear both — on the
+master's own sweep exposure 8 passes `zero_diff` at 0,1227 and is caught by `mean_px` alone.
+Verified against two live measured sweeps: exposures 4 and 8 rejected on both nodes, 16…128
+unchanged, no node left without a candidate. If the lamp is dimmed these start rejecting rungs that
+used to pass — that is correct, and the answer is light, not a lower floor.
+
+⚠ **`CAM_CAL_FAIL_BIAS` is no longer a constant (2026-08-19).** A bias `b` over `nseg` segments is a
+per-run z offset of `(b−0,5)·200·√nseg / GCP_SEGMENT_SD`, so the old fixed 1e-3 admitted **6,5 z at
+`run=2` and 10,2 at `run=5`** — against a node-health bar of 1,5. The sweep was certifying exactly
+the rungs the health gate then tripped on, and the same physical camera passed or failed depending
+on `?run=`. The bar is now stated as a z offset (`CAL_MAX_Z_OFFSET` 1,0) and converted with the
+session's segment count via `gcp_z_per_bias()` — which is why the count now travels on `K`. Two
+limits: never tighter than `CAL_BIAS_SE_K`×the window's own SE(bias), and never looser than the old
+1e-3, so it can only tighten. ⚠ **The bias gate is therefore NOISE-LIMITED, not tight**: 4,8 Mbit
+per rung is SE 2,3e-4 = ±1,5 z at `run=2`, so it cannot resolve the health bar it feeds and the
+effective bar lands at ~6,9e-4. That is a property of the 10 s budget — the fix is more bits per
+rung, not a smaller number. Each rung's implied `z_off` and the bar that bound it are logged.
 ⚠ **The trigger is TIME.** Default **15 min**, `POST /start?calint=<ms>`; **0 = no mid-pass
 insertions**. Thermal drift moves on wall-clock time, and the insertion cadence also sets the drift
 regression's resolution and the block size the centring estimates its means from.
@@ -693,6 +770,15 @@ may be pooled with anything after it.
 | `_short_*` | a 1995/5005 partial, 57 blocks at `calint` 5 min |
 | `_analyze_*.py` | the operator's own analysis scripts |
 
+⚠ **BUILT AND COMMITTED 2026-08-19, NOT YET FLASHED.** The six changes of that day (dark ladder
+gates, run-scaled bias gate, σ-only soft-down, the exclusion verdict in `/loops`, firmware identity
+in the CSV, the rate-based cycle model) exist only in the tree — `/update` answers 409 while a
+session runs and the 08-19 overnight session was still measuring. **Flash master and all three
+slaves together**: the `K` command gained a field and the `D` reply another, and while both
+mismatches degrade safely (legacy bias bar / no sha in the header) a half-flashed array is not one
+instrument. Then verify on hardware: `mflag` appearing in `/loops` without a `soft` next to it,
+`clear_sig` present, `fw=`/`# fw_nodes=` in a fresh CSV, and no node choosing exposure 4 or 8.
+
 **Committed and flashed 2026-08-18.** `elotto` and `elotto_slave` share `components/elotto_camera`,
 so they are always built, flashed and committed **together**; all four nodes run the same code.
 ⚠ **After every OTA, poll `fw_sha` in `/status` (or `/otainfo`) until it CHANGES.** A node serves the
@@ -700,9 +786,13 @@ old image while the new one is being written, so `until curl http://node/` passe
 measurements were taken from the previous binary before this was noticed.
 
 **Open, in the order I would pick them up:**
-1. **The master is the other bad arm** — 9 of 49 blocks with |mean| > 1,5, worst −6,33. It has never
-   been diagnosed separately from slave1 because the old soft-down floor could only ever exclude
-   one of them.
+1. ✅ **CLOSED 2026-08-19: the master is not a bad arm, its EXPOSURE RUNG was.** Its |mean| > 1,5
+   blocks are the ones the sweep put on exposure 4 or 8 (see `NODE_MEAN_REPORT`); its per-block σ
+   never left 0,79–1,11 against a 1,25 trip bar. The dark gates remove the rungs and the |mean|
+   trip is gone, so the arm stays in the combine and centring removes what is left. ⚠ **What is
+   NOT closed**: whether an offset survives on a *gated* rung. The 08-19 blocks at exp ≥ 16 sit at
+   −0,05…+0,09 on average but individual blocks still reach ±0,6 at an SE of 0,08, so the offsets
+   are real, just no longer big enough to fire anything. Watch `mflag` in `/loops`.
 3. **Verify the centring on a full pass.** It is verified on a short run (closed blocks at
    mean(z_ctr) exactly 0,0000, open block provisional) but has never run a full session.
 4. **Does calibration reduce the RATE of bad blocks?** The control pair only ever asked "does it add

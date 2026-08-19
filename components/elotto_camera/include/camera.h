@@ -152,11 +152,13 @@ double camera_fps_probe(int frames, int timeout_ms);
 // a sweep that chose nothing says WHY rather than just "no".
 #define CAM_CAL_FAIL_APPLY   0x01   // sensor did not latch the setting (read-back)
 #define CAM_CAL_FAIL_BITS    0x02   // too few bits in its slice to score at all
-#define CAM_CAL_FAIL_BIAS    0x04   // |bias - 0.5| >= 1e-3
+#define CAM_CAL_FAIL_BIAS    0x04   // |bias - 0.5| above the run-scaled bar
 #define CAM_CAL_FAIL_AUTOC   0x08   // some |autocorr lag 1..4| >= 0.01
 #define CAM_CAL_FAIL_SIGMA   0x10   // per-mini-run sigma outside 1 +- 0.05
 #define CAM_CAL_FAIL_STUCK   0x20   // a frame pair came back byte-identical
 #define CAM_CAL_FAIL_LIGHT   0x40   // mean pixel level above the light-leak floor
+#define CAM_CAL_FAIL_DARK    0x80   // mean pixel level below the shot-noise floor
+#define CAM_CAL_FAIL_ZDIFF  0x100   // too many zero pixel differences
 
 #define CAM_CAL_MAX_STEPS   12
 
@@ -183,8 +185,27 @@ typedef struct {
     double   bias, sigma, mbit_per_sec, autocorr_max, mean_pixel_level;
     int      nsteps;
     uint32_t elapsed_ms;
+    /* The z-per-unit-bias the bias gate was scaled to (see
+     * camera_cal_set_z_scale). 0 = the sweep ran on the legacy constant. A
+     * published sweep cannot be read without it: the same bias is a different
+     * verdict at a different run length. */
+    double   z_scale;
     camera_cal_step_t step[CAM_CAL_MAX_STEPS];
 } camera_cal_t;
+
+/* Tell the sweep what a unit of bias is WORTH in this session, so its bias gate
+ * can mean the same thing at every run length.
+ *
+ * `z_per_bias` is the per-run z offset produced by a bias of 1.0, i.e.
+ * GCP_SEGMENT_BITS * sqrt(segments) / GCP_SEGMENT_SD for the segment count the
+ * session will run. The constant lives at the call sites rather than here
+ * because elotto_gcp already REQUIRES elotto_camera and the dependency must not
+ * become circular -- and because GCP_SEGMENT_SD is the one literal in this
+ * project that must never be restated (see components/elotto_gcp/gcp.h).
+ *
+ * 0 restores the legacy fixed bar. Set it before camera_calibrate(); it is
+ * remembered until changed. */
+void camera_cal_set_z_scale(double z_per_bias);
 
 /* Sweep the exposure ladder, score each candidate over its own window, apply the
  * best setting that passes every gate, and verify it by read-back.

@@ -1172,6 +1172,11 @@ static void record_loop(double loop_mean, int loop_idx)
     // combined mean, which is the master's own mean in that case.
     if (s_nacc[0].n < 2) mean_n[0] = loop_mean;
 
+    /* The row this block will occupy, or NULL past LOOP_HIST. The soft-down
+     * section at the end of this function stamps its verdict onto it; past the
+     * cap there is no row and the verdict is printed only. */
+    LoopStat *row = NULL;
+
     camera_stats_t cs;
     camera_get_stats(&cs);
     slaves_diag();                    // nodes are idle between loops
@@ -1182,6 +1187,7 @@ static void record_loop(double loop_mean, int loop_idx)
 
     if (g_status.loop_hist && g_status.loop_hist_n < LOOP_HIST) {
         LoopStat *L = &g_status.loop_hist[g_status.loop_hist_n++];
+        row = L;                      /* completed once the soft-down verdict is in */
         memset(L, 0, sizeof(*L));
         L->base  = (float)g_status.baseline_mean;
         L->mean  = (float)loop_mean;
@@ -1233,7 +1239,9 @@ static void record_loop(double loop_mean, int loop_idx)
 
     /* Soft downweight — sticky, min-k protected, trigger-block quarantine.
      *
-     * Trip (either wire): σ > NODE_SIGMA_SOFT  OR  |mean| > NODE_MEAN_SOFT.
+     * Trip: σ > NODE_SIGMA_SOFT. σ ONLY — the |mean| wire was removed on
+     * 2026-08-19; |mean| over NODE_MEAN_REPORT is flagged into the block row
+     * and printed, and excludes nothing. See NODE_MEAN_REPORT in sensor.h.
      * Clear: NODE_SOFT_CLEAR_BLOCKS consecutive clean blocks (not one lucky
      * block — the 2026-08-11 full pass re-admitted the master after quiet
      * blocks and then block 9 poisoned the ranking), where "clean" is measured
@@ -1249,6 +1257,7 @@ static void record_loop(double loop_mean, int loop_idx)
     bool   have_stats[MAX_NODES] = {false};
     double mean_i[MAX_NODES] = {0}, sig_i[MAX_NODES] = {0};
     bool   any_trip = false;
+    uint8_t mean_mask = 0, trip_mask = 0, soft_mask = 0;
 
     for (int i = 0; i < g_status.node_count && i < MAX_NODES; i++) {
         const NodeAcc *a = &s_nacc[i];
@@ -1259,13 +1268,19 @@ static void record_loop(double loop_mean, int loop_idx)
         mean_i[i] = m_i;
         sig_i[i]  = sig;
         have_stats[i] = true;
-        bool bad_sig  = (sig > NODE_SIGMA_SOFT);
-        bool bad_mean = (fabs(m_i) > NODE_MEAN_SOFT);
-        if (bad_sig || bad_mean) {
-            want[i] = true;
-            double sm = bad_mean ? fabs(m_i) / NODE_MEAN_SOFT : 0.0;
-            double ss = bad_sig  ? sig / NODE_SIGMA_SOFT : 0.0;
-            score[i] = sm > ss ? sm : ss;
+        /* σ ONLY. |mean| is recorded and flagged (NODE_MEAN_REPORT) but does
+         * not exclude: centring removes a constant block offset from everything
+         * that is ranked, and the offsets this used to fire on were made by the
+         * exposure ladder rather than by the node. */
+        if (sig > NODE_SIGMA_SOFT) {
+            want[i]  = true;
+            score[i] = sig / NODE_SIGMA_SOFT;
+        }
+        if (fabs(m_i) > NODE_MEAN_REPORT) {
+            mean_mask |= (uint8_t)(1u << i);
+            printf("node %d: block |mean| %.3f over the %.2f report bar "
+                   "(σ %.3f, not an exclusion — centred out of the ranking)\n",
+                   i, m_i, NODE_MEAN_REPORT, sig);
         }
     }
 
@@ -1302,45 +1317,35 @@ static void record_loop(double loop_mean, int loop_idx)
      * that is down is judged against the arms that are up, in the same window,
      * instead of against a constant that turned out to be the array's own
      * median. See NODE_SOFT_CLEAR_* in sensor.h for what that cost. */
-    double peer_sig[MAX_NODES], peer_mean[MAX_NODES];
+    double peer_sig[MAX_NODES];
     int    npeer = 0;
     for (int j = 0; j < g_status.node_count && j < MAX_NODES; j++) {
         if (!g_status.nodes[j].ok || !have_stats[j]) continue;
         if (want[j] || g_status.nodes[j].soft_down) continue;   /* suspect: no reference */
-        peer_sig[npeer]  = sig_i[j];
-        peer_mean[npeer] = fabs(mean_i[j]);
-        npeer++;
+        peer_sig[npeer++] = sig_i[j];
     }
-    double clear_sig = NODE_SOFT_CLEAR_SIG, clear_mean = NODE_SOFT_CLEAR_MEAN;
+    double clear_sig = NODE_SOFT_CLEAR_SIG;
     if (npeer > 0) {
         for (int a = 1; a < npeer; a++) {          /* insertion sort, n <= 4 */
-            double vs = peer_sig[a], vm = peer_mean[a];
+            double vs = peer_sig[a];
             int b = a - 1;
             while (b >= 0 && peer_sig[b] > vs)  { peer_sig[b + 1]  = peer_sig[b];  b--; }
             peer_sig[b + 1] = vs;
-            b = a - 1;
-            while (b >= 0 && peer_mean[b] > vm) { peer_mean[b + 1] = peer_mean[b]; b--; }
-            peer_mean[b + 1] = vm;
         }
         double med_sig  = (npeer & 1) ? peer_sig[npeer / 2]
                                       : 0.5 * (peer_sig[npeer / 2 - 1] + peer_sig[npeer / 2]);
-        double med_mean = (npeer & 1) ? peer_mean[npeer / 2]
-                                      : 0.5 * (peer_mean[npeer / 2 - 1] + peer_mean[npeer / 2]);
-        double cs = med_sig  * NODE_SOFT_CLEAR_SIG_K;
-        double cm = med_mean * NODE_SOFT_CLEAR_MEAN_K;
-        if (cs > clear_sig)  clear_sig  = cs;      /* floors: never tighter than before */
-        if (cm > clear_mean) clear_mean = cm;
+        double cs = med_sig * NODE_SOFT_CLEAR_SIG_K;
+        if (cs > clear_sig)  clear_sig  = cs;      /* floor: never tighter than before */
         /* ...and never as loose as the TRIP bar, or a block that trips the node
          * could also be counted as a clean one. */
         if (clear_sig  > NODE_SIGMA_SOFT * NODE_SOFT_CLEAR_MARGIN)
             clear_sig  = NODE_SIGMA_SOFT * NODE_SOFT_CLEAR_MARGIN;
-        if (clear_mean > NODE_MEAN_SOFT * NODE_SOFT_CLEAR_MARGIN)
-            clear_mean = NODE_MEAN_SOFT * NODE_SOFT_CLEAR_MARGIN;
     }
-    /* Printed every block because the bars MOVE now: without them in the log a
-     * clean / not-clean call cannot be checked after the fact. */
-    printf("soft-down clear bars this block: |mean|<=%.3f sigma<=%.3f (from %d peer(s))\n",
-           clear_mean, clear_sig, npeer);
+    /* Printed every block because the bar MOVES: without it in the log a
+     * clean / not-clean call cannot be checked after the fact. It also travels
+     * in the block's /loops row now, so the check survives the console. */
+    printf("soft-down clear bar this block: sigma<=%.3f (from %d peer(s))\n",
+           clear_sig, npeer);
 
     for (int i = 0; i < g_status.node_count && i < MAX_NODES; i++) {
         if (!have_stats[i] && !g_status.nodes[i].soft_down) continue;
@@ -1368,11 +1373,13 @@ static void record_loop(double loop_mean, int loop_idx)
                    mean_i[i], sig_i[i],
                    contaminated ? " — block quarantined" : " — was already out, block kept");
             if (contaminated) any_trip = true;
+            trip_mask |= (uint8_t)(1u << i);
             g_status.nodes[i].soft_down = 1;
             s_soft_clean[i] = 0;
         } else if (g_status.nodes[i].soft_down && have_stats[i]) {
-            bool clean = (sig_i[i] > 0.0 && sig_i[i] <= clear_sig &&
-                          fabs(mean_i[i]) <= clear_mean);
+            /* σ only, matching the trip: a criterion that cannot put a node
+             * down must not be able to keep it down either. */
+            bool clean = (sig_i[i] > 0.0 && sig_i[i] <= clear_sig);
             if (clean) {
                 if (s_soft_clean[i] < 255) s_soft_clean[i]++;
                 if (s_soft_clean[i] >= NODE_SOFT_CLEAR_BLOCKS) {
@@ -1396,9 +1403,24 @@ static void record_loop(double loop_mean, int loop_idx)
         }
     }
 
+    for (int i = 0; i < g_status.node_count && i < MAX_NODES; i++)
+        if (g_status.nodes[i].soft_down) soft_mask |= (uint8_t)(1u << i);
+
     if (any_trip) {
         quarantine_block(loop_idx);
         recompute_pass_ranks();
+    }
+
+    /* Stamp the verdict onto the row this block already wrote. The LoopStat is
+     * filled at the top of record_loop() because it needs the accumulators
+     * before they are folded, but the exclusion decision is only reached here —
+     * so the row is completed rather than written twice. */
+    if (row) {
+        row->soft_mask   = soft_mask;
+        row->trip_mask   = trip_mask;
+        row->mean_mask   = mean_mask;
+        row->quarantined = any_trip ? 1 : 0;
+        row->clear_sig   = (float)clear_sig;
     }
 }
 

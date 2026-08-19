@@ -19,6 +19,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <math.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -35,6 +36,24 @@ extern "C" {
 #define GCP_SEGMENT_BITS   200
 #define GCP_SEGMENT_MEAN   100.0
 #define GCP_SEGMENT_SD     7.07106781
+
+/* What a unit of stream bias is WORTH as a per-run z offset, at this run length.
+ *
+ * A bias b over `segments` segments moves the ones count by (b - 0,5)*200*nseg
+ * and the z by that over GCP_SEGMENT_SD*sqrt(nseg), i.e. the offset grows with
+ * sqrt(nseg): the same camera imperfection is 1,5 z at 26087 segments and 3,3 at
+ * 130435. Every threshold on a bias therefore has to be converted here rather
+ * than written down as a constant, or it silently means something different at
+ * a different ?run= -- which is exactly what CAM_CAL_FAIL_BIAS did until
+ * 2026-08-19. Shared for the same reason as the rest of this header: master and
+ * slave must apply the same bar to their own cameras.
+ *
+ * Returns 0 for a non-positive segment count, which callers read as "unknown". */
+static inline double gcp_z_per_bias(int segments)
+{
+    if (segments <= 0) return 0.0;
+    return (double)GCP_SEGMENT_BITS * sqrt((double)segments) / GCP_SEGMENT_SD;
+}
 
 /* Why a run failed. The caller needs to tell these apart: a camera fault is
  * reported to the master and gets the node rebooted, while an abort is the

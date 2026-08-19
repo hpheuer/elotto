@@ -107,23 +107,42 @@ _Static_assert(((long long)RUN_S_MAX * 1000 * RUN_SEGS_REF) / RUN_MS_REF <= EL_S
 /* ── Wall time of ONE measured item, for the pre-start estimate ────────
  * The UI has to answer "how long will a round take?" BEFORE anything runs, so
  * it needs a model; once a session is live, /status carries the measured pace
- * and the ETA comes from that instead. This is the model, and it is a FIT to
- * two live 4-node measurements, not arithmetic on the requested numbers:
+ * and the ETA comes from that instead.
  *
- *   run=5 / gap=2 : window 4,48-4,55 s, gap 4,29 s -> cycle ~8,8 s
- *   run=1 / gap=.5: cycle ~1,8-1,9 s (2026-08-18 smoke tests)
+ * The model was `cycle_ms ~= 1,36 * run_ms + gap_ms`, fitted to two live 4-node
+ * points. It broke on 2026-08-19, measuring 4,43 s at run=2/gap=0,8 where it
+ * predicted 3,52 — 21 % short. The fit was not merely stale: a percentage OF
+ * THE REQUESTED WINDOW is the wrong shape. What a run costs is the time the
+ * SLOWEST node needs to produce its bits, and the bits are set by the segment
+ * count while the rate is a property of the hardware — so the two must appear
+ * separately or a change to either silently invalidates the constant.
  *
- * Two effects, both proportional to the requested window: the window itself
- * comes out ~10 % SHORT, and the inter-run gap carries the slave collect on top
- * of the requested blank (~46 % of the window — every node integrates the same
- * length, so the wait scales with it). Together:
+ *   run_bits  = GCP_SEGMENT_BITS * segments      (segments from run_s)
+ *   cycle_ms ~= run_bits / rate + CYCLE_FIXED_MS + gap_ms
  *
- *   cycle_ms ~= CYCLE_RUN_PCT/100 * run_ms + gap_ms
+ * CYCLE_LOAD_MBIT_X100 is the per-node rate UNDER LOAD, which is NOT the idle
+ * 5,71: during a session the GCP consumer outranks the extraction task and a
+ * frame pair costs ~70 ms instead of 39,5 (see CLAUDE.md). Measured 2026-08-19,
+ * all three slaves in agreement at 3,66-3,68; the master is not the constraint
+ * (it runs at the idle rate and waits ~1 s per run for the slaves), which is
+ * exactly why the model must use the SLOWEST node and not an average.
  *
- * 1,36*5000 + 2000 = 8800 and 1,36*1000 + 500 = 1860 — both fit.
- * ⚠ An ESTIMATE. Long windows stretch further when the camera rate collapses
- * under duty cycle, which is exactly what ?run= is there to probe. */
-#define CYCLE_RUN_PCT          136
+ * CYCLE_FIXED_MS is what is left over per run and does not scale with the
+ * window: the ring flush, the trigger, the reply collect and the publish.
+ * Solved from the 08-19 point — 4433 measured, 800 requested gap, 52174
+ * segments at 3,66 Mbit/s = 2851 ms of bits, leaving 782.
+ *
+ * Cross-check against the OTHER instrument generation, which the old constant
+ * could not fit at all: at run=5/gap=2 and the ~3,48 Mbit/s the slower nodes
+ * ran at before 2026-08-18, this gives 7,50 + 0,78 + 2,00 = 10,3 s against a
+ * measured ~10,6-10,8. The form of the model is what carries across; only the
+ * rate moved.
+ *
+ * ⚠ Still an ESTIMATE, and the live UI prefers the measured pace wherever it
+ * has one — including the slowest node's own cam_mbit from /status, which makes
+ * the constant a cold-start value rather than the answer. */
+#define CYCLE_LOAD_MBIT_X100   366   // per-node extraction rate under load, x100
+#define CYCLE_FIXED_MS         780   // per-run overhead that does not scale
 
 /* ── Unlimited mode (user, 2026-08-18) ────────────────────────────────────
  * A session that does not end with the combination space. Instead of measuring
@@ -168,14 +187,47 @@ _Static_assert(((long long)RUN_S_MAX * 1000 * RUN_SEGS_REF) / RUN_MS_REF <= EL_S
 #define DRIFT_FLAG_T           3.0   // |drift_t| above this = real cross-block drift
 /* Pass-level null gates (GCP-first). Ranking is secondary while any of these
  * fire: the published Stouffer z is only N(0,1) under unit variance and no
- * drift. Soft node downweight trips on block σ OR |mean| excursion — the
- * 2026-08-11 pass had master mean −7 / .145 +4.6 with σ≈1, which the σ-only
- * rule silently kept in the combine. */
+ * drift. Soft node downweight trips on block σ alone; the |mean| wire was
+ * removed on 2026-08-19 once block centring made it redundant and the exposure
+ * ladder was found to be generating the offsets it fired on — see
+ * NODE_MEAN_REPORT for the whole argument, including why the 2026-08-11 pass
+ * (master mean −7, .145 +4.6, σ≈1) is not a counter-example any more. */
 #define PASS_SIGMA_LO          0.85  // pass sample σ below this → null broken
 #define PASS_SIGMA_HI          1.15  // pass sample σ above this → null broken
 #define PASS_NULL_MIN_N       30     // need this many valid items before σ gate
 #define NODE_SIGMA_SOFT        1.25  // block per-node σ above this → soft-exclude
-#define NODE_MEAN_SOFT         1.50  // |block mean z| above this → soft-exclude
+/* ── |block mean| REPORTS, it no longer excludes (2026-08-19) ──────────────
+ *
+ * This was a trip wire at the same value until the 2026-08-19 session, where it
+ * put the master soft-down for half the run and the array measured 50 % of its
+ * items at k < 4 — the last 3,4 h at k = 2 — with null_flags 0, fault empty and
+ * `ok` true throughout. Three findings, in the order they matter:
+ *
+ * 1. The offsets it fired on are made by the CALIBRATION SWEEP, not by the node.
+ *    Per-block offset against the rung chosen for that block: exp 4 → −1,86,
+ *    exp 8 → −0,78, exp 16..128 → −0,05…+0,09. exp ≤ 8 averages −1,11 over 10
+ *    node-blocks against −0,03 over 106, t = −4,0. Five of the master's six
+ *    excursions sat on exposure 4 or 8. CAL_MIN_MEAN_PX / CAL_MAX_ZERO_DIFF
+ *    remove those rungs at the source; this bar was punishing the symptom.
+ * 2. CENTRING ALREADY REMOVES IT. center_block() subtracts each node's own mean
+ *    over the block and everything that is ranked reads z_ctr through rank_z().
+ *    A constant offset inside a block is gone from every number a result is
+ *    drawn from, so excluding the arm buys nothing and costs √k: keeping a
+ *    +0,5-offset arm costs 0 after centring, dropping it costs 13 %.
+ *    ⚠ This is precisely why the σ-only rule was WRONG on 2026-08-11 (master
+ *    mean −7, .145 +4,6, σ ≈ 1, all kept) and is right now: that pass had no
+ *    block centring. Do not read the 08-11 argument as still standing.
+ * 3. The bar was not run-length invariant. A fixed 1,50 in z is a bias of
+ *    2,3e-4 at run=2 and 1,5e-4 at run=5, so the same camera tripped or passed
+ *    depending on ?run= (see gcp_z_per_bias).
+ *
+ * What survives: the value, as a REPORTING threshold. An arm over it is flagged
+ * in the block's /loops row and printed, because a big offset is still worth
+ * seeing — it is how the exposure story above was found. It does not exclude,
+ * it does not quarantine, and it does not block a clear.
+ * ⚠ σ remains a trip wire and must: σ is what the 08-13 pass failed on, it is
+ * invariant to the run length by construction, and centring does NOT fix it. */
+#define NODE_MEAN_REPORT       1.50  // |block mean z| above this → flagged, not excluded
 #define NODE_SOFT_MIN_N       20     // min runs in the block before soft-exclude
 /* ── Clearing a soft-down: bars RELATIVE to the peers in the same block ────
  *
@@ -200,11 +252,18 @@ _Static_assert(((long long)RUN_S_MAX * 1000 * RUN_SEGS_REF) / RUN_MS_REF <= EL_S
  * ⚠ Peers = ok, produced stats this block, not tripping this block, not
  * soft-down. With no peers left, the floors apply and the behaviour is exactly
  * what it was before. */
-#define NODE_SOFT_CLEAR_MEAN   0.50  // floor: |mean| bar is never tighter
 #define NODE_SOFT_CLEAR_SIG    1.10  // floor: σ bar is never tighter
 #define NODE_SOFT_CLEAR_SIG_K  1.15  // σ bar = K x peer median σ
-#define NODE_SOFT_CLEAR_MEAN_K 2.00  // |mean| bar = K x peer median |mean|
 #define NODE_SOFT_CLEAR_MARGIN 0.95  // cap, as a fraction of the TRIP bar
+/* ⚠ There is no |mean| clear bar any more, and removing it was NOT tidying: a
+ * criterion that cannot trip a node must not be able to keep it down either.
+ * The pair that stood here (floor 0,50, K 2,00) was the second instance of the
+ * defect the σ floor already had — the peer median |mean| runs 0,02–0,30, so the
+ * floor bound in almost every block, and slave2 broke its streak three times on
+ * |mean| 0,52 / 0,65 / 0,74 while its σ never left 0,93–1,06. Replayed over the
+ * 29 blocks of 2026-08-19 with σ alone: slave2 clears 4 blocks after tripping
+ * instead of never, and the master — which under the old rule was down for 14 of
+ * 29 blocks — never trips at all (its σ peaked at 1,109 against the 1,25 bar). */
 
 /* ⚠ The σ FLOOR is 1,10 and NOT the old 1,05. Keeping the old value as a floor
  * was tried first and changed nothing at all — replayed over the same 29 blocks
@@ -395,6 +454,15 @@ typedef struct {
                             // kept its previous setting because none did
     float    cam_bias;      // bias of the window that chose it
     float    cam_cal_mbit;  // rate of that same window
+    /* First 8 bytes of the node's app elf sha256, hex — the same 16 characters
+     * /status publishes as fw_sha, so the two are directly comparable. From the
+     * node's 'D' reply.
+     * Empty for the master (its own identity comes from esp_app_get_description)
+     * and for a node whose firmware predates the field. It is in the CSV header
+     * because "all four run the same code" is a policy, not a fact: on
+     * 2026-08-19 the master ran a -dirty build from 10:57 and the slaves one
+     * from 09:59, and the archive of that session records neither. */
+    char     fw_sha[17];
 } NodeStatus;
 
 // Per-BLOCK health record (v3; the struct and the /loops endpoint keep their
@@ -439,6 +507,26 @@ typedef struct {
     // series across loops is the only way to see the window drift rather than
     // average it away. Measured in every session, attended or not.
     float    win_ms, gap_ms;
+    /* ── Who was in the combine, and why (2026-08-19) ──────────────────────
+     * The exclusion state was published only as a live flag in /status and
+     * printed to a console nobody reads, so a finished session could not say
+     * WHEN an arm went down or what bar it was judged against. On 2026-08-19
+     * that had to be reconstructed by replaying the rule against the block
+     * table — which works only as long as the rule has not changed since, i.e.
+     * exactly when it is least useful. A block row now carries its own verdict.
+     *
+     * soft_mask  bit i = node i was soft-down at the close of THIS block
+     * trip_mask  bit i = node i tripped IN this block (σ over the bar)
+     * mean_mask  bit i = |mean| over NODE_MEAN_REPORT — a flag, never an
+     *            exclusion; the offsets it marks are the ones the exposure
+     *            ladder makes and centring removes
+     * clear_sig  the peer-referenced σ bar this block was judged against; it
+     *            MOVES per block, so a clean/not-clean call cannot be rechecked
+     *            without it
+     * quarantined  this block's items were skipped for ranking */
+    uint8_t  soft_mask, trip_mask, mean_mask;
+    uint8_t  quarantined;
+    float    clear_sig;
 } LoopStat;
 
 typedef struct {

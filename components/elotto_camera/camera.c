@@ -864,6 +864,61 @@ static const uint32_t s_cal_ladder[] = { 4, 8, 16, 32, 64, 128, 256, 512 };
  * protection; this is a coarse backstop. The measured value is reported per step
  * either way, so the choice stays auditable rather than implicit. */
 #define CAL_MAX_MEAN_PX     100.0
+/* ── The DARK end of the ladder (2026-08-19) ──────────────────────────────
+ * CAL_MAX_MEAN_PX has had a partner missing since the enclosure was lit. The
+ * premise of this instrument is that photons do the whitening (PLAN.md §1.13),
+ * and the bottom rungs of the ladder do not have any: at exposure 4 the frame
+ * sits at mean_px 3,1-3,3 and 14,5-17,4 % of pixel differences come back
+ * exactly ZERO, against 6,9 % at exposure 128. A zero difference has a
+ * deterministic LSB, so those rungs are not a dimmer version of the same
+ * source, they are a partly frozen one.
+ *
+ * Measured on the 2026-08-19 four-node session, per-block offset by the rung
+ * the sweep chose for that block:
+ *
+ *     exp     4       8      16      32      64     128
+ *     off  -1,864  -0,781  -0,051  +0,093  -0,074  -0,039
+ *
+ * exp <= 8: -1,106 over 10 node-blocks (SE 0,267) against -0,030 over 106
+ * (SE 0,032), t = -4,0. Five of the master's six |mean| > 1,2 blocks sat on
+ * exposure 4 or 8, which is what put it soft-down for half that session.
+ *
+ * Both gates are cut BELOW the lowest rung that behaves (16: mean_px 5,3-5,4,
+ * zero_diff 0,114-0,120) and above the highest that does not (8: 3,8-4,0 and
+ * 0,130-0,151), and they are deliberately redundant -- mean_px is the physical
+ * quantity, zero_diff is the mechanism, and a rung has to clear both. If the
+ * lamp is ever dimmed these will start rejecting rungs that used to pass, which
+ * is the correct behaviour and not a regression: the answer is light, not a
+ * lower floor. */
+#define CAL_MIN_MEAN_PX       5.0
+#define CAL_MAX_ZERO_DIFF     0.125
+/* ── What the bias gate is actually protecting (2026-08-19) ───────────────
+ * CAL_BIAS_TOL is a bar on the wrong quantity. A run of `nseg` 200-bit segments
+ * turns a bias b into a per-run z offset of
+ *
+ *     (b - 0,5) * GCP_SEGMENT_BITS * sqrt(nseg) / GCP_SEGMENT_SD
+ *
+ * = (b - 0,5) * 28,28 * sqrt(nseg). At the 52174 segments of a run=2 session
+ * the 1e-3 constant therefore admits an offset of 6,5, and at run=5's 130435 it
+ * admits 10,2 -- against a NODE_MEAN_SOFT of 1,5. The sweep was certifying
+ * exactly the rungs the node-health gate then tripped on, and the same physical
+ * camera passed or failed depending on ?run=.
+ *
+ * So the bar is stated as a z offset and converted with the segment count the
+ * session will run (camera_cal_set_z_scale). Two limits keep it honest:
+ *
+ *  - never TIGHTER than CAL_BIAS_SE_K sigma of the window's OWN sampling error.
+ *    SE(bias) = 0,5/sqrt(bits), which at the 4,8 Mbit a 10 s budget buys per
+ *    rung is 2,3e-4 -- an implied z offset of +-1,5 at run=2. A gate below its
+ *    own noise floor rejects at random, and a 1,0-z bar would be one. ⚠ This
+ *    means the bias gate is NOISE-LIMITED, not tight: it cannot resolve the
+ *    health bar it feeds. That is a property of the 10 s budget, and the way to
+ *    change it is more bits per rung, not a smaller number here.
+ *  - never LOOSER than CAL_BIAS_TOL, so this can only ever tighten the gate.
+ *
+ * Both limits are reported per step, so a sweep says which one bound it. */
+#define CAL_MAX_Z_OFFSET      1.0
+#define CAL_BIAS_SE_K         3.0
 /* Frame pairs discarded before a window opens. Up to CAM_BUF_COUNT/2 pairs
  * already captured under the OLD setting can be sitting in the driver's queue,
  * so the discard count has to exceed that and then leave the sensor a few more
@@ -873,15 +928,41 @@ static const uint32_t s_cal_ladder[] = { 4, 8, 16, 32, 64, 128, 256, 512 };
 #define CAL_SETTLE_PAIRS    (CAM_BUF_COUNT / 2 + 2)
 #define CAL_SETTLE_TIMEOUT_MS 4000
 
+/* z per unit of bias for the session's run length; 0 = legacy fixed bar. */
+static double s_cal_z_scale = 0.0;
+
+void camera_cal_set_z_scale(double z_per_bias)
+{
+    s_cal_z_scale = (z_per_bias > 0.0) ? z_per_bias : 0.0;
+}
+
+/* The bias bar for ONE window, in bias units. See CAL_MAX_Z_OFFSET above. */
+static double cal_bias_bar(uint64_t bits)
+{
+    if (s_cal_z_scale <= 0.0 || bits == 0) return CAL_BIAS_TOL;
+    double bar = CAL_MAX_Z_OFFSET / s_cal_z_scale;
+    double se  = 0.5 / sqrt((double)bits);
+    if (bar < CAL_BIAS_SE_K * se) bar = CAL_BIAS_SE_K * se;  // never below its own noise
+    if (bar > CAL_BIAS_TOL)       bar = CAL_BIAS_TOL;        // never looser than before
+    return bar;
+}
+
 static uint32_t cal_gate(const camera_cal_step_t *s)
 {
     uint32_t f = 0;
     if (s->bits < CAL_MIN_BITS || s->minirun_n < CAL_MIN_MINIRUNS) f |= CAM_CAL_FAIL_BITS;
-    if (fabs(s->bias - 0.5) >= CAL_BIAS_TOL)    f |= CAM_CAL_FAIL_BIAS;
+    if (fabs(s->bias - 0.5) >= cal_bias_bar(s->bits)) f |= CAM_CAL_FAIL_BIAS;
     if (s->autocorr_max >= CAL_AUTOC_TOL)       f |= CAM_CAL_FAIL_AUTOC;
     if (fabs(s->sigma - 1.0) > CAL_SIGMA_TOL)   f |= CAM_CAL_FAIL_SIGMA;
     if (s->stuck_frames != 0)                   f |= CAM_CAL_FAIL_STUCK;
     if (s->mean_pixel_level >= CAL_MAX_MEAN_PX) f |= CAM_CAL_FAIL_LIGHT;
+    /* The dark end. Both, and only when the window actually measured something:
+     * a candidate that never got frames already fails BITS, and adding DARK to
+     * it would report a light level that was never sampled. */
+    if (s->bits >= CAL_MIN_BITS) {
+        if (s->mean_pixel_level < CAL_MIN_MEAN_PX) f |= CAM_CAL_FAIL_DARK;
+        if (s->zero_diff_frac > CAL_MAX_ZERO_DIFF) f |= CAM_CAL_FAIL_ZDIFF;
+    }
     return f;
 }
 
@@ -946,10 +1027,16 @@ static bool cal_step(camera_cal_step_t *st, uint32_t exposure, uint32_t gain,
     st->autocorr_max = amax;
     st->fail = cal_gate(st);
 
-    ESP_LOGI(TAG_CAM, "cal: exp=%-5lu gain=%-4lu fold=%d  bias=%.6f (%+.1e) sigma=%.4f "
-             "r=%.4f mean_px=%.2f zero=%.4f %.3f Mbit/s  %.1f Mbit  %s0x%02x",
+    /* The bias bar MOVES with the session's run length now, so a logged verdict
+     * cannot be checked without it -- and z_off is what the bar is really about:
+     * the per-run offset this rung would contribute if it were chosen. */
+    ESP_LOGI(TAG_CAM, "cal: exp=%-5lu gain=%-4lu fold=%d  bias=%.6f (%+.1e, bar %.1e, "
+             "z_off %+.2f) sigma=%.4f r=%.4f mean_px=%.2f zero=%.4f %.3f Mbit/s  "
+             "%.1f Mbit  %s0x%03x",
              (unsigned long)exposure, (unsigned long)gain, (int)fold,
-             st->bias, st->bias - 0.5, st->sigma, st->autocorr_max,
+             st->bias, st->bias - 0.5, cal_bias_bar(st->bits),
+             (st->bias - 0.5) * s_cal_z_scale,
+             st->sigma, st->autocorr_max,
              st->mean_pixel_level, st->zero_diff_frac, st->mbit_per_sec,
              st->bits / 1e6, st->fail ? "FAIL " : "pass ", (unsigned)st->fail);
     return true;
@@ -960,6 +1047,7 @@ bool camera_calibrate(int budget_ms, bool (*abort_cb)(void), camera_cal_t *out)
     if (!out) return false;
     memset(out, 0, sizeof(*out));
     out->chosen = -1;
+    out->z_scale = s_cal_z_scale;   // what the bias gate was scaled to, for the record
     if (s_fd < 0 || !camera_is_ready()) return false;
 
     int64_t t0 = esp_timer_get_time();

@@ -11,6 +11,8 @@
 #include "esp_http_server.h"
 #include "nvs_flash.h"
 #include "esp_timer.h"
+#include "esp_app_desc.h"   /* the running image's version/sha for the CSV header */
+#include "gcp.h"           /* GCP_SEGMENT_BITS, for the round-length model */
 #include "sensor.h"
 #include "focus.h"      // SCORE_GAP_MS default blank
 #include "nodes.h"      // slave_probe(), for the UI's node-discovery button
@@ -377,6 +379,9 @@ static const char HTML[] =
 // Set by the /status poll; read by pollFocus at 10 Hz. True while the rig is
 // calibrating, running its baseline, or parked at the observer gate.
 "var preparing=false;"
+/* Slowest node rate seen in a /status poll, for the round estimate. 0 until
+   the first poll carries one, which is what the cold-start constant is for. */
+"var lastSlowMbit=0;"
 "function fmt(ms){"
 "var m=Math.floor(ms/60000),h=Math.floor(m/60);m=m%60;"
 "return h>0?h+':'+('0'+m).slice(-2)+' h':m+' min';}"
@@ -413,11 +418,25 @@ static const char HTML[] =
 /* Wall time of ONE round at the parameters currently in the form. The operator
    sets a run BUDGET, not a duration, and 100 runs is ~20 min at run=5 but over
    an hour at run=15 — and in this mode there is no session end to discover that
-   from later. Model in sensor.h (CYCLE_RUN_PCT); once a session is live the ETA
+   from later. Model in sensor.h (CYCLE_LOAD_MBIT_X100); once a session is live the ETA
    comes from the device's measured pace instead. A round is: the scoring sweep
    (49 or 62 runs), the pool's combinations, one sweep+baseline insertion at the
    round boundary, plus one more per calint of MEASURING time — which is what
    the device's block timer actually counts. */
+/* One measurement cycle, in ms. Model in sensor.h: the bits a run needs over
+   the rate the SLOWEST node produces them at, plus the fixed per-run overhead
+   and the requested gap. `mbit` is the live minimum from /status when there is
+   one and the cold-start constant otherwise. */
+"function cycleMs(segs,gapS,mbit){"
+"if(!(mbit>0))mbit=" EL_STR(CYCLE_LOAD_MBIT_X100) "/100;"
+"return " EL_STR(GCP_SEGMENT_BITS) "*segs/(mbit*1e6)*1000+"
+EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
+"function segsFor(runS){"
+"return Math.round(runS*1000*" EL_STR(RUN_SEGS_REF) "/" EL_STR(RUN_MS_REF) ");}"
+"function slowMbit(d){"
+"var m=0;if(!d||!d.nodes)return 0;"
+"for(var i=0;i<d.nodes.length;i++){var r=d.nodes[i].cam_mbit;"
+"if(r>0&&(m===0||r<m))m=r;}return m;}"
 "function roundMs(euro,combos){"
 "var runS=parseFloat(document.getElementById('numRunS').value);"
 "if(!(runS>=" EL_STR(RUN_S_MIN) "))runS=" EL_STR(RUN_S_DEFAULT) ";"
@@ -426,7 +445,7 @@ static const char HTML[] =
 "if(gapS<0.5)gapS=0.5;if(gapS>10)gapS=10;"
 "var base=parseInt(document.getElementById('numBaseline').value)"
 "||" EL_STR(BASELINE_DEFAULT) ";"
-"var cyc=(" EL_STR(CYCLE_RUN_PCT) "/100*runS+gapS)*1000;"
+"var cyc=cycleMs(segsFor(runS),gapS,lastSlowMbit);"
 "var meas=combos*cyc;"
 "var ins=" EL_STR(CAL_BUDGET_DEFAULT_MS) "+base*cyc;"
 "var nins=1+Math.floor(meas/" EL_STR(CAL_INTERVAL_DEFAULT_MS) ");"
@@ -462,6 +481,7 @@ static const char HTML[] =
 // A page loaded or reloaded while the device is parked at the observer gate
 // must show it too — the session is blocked until somebody presses Start.
 "if(d.phase==='ready')readyShow();"
+"lastSlowMbit=slowMbit(d)||lastSlowMbit;"
 "updateItemBadge(d);updatePoolBadge(d);updateParamBadge(d);"
 "document.getElementById('sCalTotal').textContent=d.baseline_total;"
 "setScoreTotal(d);"
@@ -509,7 +529,7 @@ static const char HTML[] =
 /* Every session parameter, from /status rather than from the form: a curl-started
    run has no form, and after a reload the form is gone anyway. "per run" is the
    MEASURED pace once enough runs exist (elapsed / every run of every phase) and
-   falls back to the CYCLE_RUN_PCT estimate before that — marked, because the two
+   falls back to the rate model before that — marked, because the two
    are not the same claim. The measured value runs high early: elapsed_ms also
    contains the opening sweep, which is not a run. */
 "function pItem(k,v){return \"<span style='color:#7a9a7a'>\"+k"
@@ -527,8 +547,8 @@ static const char HTML[] =
 "var n=(d.baseline_done||0)+(d.scoring_done||0)+(d.completed||0);"
 "if(n>=5&&d.elapsed_ms>0)"
 "p.push(pItem('per run',(d.elapsed_ms/n/1000).toFixed(1)+' s measured'));"
-"else p.push(pItem('per run','\u2248 '+("
-EL_STR(CYCLE_RUN_PCT) "/100*(d.run_s||0)+(d.gap_s||0)).toFixed(1)+' s est.'));"
+"else p.push(pItem('per run','\u2248 '+(cycleMs(d.run_segs||segsFor(d.run_s||0),"
+"d.gap_s||0,slowMbit(d))/1000).toFixed(1)+' s est.'));"
 "if(d.focus_win_ms>0)p.push(pItem('window/gap',Math.round(d.focus_win_ms)"
 "+' / '+Math.round(d.focus_gap_ms||0)+' ms'));"
 "p.push(pItem('Baseline',(d.baseline_total||0)+' runs'));"
@@ -796,6 +816,7 @@ EL_STR(CYCLE_RUN_PCT) "/100*(d.run_s||0)+(d.gap_s||0)).toFixed(1)+' s est.'));"
 "}"
 "function poll(){"
 "fetch('/status').then(function(r){return r.json();}).then(function(d){"
+"lastSlowMbit=slowMbit(d)||lastSlowMbit;"
 "updateItemBadge(d);updatePoolBadge(d);updateParamBadge(d);"
 "updateFocusInfo(d);"
 // Raise the prompt as soon as the device parks on it, and take it down again
@@ -1412,13 +1433,18 @@ static esp_err_t loops_handler(httpd_req_t *req)
         const LoopStat *L = &g_status.loop_hist[i];
         int nn = L->nodes ? L->nodes : 1;
         if (nn > MAX_NODES) nn = MAX_NODES;
+        /* clear_sig / quar / the per-node soft flag below are the block's own
+         * exclusion verdict. Without them a finished session cannot say when an
+         * arm left the combine or what bar it was judged against — the bar moves
+         * per block, so it is not reconstructible from constants either. */
         len = snprintf(buf, sizeof(buf),
             "%s{\"loop\":%d,\"t_s\":%lu,\"base\":%.4f,\"raw_m\":%.4f,"
             "\"mean\":%.4f,\"sigma\":%.4f,\"cal_ms\":%d,"
-            "\"win_ms\":%.1f,\"gap_ms\":%.1f,\"nodes\":%d,\"n\":[",
+            "\"win_ms\":%.1f,\"gap_ms\":%.1f,\"clear_sig\":%.3f,\"quar\":%d,"
+            "\"nodes\":%d,\"n\":[",
             i ? "," : "", i + 1, (unsigned long)L->t_s,
             L->base, L->mean_n[0], L->mean, L->sigma, (int)L->cal_ms,
-            L->win_ms, L->gap_ms, nn);
+            L->win_ms, L->gap_ms, L->clear_sig, (int)L->quarantined, nn);
         send_chunk(req, buf, len, sizeof(buf));
         for (int k = 0; k < nn; k++) {
             // cam_exp/gain/fold are the operating point this loop was MEASURED
@@ -1427,11 +1453,13 @@ static esp_err_t loops_handler(httpd_req_t *req)
             len = snprintf(buf, sizeof(buf),
                 "%s{\"mean\":%.4f,\"sigma\":%.4f,\"cam_mbit\":%.3f,\"cam_stalls\":%lu,"
                 "\"cam_exp\":%lu,\"cam_gain\":%d,\"cam_fold\":%d,\"cam_cal\":%d,"
-                "\"cam_bias\":%.6f}",
+                "\"cam_bias\":%.6f,\"soft\":%d,\"trip\":%d,\"mflag\":%d}",
                 k ? "," : "", L->mean_n[k], L->sig_n[k], L->cam_mbit[k],
                 (unsigned long)L->cam_stalls[k], (unsigned long)L->cam_exp[k],
                 (int)L->cam_gain[k], (int)L->cam_fold[k], (int)L->cam_cal_ok[k],
-                L->cam_bias[k]);
+                L->cam_bias[k],
+                (L->soft_mask >> k) & 1, (L->trip_mask >> k) & 1,
+                (L->mean_mask >> k) & 1);
             send_chunk(req, buf, len, sizeof(buf));
         }
         httpd_resp_send_chunk(req, "]}", 2);
@@ -1517,6 +1545,14 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
     int nn = results_near_mean(near, TOP_N, &mean, &sigma);
 
     char mb[32], sb[32], cb[32], vb[32], stb[32], rb[32], gb[32];
+    /* The master's own image. The slaves' come from their 'D' replies and are
+     * emitted on the fw_nodes line below; a node that never answered one, or
+     * runs firmware older than the field, shows "?" rather than nothing, or the
+     * line would silently shorten and look like a different node count. */
+    const esp_app_desc_t *fw_desc = esp_app_get_description();
+    char master_sha[17] = {0};
+    for (int i = 0; i < 8; i++)
+        snprintf(master_sha + i * 2, 3, "%02x", fw_desc->app_elf_sha256[i]);
     const char *score_str =
         g_status.score_dir == SCORE_DIR_LOW ? "low" :
         g_status.score_dir == SCORE_DIR_ABS ? "abs" : "high";
@@ -1538,7 +1574,15 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
          * 2026-08-18, so the same run_s=5 means 70513 segments before it and
          * 130435 after — 1,85x the bits per item. Without run_segs an archived
          * pass cannot be told apart from one taken on the other instrument. */
-        "run_s=%s run_segs=%d gap_s=%s\n"
+        /* ⚠ WHICH INSTRUMENT. This file is the archive, and the project's whole
+         * data policy is "never pool across instrument boundaries" — pre/post
+         * the extraction speed-up, pre/post the onset flush, pre/post centring.
+         * Until 2026-08-19 the firmware identity lived only in /status, i.e.
+         * only while the master stayed up, and a 6,6 h session that ran on a
+         * `-dirty` build recorded nothing at all about it. Version first
+         * (readable), elf sha second (exact, and the only field that separates
+         * two builds of the same commit). */
+        "run_s=%s run_segs=%d gap_s=%s fw=%s/%s\n"
         "# nodes=",
         g_status.mode == MODE_EUROJACKPOT ? "euro" : "649",
         g_status.focus_mode ? "on" : "off", score_str,
@@ -1555,12 +1599,27 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
         g_status.unlimited ? "on" : "off", g_status.runs_cap, g_status.round,
         de_num(rb, sizeof(rb), g_status.run_target_ms / 1000.0, 2),
         g_status.run_segments,
-        de_num(gb, sizeof(gb), g_status.gap_ms / 1000.0, 2));
+        de_num(gb, sizeof(gb), g_status.gap_ms / 1000.0, 2),
+        fw_desc->version, master_sha);
     send_chunk(req, buf, nlen, sizeof(buf));
     for (int i = 0; i < g_status.node_count && i < MAX_NODES; i++) {
         nlen = snprintf(buf, sizeof(buf), "%s%s",
                         i ? "," : "",
                         i ? g_status.nodes[i].ip : "master");
+        send_chunk(req, buf, nlen, sizeof(buf));
+    }
+    httpd_resp_send_chunk(req, "\n", 1);
+
+    /* Per-node image, in the SAME order as the nodes line above — a separate
+     * line rather than fields on that one, because the node list is what maps
+     * z0..z3 to a board and every existing parser reads it as it stands. All
+     * three analysis scripts skip '#' lines, so an added one costs nothing. */
+    nlen = snprintf(buf, sizeof(buf), "# fw_nodes=");
+    send_chunk(req, buf, nlen, sizeof(buf));
+    for (int i = 0; i < g_status.node_count && i < MAX_NODES; i++) {
+        const char *sha = i ? g_status.nodes[i].fw_sha : master_sha;
+        nlen = snprintf(buf, sizeof(buf), "%s%s", i ? "," : "",
+                        sha[0] ? sha : "?");
         send_chunk(req, buf, nlen, sizeof(buf));
     }
     httpd_resp_send_chunk(req, "\n", 1);
