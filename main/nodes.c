@@ -594,6 +594,17 @@ bool node_take_z(int k, double *out_z)
     if (!s_link[k].replied) return false;
     const char *resp = s_link[k].reply;
 
+    /* ⚠ 'V:' is a VOID, not a fault: the node withheld this run's z on purpose
+     * (its pre-window ring flush did not settle) and is otherwise healthy. It
+     * must not go down the 'E:' path, which reboots the node -- escalating a
+     * transient to a reboot would cost an arm for the rest of the session, and
+     * the whole point of voiding one run is that it costs only that run. */
+    if (resp[0] == 'V' && resp[1] == ':') {
+        g_status.flush_timeouts++;
+        printf("node %d (%s): run voided -- %s" "\n", k + 1,
+               g_status.nodes[k + 1].ip, resp + 2);
+        return false;
+    }
     if (resp[0] == 'E' && resp[1] == ':') {
         node_camera_failed(k + 1, resp + 2);
         return false;

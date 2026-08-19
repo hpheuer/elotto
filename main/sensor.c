@@ -681,7 +681,16 @@ static int gather_and_combine(double z_master, bool master_ok,
     }
 
     /* Soft-exclude only when at least NODE_SOFT_MIN_COMBINE non-soft nodes
-     * answered this run — never collapse the array below three arms. */
+     * answered this run.
+     *
+     * ⚠ "never collapse the array below three arms" stood here and has been
+     * false since 2026-08-13: NODE_SOFT_MIN_COMBINE is **1**. A floor of 3 at
+     * four nodes permitted exactly ONE exclusion, so when two arms misbehaved
+     * the second stayed in and published its offset -- the 08-13 pass is the
+     * proof, where slave1 was excluded and the master's block means to -6,33
+     * were kept. Up to three of four may now drop out and a SOLO combine is
+     * possible; `k` is in the CSV per item so it stays visible afterwards.
+     * A bad arm costs more than a small k (user decision). */
     int n_soft = 0;
     for (int i = 0; i < g_status.node_count && i < MAX_NODES; i++) {
         if (have[i] && !g_status.nodes[i].soft_down) n_soft++;
