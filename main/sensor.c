@@ -98,6 +98,14 @@ static void prng_seed(void)
  *      n=11600  run  588 ms   duty 72 %   2.82 Mbit/s
  *      n=17000  run 1519 ms   duty 88 %   1.98 Mbit/s   <- collapsed
  *
+ * ⚠ EVERY NUMBER IN THE TABLE ABOVE IS PRE-2026-08-18, i.e. the ~3,4 Mbit/s
+ * instrument. Extraction is now 1,67x faster (5,71 Mbit/s idle, ~3,8 under
+ * load), so the segment counts these runs solved for no longer describe this
+ * rig — RUN_SEGS_REF/RUN_MS_REF in sensor.h carry the current calibration. The
+ * SHAPE of the argument survives and the mechanism is now known: the cliff is
+ * the GCP consumer preempting the capture task, not the duty cycle as such.
+ * Re-measure before quoting any of these figures.
+ *
  * So it is flat near 2.7 Mbit/s and falls off a cliff somewhere past ~72 %, at
  * which point longer runs feed back into a slower producer and get longer
  * still. None of this is visible in Phase 0's 3.49 Mbit/s idle figure. The
@@ -299,12 +307,32 @@ static uint8_t s_soft_clean[MAX_NODES];
 /* Brief ring flush before an attended measurement window so pre-onset bits
  * do not enter the run the observer is about to watch. Master-only: slaves
  * have no settle command on the wire; calibration already settles every node. */
-static void attended_onset_settle(void)
+/* Every measurement window starts on fresh bits — ATTENDED OR NOT.
+ *
+ * Two things were wrong here until 2026-08-19.
+ *
+ * 1. `if (!g_status.focus_mode) return;` made the settle a property of the
+ *    attended mode. But ?focus= is supposed to change NOTHING except the panel
+ *    and the tag — "a matched no-focus control must be identical in every other
+ *    respect" — and this made the two modes differ in what bits reach a run.
+ *    The attended-vs-unattended comparison would have measured the settle as
+ *    much as the observer.
+ *
+ * 2. It called camera_stats_reset(1), which also zeroes the camera statistics.
+ *    Per item, that left every block's cam_bias / cam_mbit in /loops describing
+ *    only that block's LAST item — in attended sessions, all of them. It now
+ *    flushes the ring and leaves the accumulators alone.
+ *
+ * Why it is needed at all, in either mode: nothing consumes the ring during the
+ * gap, so it is FULL when a window opens — 524288 bits produced before the item
+ * existed, which is 10 % of a run=1 item. Those bits are not bad, they are
+ * MISLABELLED, and this rig already treats crediting bits to the wrong
+ * combination as the error that matters. */
+static void onset_settle(void)
 {
-    if (!g_status.focus_mode) return;
-    camera_stats_reset(1);
-    int64_t limit = esp_timer_get_time() + 500000LL;   /* 500 ms cap */
-    while (!camera_stats_settled() && esp_timer_get_time() < limit)
+    camera_ring_flush(1);
+    int64_t limit = esp_timer_get_time() + ONSET_SETTLE_MS * 1000LL;
+    while (!camera_ring_flushed() && esp_timer_get_time() < limit)
         vTaskDelay(1);
 }
 
@@ -659,8 +687,11 @@ static int gather_and_combine(double z_master, bool master_ok,
 static double score_one_run(void)
 {
     int nseg = segments_for();               // session window, all phases
-    attended_onset_settle();
+    /* Trigger BEFORE settling: every node now flushes its own ring on 'M', so
+     * ordering it the other way would leave the master a full settle ahead of
+     * the slaves and the "same window" would be offset by ~85 ms. */
     slave_trigger(nseg);
+    onset_settle();
     double zm = 0.0;
     bool   ok = gcp_zscore_ok(nseg, &zm);
     // Sampling is over the moment the local run returns; the reply wait below
@@ -1174,7 +1205,10 @@ static void record_loop(double loop_mean, int loop_idx)
      * Trip (either wire): σ > NODE_SIGMA_SOFT  OR  |mean| > NODE_MEAN_SOFT.
      * Clear: NODE_SOFT_CLEAR_BLOCKS consecutive clean blocks (not one lucky
      * block — the 2026-08-11 full pass re-admitted the master after quiet
-     * blocks and then block 9 poisoned the ranking).
+     * blocks and then block 9 poisoned the ranking), where "clean" is measured
+     * against the PEERS in that same block and no longer against fixed
+     * constants — see NODE_SOFT_CLEAR_* in sensor.h for why the constants were
+     * unreachable in practice.
      * Floor: never soft-exclude so many that fewer than NODE_SOFT_MIN_COMBINE
      * ok nodes remain eligible; keep the least-bad among candidates.
      * Quarantine: the block that *triggered* a new soft-down is excluded from
@@ -1233,6 +1267,50 @@ static void record_loop(double loop_mean, int loop_idx)
         }
     }
 
+    /* The clear bars for THIS block, taken from the peers measured in it. A node
+     * that is down is judged against the arms that are up, in the same window,
+     * instead of against a constant that turned out to be the array's own
+     * median. See NODE_SOFT_CLEAR_* in sensor.h for what that cost. */
+    double peer_sig[MAX_NODES], peer_mean[MAX_NODES];
+    int    npeer = 0;
+    for (int j = 0; j < g_status.node_count && j < MAX_NODES; j++) {
+        if (!g_status.nodes[j].ok || !have_stats[j]) continue;
+        if (want[j] || g_status.nodes[j].soft_down) continue;   /* suspect: no reference */
+        peer_sig[npeer]  = sig_i[j];
+        peer_mean[npeer] = fabs(mean_i[j]);
+        npeer++;
+    }
+    double clear_sig = NODE_SOFT_CLEAR_SIG, clear_mean = NODE_SOFT_CLEAR_MEAN;
+    if (npeer > 0) {
+        for (int a = 1; a < npeer; a++) {          /* insertion sort, n <= 4 */
+            double vs = peer_sig[a], vm = peer_mean[a];
+            int b = a - 1;
+            while (b >= 0 && peer_sig[b] > vs)  { peer_sig[b + 1]  = peer_sig[b];  b--; }
+            peer_sig[b + 1] = vs;
+            b = a - 1;
+            while (b >= 0 && peer_mean[b] > vm) { peer_mean[b + 1] = peer_mean[b]; b--; }
+            peer_mean[b + 1] = vm;
+        }
+        double med_sig  = (npeer & 1) ? peer_sig[npeer / 2]
+                                      : 0.5 * (peer_sig[npeer / 2 - 1] + peer_sig[npeer / 2]);
+        double med_mean = (npeer & 1) ? peer_mean[npeer / 2]
+                                      : 0.5 * (peer_mean[npeer / 2 - 1] + peer_mean[npeer / 2]);
+        double cs = med_sig  * NODE_SOFT_CLEAR_SIG_K;
+        double cm = med_mean * NODE_SOFT_CLEAR_MEAN_K;
+        if (cs > clear_sig)  clear_sig  = cs;      /* floors: never tighter than before */
+        if (cm > clear_mean) clear_mean = cm;
+        /* ...and never as loose as the TRIP bar, or a block that trips the node
+         * could also be counted as a clean one. */
+        if (clear_sig  > NODE_SIGMA_SOFT * NODE_SOFT_CLEAR_MARGIN)
+            clear_sig  = NODE_SIGMA_SOFT * NODE_SOFT_CLEAR_MARGIN;
+        if (clear_mean > NODE_MEAN_SOFT * NODE_SOFT_CLEAR_MARGIN)
+            clear_mean = NODE_MEAN_SOFT * NODE_SOFT_CLEAR_MARGIN;
+    }
+    /* Printed every block because the bars MOVE now: without them in the log a
+     * clean / not-clean call cannot be checked after the fact. */
+    printf("soft-down clear bars this block: |mean|<=%.3f sigma<=%.3f (from %d peer(s))\n",
+           clear_mean, clear_sig, npeer);
+
     for (int i = 0; i < g_status.node_count && i < MAX_NODES; i++) {
         if (!have_stats[i] && !g_status.nodes[i].soft_down) continue;
 
@@ -1262,8 +1340,8 @@ static void record_loop(double loop_mean, int loop_idx)
             g_status.nodes[i].soft_down = 1;
             s_soft_clean[i] = 0;
         } else if (g_status.nodes[i].soft_down && have_stats[i]) {
-            bool clean = (sig_i[i] > 0.0 && sig_i[i] <= NODE_SOFT_CLEAR_SIG &&
-                          fabs(mean_i[i]) <= NODE_SOFT_CLEAR_MEAN);
+            bool clean = (sig_i[i] > 0.0 && sig_i[i] <= clear_sig &&
+                          fabs(mean_i[i]) <= clear_mean);
             if (clean) {
                 if (s_soft_clean[i] < 255) s_soft_clean[i]++;
                 if (s_soft_clean[i] >= NODE_SOFT_CLEAR_BLOCKS) {
@@ -1278,6 +1356,10 @@ static void record_loop(double loop_mean, int loop_idx)
                            mean_i[i], sig_i[i]);
                 }
             } else {
+                printf("node %d: soft-down streak broken at %d/%d "
+                       "(mean=%.3f sigma=%.3f)\n",
+                       i, (int)s_soft_clean[i], NODE_SOFT_CLEAR_BLOCKS,
+                       mean_i[i], sig_i[i]);
                 s_soft_clean[i] = 0;   /* streak broken */
             }
         }
@@ -1680,6 +1762,11 @@ void elotto_task(void *pvParam)
         int main_combos = comb(pool_nm, nm);
         int euro_combos = euro ? comb(pool_ne, 2) : 1;
         int full_combos = main_combos * euro_combos;
+        /* s_perm is NUM_RUNS wide and the shuffle below now indexes the WHOLE
+         * space, so the space must fit it. Euro 12+5 = 7920 and 6-of-49 pool 15
+         * = 5005 are both under NUM_RUNS 8000; this is the guard, not a case
+         * that is reachable today. */
+        if (full_combos > NUM_RUNS) full_combos = NUM_RUNS;
 
         /* Where this round lands in results[], and how much room is left. The
          * buffer is the hard stop for unlimited mode: a truncated round is still
@@ -1699,9 +1786,27 @@ void elotto_task(void *pvParam)
          * structure in the numbers; randomized, it spreads evenly.
          * fast_rng() deliberately, not the camera: measurement order is
          * administrative randomness and must not spend camera entropy. */
-        for (int i = 0; i < round_total; i++) s_perm[i] = (uint16_t)i;
-        for (int i = round_total - 1; i > 0; i--) {
-            int j = (int)(fast_rng() % (uint32_t)(i + 1));
+        /* Draw a uniformly random SUBSET of the space, not its first entries.
+         *
+         * This used to fill s_perm with 0..round_total-1 and shuffle those among
+         * themselves, which randomises the ORDER but not the SELECTION: when a
+         * round is truncated, the ids measured were exactly the lexicographically
+         * first ones -- in 6-of-49 the combinations built from the pool's lowest
+         * numbers, and in Eurojackpot, where mi = i % main_combos and
+         * ei = i / main_combos, a truncation below main_combos pinned ei to the
+         * FIRST euro pair for the whole round.
+         *
+         * Only the LAST round of an unlimited session truncates, i.e. only where
+         * results[] fills at NUM_RUNS -- the one path CLAUDE.md still listed as
+         * never exercised, which is why this survived.
+         *
+         * Forward partial Fisher-Yates: after k steps s_perm[0..k-1] holds a
+         * uniformly random k-subset in random order, and at k == full_combos it
+         * degenerates to an ordinary full shuffle, so the untruncated round (every
+         * round but the last) is unchanged in distribution. */
+        for (int i = 0; i < full_combos; i++) s_perm[i] = (uint16_t)i;
+        for (int i = 0; i < round_total; i++) {
+            int j = i + (int)(fast_rng() % (uint32_t)(full_combos - i));
             uint16_t t = s_perm[i]; s_perm[i] = s_perm[j]; s_perm[j] = t;
         }
 
@@ -1750,11 +1855,13 @@ void elotto_task(void *pvParam)
 
             // One broadcast starts every node, then measure locally — all of
             // them integrate the same window, which is the premise the sqrt(n)
-            // combine rests on. Attended sessions flush the ring first so
-            // pre-onset bits do not enter the window.
+            // combine rests on. EVERY session flushes the ring first, attended
+            // or not, so the bits credited to this item were captured during it.
+            // Trigger first: the slaves flush on 'M', so settling before the
+            // broadcast would put the master a full settle ahead of them.
             int nseg = segments_for();
-            attended_onset_settle();
             slave_trigger(nseg);
+            onset_settle();
             double zraw = 0.0;
             bool   zok  = gcp_zscore_ok(nseg, &zraw);
             focus_off();          // sampling done; the reply wait is dark time

@@ -65,6 +65,15 @@ DONE with the reason in `fault`.
 - **Results ACCUMULATE across rounds.** `results[]` is never cleared; Top-5 / Bottom-5 /
   Nearest-zero, pass mean/σ/χ², and the Bonferroni line all run on the union of every round
   measured so far, so a later round's items sort straight into the same tables.
+- ⚠ **A truncated round draws a RANDOM SUBSET (fixed 2026-08-19).** It used to fill the permutation
+  with `0 … round_total-1` and shuffle those among themselves, which randomises the ORDER but not the
+  SELECTION: a truncated round measured the lexicographically FIRST ids — in 6-of-49 the combinations
+  built from the pool's lowest numbers, and in Eurojackpot (`mi = i % main_combos`,
+  `ei = i / main_combos`) a truncation below `main_combos` pinned `ei` to the first euro pair for the
+  whole round. Now a forward partial Fisher–Yates over the whole space, which is an ordinary full
+  shuffle when nothing is truncated. Only the LAST round truncates, i.e. only at the `results[]`-full
+  stop — the one path still listed as never exercised, which is why it survived. Verified by
+  simulation: 462-space, 146 drawn, χ² 298 at df 461 (was: ids 0–145 always, 146–461 never).
 - ⚠ **This relaxes the "measured exactly ONCE" rule.** Inside a round it still holds; **across**
   rounds a combination can recur, because a later scoring pass may pick overlapping numbers. Each
   recurrence is its own row — nothing is averaged or overwritten. `index` (combination id) is only
@@ -156,6 +165,19 @@ Under H₀ with a working instrument: mean ≈ 0, σ ≈ 1, Σz² ≈ n. **Ranki
 **Soft-down** (`nodes[].soft_down`) excludes a node from the combine after a block in which its
 σ > `NODE_SIGMA_SOFT` **or** |mean| > `NODE_MEAN_SOFT`. Sticky; cleared only after
 `NODE_SOFT_CLEAR_BLOCKS` consecutive clean blocks. It never reboots anything.
+
+⚠ **The CLEAR bars are peer-referenced, not constants (2026-08-19).** They were fixed at σ ≤ 1,05
+and |mean| ≤ 0,50, and the fixed σ was the bug: measured over a 9 h four-node session the per-block
+σ of a HEALTHY arm here is 1,02–1,05, so 1,05 was the array's own median, not a health threshold.
+Meeting it four times running is ~6–15 %, so **a node that tripped once stayed down for the rest of
+the session whatever its condition** — slave1 tripped on ONE block (σ 1,290) 40 min in and was still
+excluded 5,9 h later with a running z of +0,0025, i.e. 90 % of that session combined over √3 in
+silence (`null_flags` 0, `fault` empty, `ok` true). The bar is now the peers' own median for that
+block × `NODE_SOFT_CLEAR_SIG_K`, floored at `NODE_SOFT_CLEAR_SIG` and capped below the trip bar; with
+no peers it falls back to the constants. Replayed over the same 29 blocks: slave1 clears after 5
+blocks, nobody else is ever put down. ⚠ **Replay a threshold change before believing it** — the
+first attempt kept 1,05 as the floor and changed *nothing at all*, because a floor pins the bar
+exactly at the value that was too tight.
 
 ⚠ **`NODE_SOFT_MIN_COMBINE` is 1, not 3 (2026-08-13).** At four nodes a floor of 3 allowed
 exactly ONE exclusion, so when two arms misbehaved the second stayed in. The 08-13 pass is the
@@ -491,9 +513,21 @@ nothing statistically, so a session is merely **tagged**: `/start?focus=1`, `"fo
   `seq` is monotonic per window, so the UI counts *missed* windows (a skipped window credits an
   effect to the wrong combination — mislabeling, not blur). `POST /pause?on=1|0` holds **between**
   runs only; state stays `running`, and paused time is excluded from `elapsed_ms`.
-- Attended sessions flush the camera ring briefly before each window (`attended_onset_settle()`,
-  500 ms cap) so pre-onset bits do not enter the run the observer is about to watch. Master-only:
-  slaves have no settle command on the wire.
+- **EVERY window starts on fresh bits, attended or not** (`onset_settle()`, `ONSET_SETTLE_MS` 500 ms
+  cap) — and **on all four nodes**: the slaves flush on `M`, so no wire command was needed. Nothing
+  consumes the ring during the gap, so it is FULL when a window opens: 524288 bits captured before
+  the item existed, **10 % of a `run=1` item** and 2 % of a `run=5` one. Not bad bits, MISLABELLED
+  ones. ⚠ Two things were wrong here until 2026-08-19 and both are fixed:
+  - it was gated on `focus_mode`, so **the matched no-focus control was not matched** — the deferred
+    attended-vs-unattended comparison would have measured the settle as much as the observer;
+  - it called `camera_stats_reset(1)`, which also zeroes the camera accumulators, so in an ATTENDED
+    session **every block's `cam_bias`/`cam_mbit` in `/loops` described only that block's last item**.
+    `camera_ring_flush()` is the new, statistics-preserving primitive; `camera_stats_reset()` stays
+    for calibration, where zeroing is the point.
+  ⚠ The trigger is sent BEFORE the master settles, so all four flush in parallel; the other order
+  would offset the master's window from the slaves' by ~85 ms.
+  ⚠ Costs wall time — the ring's bits must now be produced live — and it is **another instrument
+  boundary**: the bit-to-item mapping changed.
 - ⚠ `camera_get_stats()` is cumulative **since the last `camera_stats_reset()`**, i.e. since the
   last sweep. In a `?cal=0` session there is no reset and they are lifetime averages — a falling
   `mbit_s` is then not evidence of live degradation.
@@ -615,16 +649,22 @@ old image while the new one is being written, so `until curl http://node/` passe
 measurements were taken from the previous binary before this was noticed.
 
 **Open, in the order I would pick them up:**
-1. **Does slave1's fault follow the camera?** The swap is done; only a loaded run answers it. Both
-   nodes are clean at idle, and slave1's block-mean excursions (+24,13 in one block) never showed
-   up in an idle reading.
-2. **The master is the other bad arm** — 9 of 49 blocks with |mean| > 1,5, worst −6,33. It has never
+1. **The master is the other bad arm** — 9 of 49 blocks with |mean| > 1,5, worst −6,33. It has never
    been diagnosed separately from slave1 because the old soft-down floor could only ever exclude
    one of them.
 3. **Verify the centring on a full pass.** It is verified on a short run (closed blocks at
    mean(z_ctr) exactly 0,0000, open block provisional) but has never run a full session.
 4. **Does calibration reduce the RATE of bad blocks?** The control pair only ever asked "does it add
    variance?" (no). The tail question needs a count of excursions over many blocks, not a mean.
+
+**Closed 2026-08-19: does slave1's fault follow the camera? NO — it stayed with the BOARD.**
+Mean per-block σ over 29 blocks of a 9 h loaded session: master 0,9990 · **slave1 1,0402** ·
+slave0 1,0101 · **slave2 0,9964**. slave2 is the node carrying **slave1's old camera** since the
+2026-08-17 swap and it has the LOWEST σ of the four; slave1 keeps the ~4 % excess with the sensor
+gone (≈3,9σ on the difference). ⚠ Tolerating it is correct: a 1,04 arm inflates the COMBINED σ by
+1 %, dropping it costs √3 against √4 = 13 %. The trip bar at 1,25 still removes a genuinely bad arm.
+⚠ Also: slave1's long exclusions in past sessions were largely the CLEAR-bar defect above, not its
+condition — "was soft-down for hours" is not evidence of a fault.
 
 **Closed 2026-08-18:** *why the last two extraction changes bought nothing.* At IDLE the loop waits
 on the sensor, not on the CPU, and sits at 98,5 % of the frame-rate wall — which is where those two

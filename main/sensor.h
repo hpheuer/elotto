@@ -65,6 +65,11 @@
  * as a silent 7,7 s window. Capping the input removes that failure mode by
  * construction rather than reporting it. */
 #define RUN_S_DEFAULT            5
+/* Cap on the per-item ring flush (sensor.c onset_settle). A fresh pair costs
+ * ~56 ms idle and ~85 ms under load, so the wait is normally well under this;
+ * the cap only bounds the damage if the camera has stopped delivering. */
+#define ONSET_SETTLE_MS        500
+
 #define RUN_S_MIN                1
 #define RUN_S_MAX                5
 #define GAP_S_MIN              0.5
@@ -172,8 +177,48 @@ _Static_assert(((long long)RUN_S_MAX * 1000 * RUN_SEGS_REF) / RUN_MS_REF <= EL_S
 #define NODE_SIGMA_SOFT        1.25  // block per-node σ above this → soft-exclude
 #define NODE_MEAN_SOFT         1.50  // |block mean z| above this → soft-exclude
 #define NODE_SOFT_MIN_N       20     // min runs in the block before soft-exclude
-#define NODE_SOFT_CLEAR_MEAN   0.50  // |mean| must be ≤ this to count a "clean" block
-#define NODE_SOFT_CLEAR_SIG    1.05  // σ must be ≤ this to count a "clean" block
+/* ── Clearing a soft-down: bars RELATIVE to the peers in the same block ────
+ *
+ * These were fixed constants until 2026-08-19, and the fixed value was the
+ * bug. Measured over a 6,5 h four-node session: the per-block σ of a HEALTHY
+ * arm on this rig sits at 1,02–1,05, so `σ ≤ 1,05` was not a health threshold,
+ * it was the array's own median. Meeting it is a coin flip per block and
+ * meeting it four times running is ~6–15 %, so a node that tripped once was
+ * down for the rest of the session whatever its condition: slave1 tripped on a
+ * single block (σ 1,290) 40 min in and was still excluded 5,9 h later, having
+ * reached 3 of the required 4 at best, with a running z of +0,0025 — i.e. it
+ * looked healthy the whole time. 90 % of that session combined over √3.
+ *
+ * So the bar is now the peers' own median for that block, times a factor. That
+ * is real hysteresis (trip and clear stay far apart) AND it makes a common-mode
+ * bad block stop punishing the node that is down — every arm is noisy in the
+ * same block, so the reference moves with them.
+ *
+ * The absolute constants survive as FLOORS: the dynamic bar may never be
+ * STRICTER than the old fixed one. And it is capped below the TRIP bar, or a
+ * block that would trip the node could also count as clean, which is incoherent.
+ * ⚠ Peers = ok, produced stats this block, not tripping this block, not
+ * soft-down. With no peers left, the floors apply and the behaviour is exactly
+ * what it was before. */
+#define NODE_SOFT_CLEAR_MEAN   0.50  // floor: |mean| bar is never tighter
+#define NODE_SOFT_CLEAR_SIG    1.10  // floor: σ bar is never tighter
+#define NODE_SOFT_CLEAR_SIG_K  1.15  // σ bar = K x peer median σ
+#define NODE_SOFT_CLEAR_MEAN_K 2.00  // |mean| bar = K x peer median |mean|
+#define NODE_SOFT_CLEAR_MARGIN 0.95  // cap, as a fraction of the TRIP bar
+
+/* ⚠ The σ FLOOR is 1,10 and NOT the old 1,05. Keeping the old value as a floor
+ * was tried first and changed nothing at all — replayed over the same 29 blocks
+ * it still left slave1 down for 27 of them, because 1,05 IS the value that was
+ * too tight and a floor pins the bar exactly there. Replay before believing a
+ * threshold change: at floor 1,10 slave1 clears after 11 blocks, at 1,10 with
+ * K 1,15 after 5, and no other node is ever put down by any of them.
+ *
+ * Why tolerating a slightly hot arm is right: measured per-block σ over those
+ * 29 blocks was master 0,999 · slave1 1,040 · slave0 1,010 · slave2 0,996, so
+ * slave1 really does run ~4 % hot. Keeping it inflates the COMBINED σ by
+ * sqrt(3·1,00² + 1,04²)/2 = 1,010, i.e. 1 %. Dropping it costs √3 against √4,
+ * i.e. 13 % of the sensitivity. A 1 % cost against a 13 % one is not a close
+ * call, and the trip bar at 1,25 still removes an arm that is genuinely bad. */
 #define NODE_SOFT_CLEAR_BLOCKS 4     // consecutive clean blocks required to lift soft-down
 /* Never soft-exclude below this many live nodes. ⚠ 1, not 3 (2026-08-13): at
  * four nodes a floor of 3 allowed exactly ONE exclusion, so when two nodes

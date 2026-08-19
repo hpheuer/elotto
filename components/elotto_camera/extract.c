@@ -110,7 +110,8 @@ void cam_extract_fast(const uint8_t *a, const uint8_t *b, uint32_t n, bool fold,
 
         /* Byte sum of `aw` without unpacking: two 16-bit lanes, then fold.
          * Six ops for four pixels, against ~7 ms per pair for the separate
-         * strided pass this replaces. Max 640000*255 = 1,6e8, so a uint32
+         * strided pass this replaces — CPU that is really saved, though it buys
+         * no idle bit rate; see extract.h. Max 640000*255 = 1,6e8, so a uint32
          * accumulator cannot overflow within one frame. */
         uint32_t ps = (aw & 0x00FF00FFu) + ((aw >> 8) & 0x00FF00FFu);
         psum += (ps & 0xFFFFu) + (ps >> 16);

@@ -59,6 +59,11 @@
  * blur: per-combination z feeds the Stouffer accumulation, so a straddled
  * window credits an effect to an unrelated combination.
  *
+ * ⚠ The measured figures below (588 ms, 1494 ms, n=16700/17000) are PRE-
+ * 2026-08-18, from the ~3,4 Mbit/s instrument. At 1,85x the bits per second the
+ * reachable windows are different; the duty-cycle argument holds, the numbers
+ * need re-measuring before they are quoted.
+ *
  * It is forced by the hardware too. A 1000 ms window at a 200 ms gap is 83 %
  * duty *by construction* — already past the ~72 % cliff above — so no segment
  * count reaches 1000 ms there: every candidate lands in the collapsed regime

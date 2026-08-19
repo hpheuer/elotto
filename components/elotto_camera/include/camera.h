@@ -72,6 +72,18 @@ void camera_get_stats(camera_stats_t *out);
  * ring, and a session drawing from it would be reading discarded entropy.
  */
 
+/* Drop every word waiting in the ring and the packer's partial word, then wait
+ * for `pairs` freshly extracted frame pairs. Statistics are NOT touched, so the
+ * block's camera health survives — that is the whole difference from
+ * camera_stats_reset(). Asynchronous: poll camera_ring_flushed().
+ *
+ * Called before every measurement window so the bits credited to an item were
+ * physically captured during it. Without it the ring is FULL at a window's
+ * start, having filled through the preceding gap: 524288 bits, which is 10 %
+ * of a run=1 item and 2 % of a run=5 one, collected before the item existed. */
+void camera_ring_flush(int pairs);
+bool camera_ring_flushed(void);
+
 // Discard `settle_pairs` frame pairs (>=1), empty the ring, then zero every
 // entropy statistic and restart the rate clock. Asynchronous: the capture task
 // performs it, so poll camera_stats_settled().

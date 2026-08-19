@@ -56,7 +56,10 @@ typedef void (*cam_emit_fn)(uint32_t word, void *ctx);
  * It used to be accumulate_pixel_level(), striding 16 bytes through the first
  * frame — and a stride inside 64-byte cache lines still pulls EVERY line, so
  * 40000 samples cost a full 625 KB of PSRAM traffic, ~7 ms per pair, on top of
- * the two frames the diff already reads. Reusing the words the diff has in
+ * the two frames the diff already reads. ⚠ The 7 ms is CPU and it is real, but
+ * removing it moved the bit rate by 0,0 %: at idle this loop waits on the
+ * sensor, so a CPU saving is absorbed in DQBUF (camera_task). It pays under
+ * measurement load, where the loop is compute-bound, and nowhere else. Reusing the words the diff has in
  * registers makes it nearly free AND samples every pixel instead of every 16th,
  * so the CAL_MAX_MEAN_PX gate gets a better estimate, not a worse one.
  * ⚠ mean_pixel_level therefore changes slightly in value across this build. It

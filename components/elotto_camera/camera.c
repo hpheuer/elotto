@@ -111,6 +111,21 @@ static int64_t  s_last_pair_us = 0;
  * So measure the cadence with the extraction stopped: every buffer queued,
  * dequeue and requeue, time nothing else. That is the sensor's own rate. The
  * capture task performs it (it owns the fd), triggered by a flag. */
+/* ── Ring flush: drop pending words, then wait for fresh frames ────────────
+ * Separate from camera_stats_reset() ON PURPOSE, and the separation is the
+ * point. Both empty the ring, but the reset ALSO zeroes bias / sigma /
+ * autocorr / mean_pixel and restarts the rate clock — which is right before a
+ * calibration candidate and wrong before a measurement item, because those
+ * accumulators are what /loops publishes as the block's camera health.
+ *
+ * Until 2026-08-19 the per-item settle called camera_stats_reset(1), so in an
+ * ATTENDED session every block's cam_bias / cam_mbit described only its last
+ * item. That is the number this rig uses to decide whether an arm is healthy.
+ * A flush must not cost it. */
+static volatile int    s_flush_pairs = 0;   // fresh pairs still owed
+static volatile bool   s_flush_dropped = false;
+static volatile bool   s_flush_done = true;
+
 static volatile int    s_probe_req = 0;      // frames to time, 0 = idle
 static volatile bool   s_probe_done = false;
 static double          s_probe_fps = 0.0;
@@ -456,6 +471,16 @@ static void camera_task(void *arg)
             continue;
         }
 
+        /* Drop everything produced BEFORE this pair, then let this pair and any
+         * further owed pairs refill the ring. The packer goes too: it can hold
+         * up to 31 bits of the previous pair, which would otherwise be the one
+         * pre-window remnant left in an otherwise fresh window. */
+        if (s_flush_pairs > 0 && !s_flush_dropped) {
+            s_ring_tail = s_ring_head;
+            memset(&s_pack, 0, sizeof(s_pack));
+            s_flush_dropped = true;
+        }
+
         int64_t t_ext0 = esp_timer_get_time();
         diff_and_extract(s_bufs[first.index], s_bufs[buf.index], s_frame_size);
         int64_t t_ext1 = esp_timer_get_time();
@@ -483,12 +508,28 @@ static void camera_task(void *arg)
         s_last_pair_us = t_end;
         pair_wait_us = 0;
 
-        /* Frames arrive faster than the diff can consume them, so this loop
-         * never blocks on DQBUF and would starve the idle task (task watchdog)
-         * without a yield. But vTaskDelay(1) sleeps to the next TICK, and at
-         * CONFIG_FREERTOS_HZ = 100 that is 0..10 ms, ~5 ms on average. Once per
-         * pair that was ~9 % of a 56 ms budget — free when a pair cost 94 ms,
-         * expensive now that the extraction is 1,67x faster.
+        if (s_flush_pairs > 0 && s_flush_dropped && --s_flush_pairs == 0)
+            s_flush_done = true;
+
+        /* ⚠ "Frames arrive faster than the diff can consume them, so this loop
+         * never blocks on DQBUF" stood here until 2026-08-19 and is FALSE. The
+         * accounting a few lines up measures it: at idle the loop sits ~14,6 ms
+         * of every 56,0 ms pair blocked in DQBUF, because the sensor delivers
+         * 36,1 fps and not the 50 the datasheet was read for. Believing the old
+         * sentence cost a day: two changes that removed real CPU work from this
+         * loop were predicted at ~22 % and measured 0,0 %, since a loop waiting
+         * on frames absorbs a CPU saving without changing its rate.
+         *
+         * The yield still has to exist — the idle task would starve otherwise —
+         * and thinning it is still right: vTaskDelay(1) sleeps to the next TICK,
+         * 0..10 ms at CONFIG_FREERTOS_HZ = 100, ~5 ms average, and once per pair
+         * that is ~1,4 ms of every pair at CAM_YIELD_PAIRS = 4. But it bought
+         * 0,0 % of the bit rate, and the honest reason is that there was no
+         * headroom to spend, not that the arithmetic was wrong.
+         *
+         * ⚠ Under measurement LOAD the picture inverts — extraction is preempted
+         * and costs ~69,8 ms instead of 39,5, so the loop misses frames instead
+         * of waiting for them. CPU spent here is not free during a session.
          *
          * So yield every CAM_YIELD_PAIRS pairs instead. ~200 ms between yields
          * is nowhere near the 5 s task watchdog, and every task that matters
@@ -744,6 +785,16 @@ void camera_get_exposure(uint32_t *exposure, uint32_t *gain)
 }
 
 bool camera_get_xor_fold(void)    { return s_xor_fold; }
+
+void camera_ring_flush(int pairs)
+{
+    if (pairs < 1) pairs = 1;
+    s_flush_done    = false;
+    s_flush_dropped = false;
+    s_flush_pairs   = pairs;      /* last, so the capture task sees a full request */
+}
+
+bool camera_ring_flushed(void) { return s_flush_done; }
 
 double camera_fps_probe(int frames, int timeout_ms)
 {
