@@ -34,6 +34,20 @@ item** (scoring, baseline and measurement share the same length).
 - **Blocks are the statistics unit**: every `cal_interval_ms` (default **15 min**, `?calint=`,
   0 = no mid-pass insertions) the pass parks for **sweep + baseline together**; the boundary
   closes a block → `/loops` row, drift point, pairwise fold, **and the block centring below**.
+- ⚠ **A requested window is not the wall time you get.** Measured 2026-08-19, undisturbed 4-node
+  session at `?run=5`/`gap=2`: `focus_win_ms` **8721 ms** for a requested 5000, `focus_gap_ms` 2081
+  for a requested 2000, cycle ~10,8 s. The CYCLE matches what was recorded on 08-18 (~10,6 s); only
+  the split moved, because the master is now the slowest node (3,48 Mbit/s against the slaves' 3,95)
+  where it used to finish first and wait ~3,5 s for them -- the same seconds, counted as gap then and
+  as window now. **The statistics do not depend on it**: the segment count is fixed and z is
+  normalised by the square root of it. What it sets is the Focus protocol's hold time, and
+  `RUN_SEGS_REF`/`RUN_MS_REF` are deliberately NOT re-calibrated to it.
+  ⚠ **Chasing this down is DROPPED BY DECISION (user, 2026-08-19, for time.)** The reading is kept
+  because an unexplained number is still a number -- do not re-open the investigation, and do not be
+  surprised by the value.
+  ⚠ Never measure it with tight polling: `/status` in a loop loads the master over HTTP and the
+  window is the max over nodes, so the observer changes the observation (10,3 s while polling,
+  8,7 s undisturbed).
 - Session wall time scales with `run`/`gap` and combination count. Pause stops the clock, Abort
   publishes the measured prefix.
 
@@ -528,11 +542,11 @@ nothing statistically, so a session is merely **tagged**: `/start?focus=1`, `"fo
   pair: ~56 ms idle, ~85 ms under load** (derived from `ms_pair`, not directly instrumented). The
   older wording "for exactly the window its bits are collected in" was never what the code did and is
   not what the protocol wants: an observer needs to perceive the target before the sampling starts.
-  ⚠ **Open, and a pre-registration question rather than a code one: is ~70 ms enough?** Visual
-  perception plus attentional engagement is usually put at 100–300 ms, so the lead may be too SHORT.
-  Note the inconsistency with `READY_SETTLE_MS`, which holds a full **1 s** dark at the observer gate
-  for the same reason. Decide the number deliberately before the attended-vs-unattended comparison,
-  because that comparison is what it would bias.
+  ✅ **SETTLED (user, 2026-08-19): the ~70 ms lead-in is accepted as it stands.** It was raised as
+  an open pre-registration question -- visual perception plus attentional engagement is usually put
+  at 100-300 ms, so the lead is arguably too SHORT, and `READY_SETTLE_MS` holds a full 1 s at the
+  observer gate for the same reason. Judged good enough. Do not re-open it, and do not "resolve" the
+  asymmetry with `READY_SETTLE_MS` by moving either number.
 - `GET /focus` (~60 B) is polled at **10 Hz** and is deliberately separate from the 2.5 KB /status:
   `seq` is monotonic per window, so the UI counts *missed* windows (a skipped window credits an
   effect to the wrong combination — mislabeling, not blur). `POST /pause?on=1|0` holds **between**
@@ -686,19 +700,6 @@ old image while the new one is being written, so `until curl http://node/` passe
 measurements were taken from the previous binary before this was noticed.
 
 **Open, in the order I would pick them up:**
-0. ⚠ **The measured window no longer matches the request, and I do not know why.** At `?run=5` an
-   undisturbed 4-node session reports `focus_win_ms` **8721 ms** for a requested 5000, and
-   `focus_gap_ms` 2081 against a requested 2000. The **cycle is unchanged** (~10,8 s against the
-   ~10,6 s recorded on 08-18); what moved is the split, because the MASTER is now the slowest node
-   (3,48 Mbit/s against the slaves' 3,95) where on 08-18 it finished first and waited ~3,5 s for
-   slaves -- the same seconds, counted as gap then and as window now.
-   `RUN_SEGS_REF`/`RUN_MS_REF` were deliberately NOT re-calibrated: cutting the segment count ~40 %
-   on a number nobody can explain is worse than a wrong window. **The statistics are unaffected** --
-   the segment count is fixed and z is normalised by the square root of it; what drifts is the Focus
-   protocol's hold time. To attribute it, reflash the pre-08-19 image and measure the same way.
-   ⚠ Do not measure it with tight polling: `/status` in a loop loads the master over HTTP and the
-   window is the max over nodes, so the observer changes the observation (10,3 s while polling,
-   8,7 s undisturbed).
 1. **The master is the other bad arm** — 9 of 49 blocks with |mean| > 1,5, worst −6,33. It has never
    been diagnosed separately from slave1 because the old soft-down floor could only ever exclude
    one of them.
@@ -724,7 +725,13 @@ regime where it does not matter. Full account in the extraction section.
 
 **Deferred by the user — do not start unasked:** the attended-vs-unattended (focus) comparison.
 **Dropped by decision — do not re-propose:** node-drop test, camera-fault/reboot path, camera-stall
-abort, restoring the master to USB power, raising `CAM_BUF_COUNT` (measured: no effect).
+abort, restoring the master to USB power, raising `CAM_BUF_COUNT` (measured: no effect),
+**a `docs/data/README.md` index of session generations** (user, 2026-08-19: the past will be
+consulted when needed), and **deleting old session data** -- 2,9 MB in total, git keeps it anyway,
+and `_profile/` was committed for exactly the opposite reason. The one thing that WAS deleted is
+`docs/data/_live_now_*`, a superseded partial pull of the 08-19 session whose 123 provisional rows
+are all superseded in the complete archive; its `.gitignore` entry stays, because that is the name
+the next live pull will take.
 
 ⚠ Superseded design notes, the pre-2026-07-29 optics measurements and the v2 loop/ranking era were
 removed from this file and from `docs/PLAN.md` on 2026-08-17. They remain in git history at commit
