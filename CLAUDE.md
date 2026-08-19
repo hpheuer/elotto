@@ -45,7 +45,7 @@ the 400 now names `unlimited=1&maxruns=` instead.
 A **round** is: score every number → keep only as many of the best as fit `maxruns` measurement runs
 → measure that whole (small) space once in a fresh Fisher–Yates order → score again. It never ends
 by itself: **Abort, or `results[]` full at `NUM_RUNS` 8000**, at which point the session finishes
-DONE with the reason in `fault`.
+✅ with the reason in `fault`.
 
 - **Pool sizing (`unlimited_pool_sizes()`): MAXIMISE THE COMBINATIONS MEASURED, nothing else.**
   ⚠ This is not a style choice and a weighted rule was tried and **withdrawn the same day**. The
@@ -231,6 +231,20 @@ the pass it already makes. Both simpler rules are wrong and both were measured:
   ⚠ `GCP_SEGMENT_SD` is the literal `7.07106781`, **not** `sqrt(50.0)` — every z the rig has
   recorded came from that constant, and a change in the numbers must never be a side effect of
   tidying.
+  ⚠ **The four SOFT-FLOAT calls per segment are deliberate and must stay** (2026-08-19). The P4
+  FPU is single-precision, so `(ones - 100.0) / 7.07106781` compiles to `__floatsidf` + `__subdf3` +
+  `__divdf3` + `__adddf3`, and together they cost more than the popcounts did. Both obvious cures --
+  multiplying by the reciprocal, or summing `ones` and dividing once -- are arithmetically equal and
+  **not bit-identical**, so either would shift the last bits of every z in the archive. The one safe
+  saving left untaken is making the mean subtraction integer, exact for `ones` in [0,200].
+  ✅ **`__builtin_popcount` is GONE from it** (2026-08-19): no Zbb on these cores, so it was a CALL
+  to `__popcountsi2`, seven per segment, ~913.000 per run at `run=5`. Now `cam_popcount32`, promoted
+  out of the private `extract.h` into the public `camera.h`. **Measured +7,6 % bit rate under load**
+  (3,734 -> 4,019 Mbit/s, `ms_extract` 70,8 -> 64,9, three slaves in close agreement) against an
+  estimate of ~1 % -- the fourth prediction in two days wrong the same way: a library call costs far
+  more wall time under preemption than its cycle count suggests.
+  ⚠ `/camtest` now holds `cam_popcount32` against `__builtin_popcount` over 200.000 values
+  (`popcount_ok`). The word comparison could never have caught a wrong popcount, and it now feeds a z.
 - components/elotto_ota/ – update endpoint + boot-safety logic (rollback, boot counter,
   mark-valid, /update /boot /reboot /poison /otainfo). `BOOT_FAIL_LIMIT` 3,
   `HEALTHY_UPTIME_MS` 30000.
@@ -672,6 +686,19 @@ old image while the new one is being written, so `until curl http://node/` passe
 measurements were taken from the previous binary before this was noticed.
 
 **Open, in the order I would pick them up:**
+0. ⚠ **The measured window no longer matches the request, and I do not know why.** At `?run=5` an
+   undisturbed 4-node session reports `focus_win_ms` **8721 ms** for a requested 5000, and
+   `focus_gap_ms` 2081 against a requested 2000. The **cycle is unchanged** (~10,8 s against the
+   ~10,6 s recorded on 08-18); what moved is the split, because the MASTER is now the slowest node
+   (3,48 Mbit/s against the slaves' 3,95) where on 08-18 it finished first and waited ~3,5 s for
+   slaves -- the same seconds, counted as gap then and as window now.
+   `RUN_SEGS_REF`/`RUN_MS_REF` were deliberately NOT re-calibrated: cutting the segment count ~40 %
+   on a number nobody can explain is worse than a wrong window. **The statistics are unaffected** --
+   the segment count is fixed and z is normalised by the square root of it; what drifts is the Focus
+   protocol's hold time. To attribute it, reflash the pre-08-19 image and measure the same way.
+   ⚠ Do not measure it with tight polling: `/status` in a loop loads the master over HTTP and the
+   window is the max over nodes, so the observer changes the observation (10,3 s while polling,
+   8,7 s undisturbed).
 1. **The master is the other bad arm** — 9 of 49 blocks with |mean| > 1,5, worst −6,33. It has never
    been diagnosed separately from slave1 because the old soft-down floor could only ever exclude
    one of them.

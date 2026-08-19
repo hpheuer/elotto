@@ -7,6 +7,20 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+/* ⚠ cam_popcount32, not __builtin_popcount: these cores have no Zbb, so the
+ * builtin is a CALL to __popcountsi2 and this loop made seven of them per
+ * segment — ~913.000 per run at run=5. Identical results by construction, and
+ * GET /camtest holds the two against each other on target (`popcount_ok`).
+ *
+ * ⚠ The four SOFT-FLOAT calls per segment below (__floatsidf, __subdf3,
+ * __divdf3, __adddf3 — the P4 FPU is single-precision, so every double is
+ * emulated) cost more than the popcounts and are DELIBERATELY LEFT ALONE.
+ * Replacing the divide with a reciprocal multiply, or summing `ones` and
+ * dividing once, is arithmetically equivalent and NOT bit-identical: both would
+ * shift the last bits of every z this rig records. See GCP_SEGMENT_SD in gcp.h.
+ * The one safe saving left is making the mean subtraction integer, since
+ * ones ∈ [0,200] makes (double)(ones - 100) exact — not taken here, so that the
+ * popcount change could be measured on its own. */
 gcp_result_t gcp_zscore_raw(int nseg, bool (*on_yield)(void), double *out)
 {
     /* Hoisted, as the slave's copy already had it: the master recomputed it per
@@ -22,10 +36,10 @@ gcp_result_t gcp_zscore_raw(int nseg, bool (*on_yield)(void), double *out)
          * read — the run ends and produces nothing. */
         for (int i = 0; i < 6; i++) {
             if (!camera_read_word(&w)) return GCP_CAM_FAULT;
-            ones += __builtin_popcount(w);
+            ones += (int)cam_popcount32(w);
         }
         if (!camera_read_word(&w)) return GCP_CAM_FAULT;
-        ones += __builtin_popcount(w & 0xFF);
+        ones += (int)cam_popcount32(w & 0xFFu);
 
         z_sum += (ones - GCP_SEGMENT_MEAN) / GCP_SEGMENT_SD;
 

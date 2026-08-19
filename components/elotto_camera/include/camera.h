@@ -8,6 +8,23 @@
 // via EXTRA_COMPONENT_DIRS — one source of truth, byte-identical extraction on
 // both nodes, so a change here means rebuilding and flashing both.
 
+/* ⚠ These cores have no Zbb, so __builtin_popcount is a CALL to __popcountsi2
+ * (verified with objdump, and again in gcp.c's disassembly on 2026-08-19). Any
+ * hot loop counting bits must use this instead. Public rather than private to
+ * elotto_camera because the GCP primitive needs it too: gcp_zscore_raw() ran
+ * SEVEN library calls per segment, ~913.000 per run at run=5.
+ *
+ * Held against __builtin_popcount over a value sweep by GET /camtest
+ * (`popcount_ok`) — the extractor's own self-test compares emitted WORDS, so it
+ * never exercised this directly, and it now feeds a z. */
+static inline uint32_t cam_popcount32(uint32_t v)
+{
+    v = v - ((v >> 1) & 0x55555555u);
+    v = (v & 0x33333333u) + ((v >> 2) & 0x33333333u);
+    v = (v + (v >> 4)) & 0x0F0F0F0Fu;
+    return (v * 0x01010101u) >> 24;
+}
+
 typedef struct {
     bool     ready;               // stream running, ring buffer filling
     uint64_t frame_pairs;         // non-overlapping diff pairs processed

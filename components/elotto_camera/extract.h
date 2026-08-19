@@ -1,6 +1,7 @@
 #pragma once
 #include <stdint.h>
 #include <stdbool.h>
+#include "camera.h"   /* cam_popcount32 */
 
 /* ── LSB-diff extraction, as two implementations that MUST agree ───────────
  *
@@ -25,16 +26,6 @@
  *
  * State persists ACROSS calls (a frame boundary may land mid-word), so the
  * caller owns it. */
-/* ⚠ These cores have no Zbb, so __builtin_popcount is a CALL to __popcountsi2
- * (verified with objdump). process_word() runs it five times per 32 pixels and
- * the extractor once per word, which is far too hot for a function call. */
-static inline uint32_t cam_popcount32(uint32_t v)
-{
-    v = v - ((v >> 1) & 0x55555555u);
-    v = (v & 0x33333333u) + ((v >> 2) & 0x33333333u);
-    v = (v + (v >> 4)) & 0x0F0F0F0Fu;
-    return (v * 0x01010101u) >> 24;
-}
 
 typedef struct {
     uint32_t bitacc;        // partial word, MSB-first
@@ -95,6 +86,13 @@ typedef struct {
     float    ns_fast;        // word-wise extraction
     float    ns_stats;       // word-wise + the per-word statistics of process_word
     uint32_t bench_bytes;    // frame size the benchmark actually ran on
+    /* cam_popcount32 vs __builtin_popcount over a value sweep on this silicon.
+     * It now feeds a z (gcp_zscore_raw), and the word comparison above would
+     * not catch a wrong popcount: the extractor's emitted words do not depend
+     * on it. A wrong-but-plausible z looks exactly like a result. */
+    bool     popcount_ok;
+    uint32_t popcount_n;     // values checked
+    uint32_t popcount_bad;   // first value that disagreed, if any
 } cam_selftest_t;
 
 /* `bytes` is the FRAME SIZE to benchmark, and the caller passes the live one.

@@ -306,6 +306,32 @@ bool cam_extract_selftest(cam_selftest_t *out, uint32_t bytes)
         b[i] = (uint8_t)(a[i] + (int)((r >> 8) % 5) - 2);
     }
 
+    /* ── popcount equivalence ──────────────────────────────────────────────
+     * Every 32-bit value would be 4,3e9 iterations; this walks the structured
+     * cases that break SWAR implementations (each single bit, each byte
+     * boundary, all-ones, alternating masks) and then a pseudo-random sweep. */
+    out->popcount_ok = true;
+    out->popcount_n  = 0;
+    {
+        uint32_t rs2 = 0xC0FFEEu;
+        for (uint32_t t = 0; t < 200000u && out->popcount_ok; t++) {
+            uint32_t v;
+            if (t < 32)        v = 1u << t;
+            else if (t < 64)   v = 0xFFFFFFFFu >> (t - 32);
+            else if (t < 96)   v = 0xFFFFFFFFu << (t - 64);
+            else if (t == 96)  v = 0u;
+            else if (t == 97)  v = 0xFFFFFFFFu;
+            else if (t == 98)  v = 0xAAAAAAAAu;
+            else if (t == 99)  v = 0x55555555u;
+            else               v = xs32(&rs2);
+            out->popcount_n++;
+            if (cam_popcount32(v) != (uint32_t)__builtin_popcount(v)) {
+                out->popcount_ok  = false;
+                out->popcount_bad = v;
+            }
+        }
+    }
+
     int cases = 0, failed = 0;
     uint32_t words = 0, w;
 
@@ -327,7 +353,7 @@ bool cam_extract_selftest(cam_selftest_t *out, uint32_t bytes)
 
     out->cases = cases;
     out->failed_case = failed;
-    out->equal = (failed == 0);
+    out->equal = (failed == 0) && out->popcount_ok;
     out->words = words;
 
     /* ── Benchmark. Same bytes, same order, three passes each; the median of a

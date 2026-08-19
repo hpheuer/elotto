@@ -1300,7 +1300,7 @@ esp_err_t camera_selftest_handle(void *httpd_req, bool busy)
     double fps_raw = camera_fps_probe(60, 6000);
 
     cam_selftest_t t;
-    char buf[448];
+    char buf[560];
     /* THE LIVE FRAME SIZE, not a convenient one. See extract.h. */
     if (!cam_extract_selftest(&t, s_frame_size)) {
         httpd_resp_set_status(req, "500 Internal Server Error");
@@ -1317,6 +1317,7 @@ esp_err_t camera_selftest_handle(void *httpd_req, bool busy)
         "\"speedup\":%.2f,\"cpu_mhz\":%d,\"bench_bytes\":%lu,"
         "\"frame_bytes\":%lu,\"ms_pair_ext\":%.1f,"
         "\"fps_raw\":%.2f,\"ms_pair_raw\":%.1f,"
+        "\"popcount_ok\":%s,\"popcount_n\":%lu,\"popcount_bad\":\"%08lx\","
         "\"what\":%d,\"bad_at\":%lu,\"ref_w\":\"%08lx\",\"fast_w\":\"%08lx\","
         "\"ref_z\":%lu,\"fast_z\":%lu}",
         t.equal ? "true" : "false", t.cases, t.failed_case, (unsigned long)t.words,
@@ -1333,6 +1334,8 @@ esp_err_t camera_selftest_handle(void *httpd_req, bool busy)
          * cost at it. If ms_pair_raw is close to the live ms_pair, the sensor
          * is the wall and no amount of faster extraction moves the bit rate. */
         fps_raw, fps_raw > 0.0 ? 2000.0 / fps_raw : 0.0,
+        t.popcount_ok ? "true" : "false", (unsigned long)t.popcount_n,
+        (unsigned long)t.popcount_bad,
         t.what, (unsigned long)t.bad_at,
         (unsigned long)t.ref_w, (unsigned long)t.fast_w,
         (unsigned long)t.ref_z, (unsigned long)t.fast_z);
