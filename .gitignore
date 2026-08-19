@@ -8,3 +8,11 @@ managed_components/
 ota_firmware/build/
 ota_firmware/sdkconfig
 ota_firmware/sdkconfig.old
+
+# Live-pull working files. `_live_now_*` is whatever the operator last pulled
+# from a RUNNING session, so it is a moving, superseded snapshot: the copy taken
+# on 2026-08-19 held 4488 of that session's eventual 6258 items, and 124 of its
+# rows carried a provisional UNCENTRED z_ctr because their block was still open.
+# The finished session belongs in docs/data/<date>_<mode>_<what>/ instead.
+# Ignored because `git add -A` swept these into two separate commits otherwise.
+docs/data/_live_now_*
