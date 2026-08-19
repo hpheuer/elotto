@@ -1584,6 +1584,14 @@ void elotto_task(void *pvParam)
     g_status.pass_n_excl     = 0;
     g_status.v_eff           = 1.0;
     g_status.null_flags      = 0;
+    /* ⚠ Per SESSION, like every counter around it. It is published in /status
+     * and in the CSV header, so a single timeout left over from a previous run
+     * would be attributed to this one -- for every session that followed, since
+     * nothing else ever clears it. The other health counters that are
+     * deliberately cumulative (ring_drops, consumer_waits, stalls) live in the
+     * camera component and are read as LIFETIME totals; this one describes a
+     * session and must not join them. */
+    g_status.flush_timeouts  = 0;
     memset(s_soft_clean, 0, sizeof(s_soft_clean));
     g_status.loop_sigma      = 0.0;
     g_status.loops_done      = 0;

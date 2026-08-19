@@ -532,7 +532,7 @@ typedef struct {
     /* Runs voided because the pre-window ring flush did not finish in
      * ONSET_SETTLE_MS. Published in /status and the CSV header: a silent
      * safeguard that fires is indistinguishable from one that never had to. */
-    uint32_t         flush_timeouts;
+    uint32_t         flush_timeouts;   /* per SESSION -- cleared at session start */
     int              run_segments;        // segment count derived for this session
     FocusState       focus;
     bool             slave_connected;     // at least one slave answered discovery
