@@ -1188,7 +1188,8 @@ static esp_err_t status_handler(httpd_req_t *req)
         "\"pass_mean\":%.4f,\"pass_sigma\":%.4f,\"pass_chi2\":%.4f,"
         "\"pass_stouffer\":%.4f,\"pass_n_valid\":%d,\"pass_n_void\":%d,"
         "\"pass_n_excl\":%d,"
-        "\"v_eff\":%.4f,\"null_flags\":%d,\"score_dir\":\"%s\","
+        "\"v_eff\":%.4f,\"null_flags\":%d,\"flush_timeouts\":%lu,"
+        "\"score_dir\":\"%s\","
         "\"loop_sigma\":%.4f,"
         "\"pair_r\":%.4f,\"pair_n\":%d,"
         "\"pair_i\":%d,\"pair_j\":%d,\"pair_count\":%d,"
@@ -1220,7 +1221,8 @@ static esp_err_t status_handler(httpd_req_t *req)
         g_status.pass_mean, g_status.pass_sigma, g_status.pass_chi2,
         g_status.pass_stouffer, g_status.pass_n_valid, g_status.pass_n_void,
         g_status.pass_n_excl,
-        g_status.v_eff, (int)g_status.null_flags, score_str,
+        g_status.v_eff, (int)g_status.null_flags,
+        (unsigned long)g_status.flush_timeouts, score_str,
         g_status.loop_sigma,
         g_status.pair_r_max, g_status.pair_n,
         g_status.pair_r_i, g_status.pair_r_j, g_status.pair_count,
@@ -1529,7 +1531,7 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
     int nlen = snprintf(buf, sizeof(buf),
         "# elotto v3 mode=%s focus=%s score=%s items=%d/%d ranked=%d excl=%d void=%d "
         "blocks=%d paused_ms=%lld pass_mean=%s pass_sigma=%s pass_chi2=%s "
-        "pass_stouffer=%s v_eff=%s null_flags=%d drift_t=%.2f "
+        "pass_stouffer=%s v_eff=%s null_flags=%d flush_timeouts=%lu drift_t=%.2f "
         "unlimited=%s runs_cap=%d rounds=%d "
         /* ⚠ The window in BOTH units. Seconds alone are not enough: the
          * segs<->ms calibration is a MEASUREMENT and was re-measured on
@@ -1548,7 +1550,8 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
         de_num(cb, sizeof(cb), g_status.pass_chi2, 4),
         de_num(stb, sizeof(stb), g_status.pass_stouffer, 4),
         de_num(vb, sizeof(vb), g_status.v_eff, 4),
-        (int)g_status.null_flags, g_status.drift_t,
+        (int)g_status.null_flags, (unsigned long)g_status.flush_timeouts,
+        g_status.drift_t,
         g_status.unlimited ? "on" : "off", g_status.runs_cap, g_status.round,
         de_num(rb, sizeof(rb), g_status.run_target_ms / 1000.0, 2),
         g_status.run_segments,

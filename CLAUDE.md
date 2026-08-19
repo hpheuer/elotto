@@ -504,11 +504,21 @@ camera health (LoopStat, PSRAM, first LOOP_HIST=128 blocks, served by **/loops**
 |t| > 3 flags real drift. The slave's per-block camera numbers come from the `D` command, queried at
 block close while it is idle — a missing reply is diagnostics-only.
 
-**Focus display**: a "Focus:" card shows the current target in large type for exactly the window its
-bits are collected in — the candidate number while scoring, the whole draw while measuring — so the
+**Focus display**: a "Focus:" card shows the current target in large type for the window its bits are
+collected in, **plus a short lead-in** — the candidate number while scoring, the whole draw while measuring — so the
 observer is present *while* the noise is sampled (the original GCP/PEAR protocol). It changes
 nothing statistically, so a session is merely **tagged**: `/start?focus=1`, `"focus"` in /status and
 `# focus=on|off` in the CSV. **Attended and unattended sessions must never be pooled.**
+- ⚠ **The panel lights BEFORE the bits start, by design** — `focus_publish()` runs, then the trigger
+  goes out, then the ring flush waits for a fresh frame pair. The lead is therefore about **one frame
+  pair: ~56 ms idle, ~85 ms under load** (derived from `ms_pair`, not directly instrumented). The
+  older wording "for exactly the window its bits are collected in" was never what the code did and is
+  not what the protocol wants: an observer needs to perceive the target before the sampling starts.
+  ⚠ **Open, and a pre-registration question rather than a code one: is ~70 ms enough?** Visual
+  perception plus attentional engagement is usually put at 100–300 ms, so the lead may be too SHORT.
+  Note the inconsistency with `READY_SETTLE_MS`, which holds a full **1 s** dark at the observer gate
+  for the same reason. Decide the number deliberately before the attended-vs-unattended comparison,
+  because that comparison is what it would bias.
 - `GET /focus` (~60 B) is polled at **10 Hz** and is deliberately separate from the 2.5 KB /status:
   `seq` is monotonic per window, so the UI counts *missed* windows (a skipped window credits an
   effect to the wrong combination — mislabeling, not blur). `POST /pause?on=1|0` holds **between**
@@ -528,6 +538,19 @@ nothing statistically, so a session is merely **tagged**: `/start?focus=1`, `"fo
   would offset the master's window from the slaves' by ~85 ms.
   ⚠ Costs wall time — the ring's bits must now be produced live — and it is **another instrument
   boundary**: the bit-to-item mapping changed.
+- ⚠ **A flush that does not finish VOIDS the run** (2026-08-19). Not a cosmetic guard: the ring is
+  dropped at a PAIR BOUNDARY, so if no pair arrives the ring is never dropped at all and the run
+  would consume exactly the stale bits the flush exists to remove — the one case where the safeguard
+  turns into a disguise. The master withholds its own z (`k` drops); a slave answers
+  `E:ring flush timeout` and the master combines over √(k−1). It is **not** escalated to a camera
+  fault: a pair costs 56–85 ms against the 500 ms cap, well short of `CAM_STALL_TIMEOUT_MS`, and a
+  transient must not cost an arm for the rest of the session. Counted in `g_status.flush_timeouts`,
+  published in `/status` and the CSV header — a safeguard that fires must not be indistinguishable
+  from one that never had to.
+- **Baseline runs flush too.** Not consistency for its own sake: `LoopStat.base` is the *independent*
+  cross-check against the block's own master mean (`raw_m`), and two estimates of one offset are only
+  comparable if their bits have the same provenance. That cross-check is what showed the 08-19
+  block-3 excursion was already present before the block began (base −1,802 vs block mean −1,712).
 - ⚠ `camera_get_stats()` is cumulative **since the last `camera_stats_reset()`**, i.e. since the
   last sweep. In a `?cal=0` session there is no reset and they are lifetime averages — a falling
   `mbit_s` is then not evidence of live degradation.

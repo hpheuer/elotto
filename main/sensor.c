@@ -328,12 +328,34 @@ static uint8_t s_soft_clean[MAX_NODES];
  * existed, which is 10 % of a run=1 item. Those bits are not bad, they are
  * MISLABELLED, and this rig already treats crediting bits to the wrong
  * combination as the error that matters. */
-static void onset_settle(void)
+/* Returns false if the flush did not complete inside ONSET_SETTLE_MS. The
+ * caller MUST then produce no measurement.
+ *
+ * ⚠ A timed-out flush is worse than a late one. camera_ring_flush() drops the
+ * ring at the next PAIR BOUNDARY, so if no pair arrives the ring is never
+ * dropped at all — the run would then consume exactly the stale bits the flush
+ * existed to remove, and nothing downstream could tell. Carrying on silently
+ * was the original behaviour and it is the one case where the flush turns from
+ * a safeguard into a disguise.
+ *
+ * VOID is the house rule for this and predates the flush: gcp_zscore_raw()
+ * already refuses to return a short run rather than normalise it by a √segments
+ * it never reached. A run whose provenance is unknown is treated the same way —
+ * archived with k=0, never ranked. It is NOT a camera fault: a pair costs 56 ms
+ * idle and 85 ms loaded, so 500 ms is a long stall but well short of
+ * CAM_STALL_TIMEOUT_MS, and escalating a transient to a node drop would cost an
+ * arm for the rest of the session. */
+static bool onset_settle(void)
 {
     camera_ring_flush(1);
     int64_t limit = esp_timer_get_time() + ONSET_SETTLE_MS * 1000LL;
     while (!camera_ring_flushed() && esp_timer_get_time() < limit)
         vTaskDelay(1);
+    if (camera_ring_flushed()) return true;
+    g_status.flush_timeouts++;
+    printf("onset flush TIMED OUT after %d ms -- run voided (ring not dropped, "
+           "so its bits would be pre-window)\n", ONSET_SETTLE_MS);
+    return false;
 }
 
 /* ── Attended pool confirmation ────────────────────────────────────────
@@ -691,13 +713,13 @@ static double score_one_run(void)
      * ordering it the other way would leave the master a full settle ahead of
      * the slaves and the "same window" would be offset by ~85 ms. */
     slave_trigger(nseg);
-    onset_settle();
+    bool   fresh = onset_settle();
     double zm = 0.0;
-    bool   ok = gcp_zscore_ok(nseg, &zm);
+    bool   ok = fresh && gcp_zscore_ok(nseg, &zm);
     // Sampling is over the moment the local run returns; the reply wait below
     // is dark time. The caller lit the panel — see focus_publish().
     focus_off();
-    if (!ok) node_camera_failed(0, "stalled mid-run");
+    if (fresh && !ok) node_camera_failed(0, "stalled mid-run");
     // Timeout from THIS run's length: at the scoring length the old flat 4 s
     // would expire while every slave was still measuring.
     if (nodes_have_slaves()) nodes_collect(LINK_MEAS_MS_FOR(nseg), true);
@@ -1478,6 +1500,14 @@ static bool baseline_run(void)
     int    bn   = 0;
     for (int i = 0; i < g_status.baseline_total; i++) {
         if (g_status.abort_requested) { slave_abort(); return false; }
+        /* The baseline flushes too (2026-08-19). It is not cosmetic consistency:
+         * LoopStat.base is the INDEPENDENT cross-check against the block's own
+         * master mean (raw_m), and two instruments only estimate the same offset
+         * if their bits have the same provenance. That cross-check is what said
+         * the 08-19 block-3 excursion was present before the block began
+         * (base −1,802 against a block mean of −1,712); a baseline drawing on
+         * pre-window ring bits while the runs do not would blunt it. */
+        if (!onset_settle()) { run_gap_ms(gap_for()); continue; }
         double bz = 0.0;
         if (gcp_zscore_ok(segments_for(), &bz)) { bsum += bz; bn++; }
         else {
@@ -1861,11 +1891,15 @@ void elotto_task(void *pvParam)
             // broadcast would put the master a full settle ahead of them.
             int nseg = segments_for();
             slave_trigger(nseg);
-            onset_settle();
+            bool   fresh = onset_settle();
             double zraw = 0.0;
-            bool   zok  = gcp_zscore_ok(nseg, &zraw);
+            /* No flush, no measurement: the local z is withheld rather than
+             * computed from bits of unknown provenance. The slaves were already
+             * triggered and answer normally; each one withholds its own z the
+             * same way if ITS flush timed out, so k simply drops. */
+            bool   zok  = fresh && gcp_zscore_ok(nseg, &zraw);
             focus_off();          // sampling done; the reply wait is dark time
-            if (!zok) node_camera_failed(0, "stalled mid-run");
+            if (fresh && !zok) node_camera_failed(0, "stalled mid-run");
             if (nodes_have_slaves()) nodes_collect(LINK_MEAS_MS_FOR(nseg), true);
 
             double znode[MAX_NODES];

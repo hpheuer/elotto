@@ -529,6 +529,10 @@ typedef struct {
                                           // free (existing overhead) or paid for
     int              run_target_ms;       // requested window (from ?run=), for status
     int              gap_ms;              // intentional blank between runs (?gap=)
+    /* Runs voided because the pre-window ring flush did not finish in
+     * ONSET_SETTLE_MS. Published in /status and the CSV header: a silent
+     * safeguard that fires is indistinguishable from one that never had to. */
+    uint32_t         flush_timeouts;
     int              run_segments;        // segment count derived for this session
     FocusState       focus;
     bool             slave_connected;     // at least one slave answered discovery
