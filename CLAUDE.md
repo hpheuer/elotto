@@ -97,15 +97,25 @@ Bare `?runs=` still answers 400, now naming `unlimited=1&maxruns=` instead.
 
 A **round** = score every number → keep as many of the best as fit `maxruns` runs → measure that
 space once in a fresh Fisher–Yates order → score again. It ends only on **Abort** or `results[]` full
-at `NUM_RUNS` 8000, with the reason in `fault`.
+at `NUM_RUNS` 8000 — and since 2026-08-19 the buffer compacts rather than filling, so in practice
+only Abort ends it. The stop survives as the backstop for a compaction that cannot allocate.
 
 - **Pool sizing maximises COMBINATIONS MEASURED, nothing else** (`unlimited_pool_sizes()`). The
   bonus-number preference survives only as the tie-break: equal combination count → larger bonus
   pool, then larger main pool `[D3]`.
   cap 100 → Euro 7+3 = 63, 6-of-49 9 numbers = 84 · cap 500 → Euro 11+2 = 462, 6-of-49 11 = 462 ·
   cap 7920 → the full space, i.e. repeated full passes.
-- **Results ACCUMULATE.** `results[]` is never cleared; every table, the pass statistics and the
-  Bonferroni line run on the union of all rounds so far.
+- **Results ACCUMULATE.** `results[]` is never cleared between rounds; every table, the pass
+  statistics and the Bonferroni line run on the union of all rounds so far.
+- **A full buffer compacts instead of ending the session** `[D42]`. When the next round would not
+  fit, the round boundary folds everything except the best, worst and most ordinary
+  `PASS_KEEP_PER_TABLE` (16) items into moments and drops the rest. Pass mean/σ/χ²/Bonferroni stay
+  exact over every item measured; Top-N and Bottom-N stay exact outright.
+  ⚠ Only when it must, so a session that fits keeps its complete archive.
+  ⚠ `completed` in `/status` is `items_done` (monotone). `runs_completed` is ROWS HELD and steps
+  back at a compaction — never report progress from it.
+  ⚠ `compacted=` in the CSV header says what the file is NOT: non-zero means the rows are the
+  extremes plus survivors, not a sample. Never compute a distribution from them.
 - **Every round closes its own block**, even at `?calint=0`, so centring never mixes items from
   either side of a re-scoring. Rounds after the first re-run sweep + baseline **before** scoring
   (skipped at `?calint=0`): the scoring runs choose the pool and must not sit on a stale sweep.
@@ -449,14 +459,16 @@ produces.
 autocorr ≈ 0, 5,71 Mbit/s each. Settled light at exp 128: master 34,5 · slave0 27,9 · slave1 27,0 ·
 slave2 19,5, stable to ±0,6 % over 18 min.
 
-⚠ **BUILT AND COMMITTED, NOT YET FLASHED** (`elotto` 61bb92d, `elotto_slave` 3544767). The 08-19
-changes — dark ladder gates, run-scaled bias gate, σ-only soft-down, the exclusion verdict in
-`/loops`, firmware identity in the CSV, the rate-based cycle model — exist only in the tree, because
-`/update` answers 409 while the overnight session measures.
-**Flash master and all three slaves together**: `K` gained a field and `D` another. Both mismatches
-degrade safely (legacy bias bar / no sha in the header), but a half-flashed array is not one
-instrument. Then verify: `mflag` in `/loops` without a `soft` beside it, `clear_sig` present,
-`fw=`/`# fw_nodes=` in a fresh CSV, and no node on exposure 4 or 8.
+**Flashed and verified 2026-08-19** — master `1ea2723` / `3633c864e42096ca`, all three slaves
+`3c53a5e1ff7adff0`. Checked on hardware after the flash: all four nodes certify a rung and land on
+**exp 128/64/64/64**, none on 4 or 8; `clear_sig`, `quar` and per-node `soft`/`trip`/`mflag` present
+in `/loops`; `compacted=0 fw=1ea2723/…` plus `# fw_nodes=` in a fresh CSV.
+⚠ **Not exercised on hardware**: `mflag` firing (needs a real |mean| > 1,5 excursion, and the gated
+rungs are what used to produce them) and compaction itself `[D42]` — the cheapest way to reach it is
+6-of-49 unlimited at `maxruns=5005`, ~3,7 h at `?run=1`.
+⚠ Flash master and all three slaves **together**: `K` carries a field and `D` another. Both
+mismatches degrade safely (legacy bias bar / no sha in the header), but a half-flashed array is not
+one instrument.
 
 **Open, in the order I would pick them up:**
 1. **Does an offset survive on a GATED rung?** The 08-19 blocks at exp ≥ 16 average −0,05…+0,09, but
@@ -484,5 +496,6 @@ before proposing anything that sounds obvious.
 | `2026-08-13_6of49_fullpass_unattended/` | 5005 items, uncentred, with the README that motivated centring |
 | `2026-08-18_6of49_unlim_run1s/` | first unlimited-mode session |
 | `2026-08-19_6of49_unlim_overnight/` | 29 blocks; the session that produced `[D11]`, `[D18]`, `[D19]` |
+| `2026-08-19_6of49_unlim_full8000/` | 8000 items, 18 rounds, 11,6 h — hit the buffer stop; the replay set for `[D42]` |
 | `_live_*` / `_short_*` | a complete 5005 pass (13,4 h, curl-started, no gates); a 1995/5005 partial |
 | `_analyze_*.py` | the operator's own analysis scripts — they skip `#` header lines |

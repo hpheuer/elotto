@@ -487,6 +487,42 @@ raw z for every item, INCLUDING arms that were soft-down at the time. A soft-dow
 costs live sensitivity but destroys nothing: any session can be recombined afterwards under a
 different rule. This is what made D11 provable after the fact.
 
+### D42 — A full results[] compacts at the round boundary, it does not end the session
+The 2026-08-19 unlimited session stopped after 11,6 h with "results buffer full (8000 items)". It did
+not have to: at a round boundary every block of the round has closed, so `center_block()` has
+replaced every provisional `z_ctr` and the ranking key is FINAL. From there the three published
+tables are the only individual items anyone reads, and everything else the session reports — pass
+mean, σ, χ², v_eff, the Bonferroni line — is a function of n, Σz and Σz².
+
+- **Top-N and Bottom-N stay exact** at any K ≥ TOP_N, by construction: the maximum of a union is the
+  maximum of the per-part maxima.
+- **Nearest-zero is not exact by construction** — its target, the pass mean, keeps moving. In
+  practice it barely moves: centring pins each closed block at mean ≈ 0, so the pass mean sat at
+  ±0,00000 after every one of the 18 rounds, and the final nearest-5 ranked 1,1,1,2,1 within their
+  own rounds. `PASS_KEEP_PER_TABLE` is 16 rather than 5 for what headroom does not cover: a round
+  whose last block is still open, and a quarantine removing several survivors at once.
+
+Replayed against those 8000 items, compacting at EVERY round boundary rather than only when needed:
+**48 rows held instead of 8000**, n/void/excl identical, σ and χ² bit-identical, mean off by 7e-19,
+and Top/Bottom/Nearest all 5/5.
+
+⚠ **This is not "keep only the 15 published items".** That was measured too, mid-block, where
+`z_ctr` is still provisional: a running top-5 on the raw z keeps **3 of the true 5**, and the item
+that ends 4th sits at raw rank 16 when it is measured. The round boundary is what makes compaction
+lossless, not the count kept.
+
+⚠ **It runs only when the next round would not fit.** The dropped rows cannot be recovered, and the
+per-node `z0..z3` of a dropped item is how `[D11]` was found — last resort, not policy.
+
+Consequences elsewhere: `runs_completed` now means ROWS HELD and `items_done` is the session count
+(`[D41]`'s archive is what shrinks, not the statistics); `LOOP_HIST` went 128 → 1024, because at 52
+blocks per 11,6 h the old value was ~28 h and the first session able to outlive the buffer would
+have gone blind there instead.
+
+**Verified by replay, not yet on hardware**: exercising it needs a session that actually fills 8000
+items. The cheapest path is 6-of-49 unlimited at `maxruns=5005`, where the second round boundary
+cannot fit and compaction fires after ~3,7 h at `?run=1`.
+
 ---
 
 ## Dropped and deferred
