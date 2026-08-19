@@ -280,6 +280,19 @@ static void node_z_store(int j, const double *znode, const bool *have)
         row[i] = (have && have[i]) ? (float)znode[i] : NAN;
 }
 
+/* Move one archive row, for pass_compact(). The source is left as it was: the
+ * caller only ever moves DOWN (w < j) and overwrites what it passes on the way,
+ * so a stale tail can never be read -- runs_completed is lowered to the new
+ * length before anything can look. */
+static void node_z_move(int from, int to)
+{
+    if (!s_node_z || from == to) return;
+    if (from < 0 || to < 0 || from >= NUM_RUNS || to >= NUM_RUNS) return;
+    memcpy(s_node_z + (size_t)to   * MAX_NODES,
+           s_node_z + (size_t)from * MAX_NODES,
+           MAX_NODES * sizeof(float));
+}
+
 bool results_node_z(int j, float out[MAX_NODES])
 {
     if (!out || !s_node_z || j < 0 || j >= g_status.runs_completed || j >= NUM_RUNS)
@@ -808,6 +821,20 @@ static bool result_ranked(const RunResult *r)
     return r && r->k > 0 && !r->skip_rank;
 }
 
+/* ── What compaction left behind ──────────────────────────────────────────
+ * Moments of the items pass_compact() dropped, so every pass statistic stays
+ * EXACT over the whole session while results[] holds only the survivors.
+ *
+ * ⚠ This is the load-bearing part of compaction, and the failure mode if it is
+ * ever bypassed does not look like a failure. The survivors are the extremes by
+ * construction, so a statistic that forgets these sums reports the mean and σ
+ * OF THE TABLES: σ ≈ 2 and rising with every compaction, from an instrument
+ * whose null gate then fires on its own bookkeeping. Anything that reduces over
+ * results[] to describe the SESSION has to add these; anything that reduces to
+ * describe the TABLES (top/bottom/nearest, zmax) must not. */
+static double s_drop_sum, s_drop_sumsq;
+static int    s_drop_n, s_drop_void, s_drop_excl;
+
 /* Recompute pass mean/σ/χ², studentized Top-N / Bottom-N, and Bonferroni p
  * from the ranked prefix. O(n·TOP_N) after each valid item — exact against
  * the live mean, which is the whole point of Z*. */
@@ -816,8 +843,10 @@ static void recompute_pass_ranks(void)
     int ntot = g_status.runs_completed;
     if (ntot > NUM_RUNS) ntot = NUM_RUNS;
 
-    double sum = 0.0, sumsq = 0.0;
-    int    nv  = 0, nvoid = 0, nexcl = 0;
+    /* Seeded with what compaction dropped, so mean/σ/χ² describe every item the
+     * session measured and not just the rows still held. */
+    double sum = s_drop_sum, sumsq = s_drop_sumsq;
+    int    nv  = s_drop_n, nvoid = s_drop_void, nexcl = s_drop_excl;
     for (int j = 0; j < ntot; j++) {
         const RunResult *r = &g_status.results[j];
         if (r->k == 0) { nvoid++; continue; }
@@ -908,6 +937,97 @@ static void recompute_pass_ranks(void)
     update_null_flags();
 }
 
+/* ── Round-boundary compaction ─────────────────────────────────────────────
+ * Fold everything except the three published tables into moments, so an
+ * unlimited session runs until it is aborted instead of stopping at NUM_RUNS.
+ *
+ * Called ONLY at a round boundary, and only when the next round would not fit.
+ * Both halves matter:
+ *
+ *  - At a round boundary every block of the round has closed, so center_block()
+ *    has replaced every provisional z_ctr and the ranking key is FINAL. Doing
+ *    this mid-block would rank on values that are about to be rewritten:
+ *    replayed against the 2026-08-19 session, a running top-5 on the
+ *    provisional values keeps 3 of the true 5, and the item that ends 4th sits
+ *    at raw rank 16 when it is measured.
+ *  - Only when needed, so a session that fits keeps its complete archive and
+ *    behaves exactly as before. Compaction costs rows that can never be
+ *    recovered -- the per-node z0..z3 of a dropped item is how the exposure
+ *    finding was made -- so it is a last resort, not a policy.
+ *
+ * Survivors: the best, worst and most ordinary PASS_KEEP_PER_TABLE ranked items,
+ * by the same key the tables publish. Kept in MEASUREMENT ORDER, and s_node_z
+ * moves with them so results_node_z(j) still answers for a survivor.
+ *
+ * ⚠ results[] stops being a complete prefix here. Nothing may infer "the
+ * session measured runs_completed items" afterwards; items_done says that. */
+static void pass_compact(void)
+{
+    int n = g_status.runs_completed;
+    if (n > NUM_RUNS) n = NUM_RUNS;
+    if (n <= 0) return;
+
+    const int K = PASS_KEEP_PER_TABLE;
+    double mean = g_status.pass_mean;      /* the session mean as it stands now */
+    uint8_t *keep = heap_caps_calloc((size_t)n, 1, MALLOC_CAP_SPIRAM);
+    if (!keep) {                            /* no room to choose: keep everything */
+        printf("pass: compaction skipped — no heap for the survivor mask\n");
+        return;
+    }
+
+    /* Three passes, one per table. Each finds the K best by its own key without
+     * sorting the array: n is at most NUM_RUNS and K is 16, so a linear scan per
+     * survivor is cheaper than a sort and needs no scratch of its own. */
+    for (int t = 0; t < 3; t++) {
+        for (int slot = 0; slot < K; slot++) {
+            int    best = -1;
+            double best_key = 0.0;
+            for (int j = 0; j < n; j++) {
+                if (keep[j]) continue;
+                const RunResult *r = &g_status.results[j];
+                if (!result_ranked(r)) continue;
+                double z   = rank_z(r);
+                double key = (t == 0) ? z : (t == 1) ? -z : -fabs(z - mean);
+                if (best < 0 || key > best_key) { best_key = key; best = j; }
+            }
+            if (best < 0) break;            /* fewer ranked items than K */
+            keep[best] = 1;
+        }
+    }
+
+    /* Fold the losers into the moments, then close the gaps in place. Forward
+     * copy with w <= j, so the array is rewritten under itself safely and the
+     * surviving rows keep their relative order. */
+    int w = 0, dropped = 0;
+    for (int j = 0; j < n; j++) {
+        const RunResult *r = &g_status.results[j];
+        if (!keep[j]) {
+            if (r->k == 0)          s_drop_void++;
+            else if (r->skip_rank)  s_drop_excl++;
+            else {
+                double z = rank_z(r);
+                s_drop_sum   += z;
+                s_drop_sumsq += z * z;
+                s_drop_n++;
+            }
+            dropped++;
+            continue;
+        }
+        if (w != j) {
+            g_status.results[w] = *r;
+            node_z_move(j, w);
+        }
+        w++;
+    }
+    heap_caps_free(keep);
+
+    g_status.runs_completed = w;   /* rows held; items_done is unchanged */
+    g_status.compacted     += dropped;
+    printf("pass: compacted at round boundary — %d of %d rows dropped, %d kept "
+           "(%d items measured, mean %.6f σ %.6f unchanged)\n",
+           dropped, n, w, g_status.items_done, g_status.pass_mean, g_status.pass_sigma);
+}
+
 /* Quarantine every measured item in `block_idx` from pass ranking. CSV keeps
  * the rows (skip_rank=1). Called when that block *triggered* a soft-down. */
 static void quarantine_block(int block_idx)
@@ -953,8 +1073,13 @@ int results_near_mean(RunResult *out, int cap, double *out_mean, double *out_sig
     if (n > NUM_RUNS) n = NUM_RUNS;
     if (n <= 0) return 0;
 
-    double sum = 0.0;
-    int    nv  = 0;
+    /* The TARGET is the session's mean, so the dropped items count here too —
+     * without them this would centre on the mean of the extremes, i.e. on
+     * roughly zero for the wrong reason, and pick its five neighbours by an
+     * accident of the tables being symmetric. The SEARCH below then runs over
+     * the survivors only, which is the whole point of keeping a nearest-K. */
+    double sum = s_drop_sum;
+    int    nv  = s_drop_n;
     for (int j = 0; j < n; j++) {
         if (!result_ranked(&g_status.results[j])) continue;
         sum += rank_z(&g_status.results[j]);
@@ -964,8 +1089,11 @@ int results_near_mean(RunResult *out, int cap, double *out_mean, double *out_sig
     double mean = sum / (double)nv;
 
     // Sample σ (df = n−1), as everywhere else in this file: the mean it is
-    // taken about was estimated from the same data.
-    double ss = 0.0;
+    // taken about was estimated from the same data. The dropped items enter
+    // expanded — Σ(z−m)² = Σz² − 2m·Σz + n·m² — because THEIR mean is not the
+    // pass mean, so the short form Σz² − n·m² would be wrong for them.
+    double ss = s_drop_sumsq - 2.0 * mean * s_drop_sum
+              + (double)s_drop_n * mean * mean;
     for (int j = 0; j < n; j++) {
         if (!result_ranked(&g_status.results[j])) continue;
         double d = rank_z(&g_status.results[j]) - mean;
@@ -1581,6 +1709,10 @@ void elotto_task(void *pvParam)
 
     g_status.state           = ELOTTO_RUNNING;
     g_status.runs_completed  = 0;
+    g_status.items_done      = 0;
+    g_status.compacted       = 0;
+    s_drop_sum = s_drop_sumsq = 0.0;
+    s_drop_n = s_drop_void = s_drop_excl = 0;
     // unlimited / runs_cap are session parameters from /start and are NOT reset
     // here — they tag the session, exactly like focus_mode.
     g_status.round           = 0;
@@ -1840,8 +1972,14 @@ void elotto_task(void *pvParam)
         /* Where this round lands in results[], and how much room is left. The
          * buffer is the hard stop for unlimited mode: a truncated round is still
          * a valid measured prefix, but it is the last one. */
-        g_status.round_base = g_status.runs_completed;
-        int room = NUM_RUNS - g_status.round_base;
+        /* Make room rather than stop. Only when the round would not fit, so a
+         * session that never fills the buffer keeps every row it measured and
+         * behaves exactly as it did before compaction existed. */
+        if (g_status.unlimited && g_status.runs_completed + full_combos > NUM_RUNS)
+            pass_compact();
+
+        g_status.round_base = g_status.items_done;
+        int room = NUM_RUNS - g_status.runs_completed;
         int round_total = full_combos;
         if (round_total > room) { round_total = room; space_full = true; }
         if (round_total <= 0) { space_full = true; break; }
@@ -1973,7 +2111,8 @@ void elotto_task(void *pvParam)
             }
 
             g_status.runs_completed = slot + 1;  // AFTER the row is complete: readers
-                                                 // (/status, /results.csv) trust the prefix
+                                                 // (/status, /results.csv) trust the rows
+            g_status.items_done++;               // session progress; compaction never lowers it
             if (k > 0) publish_valid(r);      // studentized top/low + pass health
             g_status.elapsed_ms     = elapsed_ms_now();
             run_gap_ms(gap_for());
@@ -1990,7 +2129,7 @@ void elotto_task(void *pvParam)
             snprintf(g_status.fault, sizeof(g_status.fault),
                      "unlimited: results buffer full (%d items) after round %d "
                      "— session ended, pull /results.csv?all=1",
-                     g_status.runs_completed, round);
+                     g_status.items_done, round);
             printf("%s\n", g_status.fault);
             break;
         }

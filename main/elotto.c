@@ -1226,7 +1226,7 @@ static esp_err_t status_handler(httpd_req_t *req)
         "\"sigma_lo\":%.4f,\"sigma_hi\":%.4f,"
         "\"scoring_done\":%d,\"scoring_total\":%d,"
         "\"baseline_done\":%d,\"baseline_total\":%d,\"baseline_mean\":%.4f,"
-        "\"completed\":%d,\"total\":%d,\"elapsed_ms\":%lld,"
+        "\"completed\":%d,\"total\":%d,\"elapsed_ms\":%lld,\"compacted\":%d,"
         /* `completed` is session-wide (the results[] prefix); `total` is the
          * CURRENT round's combination space. In an ordinary session there is
          * one round and the two are the old pair. In unlimited mode a progress
@@ -1266,12 +1266,14 @@ static esp_err_t status_handler(httpd_req_t *req)
         g_status.sigma_lo, g_status.sigma_hi,
         g_status.scoring_done, g_status.scoring_total,
         g_status.baseline_done, g_status.baseline_total, g_status.baseline_mean,
-        g_status.runs_completed, g_status.runs_total,
-        (long long)g_status.elapsed_ms,
+        /* PROGRESS is items_done, never runs_completed: after a compaction the
+         * latter is the rows still held and would step backwards. */
+        g_status.items_done, g_status.runs_total,
+        (long long)g_status.elapsed_ms, g_status.compacted,
         g_status.unlimited ? "true" : "false", g_status.runs_cap,
         g_status.round, g_status.round_base,
-        g_status.runs_completed > g_status.round_base
-            ? g_status.runs_completed - g_status.round_base : 0,
+        g_status.items_done > g_status.round_base
+            ? g_status.items_done - g_status.round_base : 0,
         g_status.round_total,
         g_status.pool_confirm, g_status.pool_auto,
         g_status.pool_need_main, g_status.pool_need_euro);
@@ -1582,7 +1584,12 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
          * `-dirty` build recorded nothing at all about it. Version first
          * (readable), elf sha second (exact, and the only field that separates
          * two builds of the same commit). */
-        "run_s=%s run_segs=%d gap_s=%s fw=%s/%s\n"
+        /* `compacted=` is what this file is NOT. Non-zero means the rows below
+         * are the three published tables plus whatever else survived, not a
+         * sample of the session — the pass statistics in this header still
+         * describe every item measured, but a distribution computed from the
+         * rows will not. Zero for any session that never filled the buffer. */
+        "run_s=%s run_segs=%d gap_s=%s compacted=%d fw=%s/%s\n"
         "# nodes=",
         g_status.mode == MODE_EUROJACKPOT ? "euro" : "649",
         g_status.focus_mode ? "on" : "off", score_str,
@@ -1600,7 +1607,7 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
         de_num(rb, sizeof(rb), g_status.run_target_ms / 1000.0, 2),
         g_status.run_segments,
         de_num(gb, sizeof(gb), g_status.gap_ms / 1000.0, 2),
-        fw_desc->version, master_sha);
+        g_status.compacted, fw_desc->version, master_sha);
     send_chunk(req, buf, nlen, sizeof(buf));
     for (int i = 0; i < g_status.node_count && i < MAX_NODES; i++) {
         nlen = snprintf(buf, sizeof(buf), "%s%s",

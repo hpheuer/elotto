@@ -11,6 +11,28 @@
  * run. Both pools below fit under it by construction. */
 #define NUM_RUNS      8000
 #define TOP_N            5
+/* ── Round-boundary compaction (2026-08-19) ───────────────────────────────
+ * How many items per published table survive a compaction. The three tables
+ * publish TOP_N = 5 each; this keeps more, because 5 is the exact requirement
+ * only under assumptions that a real session can break.
+ *
+ * Top-N and Bottom-N are EXACT at any K >= TOP_N, and not empirically: the
+ * maximum of a union is the maximum of the per-part maxima, so keeping each
+ * round's best 5 keeps the session's best 5, whatever the rounds contain. The
+ * only precondition is that the values are final when the part is closed, which
+ * at a round boundary they are — every block of the round has closed and
+ * center_block() has replaced every provisional z_ctr.
+ *
+ * Nearest-zero is the one that is not exact by construction, because its target
+ * (the pass mean) keeps moving as later rounds arrive. In practice it barely
+ * moves at all -- centring forces each closed block to mean ~0, so the pass mean
+ * sat at +-0,00000 after every one of the 18 rounds of the 2026-08-19 session,
+ * and the final nearest-5 were ranked 1,1,1,2,1 within their own rounds. Three
+ * places of headroom at K = 5. The margin here costs 11 * 3 * 40 B = 1,3 KB per
+ * compaction and covers the cases that headroom does not: a round whose last
+ * block is still open, a quarantined block removing several survivors at once,
+ * and any future change that lets the pass mean drift. */
+#define PASS_KEEP_PER_TABLE 16
 #define POOL_MAIN_49    15   // C(15,6) = 5005 combinations
 #define POOL_MAIN_50    12   // C(12,5) =  792 combinations
 #define POOL_EURO_12     5   // C(5,2)  =   10 combinations
@@ -472,7 +494,15 @@ typedef struct {
 // /loops serves the whole table, one row per block. With raw z published,
 // slow drift is the one thing that widens the extremes, so this table and the
 // drift regression on it matter because raw values remain uncorrected.
-#define LOOP_HIST 128            // blocks kept in the table; the drift regression
+/* ⚠ Raised from 128 on 2026-08-19, because compaction removed the stop that was
+ * hiding this one. At 52 blocks in 11,6 h — every `calint` plus one per round —
+ * 128 was ~28 h, so the FIRST session able to run longer than the buffer would
+ * have gone blind here instead: the drift regression survives (running sums,
+ * exact past the table) but /loops, the per-block camera settings and the
+ * exclusion verdicts simply stop being recorded. 1024 is ~9 days at that rate,
+ * and costs 1024 x ~180 B = ~185 KB of PSRAM, which the same session already
+ * has spare. */
+#define LOOP_HIST 1024           // blocks kept in the table; the drift regression
                                  // runs on running sums and is exact beyond it
 typedef struct {
     float    base;         // master baseline_mean of this loop = raw per-run z offset
@@ -533,8 +563,25 @@ typedef struct {
     ElottoState      state;
     ElottoPhase      phase;
     ElottoMode       mode;
-    volatile int     runs_completed;   // items in results[] over the WHOLE session,
-                                       // i.e. across every round
+    /* ROWS CURRENTLY IN results[] — not the session's item count. The two were
+     * the same number until round-boundary compaction (2026-08-19) made
+     * results[] a subset rather than a prefix. Everything that walks the array
+     * bounds itself with this; everything that reports PROGRESS uses
+     * items_done. ⚠ Using this one for progress makes the counter go backwards
+     * the first time a compaction runs. */
+    volatile int     runs_completed;
+    /* Items measured this session, across every round. Monotone: a compaction
+     * never lowers it, because the measurement happened. This is what /status
+     * publishes as `completed`, what round_base is taken from, and what the CSV
+     * header counts in `items=`. */
+    volatile int     items_done;
+    /* Items dropped by compaction, i.e. measured and folded into the pass
+     * statistics but no longer individually in results[] or the CSV. 0 for any
+     * session that never filled the buffer, which is most of them.
+     * ⚠ Published so an archive can say what it is NOT: a CSV with
+     * `compacted=` non-zero holds the extremes plus whatever else survived, and
+     * is not a sample of the session. Never compute a distribution from it. */
+    int              compacted;
     int              runs_total;       // combinations in the CURRENT round
     /* ── Unlimited mode (see the block near the top of this file) ──────
      * `unlimited` and `runs_cap` are session parameters written by /start and
