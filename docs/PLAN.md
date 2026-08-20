@@ -5,8 +5,8 @@ the open threads in priority order. This document is the detail behind it.
 
 ⚠ **§1.1–§1.20 were removed on 2026-08-17.** They documented the v2 loop/ranking era and the
 pre-2026-07-29 optics — an instrument that no longer exists — and every rule from them that still
-applies now lives in `CLAUDE.md`. They are in git history at **`144ed5e`**
-(`git show 144ed5e:docs/PLAN.md`), and the closed design findings §1.1–§1.14 are also still in
+applies now lives in `CLAUDE.md`. They are in git history at **`998c7ab`**
+(`git show 998c7ab:docs/PLAN.md` — `144ed5e` before the 2026-08-20 history rewrite), and the closed design findings §1.1–§1.14 are also still in
 [`PLAN_HISTORY.md`](PLAN_HISTORY.md). Citations of the form "§1.x" in source comments resolve to
 those, not to a file on disk.
 

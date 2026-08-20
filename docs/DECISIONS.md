@@ -547,8 +547,14 @@ cannot fit and compaction fires after ~3,7 h at `?run=1`.
 `docs/data/2026-07-30_run5_new_hw/` — v2-era (`rank="cum"`), 3,29 Mbit/s, 44 KB together, referenced
 from nowhere including the archive table in CLAUDE.md, and unpoolable with anything under any of the
 splits in the pooling table. They were the only record of exposures 4 and 8 *passing* a sweep before
-the dark-end gate (`exp 4`, `mean_px 3,97`, `pass:true`), i.e. the counterpart to D18; that record now
-lives only in git at `18074b5`: `git show 18074b5:docs/data/2026-07-30_ladders_dc_light/node_100.json`.
+the dark-end gate (`exp 4`, `mean_px 3,97`, `pass:true`), i.e. the counterpart to D18.
+⚠ **That record is gone.** On the user's explicit instruction the same day, `git filter-repo` removed
+both directories from the whole of `master`'s history and the result was force-pushed, so no commit
+here or on GitHub still contains them. The only surviving copy is the local branch
+`backup/pre-rewrite-2026-08-20` (old `29b50ea`), which is never pushed and will not outlive this
+clone. If the pre-gate ladder data is ever wanted again, it must be re-measured, not recovered.
+⚠ The rewrite renumbered every commit from the old `18074b5` onward — 30 of them. Any commit hash
+quoted in a note, log or firmware build older than 2026-08-20 no longer resolves.
 
 🗑 **Deleted:** `docs/data/_live_now_*`, a superseded partial pull of the 08-19 session whose 123
 provisional rows are all superseded in the complete archive. Its `.gitignore` entry stays, because
@@ -559,10 +565,12 @@ that is the name the next live pull will take.
 ## Where the rest of the history lives
 
 Superseded design notes, the pre-2026-07-29 optics measurements and the v2 loop/ranking era were
-removed from CLAUDE.md and `docs/PLAN.md` on 2026-08-17 and remain in git history at `144ed5e`:
-`git show 144ed5e:CLAUDE.md`, `git show 144ed5e:docs/PLAN.md`.
+removed from CLAUDE.md and `docs/PLAN.md` on 2026-08-17 and remain in git history at `998c7ab`:
+`git show 998c7ab:CLAUDE.md`, `git show 998c7ab:docs/PLAN.md`. (Was `144ed5e` before the 2026-08-20
+history rewrite.)
 
 `docs/PLAN_4NODE.md` and `docs/PLAN_NETWORK.md` were deleted earlier and are at `8e134e5`. Source
 comments still cite those two by name; the citations are historical and resolve to git history.
 
-The pre-2026-08-19 CLAUDE.md, which carried everything above inline, is at `61bb92d`.
+The pre-2026-08-19 CLAUDE.md, which carried everything above inline, is at `97e44ce`
+(`61bb92d` before the 2026-08-20 history rewrite).
