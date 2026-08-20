@@ -17,7 +17,15 @@
 #include "focus.h"
 #include "elotto_link.h"
 
-ElottoStatus g_status = { .state = ELOTTO_IDLE };
+ElottoStatus g_status = {
+    .state = ELOTTO_IDLE,
+    /* -1, not 0: 0 is a legitimate uptime and would read as "the link
+     * dropped at boot" on a board whose link has been up the whole time. */
+    .eth_last_down_ms = -1,
+    .eth_last_up_ms   = -1,
+    .drop_uptime_ms   = -1,
+    .drop_node        = -1,
+};
 
 /* v3.0 (PLAN.md §2): one pass, every combination exactly once. The cross-loop
  * accumulators (Σz, high/low water marks) are gone with the loops themselves —
@@ -1789,6 +1797,12 @@ void elotto_task(void *pvParam)
     g_status.net_retries     = 0;
     g_status.net_lost        = 0;
     g_status.net_stale       = 0;
+    /* Per session: the first drop of THIS run is the diagnostic. The eth_*
+     * counters above it are lifetime and are deliberately not cleared. */
+    g_status.drop_uptime_ms  = -1;
+    g_status.drop_node       = -1;
+    g_status.drop_eth_up     = false;
+    g_status.drop_eth_downs  = 0;
     if (g_status.baseline_total <= 0 || g_status.baseline_total > BASELINE_MAX)
         g_status.baseline_total = BASELINE_DEFAULT;
 

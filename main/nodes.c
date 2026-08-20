@@ -29,6 +29,10 @@
 #include "gcp.h"
 #include "elotto_link.h"
 
+/* Defined below, beside the miss rule it belongs to; the camera-fault path
+ * further down is the other caller. */
+static void note_first_drop(int node);
+
 /* Camera failure policy — REPORT AND REBOOT, never substitute.
  *
  * There is no second source in this firmware, so "degrade gracefully" is not on
@@ -68,6 +72,7 @@ void node_camera_failed(int node, const char *why)
         g_status.nodes[node].reboots++;
         slave_reboot(node - 1);
     }
+    note_first_drop(node);
 
     int floor_n = (g_status.node_count >= 2) ? 2 : 1;
     if (g_status.node_ok < floor_n) {
@@ -109,6 +114,28 @@ void node_camera_failed(int node, const char *why)
 // unplugged node would cost every remaining run the full retry budget forever;
 // the Phase D gate wants an unplug to *degrade* the array, not to slow it down.
 #define NODE_MISS_LIMIT 3
+
+/* Stamp the first drop of the session with the master's OWN link state.
+ * Called from both drop paths (missed replies here, camera fault above), and
+ * only the first one lands: what a diagnosis needs is the state at the moment
+ * the array started falling apart, not the moment the last node left.
+ *
+ * Reading g_status.eth_up rather than polling the PHY is deliberate -- the
+ * event handler in elotto.c already holds the authoritative value, and a drop
+ * is decided from the measurement task, which must not block on MDIO. */
+static void note_first_drop(int node)
+{
+    if (g_status.drop_uptime_ms >= 0) return;
+    g_status.drop_uptime_ms = esp_timer_get_time() / 1000;
+    g_status.drop_eth_up    = g_status.eth_up;
+    g_status.drop_eth_downs = g_status.eth_downs;
+    g_status.drop_node      = node;
+    printf("drop forensics: node %d at uptime %lld ms, master eth %s, "
+           "%lu link down(s) since boot\n",
+           node, (long long)g_status.drop_uptime_ms,
+           g_status.drop_eth_up ? "UP" : "DOWN",
+           (unsigned long)g_status.drop_eth_downs);
+}
 
 static bool     s_slave_ok = false;   // at least one slave is participating
 static int      s_sock     = -1;
@@ -300,6 +327,7 @@ int nodes_collect(int timeout_ms, bool critical)
         if (++s_link[k].miss_streak >= NODE_MISS_LIMIT) {
             g_status.nodes[k + 1].ok = false;
             g_status.node_ok--;
+            note_first_drop(k + 1);
             printf("node %d (%s): %d missed replies -- dropped, %d node(s) left\n",
                    k + 1, g_status.nodes[k + 1].ip, s_link[k].miss_streak,
                    g_status.node_ok);

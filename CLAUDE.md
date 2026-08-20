@@ -459,13 +459,12 @@ produces.
 autocorr ≈ 0, 5,71 Mbit/s each. Settled light at exp 128: master 34,5 · slave0 27,9 · slave1 27,0 ·
 slave2 19,5, stable to ±0,6 % over 18 min.
 
-**Flashed and verified 2026-08-19** — master `1ea2723` → now `c034a16` / `3633c864e42096ca`, all three slaves
+**Flashed and verified 2026-08-19** — master `1ea2723` / `3633c864e42096ca`, all three slaves
 `3c53a5e1ff7adff0`. Checked on hardware after the flash: all four nodes certify a rung and land on
 **exp 128/64/64/64**, none on 4 or 8; `clear_sig`, `quar` and per-node `soft`/`trip`/`mflag` present
 in `/loops`; `compacted=0 fw=1ea2723/…` plus `# fw_nodes=` in a fresh CSV.
-⚠ The running binaries report `1ea2723`, which the 2026-08-20 history rewrite renamed to `c034a16`;
-the string in the CSV header is what the hardware says, and only the ELF SHA is stable across a
-rewrite. Match firmware by SHA, not by the version string, for anything built before 2026-08-20.
+⚠ The 2026-08-20 history rewrite renumbered `1ea2723` → `c034a16`, and the nodes still report the old
+string. **Match a pre-08-20 build by ELF SHA, not by the version string.**
 ⚠ **Not exercised on hardware**: `mflag` firing (needs a real |mean| > 1,5 excursion, and the gated
 rungs are what used to produce them) and compaction itself `[D42]` — the cheapest way to reach it is
 6-of-49 unlimited at `maxruns=5005`, ~3,7 h at `?run=1`.

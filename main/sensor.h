@@ -686,6 +686,35 @@ typedef struct {
                                           // z_slave of run k with z_master of
                                           // run k+1 — correlation dressed as
                                           // physics, so they are counted, not used
+
+    /* ── Which side went quiet ─────────────────────────────────────────
+     * A drop says a node stopped answering. It does NOT say whether the node
+     * went away or the master's own link did, and on 2026-08-20 that cost a
+     * 4 h session: all three slaves missed their limit inside the same ~50 s,
+     * every node was healthy afterwards, and nothing on the master recorded
+     * whether its own Ethernet had been up at the time.
+     *
+     * eth_* are LIFETIME, deliberately: the link event that ends a session is
+     * often the one that happened before it started, and a per-session counter
+     * would have been cleared by then.
+     *
+     * ⚠ Timestamps are esp_timer uptime, not wall clock — this rig has no RTC
+     * and no SNTP. `uptime_ms` travels in every /status precisely so they can
+     * be converted: wall = now − (uptime_ms − stamp). */
+    bool             eth_up;              // PHY link as of the last ETHERNET_EVENT
+    uint32_t         eth_downs;           // DISCONNECTED events since boot
+    uint32_t         eth_lost_ips;        // IP_EVENT_ETH_LOST_IP since boot
+    int64_t          eth_last_down_ms;    // uptime at the last DISCONNECTED, -1 never
+    int64_t          eth_last_up_ms;      // uptime at the last CONNECTED, -1 never
+
+    /* Stamped by the FIRST node drop of a session and then left alone: the
+     * first one is the diagnostic, the rest are its consequences. Per session. */
+    int64_t          drop_uptime_ms;      // uptime at that drop, -1 = none yet
+    bool             drop_eth_up;         // master's own link at that moment
+    uint32_t         drop_eth_downs;      // eth_downs as of that moment, so a
+                                          // link bounce that already healed is
+                                          // still visible after the fact
+    int              drop_node;           // node index that went first, -1 none
     // ── Per-loop camera calibration (PLAN.md Task 1) ───────────────────
     int              cal_budget_ms;       // sweep budget per loop, 0 = do not
                                           // calibrate. A no-calibration session

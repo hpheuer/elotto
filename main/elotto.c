@@ -35,6 +35,38 @@ static void on_ip_event(void *arg, esp_event_base_t base, int32_t id, void *data
         ip_event_got_ip_t *ev = (ip_event_got_ip_t *)data;
         ESP_LOGI(TAG, "IP: " IPSTR, IP2STR(&ev->ip_info.ip));
         xEventGroupSetBits(eth_event_group, ETH_GOT_IP_BIT);
+    } else if (id == IP_EVENT_ETH_LOST_IP) {
+        /* The lease went, the cable did not. Counted separately from a PHY
+         * drop because it points somewhere else entirely: a DHCP server that
+         * restarted, i.e. the router, not this board and not the wire. */
+        g_status.eth_lost_ips++;
+        ESP_LOGW(TAG, "eth: lost IP (%lu so far)",
+                 (unsigned long)g_status.eth_lost_ips);
+    }
+}
+
+/* ── Ethernet link log ────────────────────────────────────────────────
+ * The master's own answer to "was it me or was it them?". A node drop alone
+ * cannot distinguish a slave that went away from a master that stopped being
+ * able to hear anyone, and on 2026-08-20 that ambiguity cost a 4 h session:
+ * three slaves hit the miss limit inside the same ~50 s and every one of them
+ * was healthy when it was looked at afterwards.
+ *
+ * Lifetime counters on purpose — see sensor.h. Cheap enough to keep always:
+ * two events and four fields, no polling. */
+static void on_eth_event(void *arg, esp_event_base_t base, int32_t id, void *data)
+{
+    int64_t now_ms = esp_timer_get_time() / 1000;
+    if (id == ETHERNET_EVENT_CONNECTED) {
+        g_status.eth_up          = true;
+        g_status.eth_last_up_ms  = now_ms;
+        ESP_LOGI(TAG, "eth: link up at %lld ms", (long long)now_ms);
+    } else if (id == ETHERNET_EVENT_DISCONNECTED) {
+        g_status.eth_up            = false;
+        g_status.eth_last_down_ms  = now_ms;
+        g_status.eth_downs++;
+        ESP_LOGW(TAG, "eth: link DOWN at %lld ms (%lu since boot)",
+                 (long long)now_ms, (unsigned long)g_status.eth_downs);
     }
 }
 
@@ -1056,6 +1088,17 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 // camera failure ends that node's participation and the operator must see why.
 "if(d.fault)s3='<div style=\"color:#ff9c6e;font-weight:600;margin:4px 0\">"
 "\\u26a0 '+d.fault+'</div>'+s3;"
+// A drop with no fault string is the ambiguous case: the node simply stopped
+// answering. Say which side the master's own link was on at that moment, or
+// the operator is left holding a router log against a guess.
+"if(d.drop_node>=0){"
+"var dn=(d.drop_node===0?'master':'slave'+d.drop_node);"
+"var ago=Math.max(0,((d.uptime_ms||0)-d.drop_uptime_ms)/1000);"
+"var side=d.drop_eth_up?'master link was UP \\u2013 peer or LAN side'"
+":'master link was DOWN \\u2013 this board or its cable';"
+"if(d.drop_eth_downs>0)side+=', '+d.drop_eth_downs+' link drop(s) by then';"
+"s3+='<div style=\"color:#ffd479;margin:4px 0\">first drop: '+dn+', '"
+"+ago.toFixed(0)+' s ago \\u00b7 '+side+'</div>';}"
 "sl.innerHTML+=(sl.innerHTML?'<br>':'')+s3;}"
 "refreshNodeHealth(d);"
 // Transport health (PLAN_NETWORK Phase C). UDP can drop where the UART could
@@ -1216,6 +1259,14 @@ static esp_err_t status_handler(httpd_req_t *req)
         "\"pair_i\":%d,\"pair_j\":%d,\"pair_count\":%d,"
         "\"nodes_total\":%d,\"nodes_ok\":%d,"
         "\"net_retries\":%lu,\"net_lost\":%lu,\"net_stale\":%lu,"
+        /* Which side went quiet. uptime_ms is what makes the stamps
+         * readable: there is no RTC, so wall time of an event is
+         * now - (uptime_ms - stamp), computed by whoever polls. */
+        "\"uptime_ms\":%lld,"
+        "\"eth_up\":%s,\"eth_downs\":%lu,\"eth_lost_ips\":%lu,"
+        "\"eth_last_down_ms\":%lld,\"eth_last_up_ms\":%lld,"
+        "\"drop_node\":%d,\"drop_uptime_ms\":%lld,"
+        "\"drop_eth_up\":%s,\"drop_eth_downs\":%lu,"
         "\"focus\":%s,\"paused\":%s,\"paused_ms\":%lld,"
         "\"focus_win_ms\":%.1f,\"focus_gap_ms\":%.1f,"
         "\"run_s\":%.2f,\"gap_s\":%.2f,\"run_segs\":%d,"
@@ -1250,6 +1301,15 @@ static esp_err_t status_handler(httpd_req_t *req)
         g_status.node_count, g_status.node_ok,
         (unsigned long)g_status.net_retries, (unsigned long)g_status.net_lost,
         (unsigned long)g_status.net_stale,
+        (long long)(esp_timer_get_time() / 1000),
+        g_status.eth_up ? "true" : "false",
+        (unsigned long)g_status.eth_downs,
+        (unsigned long)g_status.eth_lost_ips,
+        (long long)g_status.eth_last_down_ms,
+        (long long)g_status.eth_last_up_ms,
+        g_status.drop_node, (long long)g_status.drop_uptime_ms,
+        g_status.drop_eth_up ? "true" : "false",
+        (unsigned long)g_status.drop_eth_downs,
         g_status.focus_mode ? "true" : "false",
         g_status.paused ? "true" : "false", (long long)g_status.paused_ms,
         g_status.focus_win_ms, g_status.focus_gap_ms,
@@ -2424,6 +2484,12 @@ static void ethernet_init(void)
 
     ESP_ERROR_CHECK(esp_event_handler_instance_register(
         IP_EVENT, IP_EVENT_ETH_GOT_IP, on_ip_event, NULL, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(
+        IP_EVENT, IP_EVENT_ETH_LOST_IP, on_ip_event, NULL, NULL));
+    /* Registered BEFORE esp_eth_start(), or the first link-up is missed and
+     * eth_up stays false on a board whose link never actually bounced. */
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(
+        ETH_EVENT, ESP_EVENT_ANY_ID, on_eth_event, NULL, NULL));
     esp_eth_start(eth_hdl);
 }
 
