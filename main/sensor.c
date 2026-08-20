@@ -1992,7 +1992,18 @@ void elotto_task(void *pvParam)
         if (g_status.unlimited && g_status.runs_completed + full_combos > NUM_RUNS)
             pass_compact();
 
-        g_status.round_base = g_status.items_done;
+        /* ⚠ runs_completed, NOT items_done. round_base is an INDEX into
+         * results[]; items_done is a monotone count of items measured. They
+         * were identical until compaction existed and pass_compact() started
+         * lowering the one while deliberately leaving the other alone -- after
+         * which this round would write past the compacted array, leave the
+         * dropped rows sitting in front of it, and count them a second time on
+         * top of the moments they were already folded into. That shipped: the
+         * 2026-08-20 session reported pass_n_valid 15806 for 8019 items, with
+         * every survivor duplicated in top/low/near.
+         * The tell is n, not sigma -- doubling identical values barely moves
+         * mean or sigma, so the D42 sanity check does not catch this. */
+        g_status.round_base = g_status.runs_completed;
         int room = NUM_RUNS - g_status.runs_completed;
         int round_total = full_combos;
         if (round_total > room) { round_total = room; space_full = true; }

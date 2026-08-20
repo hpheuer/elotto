@@ -590,7 +590,12 @@ typedef struct {
     bool             unlimited;        // rounds repeat until Abort / results full
     int              runs_cap;         // measurement runs a round may spend
     int              round;            // 1-based; 0 before the first round starts
-    int              round_base;       // results[] index this round started at
+    int              round_base;       // results[] index this round started at.
+                                       // ⚠ An INDEX, so it comes from
+                                       // runs_completed. items_done counts
+                                       // ITEMS and compaction makes the two
+                                       // diverge; see the note at the
+                                       // assignment in sensor.c
     int              round_total;      // == runs_total, published separately so a
                                        // reader never has to know which one moved
     volatile int     baseline_done;

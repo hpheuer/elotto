@@ -514,6 +514,17 @@ lossless, not the count kept.
 ⚠ **It runs only when the next round would not fit.** The dropped rows cannot be recovered, and the
 per-node `z0..z3` of a dropped item is how `[D11]` was found — last resort, not policy.
 
+**First run on hardware, 2026-08-20 — and it was wrong.** `round_base` was assigned from
+`items_done` where it is an INDEX into `results[]` and had to come from `runs_completed`. The two
+were identical until this decision made `pass_compact()` lower the one and deliberately keep the
+other, so the round after a compaction wrote past the compacted array, left the dropped rows in
+front of it, and counted them again on top of the moments they were already folded into. The
+session reported `pass_n_valid` 15806 = 7806 + 8000 for 8019 items, with every survivor duplicated
+in `top`/`low`/`near`. Wrong: everything scaling with n — `pass_stouffer`, `comparisons`, the
+Bonferroni line.
+⚠ **The tell is n, not σ.** Doubling identical values barely moves mean or σ, so the σ ≈ 2 symptom
+this entry warns about below does not fire. Check `pass_n_valid` against `completed`.
+
 Consequences elsewhere: `runs_completed` now means ROWS HELD and `items_done` is the session count
 (`[D41]`'s archive is what shrinks, not the statistics); `LOOP_HIST` went 128 → 1024, because at 52
 blocks per 11,6 h the old value was ~28 h and the first session able to outlive the buffer would

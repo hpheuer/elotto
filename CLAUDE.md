@@ -113,7 +113,9 @@ only Abort ends it. The stop survives as the backstop for a compaction that cann
   exact over every item measured; Top-N and Bottom-N stay exact outright.
   ⚠ Only when it must, so a session that fits keeps its complete archive.
   ⚠ `completed` in `/status` is `items_done` (monotone). `runs_completed` is ROWS HELD and steps
-  back at a compaction — never report progress from it.
+  back at a compaction — never report progress from it. **`items_done` is not an index**; anything
+  addressing `results[]` takes `runs_completed`. Getting that wrong is what broke the first
+  compaction on hardware `[D42]`; it shows as `pass_n_valid` ≠ `completed`, not as a bad σ.
   ⚠ `compacted=` in the CSV header says what the file is NOT: non-zero means the rows are the
   extremes plus survivors, not a sample. Never compute a distribution from them.
 - **Every round closes its own block**, even at `?calint=0`, so centring never mixes items from
