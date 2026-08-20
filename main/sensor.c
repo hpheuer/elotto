@@ -133,10 +133,12 @@ static void prng_seed(void)
  * RUN_MS_REF in sensor.h. The old CAM_SEGMENTS 11950 was the 1 s era and had
  * been dead code for several versions. */
 
-/* Segment count for a requested wall window. Uses the 2026-08-02 live cal
- * (66000 segs ↔ 4680 ms). Longer requests may stretch past the target: the
- * camera rate falls under sustained load (duty-cycle cliff) — that stretch IS
- * the limit the operator is probing with the ?run= field. */
+/* Segment count for a requested wall window, from RUN_SEGS_REF / RUN_MS_REF in
+ * sensor.h — currently the 2026-08-18 pair, 70513 segs ↔ 2703 ms. That header
+ * carries the calibration and its history; do not restate the numbers here.
+ * Longer requests may stretch past the target: the camera rate falls under
+ * sustained load (duty-cycle cliff) — that stretch IS the limit the operator is
+ * probing with the ?run= field. */
 static int segs_from_run_ms(int run_ms)
 {
     if (run_ms < 100) run_ms = 100;

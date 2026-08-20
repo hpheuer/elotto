@@ -21,7 +21,7 @@
 #include "camera.h"
 #include "extract.h"
 
-// OV5647 dark-frame noise source.
+// OV5647 noise source. See include/camera.h on why "dark frame" is a label.
 // Extraction: non-overlapping frame pairs, diff = f[2k+1] - f[2k] per pixel
 // (cancels fixed-pattern noise exactly), LSB of each diff packed into a
 // ring buffer, XOR-folded. camera_read_word() feeds noise_word() in sensor.c.

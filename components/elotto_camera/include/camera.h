@@ -3,8 +3,11 @@
 #include <stdbool.h>
 #include "esp_err.h"
 
-// OV5647 dark-frame noise source: photon shot + read noise
-// from non-overlapping frame pairs. This component is SHARED with the slave repo
+// OV5647 noise source: photon shot + read noise from non-overlapping frame
+// pairs. ⚠ "dark frame" survives in names and docs as a LABEL only — the
+// enclosure is lit with constant ambient light, and the dark end of the
+// exposure ladder is gated off because too few photons stop whitening the LSB.
+// This component is SHARED with the slave repo
 // via EXTRA_COMPONENT_DIRS — one source of truth, byte-identical extraction on
 // both nodes, so a change here means rebuilding and flashing both.
 

@@ -352,15 +352,23 @@ The noise source is an OV5647 camera per node. Design contract:
 [docs/PLAN.md](docs/PLAN.md); the phase-by-phase gate results are in git history
 (`git show 8e134e5:docs/PLAN_4NODE.md`).
 
-### Why a camera in the dark
+### Why a camera, and why it is lit
 
 The ESP32-P4 TRNG is fast and passes every bias test, but it is **whitened and opaque**: what
 comes out of the register has already been conditioned, so "is this deviation physical?" is not
-a question the register can answer. A capped camera answers it directly. With no light reaching
-the sensor, the pixel values are not zero — they are **photon shot noise** (Poisson arrival
-statistics of the few photons that do arrive, quantum-origin) plus **read noise**. Nothing
-whitens it; the bits are taken raw and the physics is visible in the diagnostics (`mean_pixel`,
+a question the register can answer. A camera answers it directly: the pixel values are **photon
+shot noise** (Poisson arrival statistics, quantum-origin) plus **read noise**. Nothing whitens it;
+the bits are taken raw and the physics stays visible in the diagnostics (`mean_pixel`,
 `zero_diff`, autocorrelation).
+
+**The enclosure is lit with constant, controlled ambient light** — it is not a dark frame, and the
+name "dark frame" survives only as a label. Photons are what does the whitening: with too few of
+them the LSB stops being uniform, which is why the dark end of the exposure ladder is *gated off*
+rather than preferred. On this rig exposures 4 and 8 fail to certify and 16…128 pass. If rungs
+start failing, the answer is more light, not a lower floor.
+
+> ⚠ **Historically this was a capped camera in the dark**, and much of the wording below still
+> comes from that arrangement. Sealing the enclosure made the source worse, not better.
 
 ### Extraction pipeline
 
@@ -379,8 +387,10 @@ Sustained **5.71 Mbit/s per node idle**, ~3.7 under measurement load, RAW8 800×
 AE/AGC/AWB off and every register write verified by read-back. That figure is *after* the XOR-fold,
 not before it.
 
-⚠ The idle rate is now **98.5 % of what the sensor can deliver** at this mode, so the ceiling is the
-sensor and nothing done to the extraction path can raise it. Under load the loop is compute-bound
+⚠ The idle rate is now **98.5 % of what the sensor can deliver** at this mode *in this output
+format*, so the ceiling is the sensor and no change to the extraction path can raise it. The one
+thing that would is dropping the XOR-fold, which doubles the emitted bits — and that is not on the
+table: the fold is what makes the stream usable at all. Under load the loop is compute-bound
 instead, which is a different question and still open. Earlier readings of 1.8 and 3.4 Mbit/s were
 PSRAM- and codegen-bound stages on the way here; they describe no firmware that still exists.
 
@@ -409,8 +419,10 @@ remove the cause, and even folded the bias sits ~3σ from 0.5 over 105.9 Mbit. T
 a per-run z offset of ≈ −0.33, which studentization removes exactly — *as long as it does not
 drift*, which is what the [cross-loop drift check](#measurement-hygiene) watches.
 
-**The two cameras are not equally clean, and it is not configuration.** Measured in Phase 2 with
-identical verified settings: master `mean_px` 6.8 / `zero_diff` 9.4 %, slave 2.8 / 16.2 %, and
+**The cameras are not equally clean, and it is not configuration.** ⚠ Measured in Phase 2, when
+the array was **two** nodes in a dark enclosure — it is four lit nodes now, and the figures below
+are that old instrument. The effect is the current one; the numbers are not. With identical
+verified settings: master `mean_px` 6.8 / `zero_diff` 9.4 %, slave 2.8 / 16.2 %, and
 the slave's bias deviation an order of magnitude larger. Bias tracks light: more photons → more
 shot noise → wider noise distribution → more uniform LSB. Sensor warming and sub-ADU
 quantization starvation were both tested and refuted; the remaining explanation is per-unit

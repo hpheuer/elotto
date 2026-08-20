@@ -449,8 +449,9 @@ static void slave_calibrate_start(int budget_ms, int segments)
 }
 
 /* Record what one node reported: "OK:<exp>,<gain>,<fold>,<bias>,<mbit_s>,<G|U>".
- * The trailing tag is the same idiom as the 'Z:' reply's source tag — appended
- * after the numbers so it cannot disturb a field-order parse — and says whether
+ * The tag is appended AFTER the numbers so it cannot disturb a field-order
+ * parse, and an older master that stops reading early still gets valid
+ * numbers. It says whether
  * the node actually adopted a GATED setting or fell back to its previous one.
  * Without it a node that certified nothing would be indistinguishable in
  * /status from one that certified the setting it happens to be running. */
