@@ -588,6 +588,11 @@ typedef struct {
     bool             unlimited;        // rounds repeat until Abort / results full
     int              runs_cap;         // measurement runs a round may spend
     int              round;            // 1-based; 0 before the first round starts
+    int              round_item_base;  // items_done when this round started. The
+                                       // ITEM-space twin of round_base, and the
+                                       // only one a progress figure may use:
+                                       // round_base is an index and compaction
+                                       // moves the two apart
     int              round_base;       // results[] index this round started at.
                                        // ⚠ An INDEX, so it comes from
                                        // runs_completed. items_done counts

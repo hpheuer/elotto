@@ -116,6 +116,9 @@ only Abort ends it. The stop survives as the backstop for a compaction that cann
   back at a compaction — never report progress from it. **`items_done` is not an index**; anything
   addressing `results[]` takes `runs_completed`. Getting that wrong is what broke the first
   compaction on hardware `[D42]`; it shows as `pass_n_valid` ≠ `completed`, not as a bad σ.
+  ⚠ The round has **two** bases and they are not interchangeable: `round_base` is the results[] index,
+  `round_item_base` the items_done value. A progress figure or the CSV `items=` field takes the item
+  one — mixing them printed "item 16184 / 378" once compaction had moved them apart.
   ⚠ `compacted=` in the CSV header says what the file is NOT: non-zero means the rows are the
   extremes plus survivors, not a sample. Never compute a distribution from them.
 - **Every round closes its own block**, even at `?calint=0`, so centring never mixes items from
@@ -495,13 +498,10 @@ round after the compaction wrote past the compacted array and the dropped rows w
 3. **Does calibration reduce the RATE of bad blocks?** The control pair only asked "does it add
    variance?" (no). The tail question needs a count of excursions over many blocks, not a mean.
 
-4. **Re-run a session long enough to compact.** The `round_base` fix is untested on hardware: it
-   only takes effect at the first compaction, so it needs a session that fills 8000. Check
-   `pass_n_valid` against `completed` — that, not σ, is where the old bug showed.
-
 **Recently closed:** the master's block offsets `[D11]` · slave1's σ excess follows the board, not the
 camera `[D15]` · why the last two extraction changes bought nothing `[D24]` · which side goes quiet
-when nodes drop (`drop_*` in `/status`, 2026-08-20).
+when nodes drop (`drop_*` in `/status`, 2026-08-20) · the `round_base` fix, verified on hardware in
+the 08-20 Eurojackpot session at 48 rounds and `compacted` 15828: `pass_n_valid` == `completed`.
 **Dropped and deferred:** see the last section of [docs/DECISIONS.md](docs/DECISIONS.md) — check it
 before proposing anything that sounds obvious.
 

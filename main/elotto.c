@@ -1332,8 +1332,11 @@ static esp_err_t status_handler(httpd_req_t *req)
         (long long)g_status.elapsed_ms, g_status.compacted,
         g_status.unlimited ? "true" : "false", g_status.runs_cap,
         g_status.round, g_status.round_base,
-        g_status.items_done > g_status.round_base
-            ? g_status.items_done - g_status.round_base : 0,
+        /* round_ITEM_base, not round_base: the latter is an index into
+         * results[] and compaction moves the two apart, which read as
+         * "item 16184 / 378" on the page. */
+        g_status.items_done > g_status.round_item_base
+            ? g_status.items_done - g_status.round_item_base : 0,
         g_status.round_total,
         g_status.pool_confirm, g_status.pool_auto,
         g_status.pool_need_main, g_status.pool_need_euro);
@@ -1624,7 +1627,7 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
      * CURRENT round — there is no session total by construction — so it stays
      * monotone instead of reading 1234/84. */
     int planned = g_status.unlimited
-                ? g_status.round_base + g_status.round_total
+                ? g_status.round_item_base + g_status.round_total
                 : g_status.runs_total;
     int nlen = snprintf(buf, sizeof(buf),
         "# elotto v3 mode=%s focus=%s score=%s items=%d/%d ranked=%d excl=%d void=%d "

@@ -1725,6 +1725,7 @@ void elotto_task(void *pvParam)
     // here — they tag the session, exactly like focus_mode.
     g_status.round           = 0;
     g_status.round_base      = 0;
+    g_status.round_item_base = 0;
     g_status.round_total     = 0;
     g_status.baseline_done   = 0;
     g_status.scoring_done    = 0;
@@ -2003,7 +2004,8 @@ void elotto_task(void *pvParam)
          * every survivor duplicated in top/low/near.
          * The tell is n, not sigma -- doubling identical values barely moves
          * mean or sigma, so the D42 sanity check does not catch this. */
-        g_status.round_base = g_status.runs_completed;
+        g_status.round_base      = g_status.runs_completed;
+        g_status.round_item_base = g_status.items_done;
         int room = NUM_RUNS - g_status.runs_completed;
         int round_total = full_combos;
         if (round_total > room) { round_total = room; space_full = true; }

@@ -525,6 +525,15 @@ Bonferroni line.
 ⚠ **The tell is n, not σ.** Doubling identical values barely moves mean or σ, so the σ ≈ 2 symptom
 this entry warns about below does not fire. Check `pass_n_valid` against `completed`.
 
+Fixed the same day, and **verified on hardware** in the 08-20 Eurojackpot session: 48 rounds,
+`compacted` 15828, `pass_n_valid` == `completed` == 17766.
+
+⚠ The fix split the round's base in two, and the first version of it shipped with the display still
+reading the wrong one — "item 16184 / 378" on the page and a nonsense `items=` in the CSV header.
+**`round_base` is a results[] index; `round_item_base` is an items_done value.** Anything counting
+ITEMS takes the second. They are equal until the first compaction, which is exactly why the mistake
+survives testing on any session that does not fill the buffer.
+
 Consequences elsewhere: `runs_completed` now means ROWS HELD and `items_done` is the session count
 (`[D41]`'s archive is what shrinks, not the statistics); `LOOP_HIST` went 128 → 1024, because at 52
 blocks per 11,6 h the old value was ~28 h and the first session able to outlive the buffer would
