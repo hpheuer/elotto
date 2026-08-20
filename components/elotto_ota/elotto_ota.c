@@ -1,5 +1,4 @@
-/* Shared network-update endpoint + boot-safety logic — see include/elotto_ota.h
- * and docs/PLAN_NETWORK.md ("Failure modes and recovery").
+/* Shared network-update endpoint + boot-safety logic — see include/elotto_ota.h.
  *
  * esp_ota sequence follows examples/system/ota/native_ota_example; the body
  * handling follows examples/protocols/http_server/file_serving. IDF's examples

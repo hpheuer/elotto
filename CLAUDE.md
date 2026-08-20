@@ -452,7 +452,7 @@ back on a known-good image without USB.
 
 ---
 
-## Where things stand (2026-08-19)
+## Where things stand (2026-08-20)
 
 **The instrument is sound and every result so far is null**, which is what a working null instrument
 produces.
@@ -461,18 +461,29 @@ produces.
 autocorr ≈ 0, 5,71 Mbit/s each. Settled light at exp 128: master 34,5 · slave0 27,9 · slave1 27,0 ·
 slave2 19,5, stable to ±0,6 % over 18 min.
 
-**Flashed and verified 2026-08-19** — master `1ea2723` / `3633c864e42096ca`, all three slaves
-`3c53a5e1ff7adff0`. Checked on hardware after the flash: all four nodes certify a rung and land on
-**exp 128/64/64/64**, none on 4 or 8; `clear_sig`, `quar` and per-node `soft`/`trip`/`mflag` present
-in `/loops`; `compacted=0 fw=1ea2723/…` plus `# fw_nodes=` in a fresh CSV.
-⚠ The 2026-08-20 history rewrite renumbered `1ea2723` → `c034a16`, and the nodes still report the old
-string. **Match a pre-08-20 build by ELF SHA, not by the version string.**
+**Flashed 2026-08-20** — master `703e98b24897e10f`, all three slaves `3c53a5e1ff7adff0` (unchanged;
+the slave sources did not move). The 08-19 checks still hold: all four certify a rung and land on
+**exp 128/64/64/64**, none on 4 or 8; `clear_sig`, `quar`, per-node `soft`/`trip`/`mflag` in `/loops`;
+`# fw_nodes=` in a fresh CSV.
+⚠ The 2026-08-20 history rewrite renumbered every commit from `18074b5` on. **Match a pre-08-20 build
+by ELF SHA, not by the version string.**
 ⚠ **Not exercised on hardware**: `mflag` firing (needs a real |mean| > 1,5 excursion, and the gated
-rungs are what used to produce them) and compaction itself `[D42]` — the cheapest way to reach it is
-6-of-49 unlimited at `maxruns=5005`, ~3,7 h at `?run=1`.
+rungs are what used to produce them), and the `round_base` fix — compaction itself has now run, see
+below.
 ⚠ Flash master and all three slaves **together**: `K` carries a field and `D` another. Both
 mismatches degrade safely (legacy bias bar / no sha in the header), but a half-flashed array is not
 one instrument.
+
+**The 2026-08-20 session, and what it cost.** 8019 items, 18 rounds, 4 h 09 min, aborted at ~04:03
+when all three slaves missed `NODE_MISS_LIMIT` inside the same ~50 s. Every node was healthy
+afterwards; the FritzBox logged a DNS fault at 04:09 that this array cannot even use, since it
+resolves no names. The master now records which side went quiet — `eth_up`, `eth_downs`,
+`eth_lost_ips`, `drop_*` and `uptime_ms` in `/status` — so the next one is answerable without
+reconstructing the abort time from slave camera counters.
+⚠ **The session's own statistics are wrong** and it is not archived. Compaction fired for the first
+time and `round_base` was taken from `items_done` where it had to come from `runs_completed`: the
+round after the compaction wrote past the compacted array and the dropped rows were counted twice.
+`pass_n_valid` 15806 for 8019 items. Fixed the same day `[D42]`.
 
 **Open, in the order I would pick them up:**
 1. **Does an offset survive on a GATED rung?** The 08-19 blocks at exp ≥ 16 average −0,05…+0,09, but
@@ -484,8 +495,13 @@ one instrument.
 3. **Does calibration reduce the RATE of bad blocks?** The control pair only asked "does it add
    variance?" (no). The tail question needs a count of excursions over many blocks, not a mean.
 
+4. **Re-run a session long enough to compact.** The `round_base` fix is untested on hardware: it
+   only takes effect at the first compaction, so it needs a session that fills 8000. Check
+   `pass_n_valid` against `completed` — that, not σ, is where the old bug showed.
+
 **Recently closed:** the master's block offsets `[D11]` · slave1's σ excess follows the board, not the
-camera `[D15]` · why the last two extraction changes bought nothing `[D24]`.
+camera `[D15]` · why the last two extraction changes bought nothing `[D24]` · which side goes quiet
+when nodes drop (`drop_*` in `/status`, 2026-08-20).
 **Dropped and deferred:** see the last section of [docs/DECISIONS.md](docs/DECISIONS.md) — check it
 before proposing anything that sounds obvious.
 

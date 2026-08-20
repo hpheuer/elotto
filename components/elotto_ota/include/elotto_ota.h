@@ -3,7 +3,7 @@
 #include "esp_err.h"
 #include "esp_http_server.h"
 
-/* Shared network-update endpoint and boot-safety logic (docs/PLAN_NETWORK.md).
+/* Shared network-update endpoint and boot-safety logic.
  *
  * SHARED between the factory updater (ota_firmware/), the master (elotto) and
  * later the slave — one implementation of the code that decides whether a node

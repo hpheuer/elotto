@@ -3,7 +3,7 @@
 #include <stdbool.h>
 #include "esp_err.h"
 
-// OV5647 dark-frame noise source (docs/PLAN_4NODE.md): photon shot + read noise
+// OV5647 dark-frame noise source: photon shot + read noise
 // from non-overlapping frame pairs. This component is SHARED with the slave repo
 // via EXTRA_COMPONENT_DIRS — one source of truth, byte-identical extraction on
 // both nodes, so a change here means rebuilding and flashing both.
@@ -131,7 +131,7 @@ bool camera_get_xor_fold(void);
  * Restarts the statistics window, since the probe itself extracts nothing. */
 double camera_fps_probe(int frames, int timeout_ms);
 
-/* ── The sweep (docs/PLAN.md Task 1 §1.4) ──────────────────────────────────
+/* ── The sweep (§1.4) ──────────────────────────────────
  *
  * Objective, settled in §1.7 and NOT a tunable: **best entropy, not maximum
  * rate**. A candidate must pass every hard gate below; among those that do, the

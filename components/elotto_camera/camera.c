@@ -21,7 +21,7 @@
 #include "camera.h"
 #include "extract.h"
 
-// OV5647 dark-frame noise source (docs/PLAN_4NODE.md).
+// OV5647 dark-frame noise source.
 // Extraction: non-overlapping frame pairs, diff = f[2k+1] - f[2k] per pixel
 // (cancels fixed-pattern noise exactly), LSB of each diff packed into a
 // ring buffer, XOR-folded. camera_read_word() feeds noise_word() in sensor.c.
@@ -845,7 +845,7 @@ static const uint32_t s_cal_ladder[] = { 4, 8, 16, 32, 64, 128, 256, 512 };
 /* Over-illumination backstop. This was a LIGHT-LEAK floor at 64.0 (a quarter of
  * full scale) back when the cameras were meant to sit in the dark and any raised
  * mean_px meant uncontrolled light getting in. The enclosure is now deliberately
- * LIT (PLAN.md §1.13), so a high mean_px means the lamp is on, not that a leak
+ * LIT (§1.13), so a high mean_px means the lamp is on, not that a leak
  * has appeared — the gate no longer measures what it was written to measure.
  *
  * Raised to 100.0 on measured evidence. At 64.0 it rejected the best rung the
@@ -866,7 +866,7 @@ static const uint32_t s_cal_ladder[] = { 4, 8, 16, 32, 64, 128, 256, 512 };
 #define CAL_MAX_MEAN_PX     100.0
 /* ── The DARK end of the ladder (2026-08-19) ──────────────────────────────
  * CAL_MAX_MEAN_PX has had a partner missing since the enclosure was lit. The
- * premise of this instrument is that photons do the whitening (PLAN.md §1.13),
+ * premise of this instrument is that photons do the whitening (§1.13),
  * and the bottom rungs of the ladder do not have any: at exposure 4 the frame
  * sits at mean_px 3,1-3,3 and 14,5-17,4 % of pixel differences come back
  * exactly ZERO, against 6,9 % at exposure 128. A zero difference has a
@@ -1083,7 +1083,7 @@ bool camera_calibrate(int budget_ms, bool (*abort_cb)(void), camera_cal_t *out)
     }
 
     /* NO FOLD TRIAL. The XOR fold was in scope as a processing parameter
-     * (PLAN §1.7 decision 3) until the 10-loop session of 2026-07-26 measured
+     * (§1.7 decision 3) until the 10-loop session of 2026-07-26 measured
      * what fold-off actually does, and the decision was WITHDRAWN.
      *
      * The trial worked exactly as designed and that was the problem: fold-off
@@ -1126,7 +1126,7 @@ bool camera_calibrate(int budget_ms, bool (*abort_cb)(void), camera_cal_t *out)
      * -1.6e-3 to -4.8e-5, ~30x the SE, so this reliably picks the right region
      * and only ties arbitrarily between rungs that are genuinely equivalent.
      *
-     * ── SIGMA MARGIN (added 2026-07-27, PLAN.md §1.17) ────────────────────
+     * ── SIGMA MARGIN (added 2026-07-27, §1.17) ────────────────────
      * Bias alone is not enough, because bias is NOT the property that hurts.
      * A bias that survives calibration directly degrades the measurement, and
      * an over-dispersed node costs SNR and drives loop_sigma.

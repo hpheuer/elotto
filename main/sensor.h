@@ -41,13 +41,11 @@
 
 /* ── Session parameters: ONE definition each ──────────────────────────────
  *
- * Every value below used to exist two or three times over: once as an HTML
- * input attribute, once as a JavaScript clamp, and once as the C validator in
- * the /start handler — three copies that nothing forced to agree. They had
- * already drifted apart: the baseline default was 50 in the form and 100 in the
- * handler (so a curl session ran a different experiment from a browser one),
- * and the calibration ETA fell back to 30000 ms for a whole build after the
- * budget default became 10000.
+ * Every value below is defined HERE and nowhere else. The HTML input
+ * attribute, the JavaScript clamp and the C validator in the /start handler all
+ * read from this one place, because three copies nothing forces to agree do not
+ * stay in agreement: the baseline default was once 50 in the form and 100 in
+ * the handler, so a curl session ran a different experiment from a browser one.
  *
  * The page is a C string literal, so the UI copies are made to reference these
  * through EL_STR() rather than being written out again. A limit changed here
@@ -415,7 +413,7 @@ typedef struct {
     uint8_t    euro[2];
 } RunResult;
 
-// Focus display (docs/PLAN_4NODE.md Phase 5): what is on screen right now, for
+// Focus display: what is on screen right now, for
 // exactly the window its bits are collected in. The observer is meant to be
 // present while the noise is sampled — the original GCP/PEAR protocol — so the
 // one property that must hold is `active` ⟺ a run is sampling.
@@ -436,7 +434,7 @@ typedef struct {
     uint8_t  euro[2];
 } FocusState;
 
-// Nodes in the array, master included as index 0 (docs/PLAN_NETWORK.md Phase D).
+// Nodes in the array, master included as index 0.
 // 4 nodes → C(4,2) = 6 pairwise correlations, which is what the gate checks.
 #define MAX_NODES   4
 #define MAX_SLAVES  (MAX_NODES - 1)
@@ -516,7 +514,7 @@ typedef struct {
     float    cam_mbit[MAX_NODES]; // camera rate at loop end, 0 = not answered
     uint32_t cam_stalls[MAX_NODES];
     uint32_t t_s;          // elapsed seconds at loop end
-    // Camera settings this loop was MEASURED AT (PLAN.md Task 1 §1.5.2, and
+    // Camera settings this loop was MEASURED AT (§1.5.2, and
     // mandatory there rather than optional). Per-loop re-tuning is what tracks
     // thermal drift, and recording the setting keeps the statistics auditable — but a
     // per-loop change nobody logged is indistinguishable from drift in the data,
@@ -649,7 +647,7 @@ typedef struct {
     int              low_count;           // valid entries in low[] (published)
     RunResult        low[TOP_N];          // lowest raw z measured so far, asc
     volatile bool    abort_requested;
-    // ── Focus display (PLAN_4NODE Phase 5) ─────────────────────────────
+    // ── Focus display ──────────────────────────────────────────────────
     bool             focus_mode;          // this session is ATTENDED: the panel is
                                           // live and the session is tagged as such.
                                           // A focus session is not equivalent to an
@@ -679,7 +677,7 @@ typedef struct {
     int              node_count;          // nodes discovered, master included (>= 1)
     int              node_ok;             // of those, still contributing
     NodeStatus       nodes[MAX_NODES];    // [0] = master
-    // UDP transport health (PLAN_NETWORK Phase C / Risk 3: "UDP loss must be
+    // UDP transport health. The rule it implements: "UDP loss must be
     // handled explicitly, not assumed away"). Per session.
     uint32_t         net_retries;         // commands resent because no reply came
     uint32_t         net_lost;            // triggers with no reply even after the
@@ -728,7 +726,7 @@ typedef struct {
                                           // a session parameter, not a #define
     int              cal_ms;              // what the last loop's calibration
                                           // actually cost, master + ack wait —
-                                          // the §1.6 gate is a measured number
+                                          // the sweep-cost gate is a measured number
     int              cal_interval_ms;      // minimum wall time between sweeps.
                                           // A loop that starts sooner than this
                                           // after the last one SKIPS calibration:

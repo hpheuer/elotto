@@ -75,7 +75,7 @@ static void prng_seed(void)
 
 #define SEGMENT_BITS   200                     // 6 words + 8 bits, per z segment
 
-/* Segments per run (PLAN_4NODE Phase 1 + 5).
+/* Segments per run.
  *
  * Phase 5 made the run length the *display* window: the Focus panel holds a
  * target for exactly as long as its bits are collected, so the hold time is not
@@ -118,8 +118,8 @@ static void prng_seed(void)
  * which point longer runs feed back into a slower producer and get longer
  * still. None of this is visible in Phase 0's 3.49 Mbit/s idle figure. The
  * counts below are solved from the flat part — n = rate × (window + gap) —
- * which also keeps the source out of the starved regime, where PLAN_4NODE's
- * open item 3 (camera bias degrading under sustained load) lives.
+ * which also keeps the source out of the starved regime, where camera bias
+ * degrades under sustained load.
  *
  * This is the other reason RUN_GAP_MS is not merely cosmetic: the gap is when
  * the producer gets the CPU back, so it buys back most of what it costs.
@@ -2052,7 +2052,7 @@ void elotto_task(void *pvParam)
             if (g_status.abort_requested) { slave_abort(); goto done; }
 
             /* ── Block boundary: sweep + baseline every cal_interval_ms ────
-             * Wall-clock, like the sweep trigger always was (§1.18) — 0 means
+             * Wall-clock, like the sweep trigger always was — 0 means
              * no mid-pass insertions at all. Closing the block BEFORE the
              * insertion keeps the /loops row describing items measured at ONE
              * operating point; the insertion then opens the next block. */

@@ -2,8 +2,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-/* Node link: the UDP transport that replaces the UART pair (docs/PLAN_NETWORK.md
- * §4, Phase C).
+/* Node link: the UDP transport that replaces the UART pair.
  *
  * SHARED between the master (elotto) and the slave (elotto_slave, which reaches
  * this through EXTRA_COMPONENT_DIRS=../elotto/components). The wire format lives
@@ -27,9 +26,9 @@
  * FRAME:  "EL1 <seq> <payload>"      (plain ASCII, one command per datagram)
  *
  * The payload is the *unchanged* UART command/reply text — "M", "B100", "D",
- * "A", "P" and the "Z:<z>,<C|T>" / "D:..." / "OK" answers. PLAN_NETWORK §4 asks
- * for exactly that: keep the command semantics, swap only the transport, so the
- * statistics layer needs no changes and the A/B compares like with like.
+ * "A", "P" and the "Z:<z>,<C|T>" / "D:..." / "OK" answers. That is the rule:
+ * keep the command semantics, swap only the transport, so the statistics layer
+ * needs no changes and the A/B compares like with like.
  *
  * WHY A SEQUENCE NUMBER: the UART link was effectively lossless and strictly
  * ordered, so a reply could only belong to the command just sent. UDP offers

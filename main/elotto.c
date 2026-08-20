@@ -115,7 +115,7 @@ static const char HTML[] =
 "border-radius:0;width:44px;height:42px;font-size:.82em;padding-top:7px;"
 "clip-path:polygon(50% 0%,61% 35%,98% 35%,68% 57%,79% 91%,50% 70%,21% 91%,"
 "32% 57%,2% 35%,39% 35%)}"
-// Focus panel (PLAN_4NODE Phase 5). Salience over legibility: the observer is
+// Focus panel. Salience over legibility: the observer is
 // not meant to decode six numbers in half a second, they are meant to be
 // present while those numbers are on screen and the noise is sampled. So the
 // type is large and high-contrast because it must REGISTER, not because it must
@@ -1101,7 +1101,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "+ago.toFixed(0)+' s ago \\u00b7 '+side+'</div>';}"
 "sl.innerHTML+=(sl.innerHTML?'<br>':'')+s3;}"
 "refreshNodeHealth(d);"
-// Transport health (PLAN_NETWORK Phase C). UDP can drop where the UART could
+// Transport health. UDP can drop where the UART could
 // not, so the gate is a counted "zero lost triggers", not an impression that it
 // felt reliable. Stale replies are answers that arrived after we stopped
 // waiting — dropped by sequence number, never folded into a z.
@@ -1373,7 +1373,7 @@ static esp_err_t status_handler(httpd_req_t *req)
     pos += elotto_ota_status_json(buf + pos, sizeof(buf) - pos);
     pos += snprintf(buf + pos, sizeof(buf) - pos, ",");
 
-    /* Per-node health (PLAN_NETWORK Phase D). A node that quietly degraded —
+    /* Per-node health. A node that quietly degraded —
      * lost its camera, started missing replies, or drifted off σ = 1 — has to be
      * visible individually; the combined z averages exactly that away.
      * Index 0 is the master. There is no per-node "src" any more: one source
@@ -1399,8 +1399,8 @@ static esp_err_t status_handler(httpd_req_t *req)
     }
     pos += snprintf(buf + pos, sizeof(buf) - pos, "],");
 
-    /* Every pair, not just the worst. The array is wired as PLAN_NETWORK's
-     * Risk 1 control (master on isolated power, slaves on one PoE rail), so
+    /* Every pair, not just the worst. The array is wired as the power
+     * control (master on isolated power, slaves on one PoE rail), so
      * WHICH pairs correlate is the question a maximum cannot answer. */
     pos += snprintf(buf + pos, sizeof(buf) - pos, "\"pairs\":[");
     bool first_pair = true;
@@ -1789,7 +1789,7 @@ static esp_err_t calibrate_handler(httpd_req_t *req)
     return camera_cal_send_json(req, elotto_last_calibration());
 }
 
-/* ── /focus GET – the current target (PLAN_4NODE Phase 5) ─────────────
+/* ── /focus GET – the current target ─────────────────────────────────
  * Deliberately NOT part of /status. That response is ~2.5 KB and polled at
  * 1 Hz: far too fat and far too slow to track a 500 ms window. This one is
  * ~60 bytes and polled at 10 Hz (~600 B/s, five samples per window), which is
@@ -2141,11 +2141,9 @@ static esp_err_t pool_handler(httpd_req_t *req)
 
 /* ── /diag GET – the camera, which is the only source there is ──────
  *
- * This used to A/B the on-chip TRNG register against esp_random() and report
- * the camera alongside them. Both TRNG tests are gone with the TRNG itself
- * (sensor.h): keeping a diagnostic that measures a source the firmware cannot
- * use would only invite comparisons against a number this instrument is not
- * allowed to produce. */
+ * ⛔ The TRNG is not reported here and must not be added back. A diagnostic
+ * that measures a source the firmware cannot use only invites comparisons
+ * against a number this instrument is not allowed to produce. */
 /* GET /diag — the four-camera health page.
  *
  * One row per node, live. Built because per-node optical faults are the thing
@@ -2445,7 +2443,7 @@ static void start_webserver(void)
         httpd_register_uri_handler(srv, &uris[i]);
 
     /* /update, /boot, /reboot, /poison, /otainfo — the same shared code the
-     * factory updater runs (docs/PLAN_NETWORK.md). */
+     * factory updater runs. */
     elotto_ota_register(srv, session_running);
 
     /* Only now is this image proven reachable, which is the criterion that

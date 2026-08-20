@@ -11,8 +11,8 @@ applies now lives in `CLAUDE.md`. They are in git history at **`998c7ab`**
 those, not to a file on disk.
 
 ⚠ `PLAN_4NODE.md` and `PLAN_NETWORK.md` were deleted earlier at the user's request and are in git
-history, last present at **`8e134e5`** (`git show 8e134e5:docs/PLAN_4NODE.md`). Source comments
-still cite them by name; those citations are historical too, and were left alone deliberately.
+history, last present at **`8e134e5`** (`git show 8e134e5:docs/PLAN_4NODE.md`). The source comments
+that cited them by name were cleaned of those citations on 2026-08-20.
 
 ---
 

@@ -84,7 +84,7 @@ void node_camera_failed(int node, const char *why)
     }
 }
 
-/* ── Slave link — UDP broadcast (docs/PLAN_NETWORK.md §4, Phase C) ────
+/* ── Slave link — UDP broadcast ───────────────────────────────────────
  * Replaces the UART1 point-to-point pair (was TX=GPIO14 / RX=GPIO15,
  * 460800 baud). A command leaves as ONE broadcast datagram, so every node
  * starts within microseconds of the others instead of N sequential UART
@@ -289,7 +289,7 @@ static void nodes_send(const char *cmd)
  * that already answered this sequence number replies from its cache without
  * measuring again, so only the node that actually missed it pays anything.
  *
- * A node that stays silent is dropped FOR THIS RUN (PLAN_NETWORK §4) — at n>=3
+ * A node that stays silent is dropped FOR THIS RUN — at n>=3
  * that is a degraded run over √(n−1), not a reason to end the session. After
  * NODE_MISS_LIMIT consecutive misses it leaves the session altogether, so an
  * unplugged node degrades the array instead of taxing every later run with the
@@ -399,7 +399,7 @@ void nodes_discover(void)
     printf(")\n");
 }
 
-/* The segment count now travels ON THE WIRE (PLAN_4NODE Phase 5): it is no
+/* The segment count travels ON THE WIRE: it is no
  * longer a constant each side keeps its own copy of. With run length made
  * phase-dependent, a duplicated constant would let master and slave integrate
  * different windows while every published number stayed plausible — the exact

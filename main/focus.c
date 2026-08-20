@@ -3,10 +3,7 @@
  * See focus.h for what this module is and why these four belong together.
  * Moved out of sensor.c on 2026-07-27 with no functional change: the block had
  * zero function calls into the GCP statistics around it, and every static it
- * owns was used only by the functions that moved with it. The only edits the
- * file boundary forced were dropping `static` from the eight entry points and
- * adding session_clock_start(), because sensor.c used to assign s_t0 directly.
- */
+ * owns is used only by the functions here. */
 #include <stdio.h>
 #include <string.h>
 
@@ -17,7 +14,7 @@
 #include "sensor.h"
 #include "focus.h"
 
-/* ── Focus display + pause (docs/PLAN_4NODE.md Phase 5) ───────────────────
+/* ── Focus display + pause ───────────────────────────────────────────────
  *
  * The panel shows what is being measured, WHILE it is being measured. That is
  * the whole content of the experiment: it makes the observer part of the
@@ -75,8 +72,7 @@
  * Shortening the window instead was rejected: the gap is the soft parameter the
  * plan already marked adjustable ("then pay for it in the run budget"), whereas
  * the hold time is the spec, and buying a display number by running the entropy
- * source in a starved regime trades physics for cosmetics — that regime is
- * where PLAN_4NODE's open item 3 lives.
+ * source in a starved regime trades physics for cosmetics.
  *
  * v3: one window (~5 s) and one gap (SCORE_GAP_MS = 2 s) for every phase, so
  * the fixed-length run_gap() is gone — every caller passes the length. */

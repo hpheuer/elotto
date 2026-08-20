@@ -547,29 +547,24 @@ cannot fit and compaction fires after ~3,7 h at `?run=1`.
 - chasing down the window/gap split (D2);
 - a `docs/data/README.md` index of session generations (user, 2026-08-19: the past will be consulted
   when needed);
-- deleting old session data — 2,9 MB in total, git keeps it anyway, and `_profile/` was committed for
-  exactly the opposite reason. ⚠ Partly overruled by the user 2026-08-20: the two v2-era 2026-07-30
-  directories were deleted (see 🗑 below). The rule still holds for everything from 2026-08-05 on —
-  each of those is either cited evidence or the only dataset of its instrument generation.
+- deleting session data from 2026-08-05 on — each of those is either cited evidence or the only
+  dataset of its instrument generation, and `_profile/` was committed for exactly the opposite
+  reason. (The blanket form of this rule was overruled on 2026-08-20; see 🗑 below.)
 
 ⏸ **Deferred by the user — do not start unasked:** the attended-vs-unattended (focus) comparison.
 
-🗑 **Deleted 2026-08-20 (user):** `docs/data/2026-07-30_ladders_dc_light/` and
-`docs/data/2026-07-30_run5_new_hw/` — v2-era (`rank="cum"`), 3,29 Mbit/s, 44 KB together, referenced
-from nowhere including the archive table in CLAUDE.md, and unpoolable with anything under any of the
-splits in the pooling table. They were the only record of exposures 4 and 8 *passing* a sweep before
-the dark-end gate (`exp 4`, `mean_px 3,97`, `pass:true`), i.e. the counterpart to D18.
-⚠ **That record is gone.** On the user's explicit instruction the same day, `git filter-repo` removed
-both directories from the whole of `master`'s history and the result was force-pushed, so no commit
-here or on GitHub still contains them. The only surviving copy is the local branch
-`backup/pre-rewrite-2026-08-20` (old `29b50ea`), which is never pushed and will not outlive this
-clone. If the pre-gate ladder data is ever wanted again, it must be re-measured, not recovered.
-⚠ The rewrite renumbered every commit from the old `18074b5` onward — 30 of them. Any commit hash
-quoted in a note, log or firmware build older than 2026-08-20 no longer resolves.
+🗑 **Deleted 2026-08-20 (user), and unrecoverable:** `docs/data/2026-07-30_ladders_dc_light/` and
+`docs/data/2026-07-30_run5_new_hw/`. v2-era, unpoolable under every split in the pooling table, and
+the only record of exposures 4 and 8 *passing* a sweep before the dark-end gate (`exp 4`,
+`mean_px 3,97`, `pass:true`) — the counterpart to D18. `git filter-repo` removed them from the whole
+of `master`'s history and the result was force-pushed, so no commit here or on GitHub contains them.
+The one surviving copy is the local branch `backup/pre-rewrite-2026-08-20`, never pushed and no
+longer-lived than this clone. **Re-measure, do not try to recover.**
+⚠ The rewrite renumbered all 30 commits from the old `18074b5` on. **A commit hash quoted in a note,
+log or firmware build older than 2026-08-20 does not resolve** — match those by ELF SHA.
 
-🗑 **Deleted:** `docs/data/_live_now_*`, a superseded partial pull of the 08-19 session whose 123
-provisional rows are all superseded in the complete archive. Its `.gitignore` entry stays, because
-that is the name the next live pull will take.
+🗑 **Deleted:** `docs/data/_live_now_*`, a superseded partial pull of the 08-19 session. Its
+`.gitignore` entry stays, because that is the name the next live pull will take.
 
 ---
 
@@ -577,11 +572,17 @@ that is the name the next live pull will take.
 
 Superseded design notes, the pre-2026-07-29 optics measurements and the v2 loop/ranking era were
 removed from CLAUDE.md and `docs/PLAN.md` on 2026-08-17 and remain in git history at `998c7ab`:
-`git show 998c7ab:CLAUDE.md`, `git show 998c7ab:docs/PLAN.md`. (Was `144ed5e` before the 2026-08-20
-history rewrite.)
+`git show 998c7ab:CLAUDE.md`, `git show 998c7ab:docs/PLAN.md`.
 
-`docs/PLAN_4NODE.md` and `docs/PLAN_NETWORK.md` were deleted earlier and are at `8e134e5`. Source
-comments still cite those two by name; the citations are historical and resolve to git history.
+`docs/PLAN_4NODE.md` and `docs/PLAN_NETWORK.md` were deleted earlier and are at `8e134e5`. The source
+comments that used to cite them by name were cleaned of those citations on 2026-08-20 — the prose they
+carried stands on its own, and a reference no reader can follow is worse than none.
 
-The pre-2026-08-19 CLAUDE.md, which carried everything above inline, is at `97e44ce`
-(`61bb92d` before the 2026-08-20 history rewrite).
+⚠ **`§1.x` in a source comment is NOT such a dead reference**: those resolve to
+[`PLAN_HISTORY.md`](PLAN_HISTORY.md), which still carries §1.1–§1.17. They are deliberately bare — the
+file is the only thing left numbering sections that way.
+
+The pre-2026-08-19 CLAUDE.md, which carried everything above inline, is at `97e44ce`.
+
+⚠ Every hash on this page is post-rewrite. Anything written before 2026-08-20 quotes the old numbering
+and will not resolve.
