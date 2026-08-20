@@ -537,9 +537,18 @@ cannot fit and compaction fires after ~3,7 h at `?run=1`.
 - a `docs/data/README.md` index of session generations (user, 2026-08-19: the past will be consulted
   when needed);
 - deleting old session data — 2,9 MB in total, git keeps it anyway, and `_profile/` was committed for
-  exactly the opposite reason.
+  exactly the opposite reason. ⚠ Partly overruled by the user 2026-08-20: the two v2-era 2026-07-30
+  directories were deleted (see 🗑 below). The rule still holds for everything from 2026-08-05 on —
+  each of those is either cited evidence or the only dataset of its instrument generation.
 
 ⏸ **Deferred by the user — do not start unasked:** the attended-vs-unattended (focus) comparison.
+
+🗑 **Deleted 2026-08-20 (user):** `docs/data/2026-07-30_ladders_dc_light/` and
+`docs/data/2026-07-30_run5_new_hw/` — v2-era (`rank="cum"`), 3,29 Mbit/s, 44 KB together, referenced
+from nowhere including the archive table in CLAUDE.md, and unpoolable with anything under any of the
+splits in the pooling table. They were the only record of exposures 4 and 8 *passing* a sweep before
+the dark-end gate (`exp 4`, `mean_px 3,97`, `pass:true`), i.e. the counterpart to D18; that record now
+lives only in git at `18074b5`: `git show 18074b5:docs/data/2026-07-30_ladders_dc_light/node_100.json`.
 
 🗑 **Deleted:** `docs/data/_live_now_*`, a superseded partial pull of the 08-19 session whose 123
 provisional rows are all superseded in the complete archive. Its `.gitignore` entry stays, because
