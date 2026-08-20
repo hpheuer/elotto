@@ -126,9 +126,12 @@ static void prng_seed(void)
  *
  * z stays N(0,1) at any run length because it is normalised by √segments; the
  * length only sets granularity, and statistical power per second is
- * rate-limited either way. */
-#define CAM_SEGMENTS   11950          // 2.4 Mbit/run ≈ 1000 ms (measured: 1027 ms
-                                      // at the 350 ms gap, +2.7 % of target)
+ * rate-limited either way.
+ *
+ * There is no fixed segment constant here any more: the count is solved from
+ * the session's ?run= by segs_from_run_ms() below, against RUN_SEGS_REF /
+ * RUN_MS_REF in sensor.h. The old CAM_SEGMENTS 11950 was the 1 s era and had
+ * been dead code for several versions. */
 
 /* Segment count for a requested wall window. Uses the 2026-08-02 live cal
  * (66000 segs ↔ 4680 ms). Longer requests may stretch past the target: the

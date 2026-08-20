@@ -244,9 +244,10 @@ The combinations whose parallel noise stream deviates most strongly from chance 
 baseline-corrected **Z-scores** — are surfaced as the suggested lottery numbers.
 
 Each **GCP run** consumes a fixed batch of raw noise bits, in 200-bit segments:
-- **Segments per run: 11,950 (≈ 2.4 Mbit, ≈ 1000 ms)** — one source, so one constant, used for
-  scoring, measurement and baseline alike. It travels on the wire (`M<seg>`, `B<runs>,<seg>`), so
-  a node that is *told* the length cannot disagree about it.
+- **Segments per run follow the session's `?run=`** (1–5 s, default 5), solved against
+  `RUN_SEGS_REF`/`RUN_MS_REF` — 26,087 segments at 1 s, 130,435 at 5 s on this rig. One length for
+  scoring, measurement and baseline alike. It travels on the wire (`M<seg>`, `B<runs>,<seg>`,
+  `K<budget_ms>,<segs>`), so a node that is *told* the length cannot disagree about it.
   Run length only sets granularity — statistical power per second is rate-limited either way,
   and Z stays N(0,1) because it is normalised by √segments.
 - Z-score per segment: `(ones − 100) / √50`
@@ -374,10 +375,14 @@ Camera task → ring buffer → `noise_word()`:
 4. Words go into a ring buffer (≥ 64 KB, PSRAM). `camera_read_word()` pops one; if the ring is
    empty it **waits** (`vTaskDelay`). Bits are never reused or fabricated to cover an underrun.
 
-Sustained ≈ **3.4 Mbit/s per node** (RAW8, 800×800 @ 50 fps, exposure 16, gain 1023, AE/AGC/AWB
-off, register writes verified by read-back). Throughput is limited by **PSRAM bandwidth**, not
-the sensor: holding both frames of a pair dequeued instead of copying one aside took the rate
-from 1.8 to 5.7 Mbit/s.
+Sustained **5.71 Mbit/s per node idle**, ~3.7 under measurement load, RAW8 800×800 @ 50 fps with
+AE/AGC/AWB off and every register write verified by read-back. That figure is *after* the XOR-fold,
+not before it.
+
+⚠ The idle rate is now **98.5 % of what the sensor can deliver** at this mode, so the ceiling is the
+sensor and nothing done to the extraction path can raise it. Under load the loop is compute-bound
+instead, which is a different question and still open. Earlier readings of 1.8 and 3.4 Mbit/s were
+PSRAM- and codegen-bound stages on the way here; they describe no firmware that still exists.
 
 > **Task priority is load-bearing.** The extraction task (`ELOTTO_CAM_TASK_PRIO` = 4) is
 > CPU-hungry, so any task calling `camera_read_word()` must run *above* it, or the producer
@@ -391,6 +396,11 @@ from 1.8 to 5.7 Mbit/s.
 |---|---|---|---|---|---|---|
 | **Gate** | \|b−0.5\| < 1e−3 | 1 ± 0.05 | ≥ 2 | \|r\| < 0.01 | 0 | at black floor |
 | **Measured** | 0.499844 | 0.9975 | 3.419 | ≤ 0.0002 | 0 | 3.56 / 255 |
+
+⚠ **That row is the Phase 0 acceptance run and nothing since.** The rate is three generations old,
+the mean pixel belongs to the dark enclosure the array no longer runs in, and the bias bar is the
+flat 1e−3 that has been replaced by a run-scaled one. Today all four nodes sit within 1.4e−4 of 0.5
+at σ 0.996–1.003 and 5.71 Mbit/s; the live numbers are on the master's `/diag` page.
 
 **Residual bias, honestly stated.** The *unfolded* LSB stream is biased 0.4849 — a ~3 % excess
 of even diffs that symmetric noise cannot produce (only 12.6 % of diffs are 0, so quantization
@@ -523,14 +533,16 @@ from any change to what is measured, so the statistics could be compared like wi
 | Command (master → slaves, broadcast :5000) | Reply (unicast) | Meaning |
 |---|---|---|
 | `P` | `OK` | Discovery — find the nodes at startup, no static IP table |
-| `B<n>` | `OK` (after n runs) | Run n baseline runs, store own baseline mean; **re-arm the camera** (a session start) |
-| `M` | `Z:<float>,<C\|T>` | Run one measurement, return baseline-corrected Z + the source it used (**C**amera / **T**RNG) |
-| `D` | `D:<ready>,<bias>,<σ>,<Mbit/s>,<stalls>,<stuck>,<C\|T>` | Slave camera health; the master asks once per loop for the `/loops` table |
+| `B<runs>,<seg>` | `OK` (after n runs) | Run n baseline runs, store own baseline mean; **re-arm the camera** (a session start) |
+| `M<seg>` | `Z:<float>` | Run one measurement, return baseline-corrected Z |
+| `K<budget_ms>,<segs>` | `OK:<exp>,<gain>,<fold>,<bias>,<mbit_s>,<G\|U>` | Sweep the exposure ladder and certify a rung |
+| `D` | `D:<ready>,<bias>,<σ>,<Mbit/s>,<stalls>,<stuck>,fw=<sha>` | Slave camera health; the master asks once per block for the `/loops` table |
 | `A` | `OK` | Abort the current/next operation |
+| `R` | `OK` | Reboot — the master's answer to a camera fault on that node |
 
-The source tag sits **after** the float so `atof()` still parses the number and a pre-camera
-slave stays compatible. A `T` tag during a camera session aborts the master too — see
-[stall policy](#a-stall-aborts-the-session--it-does-not-fall-back).
+Any command may answer **`E:<reason>`** instead. There is no source tag any more and no fallback
+to tag: the camera is the only source, so a node that cannot deliver says so, and the master drops
+and reboots it — see [stall policy](#a-stall-aborts-the-session--it-does-not-fall-back).
 
 **Why every frame carries a sequence number.** UART was effectively lossless and strictly
 ordered, so a reply could only belong to the command just sent. UDP guarantees neither. A late
