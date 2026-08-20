@@ -37,6 +37,13 @@ extern "C" {
 #define GCP_SEGMENT_MEAN   100.0
 #define GCP_SEGMENT_SD     7.07106781
 
+/* The same mean as an int, for the one place the subtraction can be done in
+ * integers. ones is in [0,200], so ones - 100 is in [-100,100] and converts to
+ * double exactly -- identical to (double)ones - 100.0, which is exact for the
+ * same reason. This is the only arithmetic rearrangement in the z path that is
+ * bit-identical rather than merely equivalent; see gcp.c. */
+#define GCP_SEGMENT_MEAN_I 100
+
 /* What a unit of stream bias is WORTH as a per-run z offset, at this run length.
  *
  * A bias b over `segments` segments moves the ones count by (b - 0,5)*200*nseg

@@ -345,12 +345,18 @@ that. A further speed-up would still pay during a session. Two conditions before
 it with `ms_extract` under LOAD, never at idle; and note that raising the loaded rate pushes a 5 s
 window toward 182.000 segments against `EL_SEG_MAX` 200000, splitting the archive again (D1).
 
-### D26 — The four soft-float calls per segment stay
-2026-08-19. The P4 FPU is single-precision, so `(ones - 100.0) / 7.07106781` compiles to `__floatsidf`
+### D26 — The soft-float calls per segment stay, except the one that was exact
+2026-08-19. The P4 FPU is single-precision, so `(ones - 100.0) / 7.07106781` compiled to `__floatsidf`
 + `__subdf3` + `__divdf3` + `__adddf3`, together costing more than the popcounts did. Both obvious
 cures — multiplying by the reciprocal, or summing `ones` and dividing once — are arithmetically equal
-and **not bit-identical**, so either would shift the last bits of every z in the archive. The one safe
-saving left untaken is making the mean subtraction integer, exact for `ones` in [0,200].
+and **not bit-identical**, so either would shift the last bits of every z in the archive.
+
+**`__subdf3` was the exception and is gone (2026-08-21).** `ones` is in [0,200], so `ones - 100` is an
+integer subtract whose result converts to double exactly — and `(double)ones - 100.0` is exact for the
+same reason, which makes the two **bit-identical, not merely equivalent**. Verified by enumeration
+over all 201 values of `ones`. It was held back from the popcount change deliberately, so that change
+could be measured alone. ⚠ Bit-identical means this does **not** split the pooling table: it is the
+only rearrangement in the z path that does not.
 
 The popcount call, by contrast, was removed: seven `__popcountsi2` calls per segment, ~913.000 per run
 at `run=5`. **Measured +7,6 % bit rate under load** (3,734 → 4,019 Mbit/s, `ms_extract` 70,8 → 64,9,

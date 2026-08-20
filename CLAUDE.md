@@ -339,7 +339,8 @@ The enclosure is **LIT, not dark** `[D28]`.
 - **components/elotto_gcp/** – the z-score primitive (`gcp_zscore_raw()`) and `gcp_z_per_bias()`.
   Shared so the nodes cannot disagree about what a z is `[D37]`.
   ⚠ `GCP_SEGMENT_SD` is the literal `7.07106781`, not `sqrt(50.0)`.
-  ⚠ The four soft-float calls per segment are deliberate `[D26]`.
+  ⚠ The remaining soft-float calls per segment are deliberate `[D26]`; only `__subdf3` was removable
+    without moving a stored z.
   `/camtest` checks `cam_popcount32` against `__builtin_popcount` over 200.000 values.
 - **components/elotto_ota/** – update endpoint + boot safety (rollback, boot counter, mark-valid;
   `/update` `/boot` `/reboot` `/poison` `/otainfo`). `BOOT_FAIL_LIMIT` 3, `HEALTHY_UPTIME_MS` 30000.
