@@ -5,6 +5,8 @@
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
+#include "freertos/portmacro.h"
 #include "esp_timer.h"
 #include "esp_err.h"
 #include "esp_heap_caps.h"
@@ -286,11 +288,38 @@ static double score_one_run(bool *ok);   // forward (defined after the slave lin
 static float *s_node_z;   // [NUM_RUNS * MAX_NODES], NaN = did not contribute
 
 /* Serialises pass_compact() (elotto_task) against the archive readers on the
- * HTTP task (results_near_mean, results_node_z). A spinlock, because every
- * critical section is a bounded in-memory loop with no blocking call — never
- * held across I/O, so a reader spinning for it cannot be preempted into a
- * deadlock. */
-static portMUX_TYPE s_archive_lock = portMUX_INITIALIZER_UNLOCKED;
+ * HTTP task (results_near_mean, results_row_z).
+ *
+ * A MUTEX, not a spinlock. results_near_mean() walks up to NUM_RUNS rows three
+ * times with soft-float arithmetic, i.e. it can hold the lock for milliseconds,
+ * and a spinlock (portENTER_CRITICAL) would disable interrupts on that core for
+ * the whole walk — lost camera frames and missed UDP reply windows, the very
+ * signature that cost the 08-20 session. A mutex only blocks the competing
+ * task, so interrupts keep running; the read side is a tight in-memory loop
+ * with no blocking call and no nesting, so it cannot deadlock. pass_compact()
+ * waits for a reader, which is fine — it runs once per round, not per poll. */
+static SemaphoreHandle_t s_archive_mutex;          // created on first use
+static portMUX_TYPE       s_archive_init_lock = portMUX_INITIALIZER_UNLOCKED;
+
+static SemaphoreHandle_t archive_mutex(void)
+{
+    if (s_archive_mutex) return s_archive_mutex;
+    portENTER_CRITICAL(&s_archive_init_lock);
+    if (!s_archive_mutex) s_archive_mutex = xSemaphoreCreateMutex();
+    portEXIT_CRITICAL(&s_archive_init_lock);
+    return s_archive_mutex;
+}
+
+static void archive_lock(void)
+{
+    SemaphoreHandle_t m = archive_mutex();
+    if (m) xSemaphoreTake(m, portMAX_DELAY);
+}
+
+static void archive_unlock(void)
+{
+    if (s_archive_mutex) xSemaphoreGive(s_archive_mutex);
+}
 
 static void node_z_store(int j, const double *znode, const bool *have)
 {
@@ -313,17 +342,26 @@ static void node_z_move(int from, int to)
            MAX_NODES * sizeof(float));
 }
 
-bool results_node_z(int j, float out[MAX_NODES])
+/* Snapshot one measured item — its RunResult row AND its per-node z — under a
+ * single lock. The CSV ?all=1 stream needs both, and reading the row unlocked
+ * while pass_compact() rewrites results[] in place could pair a row from the
+ * old layout with z-values from the new one. One locked read closes that.
+ *
+ * Returns false if the archive is missing or j is out of range. out_z gets NaN
+ * for nodes that did not contribute that run. Lives in PSRAM so results[]
+ * itself stays lean. */
+bool results_row_z(int j, RunResult *out_row, float out_z[MAX_NODES])
 {
-    if (!out || !s_node_z) return false;
-    portENTER_CRITICAL(&s_archive_lock);
+    if (!out_row || !out_z || !s_node_z) return false;
+    archive_lock();
     if (j < 0 || j >= g_status.runs_completed || j >= NUM_RUNS) {
-        portEXIT_CRITICAL(&s_archive_lock);
+        archive_unlock();
         return false;
     }
+    *out_row = g_status.results[j];
     const float *row = s_node_z + (size_t)j * MAX_NODES;
-    for (int i = 0; i < MAX_NODES; i++) out[i] = row[i];
-    portEXIT_CRITICAL(&s_archive_lock);
+    for (int i = 0; i < MAX_NODES; i++) out_z[i] = row[i];
+    archive_unlock();
     return true;
 }
 
@@ -523,8 +561,21 @@ static void score_and_build_pool(int max_val, int pool_size, uint8_t *pool,
             }
             if (first || key > bs) { b = j; bs = key; first = false; }
         }
+        /* ⚠ Never write a 0 into the pool. `b` stays 0 only when every
+         * remaining candidate voided this pass (scored[] == false). A 0 would
+         * then be enumerated as a drawn number and land in the CSV — silent
+         * data corruption. Same treatment as the full_combos > NUM_RUNS guard
+         * below: abort loudly rather than clamp. */
+        if (b == 0) {
+            snprintf(g_status.fault, sizeof(g_status.fault),
+                     "scoring: only %d of %d candidates produced a usable z "
+                     "this pass — session aborted", i - n_keep, pool_size - n_keep);
+            printf("pass: %s\n", g_status.fault);
+            g_status.abort_requested = true;
+            return;
+        }
         pool[i] = (uint8_t)b;
-        if (b) used[b] = true;
+        used[b] = true;
     }
     // Sort ascending (for consistent combination enumeration).
     for (int i = 1; i < pool_size; i++) {
@@ -1048,7 +1099,7 @@ static void pass_compact(void)
      * s_node_z in place and then lowers runs_completed, and an HTTP reader
      * (results_near_mean / results_node_z) may be walking either array right
      * now. The selection above only reads, so it needs no lock. */
-    portENTER_CRITICAL(&s_archive_lock);
+    archive_lock();
     int w = 0, dropped = 0;
     for (int j = 0; j < n; j++) {
         const RunResult *r = &g_status.results[j];
@@ -1072,7 +1123,7 @@ static void pass_compact(void)
     }
     g_status.runs_completed = w;   /* rows held; items_done is unchanged */
     g_status.compacted     += dropped;
-    portEXIT_CRITICAL(&s_archive_lock);
+    archive_unlock();
 
     heap_caps_free(keep);
 
@@ -1122,14 +1173,16 @@ int results_near_mean(RunResult *out, int cap, double *out_mean, double *out_sig
     if (out_sigma) *out_sigma = 0.0;
     if (!out || cap <= 0) return 0;
 
-    /* Held across the whole walk: pass_compact() rewrites results[] in place
-     * and folds s_drop_* at a round boundary, and this reader must not see a
-     * half-moved row or a partially-updated moment. See s_archive_lock. */
-    portENTER_CRITICAL(&s_archive_lock);
+    /* Held across the walk. pass_compact() rewrites results[] in place and
+     * folds s_drop_* at a round boundary; this reader must not see a half-moved
+     * row. The lock is a MUTEX (see s_archive_mutex), not a spinlock, so the
+     * millisecond-scale walk below blocks pass_compact() — which runs once per
+     * round — without ever disabling interrupts on this core. */
+    archive_lock();
 
     int n = g_status.runs_completed;
     if (n > NUM_RUNS) n = NUM_RUNS;
-    if (n <= 0) { portEXIT_CRITICAL(&s_archive_lock); return 0; }
+    if (n <= 0) { archive_unlock(); return 0; }
 
     /* The TARGET is the session's mean, so the dropped items count here too —
      * without them this would centre on the mean of the extremes, i.e. on
@@ -1143,7 +1196,7 @@ int results_near_mean(RunResult *out, int cap, double *out_mean, double *out_sig
         sum += rank_z(&g_status.results[j]);
         nv++;
     }
-    if (nv <= 0) { portEXIT_CRITICAL(&s_archive_lock); return 0; }
+    if (nv <= 0) { archive_unlock(); return 0; }
     double mean = sum / (double)nv;
 
     // Sample σ (df = n−1), as everywhere else in this file: the mean it is
@@ -1175,7 +1228,7 @@ int results_near_mean(RunResult *out, int cap, double *out_mean, double *out_sig
         }
         out[p] = g_status.results[j];
     }
-    portEXIT_CRITICAL(&s_archive_lock);
+    archive_unlock();
     return got;
 }
 

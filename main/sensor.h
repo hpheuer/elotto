@@ -832,8 +832,9 @@ const camera_cal_t *elotto_last_calibration(void);
  * is complete. */
 int results_near_mean(RunResult *out, int cap, double *out_mean, double *out_sigma);
 
-/* Per-node raw z for measured item j (measurement order). Returns false if
- * the archive is missing or j is out of range. out[MAX_NODES] gets NaN for
- * nodes that did not contribute that run. Lives in PSRAM so results[] itself
- * stays lean. */
-bool results_node_z(int j, float out[MAX_NODES]);
+/* Per-node raw z for measured item j (measurement order), together with the
+ * item's RunResult row, read under one lock so a concurrent round-boundary
+ * compaction cannot pair a row from the old layout with z-values from the new
+ * one. Returns false if the archive is missing or j is out of range.
+ * out_z[MAX_NODES] gets NaN for nodes that did not contribute that run. */
+bool results_row_z(int j, RunResult *out_row, float out_z[MAX_NODES]);

@@ -1758,10 +1758,13 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
             "z0;z1;z2;z3;round\n");
         send_chunk(req, buf, len, sizeof(buf));
         for (int j = 0; j < n; j++) {
-            const RunResult *r = &g_status.results[j];
             char zb[32], ab[32], nz[MAX_NODES][32];
+            /* Row and per-node z in one locked snapshot: reading results[j]
+             * unlocked would let a round-boundary compaction pair an old-layout
+             * row with new-layout z-values. */
+            RunResult row;
             float nodez[MAX_NODES];
-            if (!results_node_z(j, nodez)) {
+            if (!results_row_z(j, &row, nodez)) {
                 for (int i = 0; i < MAX_NODES; i++) nodez[i] = NAN;
             }
             for (int i = 0; i < MAX_NODES; i++) {
@@ -1772,14 +1775,14 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
             }
             len = snprintf(buf, sizeof(buf),
                 "%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%s;%s;%d;%d;%d;%s;%s;%s;%s;%d\n",
-                j + 1, r->index,
-                r->nums[0], r->nums[1], r->nums[2],
-                r->nums[3], r->nums[4], r->nums[5],
-                r->euro[0], r->euro[1],
-                de_num(zb, sizeof(zb), r->z_score, 6),
-                de_num(ab, sizeof(ab), (double)r->z_ctr, 4),
-                (int)r->block, (int)r->k, (int)r->skip_rank,
-                nz[0], nz[1], nz[2], nz[3], (int)r->round);
+                j + 1, row.index,
+                row.nums[0], row.nums[1], row.nums[2],
+                row.nums[3], row.nums[4], row.nums[5],
+                row.euro[0], row.euro[1],
+                de_num(zb, sizeof(zb), row.z_score, 6),
+                de_num(ab, sizeof(ab), (double)row.z_ctr, 4),
+                (int)row.block, (int)row.k, (int)row.skip_rank,
+                nz[0], nz[1], nz[2], nz[3], (int)row.round);
             send_chunk(req, buf, len, sizeof(buf));
         }
         httpd_resp_send_chunk(req, NULL, 0);

@@ -39,6 +39,7 @@ static const char *TAG_CAM = "cam";
 #define MINIRUN_BITS        (WORDS_PER_MINIRUN * 32)
 
 static int      s_fd = -1;
+static bool     s_video_inited = false;   // esp_video_init() succeeded (for fail-path deinit)
 static uint32_t s_frame_size = 0;
 static uint8_t *s_bufs[CAM_BUF_COUNT];
 static uint32_t s_buf_len[CAM_BUF_COUNT];   // mmap length per buffer, for fail-path munmap
@@ -632,6 +633,7 @@ esp_err_t camera_init(void)
         ESP_LOGE(TAG_CAM, "esp_video_init failed: %s", esp_err_to_name(ret));
         goto fail;
     }
+    s_video_inited = true;
 
     s_fd = open(ESP_VIDEO_MIPI_CSI_DEVICE_NAME, O_RDWR);
     if (s_fd < 0) {
@@ -754,7 +756,7 @@ fail:
         close(s_fd);
         s_fd = -1;
     }
-    esp_video_deinit();
+    if (s_video_inited) esp_video_deinit();
 #if CONFIG_ELOTTO_CAM_XCLK_PIN > 0
     if (s_xclk_handle) esp_cam_sensor_xclk_free(s_xclk_handle);
 #endif
