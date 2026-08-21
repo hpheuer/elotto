@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
+#include <stdarg.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
@@ -28,6 +29,9 @@ static const char *TAG = "ELOTTO";
 #define ETH_GOT_IP_BIT    BIT0
 
 static EventGroupHandle_t eth_event_group;
+
+/* CSRF guard (defined beside the webserver below); shared logic in elotto_ota. */
+static bool origin_ok(httpd_req_t *req);
 
 static void on_ip_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
@@ -1218,6 +1222,47 @@ static int emit_run(char *buf, int cap, const RunResult *r, bool euro)
         r->nums[3], r->nums[4], r->nums[5]);
 }
 
+/* ── Clamped JSON-buffer append ──────────────────────────────────────────
+ * snprintf returns the length it WOULD have written, not the length it did.
+ * Feeding that back into `buf + pos` with `sizeof(buf) - pos` underflows the
+ * size once `pos` reaches the cap and writes past the buffer — the bug class
+ * send_chunk() below already fixes for the CSV path. These two helpers apply
+ * the same clamp to the JSON handlers that accumulate into a fixed buffer. */
+
+/* Remaining room in a fixed buffer, but never less than 1, so a producer that
+ * NUL-terminates within the given size is always safe. */
+static int buf_room(int pos, size_t cap)
+{
+    if (pos < 0 || (size_t)pos >= cap - 1) return 1;
+    return (int)(cap - (size_t)pos);
+}
+
+/* Fold a snprintf-style returned length into *pos, clamped so *pos never
+ * exceeds cap-1. A call that reports "would have written" more than the room
+ * saturates instead of overrunning. */
+static int buf_advance(size_t cap, int *pos, int n)
+{
+    if (!pos || n <= 0) return pos ? *pos : 0;
+    if (*pos < 0) *pos = 0;
+    if ((size_t)*pos + (size_t)n > cap - 1) *pos = (int)(cap - 1);
+    else *pos += n;
+    return *pos;
+}
+
+/* vsnprintf into a fixed buffer at *pos, clamped to cap-1. Never writes past
+ * the buffer; on truncation the append is silently dropped (the alternative —
+ * half a JSON value — is worse), and the document simply ends short. */
+static int buf_append(char *buf, size_t cap, int *pos, const char *fmt, ...)
+{
+    int room = buf_room(*pos, cap);
+    if (room <= 1) return *pos;   /* no room: drop the write entirely */
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(buf + *pos, (size_t)room, fmt, ap);
+    va_end(ap);
+    return buf_advance(cap, pos, n);
+}
+
 /* ── /status JSON ─────────────────────────────────────────────────── */
 static esp_err_t status_handler(httpd_req_t *req)
 {
@@ -1244,7 +1289,7 @@ static esp_err_t status_handler(httpd_req_t *req)
     const char *score_str =
         g_status.score_dir == SCORE_DIR_LOW ? "low" :
         g_status.score_dir == SCORE_DIR_ABS ? "abs" : "high";
-    pos += snprintf(buf+pos, sizeof(buf)-pos,
+    pos = buf_append(buf, sizeof(buf), &pos,
         "{\"state\":\"%s\",\"mode\":\"%s\",\"phase\":\"%s\","
         "\"slave\":%s,"
         "\"src\":\"camera\",\"src_stalled\":%s,\"fault\":\"%s\","
@@ -1357,24 +1402,25 @@ static esp_err_t status_handler(httpd_req_t *req)
      * next one, so a stale pool is never served under a running bar. */
     if (g_status.state == ELOTTO_RUNNING &&
         (g_status.phase == PHASE_POOL_CONFIRM || g_status.pool_n_main > 0)) {
-        pos += snprintf(buf+pos, sizeof(buf)-pos, "\"pool_main\":[");
+        buf_append(buf, sizeof(buf), &pos, "\"pool_main\":[");
         for (int i = 0; i < g_status.pool_n_main; i++)
-            pos += snprintf(buf+pos, sizeof(buf)-pos, "%s{\"n\":%d,\"z\":%.2f}",
-                            i ? "," : "", g_status.pool_main[i],
-                            (double)g_status.pool_main_z[i]);
-        pos += snprintf(buf+pos, sizeof(buf)-pos, "],\"pool_euro\":[");
+            buf_append(buf, sizeof(buf), &pos, "%s{\"n\":%d,\"z\":%.2f}",
+                       i ? "," : "", g_status.pool_main[i],
+                       (double)g_status.pool_main_z[i]);
+        buf_append(buf, sizeof(buf), &pos, "],\"pool_euro\":[");
         for (int i = 0; i < g_status.pool_n_euro; i++)
-            pos += snprintf(buf+pos, sizeof(buf)-pos, "%s{\"n\":%d,\"z\":%.2f}",
-                            i ? "," : "", g_status.pool_euro[i],
-                            (double)g_status.pool_euro_z[i]);
-        pos += snprintf(buf+pos, sizeof(buf)-pos, "],");
+            buf_append(buf, sizeof(buf), &pos, "%s{\"n\":%d,\"z\":%.2f}",
+                       i ? "," : "", g_status.pool_euro[i],
+                       (double)g_status.pool_euro_z[i]);
+        buf_append(buf, sizeof(buf), &pos, "],");
     }
 
     /* Firmware identity: version, build time, elf sha256, running slot, OTA
      * state. Without it an update that answered "ok" cannot be distinguished
      * from one that silently rolled back. */
-    pos += elotto_ota_status_json(buf + pos, sizeof(buf) - pos);
-    pos += snprintf(buf + pos, sizeof(buf) - pos, ",");
+    pos = buf_advance(sizeof(buf), &pos,
+                      elotto_ota_status_json(buf + pos, buf_room(pos, sizeof(buf))));
+    buf_append(buf, sizeof(buf), &pos, ",");
 
     /* Per-node health. A node that quietly degraded —
      * lost its camera, started missing replies, or drifted off σ = 1 — has to be
@@ -1382,10 +1428,10 @@ static esp_err_t status_handler(httpd_req_t *req)
      * Index 0 is the master. There is no per-node "src" any more: one source
      * exists, so a node either produced camera bits or it faulted and says so.
      */
-    pos += snprintf(buf + pos, sizeof(buf) - pos, "\"nodes\":[");
+    buf_append(buf, sizeof(buf), &pos, "\"nodes\":[");
     for (int i = 0; i < g_status.node_count && i < MAX_NODES; i++) {
         const NodeStatus *N = &g_status.nodes[i];
-        pos += snprintf(buf + pos, sizeof(buf) - pos,
+        buf_append(buf, sizeof(buf), &pos,
             "%s{\"id\":%d,\"ip\":\"%s\",\"ok\":%s,\"soft_down\":%s,"
             "\"z\":%.4f,\"z_n\":%lu,\"sigma\":%.4f,"
             "\"lost\":%lu,\"cam_mbit\":%.3f,\"cam_stalls\":%lu,"
@@ -1400,42 +1446,46 @@ static esp_err_t status_handler(httpd_req_t *req)
             (unsigned long)N->cam_exp, (int)N->cam_gain, (int)N->cam_fold,
             (int)N->cam_cal_ok, N->cam_bias, N->cam_cal_mbit);
     }
-    pos += snprintf(buf + pos, sizeof(buf) - pos, "],");
+    buf_append(buf, sizeof(buf), &pos, "],");
 
     /* Every pair, not just the worst. The array is wired as the power
      * control (master on isolated power, slaves on one PoE rail), so
      * WHICH pairs correlate is the question a maximum cannot answer. */
-    pos += snprintf(buf + pos, sizeof(buf) - pos, "\"pairs\":[");
+    buf_append(buf, sizeof(buf), &pos, "\"pairs\":[");
     bool first_pair = true;
     for (int i = 0; i < g_status.node_count; i++)
         for (int j = i + 1; j < g_status.node_count; j++) {
-            pos += snprintf(buf + pos, sizeof(buf) - pos,
+            buf_append(buf, sizeof(buf), &pos,
                 "%s{\"i\":%d,\"j\":%d,\"r\":%.4f}",
                 first_pair ? "" : ",", i, j, g_status.pair_r[i][j]);
             first_pair = false;
         }
-    pos += snprintf(buf + pos, sizeof(buf) - pos, "],");
+    buf_append(buf, sizeof(buf), &pos, "],");
 
     // Top-N / Bottom-N by raw z, updated after EVERY measured item, so the
     // live ranking is always visible — the intermediate-results promise of v3.
     bool euro = (g_status.mode == MODE_EUROJACKPOT);
 
-    pos += snprintf(buf+pos, sizeof(buf)-pos, "\"top\":[");
+    buf_append(buf, sizeof(buf), &pos, "\"top\":[");
     int tshow = g_status.result_count;
     if (tshow < 0) tshow = 0;
     if (tshow > TOP_N) tshow = TOP_N;
     for (int i = 0; i < tshow; i++) {
-        if (i) pos += snprintf(buf+pos, sizeof(buf)-pos, ",");
-        pos += emit_run(buf+pos, sizeof(buf)-pos, &g_status.top[i], euro);
+        if (i) buf_append(buf, sizeof(buf), &pos, ",");
+        pos = buf_advance(sizeof(buf), &pos,
+                          emit_run(buf + pos, buf_room(pos, sizeof(buf)),
+                                   &g_status.top[i], euro));
     }
-    pos += snprintf(buf+pos, sizeof(buf)-pos, "],\"low\":[");
+    buf_append(buf, sizeof(buf), &pos, "],\"low\":[");
 
     int lshow = g_status.low_count;
     if (lshow < 0) lshow = 0;
     if (lshow > TOP_N) lshow = TOP_N;
     for (int i = 0; i < lshow; i++) {
-        if (i) pos += snprintf(buf+pos, sizeof(buf)-pos, ",");
-        pos += emit_run(buf+pos, sizeof(buf)-pos, &g_status.low[i], euro);
+        if (i) buf_append(buf, sizeof(buf), &pos, ",");
+        pos = buf_advance(sizeof(buf), &pos,
+                          emit_run(buf + pos, buf_room(pos, sizeof(buf)),
+                                   &g_status.low[i], euro));
     }
 
     // The third group: the items closest to the pass mean — the least
@@ -1445,12 +1495,14 @@ static esp_err_t status_handler(httpd_req_t *req)
     double pmean = 0.0, psigma = 0.0;
     int nshow = results_near_mean(near, TOP_N, &pmean, &psigma);
     (void)pmean; (void)psigma;   /* already published as g_status.pass_* */
-    pos += snprintf(buf+pos, sizeof(buf)-pos, "],\"near\":[");
+    buf_append(buf, sizeof(buf), &pos, "],\"near\":[");
     for (int i = 0; i < nshow; i++) {
-        if (i) pos += snprintf(buf+pos, sizeof(buf)-pos, ",");
-        pos += emit_run(buf+pos, sizeof(buf)-pos, &near[i], euro);
+        if (i) buf_append(buf, sizeof(buf), &pos, ",");
+        pos = buf_advance(sizeof(buf), &pos,
+                          emit_run(buf + pos, buf_room(pos, sizeof(buf)),
+                                   &near[i], euro));
     }
-    pos += snprintf(buf+pos, sizeof(buf)-pos, "]}");
+    buf_append(buf, sizeof(buf), &pos, "]}");
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
@@ -1818,15 +1870,16 @@ static esp_err_t focus_handler(httpd_req_t *req)
     }
 
     char buf[160];
-    int  pos = snprintf(buf, sizeof(buf),
+    int  pos = 0;
+    buf_append(buf, sizeof(buf), &pos,
         "{\"seq\":%lu,\"on\":%d,\"p\":%d,\"k\":%d,\"n\":[",
         (unsigned long)f.seq, f.active ? 1 : 0, g_status.paused ? 1 : 0, f.kind);
     for (int i = 0; i < f.n && i < 6; i++)
-        pos += snprintf(buf + pos, sizeof(buf) - pos, "%s%d", i ? "," : "", f.nums[i]);
-    pos += snprintf(buf + pos, sizeof(buf) - pos, "],\"e\":[");
+        buf_append(buf, sizeof(buf), &pos, "%s%d", i ? "," : "", f.nums[i]);
+    buf_append(buf, sizeof(buf), &pos, "],\"e\":[");
     for (int i = 0; i < f.ne && i < 2; i++)
-        pos += snprintf(buf + pos, sizeof(buf) - pos, "%s%d", i ? "," : "", f.euro[i]);
-    snprintf(buf + pos, sizeof(buf) - pos, "]}");
+        buf_append(buf, sizeof(buf), &pos, "%s%d", i ? "," : "", f.euro[i]);
+    buf_append(buf, sizeof(buf), &pos, "]}");
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
@@ -1844,6 +1897,16 @@ static esp_err_t focus_handler(httpd_req_t *req)
  * Device-side, like the loop itself: closing the browser does not resume it. */
 static esp_err_t pause_handler(httpd_req_t *req)
 {
+    if (!origin_ok(req)) return ESP_OK;
+    /* A pause is only meaningful while a session can actually hold between runs.
+     * Accepting one in idle would leave `paused` set into the NEXT session,
+     * which then blocks at its first pause_gate() — a silent outage on a multi-
+     * hour run. Same 409 contract as /pool, /ready and /update. */
+    if (g_status.state != ELOTTO_RUNNING) {
+        httpd_resp_set_status(req, "409 Conflict");
+        httpd_resp_sendstr(req, "no session running to pause");
+        return ESP_OK;
+    }
     bool on = true;
     char qry[32] = "", val[8] = "";
     if (httpd_req_get_url_query_str(req, qry, sizeof(qry)) == ESP_OK &&
@@ -1862,6 +1925,7 @@ static esp_err_t pause_handler(httpd_req_t *req)
  * Same contract as /update, which has refused mid-measurement since Phase B. */
 static esp_err_t start_handler(httpd_req_t *req)
 {
+    if (!origin_ok(req)) return ESP_OK;
     if (g_status.state == ELOTTO_RUNNING) {
         httpd_resp_set_status(req, "409 Conflict");
         httpd_resp_sendstr(req, "session already running -- abort it first");
@@ -2011,7 +2075,18 @@ static esp_err_t start_handler(httpd_req_t *req)
             if (n > EL_SEG_MAX) n = EL_SEG_MAX;
             g_status.run_segments = (int)n;
         }
-        xTaskCreate(elotto_task, "elotto", 8192, NULL, 5, NULL);
+        /* Claim the RUNNING state synchronously, BEFORE the task exists, so a
+         * second /start in the window between this handler and elotto_task's own
+         * state assignment hits the 409 above instead of spawning a second
+         * session over the same g_status/results[]. elotto_task re-asserts it
+         * (harmlessly) after its reset block. */
+        g_status.state = ELOTTO_RUNNING;
+        if (xTaskCreate(elotto_task, "elotto", 8192, NULL, 5, NULL) != pdPASS) {
+            g_status.state = ELOTTO_IDLE;
+            httpd_resp_set_status(req, "500 Internal Server Error");
+            httpd_resp_sendstr(req, "no heap for the session task");
+            return ESP_OK;
+        }
     }
     httpd_resp_sendstr(req, "ok");
     return ESP_OK;
@@ -2020,6 +2095,7 @@ static esp_err_t start_handler(httpd_req_t *req)
 /* ── /abort POST ──────────────────────────────────────────────────── */
 static esp_err_t abort_handler(httpd_req_t *req)
 {
+    if (!origin_ok(req)) return ESP_OK;
     g_status.abort_requested = true;
     httpd_resp_sendstr(req, "ok");
     return ESP_OK;
@@ -2073,6 +2149,7 @@ static int parse_num_list(const char *s, uint8_t *out, int max_n, int max_val)
  * in flight. */
 static esp_err_t probe_handler(httpd_req_t *req)
 {
+    if (!origin_ok(req)) return ESP_OK;
     if (g_status.state == ELOTTO_RUNNING) {
         httpd_resp_set_status(req, "409 Conflict");
         httpd_resp_sendstr(req, "cannot re-scan while a session is running");
@@ -2088,6 +2165,7 @@ static esp_err_t probe_handler(httpd_req_t *req)
 
 static esp_err_t ready_handler(httpd_req_t *req)
 {
+    if (!origin_ok(req)) return ESP_OK;
     if (g_status.state != ELOTTO_RUNNING || g_status.phase != PHASE_READY) {
         httpd_resp_set_status(req, "409 Conflict");
         httpd_resp_sendstr(req, "no session waiting to start");
@@ -2100,6 +2178,7 @@ static esp_err_t ready_handler(httpd_req_t *req)
 
 static esp_err_t pool_handler(httpd_req_t *req)
 {
+    if (!origin_ok(req)) return ESP_OK;
     char qry[512] = "";
     char val[256] = "";
     PoolAction act = POOL_ACCEPT;
@@ -2335,7 +2414,7 @@ static esp_err_t diagjson_handler(httpd_req_t *req)
     uint32_t exp_now = 0, gain_now = 0;
     camera_get_exposure(&exp_now, &gain_now);
 
-    pos += snprintf(buf+pos, sizeof(buf)-pos,
+    buf_append(buf, sizeof(buf), &pos,
         "{"
         "\"src\":\"camera-only\","
         "\"cam\":{"
@@ -2382,6 +2461,7 @@ static esp_err_t diagjson_handler(httpd_req_t *req)
  * LIGHT against a live mean_px, not a way to pin a node to a rung. */
 static esp_err_t expose_handler(httpd_req_t *req)
 {
+    if (!origin_ok(req)) return ESP_OK;
     return camera_expose_handle(req, g_status.state == ELOTTO_RUNNING);
 }
 
@@ -2391,6 +2471,7 @@ static esp_err_t expose_handler(httpd_req_t *req)
  * it competes with the extraction task for the same core. */
 static esp_err_t camtest_handler(httpd_req_t *req)
 {
+    if (!origin_ok(req)) return ESP_OK;
     return camera_selftest_handle(req, g_status.state == ELOTTO_RUNNING);
 }
 
@@ -2408,6 +2489,18 @@ static esp_err_t root_handler(httpd_req_t *req)
  * this returns true. The USB path had no such guard — only discipline and a
  * note in CLAUDE.md to check /status first. */
 static bool session_running(void) { return g_status.state == ELOTTO_RUNNING; }
+
+/* CSRF guard for every state-changing handler in this file. The shared check
+ * lives in elotto_ota; this wrapper turns a refusal into the 403 the handler
+ * already returns, so each call site stays a single line. */
+static bool origin_ok(httpd_req_t *req)
+{
+    if (elotto_httpd_same_origin(req)) return true;
+    httpd_resp_set_status(req, "403 Forbidden");
+    httpd_resp_set_type(req, "text/plain");
+    httpd_resp_sendstr(req, "cross-origin request refused");
+    return false;
+}
 
 static void start_webserver(void)
 {

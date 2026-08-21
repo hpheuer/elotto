@@ -279,11 +279,18 @@ static void nth_combination(const uint8_t *pool, int n, int r, int k, uint8_t *o
 // numbers enter the pool, never the Phase-2 statistics measured on them.
 // A session whose pool choice must be trusted on its own wants several full
 // random passes; it must NOT go back to repeats in place (onset is the payload).
-static double score_one_run(void);   // forward (defined after the slave link block)
+static double score_one_run(bool *ok);   // forward (defined after the slave link block)
 
 /* Per-item node-z archive (PSRAM). results[j] stays lean; re-analysis needs
  * the per-node series to recombine, drop a soft-failed node, or recompute r. */
 static float *s_node_z;   // [NUM_RUNS * MAX_NODES], NaN = did not contribute
+
+/* Serialises pass_compact() (elotto_task) against the archive readers on the
+ * HTTP task (results_near_mean, results_node_z). A spinlock, because every
+ * critical section is a bounded in-memory loop with no blocking call — never
+ * held across I/O, so a reader spinning for it cannot be preempted into a
+ * deadlock. */
+static portMUX_TYPE s_archive_lock = portMUX_INITIALIZER_UNLOCKED;
 
 static void node_z_store(int j, const double *znode, const bool *have)
 {
@@ -308,10 +315,15 @@ static void node_z_move(int from, int to)
 
 bool results_node_z(int j, float out[MAX_NODES])
 {
-    if (!out || !s_node_z || j < 0 || j >= g_status.runs_completed || j >= NUM_RUNS)
+    if (!out || !s_node_z) return false;
+    portENTER_CRITICAL(&s_archive_lock);
+    if (j < 0 || j >= g_status.runs_completed || j >= NUM_RUNS) {
+        portEXIT_CRITICAL(&s_archive_lock);
         return false;
+    }
     const float *row = s_node_z + (size_t)j * MAX_NODES;
     for (int i = 0; i < MAX_NODES; i++) out[i] = row[i];
+    portEXIT_CRITICAL(&s_archive_lock);
     return true;
 }
 
@@ -400,6 +412,14 @@ bool elotto_pool_reply(PoolAction act,
 {
     if (g_status.phase != PHASE_POOL_CONFIRM || g_status.state != ELOTTO_RUNNING)
         return false;
+    /* The operator may only UNCHECK numbers, never add new ones: the selection
+     * must stay a subset of the proposal /status is currently showing. A larger
+     * one would grow the combination space past what the scoring pass measured
+     * -- and, at 15 Eurojackpot main numbers, past NUM_RUNS -- so the pass would
+     * be silently truncated into a mislabelled "complete" session. Reject it;
+     * the /pool handler turns false into a 409. */
+    if (n_main > g_status.pool_n_main || n_euro > g_status.pool_n_euro)
+        return false;
     if (n_main > POOL_MAIN_49) n_main = POOL_MAIN_49;
     if (n_euro > POOL_EURO_12) n_euro = POOL_EURO_12;
     for (int i = 0; i < n_main; i++) s_pool_sel_main[i] = main_sel[i];
@@ -425,6 +445,7 @@ static void score_and_build_pool(int max_val, int pool_size, uint8_t *pool,
 {
     double scores[51] = {0};
     bool   skip[51]   = {false};
+    bool   scored[51] = {false};   // this pass produced a usable z (not void)
     if (n_keep > pool_size) n_keep = pool_size;
     for (int i = 0; i < n_keep; i++)
         if (keep[i] >= 1 && keep[i] <= max_val) skip[keep[i]] = true;
@@ -462,7 +483,9 @@ static void score_and_build_pool(int max_val, int pool_size, uint8_t *pool,
         // bits cover the same interval, or the panel is decoration. ONE window
         // per number (session run_segments): genuine onset, held once.
         focus_show_number(k, euro_pool);
-        scores[k] = score_one_run();
+        bool ok = false;
+        scores[k] = score_one_run(&ok);
+        scored[k] = ok;
         g_status.scoring_done++;
         g_status.elapsed_ms = elapsed_ms_now();
         run_gap_ms(gap_for());
@@ -483,13 +506,15 @@ static void score_and_build_pool(int max_val, int pool_size, uint8_t *pool,
     }
     /* Pick by pre-registered score_dir. HIGH = largest z (historical default);
      * LOW = smallest z; ABS = largest |z|. Direction is a session parameter
-     * (?score=) so the hypothesis is on the record before the pass. */
+     * (?score=) so the hypothesis is on the record before the pass.
+     * Void runs (scored[k] == false) are excluded: a void is not a z of 0 and
+     * ranking it as one would steer the pool toward numbers whose runs failed. */
     for (int i = n_keep; i < pool_size; i++) {
         int b = 0;
         double bs = 0.0;
         bool first = true;
         for (int j = 1; j <= max_val; j++) {
-            if (used[j] || skip[j]) continue;
+            if (used[j] || skip[j] || !scored[j]) continue;
             double s = scores[j], key;
             switch (g_status.score_dir) {
             case SCORE_DIR_LOW: key = -s;           break;
@@ -740,8 +765,14 @@ static int gather_and_combine(double z_master, bool master_ok,
 
 /* One scoring run, node-combined like Phase 2: trigger every node, measure
  * locally in parallel, combine ÷√k. No baseline subtraction — the offset is
- * common to every number and scoring only ranks them. */
-static double score_one_run(void)
+ * common to every number and scoring only ranks them.
+ *
+ * *ok is set to whether the run produced a usable z (k > 0). A void run must
+ * NOT be scored as 0.0 and ranked: under score_dir=LOW a 0.0 would beat every
+ * positive z, and under HIGH every negative one — so a camera that dropped one
+ * run would steer which numbers enter the pool. The caller excludes void
+ * candidates from selection instead. */
+static double score_one_run(bool *ok)
 {
     int nseg = segments_for();               // session window, all phases
     /* Trigger BEFORE settling: every node now flushes its own ring on 'M', so
@@ -750,11 +781,11 @@ static double score_one_run(void)
     slave_trigger(nseg);
     bool   fresh = onset_settle();
     double zm = 0.0;
-    bool   ok = fresh && gcp_zscore_ok(nseg, &zm);
+    bool   zok = fresh && gcp_zscore_ok(nseg, &zm);
     // Sampling is over the moment the local run returns; the reply wait below
     // is dark time. The caller lit the panel — see focus_publish().
     focus_off();
-    if (fresh && !ok) node_camera_failed(0, "stalled mid-run");
+    if (fresh && !zok) node_camera_failed(0, "stalled mid-run");
     // Timeout from THIS run's length: at the scoring length the old flat 4 s
     // would expire while every slave was still measuring.
     if (nodes_have_slaves()) nodes_collect(LINK_MEAS_MS_FOR(nseg), true);
@@ -762,9 +793,10 @@ static double score_one_run(void)
     bool   have[MAX_NODES];
     double z = 0.0;
     uint8_t mask = 0;
-    int k = gather_and_combine(zm, ok, znode, have, &z, &mask);
+    int k = gather_and_combine(zm, zok, znode, have, &z, &mask);
     (void)mask;
-    return (k > 0) ? z : 0.0;   /* void scores as 0 for ranking noise only */
+    if (ok) *ok = (k > 0);
+    return (k > 0) ? z : 0.0;
 }
 
 /* Effective variance of the Stouffer combine under the measured per-node σ
@@ -1010,7 +1042,13 @@ static void pass_compact(void)
 
     /* Fold the losers into the moments, then close the gaps in place. Forward
      * copy with w <= j, so the array is rewritten under itself safely and the
-     * surviving rows keep their relative order. */
+     * surviving rows keep their relative order.
+     *
+     * This whole phase is the critical section: it rewrites results[] and
+     * s_node_z in place and then lowers runs_completed, and an HTTP reader
+     * (results_near_mean / results_node_z) may be walking either array right
+     * now. The selection above only reads, so it needs no lock. */
+    portENTER_CRITICAL(&s_archive_lock);
     int w = 0, dropped = 0;
     for (int j = 0; j < n; j++) {
         const RunResult *r = &g_status.results[j];
@@ -1032,10 +1070,12 @@ static void pass_compact(void)
         }
         w++;
     }
-    heap_caps_free(keep);
-
     g_status.runs_completed = w;   /* rows held; items_done is unchanged */
     g_status.compacted     += dropped;
+    portEXIT_CRITICAL(&s_archive_lock);
+
+    heap_caps_free(keep);
+
     printf("pass: compacted at round boundary — %d of %d rows dropped, %d kept "
            "(%d items measured, mean %.6f σ %.6f unchanged)\n",
            dropped, n, w, g_status.items_done, g_status.pass_mean, g_status.pass_sigma);
@@ -1082,9 +1122,14 @@ int results_near_mean(RunResult *out, int cap, double *out_mean, double *out_sig
     if (out_sigma) *out_sigma = 0.0;
     if (!out || cap <= 0) return 0;
 
+    /* Held across the whole walk: pass_compact() rewrites results[] in place
+     * and folds s_drop_* at a round boundary, and this reader must not see a
+     * half-moved row or a partially-updated moment. See s_archive_lock. */
+    portENTER_CRITICAL(&s_archive_lock);
+
     int n = g_status.runs_completed;
     if (n > NUM_RUNS) n = NUM_RUNS;
-    if (n <= 0) return 0;
+    if (n <= 0) { portEXIT_CRITICAL(&s_archive_lock); return 0; }
 
     /* The TARGET is the session's mean, so the dropped items count here too —
      * without them this would centre on the mean of the extremes, i.e. on
@@ -1098,7 +1143,7 @@ int results_near_mean(RunResult *out, int cap, double *out_mean, double *out_sig
         sum += rank_z(&g_status.results[j]);
         nv++;
     }
-    if (nv <= 0) return 0;
+    if (nv <= 0) { portEXIT_CRITICAL(&s_archive_lock); return 0; }
     double mean = sum / (double)nv;
 
     // Sample σ (df = n−1), as everywhere else in this file: the mean it is
@@ -1130,6 +1175,7 @@ int results_near_mean(RunResult *out, int cap, double *out_mean, double *out_sig
         }
         out[p] = g_status.results[j];
     }
+    portEXIT_CRITICAL(&s_archive_lock);
     return got;
 }
 
@@ -1844,6 +1890,10 @@ void elotto_task(void *pvParam)
     pairs_reset();
     session_clock_start();
 
+    /* Block index of the pass. Declared HERE, before the first goto done, so
+     * the abort path can centre the open block (see done:). */
+    int block = 0;
+
     /* ── Opening insertion: camera sweep + baseline ────────────────────
      * Before anything is displayed. The sweep establishes each node's
      * operating point; the baseline records the offset reference at that
@@ -1889,7 +1939,6 @@ void elotto_task(void *pvParam)
      * union of all rounds measured so far, which is what "new results are sorted
      * in" means. Each round is closed as its own block (or blocks), so block
      * centring never mixes items from either side of a re-scoring. */
-    int     block          = 0;
     int     round          = 0;
     bool    space_full     = false;
     int64_t last_insert_us = esp_timer_get_time();
@@ -1985,9 +2034,19 @@ void elotto_task(void *pvParam)
         int full_combos = main_combos * euro_combos;
         /* s_perm is NUM_RUNS wide and the shuffle below now indexes the WHOLE
          * space, so the space must fit it. Euro 12+5 = 7920 and 6-of-49 pool 15
-         * = 5005 are both under NUM_RUNS 8000; this is the guard, not a case
-         * that is reachable today. */
-        if (full_combos > NUM_RUNS) full_combos = NUM_RUNS;
+         * = 5005 are both under NUM_RUNS 8000. A pool that still exceeds it is
+         * an inflated proposal, so this is a hard stop, NOT a silent clamp:
+         * truncating would measure a subset and publish it as complete — the
+         * mislabelling this instrument refuses to do. */
+        if (full_combos > NUM_RUNS) {
+            snprintf(g_status.fault, sizeof(g_status.fault),
+                     "combination space %d exceeds NUM_RUNS %d — pool grew past "
+                     "its scored proposal; session aborted",
+                     full_combos, NUM_RUNS);
+            printf("pass: %s\n", g_status.fault);
+            g_status.abort_requested = true;
+            goto done;
+        }
 
         /* Where this round lands in results[], and how much room is left. The
          * buffer is the hard stop for unlimited mode: a truncated round is still
@@ -2174,6 +2233,14 @@ done:
      * partial block's pairwise moments so the matrix stays complete. The
      * partial block is deliberately NOT given a /loops row: every stored row
      * describes a full between-insertions span. */
+    /* ⚠ Centre the open block FIRST, while s_nacc still holds its per-node
+     * sums — pairs_fold_loop() below clears them. Without this, an aborted
+     * session ranks the open block on RAW z and every closed block on CENTRED
+     * z under one pass mean/σ and Top/Bottom, with no marker to tell the two
+     * apart. s_blk_n guards the aborts before the measurement pass (opening
+     * sweep, observer gate, scoring), where `block` may not even be
+     * initialised and there is nothing to centre. */
+    if (s_blk_n > 0) center_block(block);
     pairs_fold_loop();
     publish_pair_stats();
     recompute_pass_ranks();   /* studentized ranks + null_flags from valid prefix */

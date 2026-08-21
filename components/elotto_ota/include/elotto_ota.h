@@ -51,3 +51,15 @@ int elotto_ota_status_json(char *buf, int cap);
 
 /* True when this image is running from an OTA slot rather than factory. */
 bool elotto_ota_running_from_slot(void);
+
+/* CSRF guard for state-changing endpoints (POST /update, /boot, /reboot,
+ * /poison, and every other state-changing handler in the firmwares).
+ *
+ * A browser cross-origin POST is a "simple request": CORS blocks the attacker
+ * from READING the response, but the request itself is sent and executes. So a
+ * page on any site could POST /abort to this node. The guard: when an Origin
+ * header is present, its host must equal the request's own Host header
+ * (same-origin). A request with no Origin header (curl, scripts, same-machine
+ * tools) passes — the operator's whole update workflow runs over curl.
+ * Returns true to allow the request. */
+bool elotto_httpd_same_origin(httpd_req_t *req);

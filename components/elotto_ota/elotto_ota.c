@@ -7,6 +7,7 @@
  */
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
 #include <stdlib.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -189,8 +190,54 @@ static esp_err_t refuse_409(httpd_req_t *req, const char *why)
     return ESP_OK;
 }
 
+/* ── CSRF guard ─────────────────────────────────────────────────────────
+ * See elotto_ota.h. Shared here so master, slave and updater apply the same
+ * rule to their state-changing handlers. */
+bool elotto_httpd_same_origin(httpd_req_t *req)
+{
+    char origin[128] = "", host[128] = "";
+    if (httpd_req_get_hdr_value_str(req, "Origin", origin, sizeof(origin)) != ESP_OK)
+        return true;   /* no Origin header: curl / script / same-machine tool */
+    if (httpd_req_get_hdr_value_str(req, "Host", host, sizeof(host)) != ESP_OK)
+        return false;  /* cannot verify — refuse rather than trust */
+
+    /* Host part of the Origin URL: skip "http://" / "https://", stop at ':' or
+     * '/'. No port is expected on this LAN, but tolerate it by cutting both. */
+    const char *o = origin;
+    if      (strncmp(o, "http://",  7) == 0) o += 7;
+    else if (strncmp(o, "https://", 8) == 0) o += 8;
+    else return false;
+
+    size_t ol = 0;
+    while (o[ol] && o[ol] != ':' && o[ol] != '/') ol++;
+    if (ol == 0) return false;
+
+    /* Host header, also cut at an optional port. */
+    size_t hl = 0;
+    while (host[hl] && host[hl] != ':') hl++;
+    if (hl == 0) return false;
+
+    return ol == hl && strncasecmp(o, host, ol) == 0;
+}
+
+static esp_err_t refuse_403(httpd_req_t *req, const char *why)
+{
+    httpd_resp_set_status(req, "403 Forbidden");
+    httpd_resp_set_type(req, "text/plain");
+    httpd_resp_sendstr(req, why);
+    return ESP_OK;
+}
+
+static bool origin_ok(httpd_req_t *req)
+{
+    if (elotto_httpd_same_origin(req)) return true;
+    refuse_403(req, "cross-origin request refused");
+    return false;
+}
+
 static esp_err_t update_post_handler(httpd_req_t *req)
 {
+    if (!origin_ok(req)) return ESP_OK;
     /* Refusing beats destroying: a flash mid-measurement silently throws away
      * however many hours the session had accumulated. */
     if (s_busy && s_busy())
@@ -282,6 +329,7 @@ static esp_err_t update_post_handler(httpd_req_t *req)
 
 static esp_err_t boot_post_handler(httpd_req_t *req)
 {
+    if (!origin_ok(req)) return ESP_OK;
     const esp_partition_t *p = slot_from_query(req);
     if (!p) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "no such slot"); return ESP_FAIL; }
     esp_err_t err = esp_ota_set_boot_partition(p);
@@ -299,6 +347,7 @@ static esp_err_t boot_post_handler(httpd_req_t *req)
 
 static esp_err_t reboot_post_handler(httpd_req_t *req)
 {
+    if (!origin_ok(req)) return ESP_OK;
     httpd_resp_sendstr(req, "ok: rebooting\n");
     reboot_soon();
     return ESP_OK;
@@ -309,6 +358,7 @@ static esp_err_t reboot_post_handler(httpd_req_t *req)
  * these paths must be re-provable on every node, not just the first one. */
 static esp_err_t poison_post_handler(httpd_req_t *req)
 {
+    if (!origin_ok(req)) return ESP_OK;
     char qry[32], val[8] = "1";
     if (httpd_req_get_url_query_str(req, qry, sizeof(qry)) == ESP_OK)
         httpd_query_key_value(qry, "on", val, sizeof(val));

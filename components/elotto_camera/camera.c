@@ -41,8 +41,9 @@ static const char *TAG_CAM = "cam";
 static int      s_fd = -1;
 static uint32_t s_frame_size = 0;
 static uint8_t *s_bufs[CAM_BUF_COUNT];
+static uint32_t s_buf_len[CAM_BUF_COUNT];   // mmap length per buffer, for fail-path munmap
 #if CONFIG_ELOTTO_CAM_XCLK_PIN > 0
-static esp_cam_sensor_xclk_handle_t s_xclk_handle;
+static esp_cam_sensor_xclk_handle_t s_xclk_handle = NULL;
 #endif
 
 static SemaphoreHandle_t s_mutex;
@@ -61,6 +62,32 @@ static volatile uint32_t s_ring_tail = 0;
 static volatile uint32_t s_ring_drops = 0;
 static volatile uint32_t s_consumer_waits = 0;
 static volatile uint32_t s_stalls = 0;
+
+/* ── Ring-tail reset guard ────────────────────────────────────────────────
+ * s_ring_tail is owned by the consumer, but two PRODUCER paths reset it to
+ * s_ring_head: stats_reset_locked() (calibration) and the pre-window flush.
+ * Both are documented (camera.h) to run only between measurements, when the
+ * consumer is not reading, so the race is excluded by call structure — this
+ * flag makes it true mechanically instead of by contract.
+ *
+ * `s_consumer_active` is set around ONLY the two-instruction window in
+ * camera_read_word() that reads the tail, reads the word and bumps the tail.
+ * It is deliberately NOT held across the blocking wait-for-data loop: a
+ * producer that wanted to reset the tail would otherwise spin on a consumer
+ * that is itself waiting on the producer — a deadlock. As scoped, the flag is
+ * held for a handful of cycles, so the producer's wait below is bounded to
+ * microseconds and can never deadlock. */
+static volatile bool s_consumer_active = false;
+
+/* Producer-side reset of the ring tail: wait out an in-flight consumer pop,
+ * then drop every queued word. The wait is spin-bounded (see above) and in
+ * practice returns immediately, because both call sites run between runs. */
+static void ring_reset_tail(void)
+{
+    while (s_consumer_active) { vTaskDelay(1); }
+    __sync_synchronize();
+    s_ring_tail = s_ring_head;
+}
 
 #define CAM_STALL_TIMEOUT_MS  2000
 /* Frame pairs between idle-task yields; see camera_task(). */
@@ -350,7 +377,7 @@ static void stats_reset_locked(void)
     s_us_wait = 0; s_us_ext = 0; s_us_rest = 0; s_us_cycle = 0;
     s_acct_pairs = 0; s_last_pair_us = 0;
     memset(&s_pack, 0, sizeof(s_pack));  // a half-folded pair must not straddle
-    s_ring_tail = s_ring_head;           // drop unread old-setting words
+    ring_reset_tail();                   // drop unread old-setting words
     s_stream_start_us = esp_timer_get_time();
 
     /* The PUBLISHED snapshot has to be zeroed too, not just the accumulators it
@@ -476,7 +503,7 @@ static void camera_task(void *arg)
          * up to 31 bits of the previous pair, which would otherwise be the one
          * pre-window remnant left in an otherwise fresh window. */
         if (s_flush_pairs > 0 && !s_flush_dropped) {
-            s_ring_tail = s_ring_head;
+            ring_reset_tail();
             memset(&s_pack, 0, sizeof(s_pack));
             s_flush_dropped = true;
         }
@@ -548,6 +575,11 @@ esp_err_t camera_init(void)
 #else
     esp_err_t ret;
 
+    /* Do-not-double-init: the boot path calls this once, but a defensive guard
+     * costs one branch and stops a second call from leaking the ring/mutex and
+     * spawning a second capture task over the same fd. */
+    if (s_fd >= 0) return ESP_OK;
+
     s_mutex = xSemaphoreCreateMutex();
     if (!s_mutex) return ESP_ERR_NO_MEM;
 
@@ -555,7 +587,8 @@ esp_err_t camera_init(void)
     if (!s_ring) {
         ESP_LOGE(TAG_CAM, "ring buffer alloc failed (%u bytes, needs PSRAM)",
                  (unsigned)(RING_WORDS * sizeof(uint32_t)));
-        return ESP_ERR_NO_MEM;
+        ret = ESP_ERR_NO_MEM;
+        goto fail;
     }
 
 #if CONFIG_ELOTTO_CAM_XCLK_PIN > 0
@@ -568,12 +601,12 @@ esp_err_t camera_init(void)
     ret = esp_cam_sensor_xclk_allocate(ESP_CAM_SENSOR_XCLK_ESP_CLOCK_ROUTER, &s_xclk_handle);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG_CAM, "xclk allocate failed: %s", esp_err_to_name(ret));
-        return ret;
+        goto fail;
     }
     ret = esp_cam_sensor_xclk_start(s_xclk_handle, &xclk_cfg);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG_CAM, "xclk start failed: %s", esp_err_to_name(ret));
-        return ret;
+        goto fail;
     }
 #else
     ESP_LOGI(TAG_CAM, "XCLK pin disabled (-1) -- assuming the camera module supplies its own clock");
@@ -597,13 +630,14 @@ esp_err_t camera_init(void)
     ret = esp_video_init(&cam_config);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG_CAM, "esp_video_init failed: %s", esp_err_to_name(ret));
-        return ret;
+        goto fail;
     }
 
     s_fd = open(ESP_VIDEO_MIPI_CSI_DEVICE_NAME, O_RDWR);
     if (s_fd < 0) {
         ESP_LOGE(TAG_CAM, "open %s failed", ESP_VIDEO_MIPI_CSI_DEVICE_NAME);
-        return ESP_FAIL;
+        ret = ESP_FAIL;
+        goto fail;
     }
 
     // Use the sensor's default/native format (index 0) instead of hardcoding
@@ -612,11 +646,13 @@ esp_err_t camera_init(void)
     struct v4l2_fmtdesc fmtdesc = { .index = 0, .type = V4L2_BUF_TYPE_VIDEO_CAPTURE };
     if (ioctl(s_fd, VIDIOC_ENUM_FMT, &fmtdesc) != 0) {
         ESP_LOGE(TAG_CAM, "ENUM_FMT failed");
+        ret = ESP_FAIL;
         goto fail;
     }
     struct v4l2_frmsizeenum frmsize = { .index = 0, .pixel_format = fmtdesc.pixelformat };
     if (ioctl(s_fd, VIDIOC_ENUM_FRAMESIZES, &frmsize) != 0) {
         ESP_LOGE(TAG_CAM, "ENUM_FRAMESIZES failed");
+        ret = ESP_FAIL;
         goto fail;
     }
 
@@ -628,6 +664,7 @@ esp_err_t camera_init(void)
     };
     if (ioctl(s_fd, VIDIOC_S_FMT, &fmt) != 0) {
         ESP_LOGE(TAG_CAM, "S_FMT failed");
+        ret = ESP_FAIL;
         goto fail;
     }
     s_frame_size = fmt.fmt.pix.sizeimage ? fmt.fmt.pix.sizeimage
@@ -655,6 +692,7 @@ esp_err_t camera_init(void)
     };
     if (ioctl(s_fd, VIDIOC_REQBUFS, &req) != 0) {
         ESP_LOGE(TAG_CAM, "REQBUFS failed");
+        ret = ESP_FAIL;
         goto fail;
     }
 
@@ -666,15 +704,20 @@ esp_err_t camera_init(void)
         };
         if (ioctl(s_fd, VIDIOC_QUERYBUF, &buf) != 0) {
             ESP_LOGE(TAG_CAM, "QUERYBUF[%d] failed", i);
+            ret = ESP_FAIL;
             goto fail;
         }
         s_bufs[i] = (uint8_t *)mmap(NULL, buf.length, PROT_READ | PROT_WRITE, MAP_SHARED, s_fd, buf.m.offset);
-        if (!s_bufs[i]) {
+        if (s_bufs[i] == MAP_FAILED) {
             ESP_LOGE(TAG_CAM, "mmap[%d] failed", i);
+            s_bufs[i] = NULL;
+            ret = ESP_FAIL;
             goto fail;
         }
+        s_buf_len[i] = buf.length;
         if (ioctl(s_fd, VIDIOC_QBUF, &buf) != 0) {
             ESP_LOGE(TAG_CAM, "QBUF[%d] failed", i);
+            ret = ESP_FAIL;
             goto fail;
         }
     }
@@ -682,18 +725,42 @@ esp_err_t camera_init(void)
     int type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     if (ioctl(s_fd, VIDIOC_STREAMON, &type) != 0) {
         ESP_LOGE(TAG_CAM, "STREAMON failed");
+        ret = ESP_FAIL;
         goto fail;
     }
 
     cam_verify_regs("after-streamon");   // STREAMON rewrites sensor regs; confirm ours survived
-    xTaskCreate(camera_task, "cam_task", 8192, NULL, ELOTTO_CAM_TASK_PRIO, NULL);
+    if (xTaskCreate(camera_task, "cam_task", 8192, NULL, ELOTTO_CAM_TASK_PRIO, NULL) != pdPASS) {
+        ESP_LOGE(TAG_CAM, "capture task create failed");
+        ret = ESP_ERR_NO_MEM;
+        goto fail;
+    }
     ESP_LOGI(TAG_CAM, "streaming, extraction task started");
     return ESP_OK;
 
 fail:
-    close(s_fd);
-    s_fd = -1;
-    return ESP_FAIL;
+    /* Unwind in reverse order of acquisition, so a failed bring-up leaves the
+     * node clean enough for the boot path to report a camera fault (and for a
+     * later retry). Every step is idempotent against a partially-built state. */
+    if (s_fd >= 0) {
+        int type_off = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        ioctl(s_fd, VIDIOC_STREAMOFF, &type_off);
+        for (int i = 0; i < CAM_BUF_COUNT; i++) {
+            if (s_bufs[i] && s_bufs[i] != MAP_FAILED)
+                munmap(s_bufs[i], s_buf_len[i]);
+            s_bufs[i] = NULL;
+            s_buf_len[i] = 0;
+        }
+        close(s_fd);
+        s_fd = -1;
+    }
+    esp_video_deinit();
+#if CONFIG_ELOTTO_CAM_XCLK_PIN > 0
+    if (s_xclk_handle) esp_cam_sensor_xclk_free(s_xclk_handle);
+#endif
+    if (s_ring) { heap_caps_free(s_ring); s_ring = NULL; }
+    if (s_mutex) { vSemaphoreDelete(s_mutex); s_mutex = NULL; }
+    return ret;
 #endif
 }
 
@@ -725,7 +792,11 @@ bool camera_read_word(uint32_t *out)
     }
 
     *out = s_ring[s_ring_tail];
+    s_consumer_active = true;
+    __sync_synchronize();
     s_ring_tail = (s_ring_tail + 1) % RING_WORDS;
+    __sync_synchronize();
+    s_consumer_active = false;
     return true;
 }
 
