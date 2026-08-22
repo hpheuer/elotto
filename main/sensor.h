@@ -832,6 +832,13 @@ const camera_cal_t *elotto_last_calibration(void);
  * is complete. */
 int results_near_mean(RunResult *out, int cap, double *out_mean, double *out_sigma);
 
+/* Create the archive mutex that serialises pass_compact() against the archive
+ * readers (results_row_z, results_near_mean). Called once from app_main before
+ * any HTTP reader can run. Eager, not lazy: a heap failure here is a loud
+ * startup error instead of a silent return to unlocked behaviour on the first
+ * poll. Idempotent. */
+void results_archive_init(void);
+
 /* Per-node raw z for measured item j (measurement order), together with the
  * item's RunResult row, read under one lock so a concurrent round-boundary
  * compaction cannot pair a row from the old layout with z-values from the new

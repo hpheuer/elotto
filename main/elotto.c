@@ -1153,7 +1153,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 // Always show Z and Z* when pass σ is available; p is from Z* (studentized).
 "function renderRunTable(headId,bodyId,res,isEuro,d,st){"
 "document.getElementById(headId).innerHTML="
-"'<tr><th>#</th><th>Item</th><th>Z</th>'+(st?'<th>Z*</th>':'')+'<th>p</th><th>k</th><th>Numbers</th>'"
+"'<tr><th>#</th><th title=\"item within its round; in unlimited mode shown as item/round, because index alone repeats across rounds\">Item</th><th>Z</th>'+(st?'<th>Z*</th>':'')+'<th>p</th><th title=\"nodes that contributed to this item&#39;s combine, the k in z = \\u03a3 z_i / \\u221ak; 4 = all four; blank = VOID, no usable z\">k</th><th>Numbers</th>'"
 "+(isEuro?'<th>Bonus</th>':'')+'</tr>';"
 "var tb=document.getElementById(bodyId);tb.innerHTML='';"
 "for(var i=0;i<res.length;i++){"
@@ -1168,7 +1168,8 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 // built from z_ctr. The Z column still shows the raw z next to it.
 "var z=r.z,zc=(r.z_ctr===undefined?z:r.z_ctr);"
 "var zs=(st&&st.s>0)?(zc-st.m)/st.s:0;"
-"tb.innerHTML+='<tr><td>'+(i+1)+'</td><td>'+r.run+'</td>"
+"var itm=(d.unlimited&&r.round)?(r.run+'/'+r.round):r.run;"
+"tb.innerHTML+='<tr><td>'+(i+1)+'</td><td>'+itm+'</td>"
 "<td>'+z.toFixed(4)+'</td>'+(st?'<td>'+zs.toFixed(3)+'</td>':'')+'"
 "<td>'+pfmt(p2(st?zs:z))+'</td><td>'+(r.k||'')+'</td><td>'+nums+'</td>"
 "'+(isEuro?'<td>'+estr+'</td>':'')+'</tr>';"
@@ -1205,19 +1206,24 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "</script></body></html>";
 
 /* Serialize one RunResult as a JSON object; returns chars written. */
+/* `round` travels with every published row because `index` alone does not
+ * identify an item in unlimited mode: it is the position within ITS round, and
+ * a later round re-uses the same numbers. The identity is (round, index) — see
+ * the unlimited-mode notes in sensor.h. Single-pass sessions run exactly one
+ * round, so the UI hides it there rather than printing a constant "/1". */
 static int emit_run(char *buf, int cap, const RunResult *r, bool euro)
 {
     if (euro)
         return snprintf(buf, cap,
-            "{\"run\":%d,\"z\":%.4f,\"z_ctr\":%.4f,\"k\":%d,"
+            "{\"run\":%d,\"round\":%d,\"z\":%.4f,\"z_ctr\":%.4f,\"k\":%d,"
             "\"nums\":[%d,%d,%d,%d,%d],\"euro\":[%d,%d]}",
-            r->index, r->z_score, (double)r->z_ctr, (int)r->k,
+            r->index, (int)r->round, r->z_score, (double)r->z_ctr, (int)r->k,
             r->nums[0], r->nums[1], r->nums[2], r->nums[3], r->nums[4],
             r->euro[0], r->euro[1]);
     return snprintf(buf, cap,
-        "{\"run\":%d,\"z\":%.4f,\"z_ctr\":%.4f,\"k\":%d,"
+        "{\"run\":%d,\"round\":%d,\"z\":%.4f,\"z_ctr\":%.4f,\"k\":%d,"
         "\"nums\":[%d,%d,%d,%d,%d,%d],\"euro\":[]}",
-        r->index, r->z_score, (double)r->z_ctr, (int)r->k,
+        r->index, (int)r->round, r->z_score, (double)r->z_ctr, (int)r->k,
         r->nums[0], r->nums[1], r->nums[2],
         r->nums[3], r->nums[4], r->nums[5]);
 }
@@ -1759,9 +1765,12 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
         send_chunk(req, buf, len, sizeof(buf));
         for (int j = 0; j < n; j++) {
             char zb[32], ab[32], nz[MAX_NODES][32];
-            /* Row and per-node z in one locked snapshot: reading results[j]
-             * unlocked would let a round-boundary compaction pair an old-layout
-             * row with new-layout z-values. */
+            /* Row and per-node z in one locked snapshot, PER ROW. The lock is
+             * released before send_chunk, so a round-boundary compaction can
+             * still run BETWEEN two rows of this stream — the guarantee is that
+             * no single row mixes an old-layout RunResult with new-layout
+             * z-values, not that the file is a self-consistent sample. The
+             * compacted= header field already says the latter. */
             RunResult row;
             float nodez[MAX_NODES];
             if (!results_row_z(j, &row, nodez)) {
@@ -2624,6 +2633,11 @@ void app_main(void)
      * once an image is marked valid, so the bootloader would relaunch it
      * forever and the reset button would not help. */
     elotto_ota_boot_check();
+
+    /* Before any HTTP reader: the mutex between compaction and the archive
+     * readers. Eager so a heap failure is a loud startup error, not a silent
+     * return to unlocked behaviour (see results_archive_init). */
+    results_archive_init();
 
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());

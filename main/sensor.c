@@ -297,23 +297,30 @@ static float *s_node_z;   // [NUM_RUNS * MAX_NODES], NaN = did not contribute
  * signature that cost the 08-20 session. A mutex only blocks the competing
  * task, so interrupts keep running; the read side is a tight in-memory loop
  * with no blocking call and no nesting, so it cannot deadlock. pass_compact()
- * waits for a reader, which is fine — it runs once per round, not per poll. */
-static SemaphoreHandle_t s_archive_mutex;          // created on first use
-static portMUX_TYPE       s_archive_init_lock = portMUX_INITIALIZER_UNLOCKED;
+ * waits for a reader, which is fine — it runs once per round, not per poll.
+ *
+ * Created EAGERLY by results_archive_init() (called from app_main), not on
+ * first use: a heap failure at the first locked read would otherwise degrade
+ * silently to the pre-fix unlocked behaviour. Eager creation turns it into a
+ * loud startup error instead. */
+static SemaphoreHandle_t s_archive_mutex;
 
-static SemaphoreHandle_t archive_mutex(void)
+void results_archive_init(void)
 {
-    if (s_archive_mutex) return s_archive_mutex;
-    portENTER_CRITICAL(&s_archive_init_lock);
-    if (!s_archive_mutex) s_archive_mutex = xSemaphoreCreateMutex();
-    portEXIT_CRITICAL(&s_archive_init_lock);
-    return s_archive_mutex;
+    if (s_archive_mutex) return;               /* idempotent */
+    s_archive_mutex = xSemaphoreCreateMutex();
+    if (!s_archive_mutex) {
+        /* This is the one lock between compaction and the archive readers. If
+         * it cannot be created, every archive_lock() below is a no-op and the
+         * pre-fix race returns — so say it, loudly, at boot, not on a poll. */
+        printf("sensor: FATAL — archive mutex creation failed; compaction will "
+               "race the HTTP readers (no archive synchronisation)\n");
+    }
 }
 
 static void archive_lock(void)
 {
-    SemaphoreHandle_t m = archive_mutex();
-    if (m) xSemaphoreTake(m, portMAX_DELAY);
+    if (s_archive_mutex) xSemaphoreTake(s_archive_mutex, portMAX_DELAY);
 }
 
 static void archive_unlock(void)
