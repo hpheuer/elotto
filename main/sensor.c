@@ -171,6 +171,16 @@ static int segments_for(void)
         g_status.run_segments = segs_from_run_ms(
             g_status.run_target_ms > 0 ? g_status.run_target_ms
                                        : RUN_S_DEFAULT * 1000);
+    /* What the window buys the entropy channel, published so the parameter line
+     * can say it before a single item is measured. The whole point of the
+     * Welch form is that the bin count (and therefore H's scale) is fixed and
+     * only M moves with ?run= — 25 windows at 1 s, 127 at 5 s, i.e. the same
+     * statistic at 5x the resolution rather than a different one. */
+    if (g_status.ent_windows == 0 && g_status.run_segments > 0) {
+        int m = g_status.run_segments / GCP_SPEC_W;
+        if (gcp_spec_null(m, &g_status.ent_h0, &g_status.ent_sd))
+            g_status.ent_windows = m;
+    }
     return g_status.run_segments;
 }
 
@@ -190,6 +200,21 @@ static int gap_for(void)
 static bool gcp_zscore_ok(int nseg, double *out)
 {
     return gcp_zscore_raw(nseg, NULL, out) == GCP_OK;
+}
+
+/* The master's own run with the spectral accumulator alongside. Same loop, same
+ * z — see gcp_zscore_spec(). *out_have_h is false when the window carried too
+ * few Welch windows or the FFT buffers could not be allocated; the run is still
+ * a full measurement in the channel that tests. The BASELINE deliberately does
+ * not use this: LoopStat.base is a drift reference for z and entropy has no
+ * counterpart to it. */
+static bool gcp_zscore_h_ok(int nseg, double *out, bool *out_have_h, double *out_h)
+{
+    gcp_spec_t sp;
+    gcp_spec_begin(&sp);
+    bool ok = gcp_zscore_spec(nseg, NULL, out, &sp) == GCP_OK;
+    *out_have_h = ok && gcp_spec_finish(&sp, out_h, NULL);
+    return ok;
 }
 
 static int comb(int n, int r)
@@ -286,6 +311,12 @@ static double score_one_run(bool *ok);   // forward (defined after the slave lin
 /* Per-item node-z archive (PSRAM). results[j] stays lean; re-analysis needs
  * the per-node series to recombine, drop a soft-failed node, or recompute r. */
 static float *s_node_z;   // [NUM_RUNS * MAX_NODES], NaN = did not contribute
+/* The entropy twin, same shape and same lifetime: per-item per-node z_h, NaN
+ * where that node reported no H. Separate array rather than a widened row so
+ * s_node_z keeps its layout and any offline tool reading it still works. A node
+ * can report a z without an H (older slave firmware, PSRAM allocation failed),
+ * so the two masks are NOT interchangeable — never infer one from the other. */
+static float *s_node_h;   // [NUM_RUNS * MAX_NODES], NaN = no entropy this run
 
 /* Serialises pass_compact() (elotto_task) against the archive readers on the
  * HTTP task (results_near_mean, results_row_z).
@@ -336,17 +367,34 @@ static void node_z_store(int j, const double *znode, const bool *have)
         row[i] = (have && have[i]) ? (float)znode[i] : NAN;
 }
 
+static void node_h_store(int j, const double *zh, const bool *have_h)
+{
+    if (!s_node_h || j < 0 || j >= NUM_RUNS) return;
+    float *row = s_node_h + (size_t)j * MAX_NODES;
+    for (int i = 0; i < MAX_NODES; i++)
+        row[i] = (have_h && have_h[i]) ? (float)zh[i] : NAN;
+}
+
 /* Move one archive row, for pass_compact(). The source is left as it was: the
  * caller only ever moves DOWN (w < j) and overwrites what it passes on the way,
  * so a stale tail can never be read -- runs_completed is lowered to the new
  * length before anything can look. */
 static void node_z_move(int from, int to)
 {
-    if (!s_node_z || from == to) return;
+    if (from == to) return;
     if (from < 0 || to < 0 || from >= NUM_RUNS || to >= NUM_RUNS) return;
-    memcpy(s_node_z + (size_t)to   * MAX_NODES,
-           s_node_z + (size_t)from * MAX_NODES,
-           MAX_NODES * sizeof(float));
+    if (s_node_z)
+        memcpy(s_node_z + (size_t)to   * MAX_NODES,
+               s_node_z + (size_t)from * MAX_NODES,
+               MAX_NODES * sizeof(float));
+    /* ⚠ The entropy archive moves WITH the z archive, in the same call. Two
+     * separate move loops would be two chances to compact one and forget the
+     * other, and the result — an item's z paired with a neighbour's H — is a
+     * ranking key that looks entirely plausible. */
+    if (s_node_h)
+        memcpy(s_node_h + (size_t)to   * MAX_NODES,
+               s_node_h + (size_t)from * MAX_NODES,
+               MAX_NODES * sizeof(float));
 }
 
 /* Snapshot one measured item — its RunResult row AND its per-node z — under a
@@ -357,7 +405,8 @@ static void node_z_move(int from, int to)
  * Returns false if the archive is missing or j is out of range. out_z gets NaN
  * for nodes that did not contribute that run. Lives in PSRAM so results[]
  * itself stays lean. */
-bool results_row_z(int j, RunResult *out_row, float out_z[MAX_NODES])
+bool results_row_z(int j, RunResult *out_row, float out_z[MAX_NODES],
+                   float out_h[MAX_NODES])
 {
     if (!out_row || !out_z || !s_node_z) return false;
     archive_lock();
@@ -368,6 +417,10 @@ bool results_row_z(int j, RunResult *out_row, float out_z[MAX_NODES])
     *out_row = g_status.results[j];
     const float *row = s_node_z + (size_t)j * MAX_NODES;
     for (int i = 0; i < MAX_NODES; i++) out_z[i] = row[i];
+    if (out_h) {
+        const float *hrow = s_node_h ? s_node_h + (size_t)j * MAX_NODES : NULL;
+        for (int i = 0; i < MAX_NODES; i++) out_h[i] = hrow ? hrow[i] : NAN;
+    }
     archive_unlock();
     return true;
 }
@@ -771,22 +824,34 @@ static void pool_confirm_wait(bool euro, int mx, int *io_pool_nm, int *io_pool_n
  * Returns k; k == 0 means VOID — caller must not publish as a result.
  * *out_mask receives the bit mask of nodes that actually entered the combine. */
 static int gather_and_combine(double z_master, bool master_ok,
+                              double h_master, bool master_h,
                               double znode[MAX_NODES], bool have[MAX_NODES],
-                              double *out_z, uint8_t *out_mask)
+                              double zh[MAX_NODES], bool have_h[MAX_NODES],
+                              double *out_z, uint8_t *out_mask, double *out_zh)
 {
+    /* Windows per run, from the COMMANDED segment count — identical on every
+     * node, so the master standardises every arm's H against the same null.
+     * See the note in the slave's 'M' reply for why M does not travel. */
+    const int mwin = g_status.run_segments / GCP_SPEC_W;
+
     for (int i = 0; i < MAX_NODES; i++) {
-        znode[i] = 0.0;
-        have[i]  = false;
+        znode[i]  = 0.0;
+        have[i]   = false;
+        zh[i]     = 0.0;
+        have_h[i] = false;
     }
     if (master_ok && g_status.nodes[0].ok) {
         znode[0] = z_master;
         have[0]  = true;
+        if (master_h) have_h[0] = gcp_spec_z(h_master, mwin, &zh[0]);
     }
     for (int s = 0; s < nodes_slave_count(); s++) {
-        double zs = 0.0;
-        if (!g_status.nodes[s + 1].ok || !node_take_z(s, &zs)) continue;
+        double zs = 0.0, hs = 0.0;
+        bool   hh = false;
+        if (!g_status.nodes[s + 1].ok || !node_take_z(s, &zs, &hh, &hs)) continue;
         znode[s + 1] = zs;
         have[s + 1]  = true;
+        if (hh) have_h[s + 1] = gcp_spec_z(hs, mwin, &zh[s + 1]);
     }
 
     /* Soft-exclude only when at least NODE_SOFT_MIN_COMBINE non-soft nodes
@@ -818,6 +883,21 @@ static int gather_and_combine(double z_master, bool master_ok,
     }
     if (out_mask) *out_mask = mask;
     if (out_z) *out_z = (k > 0) ? sum / sqrt((double)k) : 0.0;
+
+    /* The entropy combine is the SAME Stouffer form over its OWN k. It is not
+     * the z combine's k: an arm can answer with a z and no H, so k_h ≤ k and
+     * the two must be counted separately or the √k scaling is wrong for one of
+     * them. The set of arms is otherwise identical — soft-down exclusion
+     * applies to both, because a node hot enough to be dropped from z is not a
+     * node whose spectrum should decide a ranking. */
+    double hsum = 0.0;
+    int    kh   = 0;
+    for (int i = 0; i < g_status.node_count && i < MAX_NODES; i++) {
+        if (!(mask & (1u << i)) || !have_h[i]) continue;
+        hsum += zh[i];
+        kh++;
+    }
+    if (out_zh) *out_zh = (kh > 0) ? hsum / sqrt((double)kh) : NAN;
     return k;
 }
 
@@ -829,7 +909,18 @@ static int gather_and_combine(double z_master, bool master_ok,
  * NOT be scored as 0.0 and ranked: under score_dir=LOW a 0.0 would beat every
  * positive z, and under HIGH every negative one — so a camera that dropped one
  * run would steer which numbers enter the pool. The caller excludes void
- * candidates from selection instead. */
+ * candidates from selection instead.
+ *
+ * ⚠ SCORING RANKS ON THE SAME KEY THE PASS DOES (2026-08-25): the entropy half
+ * enters here too, at the session's ?went=. It has to — a pool chosen on z
+ * alone and then ranked on z-plus-entropy would be selecting candidates by one
+ * criterion and judging them by another, and the difference would show up as an
+ * apparent effect of the entropy channel.
+ *
+ * ⚠ But NOT block-centred, because no block has closed yet. Scoring runs on raw
+ * z and raw z_h, exactly as it always ran on raw z: what it removes is common
+ * to every candidate, so it does not move the ORDER. The per-node entropy
+ * offset is common in the same way. */
 static double score_one_run(bool *ok)
 {
     int nseg = segments_for();               // session window, all phases
@@ -838,8 +929,9 @@ static double score_one_run(bool *ok)
      * the slaves and the "same window" would be offset by ~85 ms. */
     slave_trigger(nseg);
     bool   fresh = onset_settle();
-    double zm = 0.0;
-    bool   zok = fresh && gcp_zscore_ok(nseg, &zm);
+    double zm = 0.0, hm = 0.0;
+    bool   hok = false;
+    bool   zok = fresh && gcp_zscore_h_ok(nseg, &zm, &hok, &hm);
     // Sampling is over the moment the local run returns; the reply wait below
     // is dark time. The caller lit the panel — see focus_publish().
     focus_off();
@@ -847,14 +939,27 @@ static double score_one_run(bool *ok)
     // Timeout from THIS run's length: at the scoring length the old flat 4 s
     // would expire while every slave was still measuring.
     if (nodes_have_slaves()) nodes_collect(LINK_MEAS_MS_FOR(nseg), true);
-    double znode[MAX_NODES];
-    bool   have[MAX_NODES];
-    double z = 0.0;
+    double znode[MAX_NODES], zhn[MAX_NODES];
+    bool   have[MAX_NODES], haveh[MAX_NODES];
+    double z = 0.0, zh = NAN;
     uint8_t mask = 0;
-    int k = gather_and_combine(zm, zok, znode, have, &z, &mask);
+    int k = gather_and_combine(zm, zok, hm, hok, znode, have, zhn, haveh,
+                               &z, &mask, &zh);
     (void)mask;
     if (ok) *ok = (k > 0);
-    return (k > 0) ? z : 0.0;
+    if (k <= 0) return 0.0;
+
+    /* The same weighting rank_key() applies, on the uncentred values. An item
+     * with no entropy contributes 0 for that half, i.e. ranks as exactly
+     * average — the alternative, falling back to the pure-z key for that one
+     * candidate, would put it on a different scale from its competitors. */
+    double w = g_status.ent_w;
+    if (w <= 0.0) return z;
+    double zhv = isnan(zh) ? 0.0 : zh;
+    if (zhv >  ENT_Z_CLAMP) zhv =  ENT_Z_CLAMP;
+    if (zhv < -ENT_Z_CLAMP) zhv = -ENT_Z_CLAMP;
+    double a = 1.0 - w;
+    return (a * z - w * zhv) / sqrt(a * a + w * w);
 }
 
 /* Effective variance of the Stouffer combine under the measured per-node σ
@@ -919,6 +1024,43 @@ static void update_null_flags(void)
  * place — mixing the two silently would be indistinguishable from a result. */
 static double rank_z(const RunResult *r) { return (double)r->z_ctr; }
 
+/* ── The ranking key: z and spectral entropy, weighted (2026-08-25) ────────
+ *
+ * key = ((1−w)·z_ctr − w·z_h) / √((1−w)² + w²)
+ *
+ * Three things the shape is doing:
+ *
+ * 1. MINUS z_h, because low entropy is the direction of interest (user). An
+ *    item with less spectral disorder than white noise scores HIGH, so it lands
+ *    in Top-N beside a high z rather than in Bottom-N.
+ * 2. The √ normaliser, not a plain average. Both halves are ~N(0,1) and, under
+ *    H₀, INDEPENDENT — z is the DC bin and z_h is built from bins 1…511 — so
+ *    the weighted sum has variance (1−w)²+w², and dividing by its root keeps
+ *    the key at unit variance whatever w is. At w = 0,5 that is (z − z_h)/√2,
+ *    the same Stouffer form the node combine uses. Without it, changing w would
+ *    silently change the SCALE of every published Z*.
+ * 3. Direction-neutral. score_dir is not applied here: Top-N and Bottom-N are
+ *    both published and both mean what they always meant, so the key must not
+ *    flip with a Phase-0 parameter. ?score= still only chooses which numbers
+ *    enter the pool.
+ *
+ * ⚠ w = 0 reproduces the pure-z ranking EXACTLY, including the scale — that is
+ * the control arm, and it is one query parameter away.
+ * ⚠ zh_ctr == 0 means "no entropy value for this item", which reads as exactly
+ * average entropy. That is deliberate: the alternative is to rank that item on
+ * a key with a different variance from its neighbours'.
+ * ⚠ Clamped. See ENT_Z_CLAMP in sensor.h — the archive keeps the real value. */
+double rank_key(const RunResult *r)
+{
+    double w = g_status.ent_w;
+    if (w <= 0.0) return (double)r->z_ctr;
+    double zh = (double)r->zh_ctr;
+    if (zh >  ENT_Z_CLAMP) zh =  ENT_Z_CLAMP;
+    if (zh < -ENT_Z_CLAMP) zh = -ENT_Z_CLAMP;
+    double a = 1.0 - w;
+    return (a * (double)r->z_ctr - w * zh) / sqrt(a * a + w * w);
+}
+
 static bool result_ranked(const RunResult *r)
 {
     return r && r->k > 0 && !r->skip_rank;
@@ -969,6 +1111,8 @@ static void recompute_pass_ranks(void)
         g_status.best_z = 0.0;
         g_status.p_corrected = 1.0;
         g_status.comparisons = 0;
+        g_status.rank_mean = g_status.rank_sigma = 0.0;
+        g_status.ent_n = g_status.ent_clamped = 0;
         update_null_flags();
         return;
     }
@@ -979,10 +1123,48 @@ static void recompute_pass_ranks(void)
     g_status.pass_sigma    = sigma;
     g_status.pass_stouffer = mean * sqrt((double)nv);
 
-    /* Ranking key is the centred z itself — subtracting the pass mean and
-     * dividing by σ is monotone, so it reorders nothing; it only sets the scale
-     * the UI prints. zmax_abs is kept studentized because the Bonferroni line
-     * needs a standard normal deviate.
+    /* ── Two channels, two jobs ────────────────────────────────────────────
+     * Everything ABOVE runs on rank_z() and stays there: pass mean/σ/χ², the
+     * Bonferroni line and null_flags are the null GATES, and they are only
+     * meaningful on a statistic whose null this instrument actually meets.
+     * The spectral entropy null is the ideal one and the array does not quite
+     * meet it (see gcp.h), so it must never reach a p-value.
+     *
+     * Everything BELOW — the three published tables — runs on rank_key(), the
+     * weighted combination. rank_mean/rank_sigma are its own moments, because
+     * the UI's Z* and the nearest-mean table have to be studentized against
+     * the key that ordered them, not against z's moments. At ?went=0 the key
+     * IS z_ctr and the two pairs coincide exactly. */
+    double ksum = 0.0, ksumsq = 0.0;
+    int    kn = 0, ent_n = 0, ent_clamped = 0;
+    for (int j = 0; j < ntot; j++) {
+        const RunResult *r = &g_status.results[j];
+        if (!result_ranked(r)) continue;
+        double kk = rank_key(r);
+        ksum += kk; ksumsq += kk * kk; kn++;
+        if (r->zh_ctr != 0.0f) {
+            ent_n++;
+            if (fabs((double)r->zh_ctr) >= ENT_Z_CLAMP) ent_clamped++;
+        }
+    }
+    /* ⚠ NOT seeded with the compaction moments, unlike the z statistics above.
+     * s_drop_* holds Σz and Σz², which cannot reconstruct the key's moments —
+     * the dropped rows' entropy is gone with them. So these two describe the
+     * rows HELD, which for a session that never compacted is every ranked item
+     * and for one that did is the extremes. They set a display scale and choose
+     * the nearest-mean five; nothing tests against them. */
+    double kmean  = (kn > 0) ? ksum / (double)kn : 0.0;
+    double kss    = ksumsq - (double)kn * kmean * kmean;
+    double ksigma = (kn > 1 && kss > 0.0) ? sqrt(kss / (double)(kn - 1)) : 0.0;
+    g_status.rank_mean   = kmean;
+    g_status.rank_sigma  = ksigma;
+    g_status.ent_n       = ent_n;
+    g_status.ent_clamped = ent_clamped;
+
+    /* Subtracting the mean and dividing by σ is monotone, so it reorders
+     * nothing; it only sets the scale the UI prints. zmax_abs is kept
+     * studentized on rank_z because the Bonferroni line needs a standard normal
+     * deviate from the channel that tests.
      *
      * Built into LOCAL lists and published at the end: /status and
      * /results.csv read top[]/low[] from the HTTP task, and zeroing the counts
@@ -1000,20 +1182,21 @@ static void recompute_pass_ranks(void)
         double zs = (sigma > 0.0) ? (z - mean) / sigma : (z - mean);
         if (fabs(zs) > zmax_abs) zmax_abs = fabs(zs);
 
-        if (ltn < TOP_N || z > rank_z(&ltop[ltn - 1])) {
+        double key = rank_key(r);
+        if (ltn < TOP_N || key > rank_key(&ltop[ltn - 1])) {
             if (ltn < TOP_N) ltn++;
             int p = ltn - 1;
-            while (p > 0 && rank_z(&ltop[p - 1]) < z) {
+            while (p > 0 && rank_key(&ltop[p - 1]) < key) {
                 ltop[p] = ltop[p - 1];
                 p--;
             }
             ltop[p] = *r;
         }
 
-        if (lln < TOP_N || z < rank_z(&llow[lln - 1])) {
+        if (lln < TOP_N || key < rank_key(&llow[lln - 1])) {
             if (lln < TOP_N) lln++;
             int p = lln - 1;
-            while (p > 0 && rank_z(&llow[p - 1]) > z) {
+            while (p > 0 && rank_key(&llow[p - 1]) > key) {
                 llow[p] = llow[p - 1];
                 p--;
             }
@@ -1071,7 +1254,10 @@ static void pass_compact(void)
     if (n <= 0) return;
 
     const int K = PASS_KEEP_PER_TABLE;
-    double mean = g_status.pass_mean;      /* the session mean as it stands now */
+    /* The survivor key must be the PUBLISHED key, or compaction throws away the
+     * items the tables are about to want. rank_mean is the key's own mean over
+     * the ranked rows — at ?went=0 it equals pass_mean and this is unchanged. */
+    double mean = (g_status.ent_w > 0.0) ? g_status.rank_mean : g_status.pass_mean;
     uint8_t *keep = heap_caps_calloc((size_t)n, 1, MALLOC_CAP_SPIRAM);
     if (!keep) {                            /* no room to choose: keep everything */
         printf("pass: compaction skipped — no heap for the survivor mask\n");
@@ -1089,7 +1275,7 @@ static void pass_compact(void)
                 if (keep[j]) continue;
                 const RunResult *r = &g_status.results[j];
                 if (!result_ranked(r)) continue;
-                double z   = rank_z(r);
+                double z   = rank_key(r);
                 double key = (t == 0) ? z : (t == 1) ? -z : -fabs(z - mean);
                 if (best < 0 || key > best_key) { best_key = key; best = j; }
             }
@@ -1195,12 +1381,27 @@ int results_near_mean(RunResult *out, int cap, double *out_mean, double *out_sig
      * without them this would centre on the mean of the extremes, i.e. on
      * roughly zero for the wrong reason, and pick its five neighbours by an
      * accident of the tables being symmetric. The SEARCH below then runs over
-     * the survivors only, which is the whole point of keeping a nearest-K. */
-    double sum = s_drop_sum;
-    int    nv  = s_drop_n;
+     * the survivors only, which is the whole point of keeping a nearest-K.
+     *
+     * ⚠ NEAREST THE MEAN OF THE KEY THAT ORDERS THE OTHER TWO TABLES (2026-08-25).
+     * Top-5 and Bottom-5 are the extremes of rank_key(); "least remarkable" has
+     * to mean least remarkable BY THE SAME MEASURE, or the three tables answer
+     * three different questions and the middle one looks like a third result.
+     * At ?went=0 the key is z_ctr and this is exactly what it always was.
+     *
+     * ⚠ The compaction moments cannot be carried over. s_drop_* holds Σz and
+     * Σz² for the dropped rows, and the key is not a function of z alone — the
+     * entropy of a dropped row went with it. So at ?went>0 in a session that has
+     * compacted, the target is the mean over the rows HELD; that is stated in
+     * the CSV by `compacted=` being non-zero and is why a distribution must
+     * never be computed from such a file anyway. At ?went=0 the seeding is exact
+     * as before. */
+    const bool ent_on = (g_status.ent_w > 0.0);
+    double sum = ent_on ? 0.0 : s_drop_sum;
+    int    nv  = ent_on ? 0   : s_drop_n;
     for (int j = 0; j < n; j++) {
         if (!result_ranked(&g_status.results[j])) continue;
-        sum += rank_z(&g_status.results[j]);
+        sum += rank_key(&g_status.results[j]);
         nv++;
     }
     if (nv <= 0) { archive_unlock(); return 0; }
@@ -1210,11 +1411,12 @@ int results_near_mean(RunResult *out, int cap, double *out_mean, double *out_sig
     // taken about was estimated from the same data. The dropped items enter
     // expanded — Σ(z−m)² = Σz² − 2m·Σz + n·m² — because THEIR mean is not the
     // pass mean, so the short form Σz² − n·m² would be wrong for them.
-    double ss = s_drop_sumsq - 2.0 * mean * s_drop_sum
-              + (double)s_drop_n * mean * mean;
+    double ss = ent_on ? 0.0
+                       : (s_drop_sumsq - 2.0 * mean * s_drop_sum
+                          + (double)s_drop_n * mean * mean);
     for (int j = 0; j < n; j++) {
         if (!result_ranked(&g_status.results[j])) continue;
-        double d = rank_z(&g_status.results[j]) - mean;
+        double d = rank_key(&g_status.results[j]) - mean;
         ss += d * d;
     }
     double sigma = (nv > 1 && ss > 0.0) ? sqrt(ss / (double)(nv - 1)) : 0.0;
@@ -1222,15 +1424,15 @@ int results_near_mean(RunResult *out, int cap, double *out_mean, double *out_sig
     if (out_mean)  *out_mean  = mean;
     if (out_sigma) *out_sigma = sigma;
 
-    // Insertion sort by |z − mean|, keeping the `cap` smallest.
+    // Insertion sort by |key − mean|, keeping the `cap` smallest.
     int got = 0;
     for (int j = 0; j < n; j++) {
         if (!result_ranked(&g_status.results[j])) continue;
-        double d = fabs(rank_z(&g_status.results[j]) - mean);
-        if (got == cap && d >= fabs(rank_z(&out[got - 1]) - mean)) continue;
+        double d = fabs(rank_key(&g_status.results[j]) - mean);
+        if (got == cap && d >= fabs(rank_key(&out[got - 1]) - mean)) continue;
         if (got < cap) got++;
         int p = got - 1;
-        while (p > 0 && fabs(rank_z(&out[p - 1]) - mean) > d) {
+        while (p > 0 && fabs(rank_key(&out[p - 1]) - mean) > d) {
             out[p] = out[p - 1]; p--;
         }
         out[p] = g_status.results[j];
@@ -1267,11 +1469,32 @@ typedef struct {
 
 static PairAcc s_pair[MAX_NODES][MAX_NODES];   // upper triangle, i < j
 static NodeAcc s_nacc[MAX_NODES];
+/* Per-node z_h sums over the OPEN block, the entropy twin of s_nacc. Separate
+ * counts, not a shared n: a node can answer with a z and no H (older slave
+ * firmware, or its FFT buffers did not allocate), so the two channels have
+ * different denominators and sharing one would centre the entropy on a mean
+ * divided by the wrong count. Cleared with s_nacc by pairs_fold_loop(). */
+static NodeAcc s_hacc[MAX_NODES];
 
 static void pairs_reset(void)
 {
     memset(s_pair, 0, sizeof(s_pair));
     memset(s_nacc, 0, sizeof(s_nacc));
+    memset(s_hacc, 0, sizeof(s_hacc));
+}
+
+/* Fold one run's per-node z_h into the open block. Kept out of pairs_add_run()
+ * on purpose: the pairwise independence matrix is a statement about the z
+ * channel and the √k combine that rests on it, and mixing a second statistic
+ * into it would change what pair_r means. */
+static void hacc_add_run(const double *zh, const bool *have_h)
+{
+    for (int i = 0; i < g_status.node_count && i < MAX_NODES; i++) {
+        if (!have_h[i]) continue;
+        s_hacc[i].s  += zh[i];
+        s_hacc[i].ss += zh[i] * zh[i];
+        s_hacc[i].n++;
+    }
 }
 
 /* Fold one run's per-node values in. `z[]` holds each node's own z and `have[]`
@@ -1313,6 +1536,13 @@ static void pairs_fold_loop(void)
             a->cloops++;
         }
         a->s = a->ss = 0.0; a->n = 0;
+        /* ⚠ The entropy block sums are cleared HERE and nowhere else, in the
+         * same loop as s_nacc, because center_block() reads both and this call
+         * is what ends their block. Clearing them anywhere else would let one
+         * block's items be centred on another block's mean — the failure would
+         * show as an entropy offset drifting with the block index, which is
+         * indistinguishable from the thermal drift this rig is looking for. */
+        s_hacc[i].s = s_hacc[i].ss = 0.0; s_hacc[i].n = 0;
 
         for (int j = i + 1; j < MAX_NODES; j++) {
             PairAcc *p = &s_pair[i][j];
@@ -1711,6 +1941,26 @@ static void center_block(int block_idx)
         }
     }
 
+    /* The entropy channel is centred by exactly the same argument and with its
+     * OWN per-node means. It needs it more than z does, not less: H₀ depends on
+     * the operating point — a node's exposure rung sets its frame cadence and
+     * therefore how much per-frame structure lands in the spectrum — so the
+     * per-node offset is real, constant within a block, and larger than z's.
+     * Removing it is what turns z_h from "which node is this" into "which item
+     * is this".
+     *
+     * ⚠ Same pre-registration cost as z, and it bites harder here: an entropy
+     * effect CONSTANT across a block is removed with the offset. What survives
+     * is variation between items inside one block. */
+    double mh[MAX_NODES] = {0};
+    bool   okh[MAX_NODES] = {false};
+    for (int i = 0; i < g_status.node_count && i < MAX_NODES; i++) {
+        if (s_hacc[i].n >= 2) {
+            mh[i]  = s_hacc[i].s / (double)s_hacc[i].n;
+            okh[i] = true;
+        }
+    }
+
     int ntot = g_status.runs_completed;
     if (ntot > NUM_RUNS) ntot = NUM_RUNS;
     int n = 0;
@@ -1730,6 +1980,22 @@ static void center_block(int block_idx)
             r->z_ctr = (float)(sum / sqrt((double)kk));
             n++;
         }
+
+        /* Over the arms that reported an H, which is its own count — see the
+         * √k note in gather_and_combine(). 0 when none did, which rank_key()
+         * reads as "exactly average entropy". */
+        const float *hrow = s_node_h ? s_node_h + (size_t)j * MAX_NODES : NULL;
+        double hsum = 0.0;
+        int    kh   = 0;
+        if (hrow) {
+            for (int i = 0; i < MAX_NODES; i++) {
+                if (!(r->have_mask & (1u << i))) continue;
+                if (isnan(hrow[i])) continue;
+                hsum += (double)hrow[i] - (okh[i] ? mh[i] : 0.0);
+                kh++;
+            }
+        }
+        r->zh_ctr = (kh > 0) ? (float)(hsum / sqrt((double)kh)) : 0.0f;
     }
     if (n > 0)
         printf("block %d: centred %d items (node means %+.3f %+.3f %+.3f %+.3f)\n",
@@ -1892,6 +2158,13 @@ void elotto_task(void *pvParam)
     if (s_node_z) {
         for (size_t i = 0; i < (size_t)NUM_RUNS * MAX_NODES; i++)
             s_node_z[i] = NAN;
+    }
+    if (!s_node_h)
+        s_node_h = heap_caps_malloc((size_t)NUM_RUNS * MAX_NODES * sizeof(float),
+                                    MALLOC_CAP_SPIRAM);
+    if (s_node_h) {
+        for (size_t i = 0; i < (size_t)NUM_RUNS * MAX_NODES; i++)
+            s_node_h[i] = NAN;
     }
     // focus_mode is set by /start and NOT reset here — it is the session's tag.
     focus_reset();
@@ -2220,26 +2493,30 @@ void elotto_task(void *pvParam)
             int nseg = segments_for();
             slave_trigger(nseg);
             bool   fresh = onset_settle();
-            double zraw = 0.0;
+            double zraw = 0.0, hraw = 0.0;
+            bool   hok  = false;
             /* No flush, no measurement: the local z is withheld rather than
              * computed from bits of unknown provenance. The slaves were already
              * triggered and answer normally; each one withholds its own z the
              * same way if ITS flush timed out, so k simply drops. */
-            bool   zok  = fresh && gcp_zscore_ok(nseg, &zraw);
+            bool   zok  = fresh && gcp_zscore_h_ok(nseg, &zraw, &hok, &hraw);
             focus_off();          // sampling done; the reply wait is dark time
             if (fresh && !zok) node_camera_failed(0, "stalled mid-run");
             if (nodes_have_slaves()) nodes_collect(LINK_MEAS_MS_FOR(nseg), true);
 
-            double znode[MAX_NODES];
-            bool   have[MAX_NODES];
-            double z = 0.0;
+            double znode[MAX_NODES], zhn[MAX_NODES];
+            bool   have[MAX_NODES], haveh[MAX_NODES];
+            double z = 0.0, zh = NAN;
             uint8_t mask = 0;
-            int k = gather_and_combine(zraw, zok, znode, have, &z, &mask);
+            int k = gather_and_combine(zraw, zok, hraw, hok, znode, have,
+                                       zhn, haveh, &z, &mask, &zh);
 
             /* Archive every node that produced a z (including soft-down ones),
              * so post-hoc recombine is possible. */
             node_z_store(slot, znode, have);
+            node_h_store(slot, zhn, haveh);
             pairs_add_run(znode, have);
+            hacc_add_run(zhn, haveh);
 
             r->index     = i + 1;
             r->block     = (uint16_t)block;
@@ -2251,14 +2528,22 @@ void elotto_task(void *pvParam)
                 r->z_score = z;
                 /* Provisional: the block's node means are not known until it
                  * closes, so the live ranking uses the uncentred value and
-                 * center_block() replaces it a few minutes later. */
+                 * center_block() replaces it a few minutes later. Same for the
+                 * entropy — and provisional z_h is FURTHER from its final value
+                 * than provisional z is, because the per-node entropy offset is
+                 * the larger one. The live tables move more at a block close
+                 * than they used to; that is the estimator arriving, not drift. */
                 r->z_ctr   = (float)z;
+                r->zh_ctr  = isnan(zh) ? 0.0f : (float)zh;
+                g_status.ent_zh_last = zh;
+                g_status.ent_h_last  = hok ? hraw : NAN;
                 s_blk_sum += z;  s_blk_sumsq += z * z;  s_blk_n++;
             } else {
                 /* VOID: incomplete combine. Archived with k=0, never enters
                  * ranking, Bonferroni, pass mean/σ, or block σ. */
                 r->z_score = 0.0;
                 r->z_ctr   = 0.0f;
+                r->zh_ctr  = 0.0f;
             }
 
             g_status.runs_completed = slot + 1;  // AFTER the row is complete: readers

@@ -154,6 +154,68 @@ to 6+4 = 36.
 
 ---
 
+### Spectral entropy — the second channel (2026-08-25)
+**z is the DC bin.** `Σ(ones−100)` is exactly the 0-th Fourier component of the segment series, so a
+statistic built from bins 1…511 is independent of z under H₀ — a second measurement out of the same
+bits, at no extra measuring time. Welch over `GCP_SPEC_W` 1024-segment windows, `GCP_SPEC_BINS` 511
+(DC dropped because it is z; Nyquist dropped because it is χ²₁, not χ²₂), normalised entropy H/ln K.
+
+- **`?went=<0..1>` is the weight of the entropy half of the ranking key**, default **0,50** (user,
+  "wir probieren mal 50:50"). Out of range answers **400**. `?went=0` is the control arm and
+  reproduces the pure-z ranking exactly, including the scale.
+  **key = ((1−w)·z_ctr − w·z_h)/√((1−w)²+w²)** — minus z_h because **low entropy is the interesting
+  direction**, and the √ normaliser because both halves are N(0,1) and independent, so the key stays
+  unit-variance at every w. Direction-neutral: `?score=` still only picks the pool.
+- ⚠ **It RANKS, it does not TEST.** Top-5/Bottom-5/Nearest and the compaction survivors run on
+  `rank_key()`; `pass_mean/σ/χ²`, the Bonferroni line and `null_flags` stay on `rank_z()` — the
+  closed-form entropy null is the IDEAL one and this array does not quite meet it (1600 consecutive
+  segments share a frame pair, so per-frame structure is a real spectral line). Block centring
+  removes that as the constant it is; a p-value from it would not be honest.
+- **Null in closed form, from the run's own M** (`gcp_spec_null()`): H₀ = 1 − (ψ(M+1)−ln M)/ln K,
+  Var = Var(Z)/(K·M²). Verified against Monte Carlo: mean to 8e-6, σ 1,6 % (M=25) / 5,5 % (M=127)
+  conservative. M is fixed per session, so the σ error is a constant scale and cannot reorder.
+  **1 s works**: M ≈ 25, σ(H_norm) ≈ 2,0e-4 · 5 s: M ≈ 127, σ ≈ 3,9e-5 — the same statistic, 5×
+  sharper, directly comparable because z_h is standardised per run.
+- **z_h is block-centred per node like z**, on its own accumulator (`s_hacc`) and its own k — a node
+  can answer with a z and no H, so `k_h ≤ k`. It needs centring more than z does: the per-node offset
+  follows the exposure rung, hence the frame cadence, hence how much per-frame structure lands in the
+  spectrum. ⚠ Same pre-registration cost, and it bites harder: an entropy effect **constant across a
+  block** is removed with the offset.
+- `ENT_Z_CLAMP` 12 bounds the entropy term **in the key only** — the archive is never clamped. One
+  stuck frame would otherwise own Top-5 for the session. Hits are counted (`ent_clamped`); non-zero
+  means camera glitches were competing for the table.
+- Wire: `Z:<z>,<H_norm>` — **appended and optional**, 8 decimals (6 would quantise z_h at `?run=5`).
+  M does not travel: every node measures the commanded `nseg`, so M = nseg/1024 on all of them.
+  A slave without the field contributes to z and not to entropy.
+- **`GET /spectest`** holds the packed real FFT against a reference DFT and prints the null moments
+  at the session's window count. **Master only**, like `/camtest`, and for the same reason: the test
+  is pure arithmetic out of the shared component, so all four nodes run the identical object code —
+  a per-node run would answer a question that cannot differ. 409 while measuring.
+  ⛔ Do not change `spec_fold()` without it — a wrong unpack gives a wrong-but-plausible H.
+  Verified on hardware 2026-08-25: `worst_rel` 2,8e-06, `h0` 0,99936953, `sd` 3,939e-05 at 127
+  windows — the target's digamma agrees with the Python reference to every printed digit.
+- **The archive carries z_h even at `?went=0`.** The control arm measures, combines and centres the
+  entropy exactly as the 0,5 arm does; the weight only enters the ranking. So a `?went=0` session can
+  be re-ranked at any weight offline from `h0..h3` in the CSV, and the two arms differ in nothing but
+  the order of three tables.
+- ⚠ **`ent_w` splits the pooling table for the TABLES only.** Two sessions at different weights put
+  different items in Top-5. `z_raw`/`z_ctr` still pool — the entropy channel does not touch them.
+- ⛔ **The FFT working buffers go in INTERNAL RAM, never PSRAM** — measured, and the margin is not
+  subtle. The first build put all ~12 KB in PSRAM and the slaves ran at **3,81 Mbit/s against 5,72**
+  for a node still on the pre-FFT image, `ms_extract` 67 ms against 39 — a third of the bit rate
+  gone. It is not the arithmetic (25 windows × 512 points is ~750 kFLOP per 1 s run); it is the
+  **bus**, shared with the capture buffers and the extraction ring. Moving them internal restored all
+  four nodes to 5,716–5,717 and `ms_extract` 39,5–39,8, i.e. no measurable cost at all.
+  `gcp_spec_in_psram()` / `"in_psram"` in `/spectest` reports the fallback, because a node that lands
+  there is merely slow and nothing else would say why.
+  ⚠ **Never judge this on the master's rate**: the master finishes its run and then waits ~1,3 s for
+  the slave replies, so its extraction task gets the idle bus back and it read 5,717 in BOTH builds.
+  The slaves are the measurement.
+- ⚠ **`?went=0` does not disable the FFT.** Entropy is always measured, combined and centred; the
+  weight only enters the ranking. The control for a *cost* question is therefore the pre-FFT image,
+  not `?went=0` — a within-session comparison against one node left on the old firmware is the
+  method that worked.
+
 ## Stored z is RAW; ranking is block-centred
 - **`z_score` is the raw combined Stouffer z and is never rewritten.** It is the archive.
   `/results.csv` carries it forever, alongside the per-node `z0..z3`.
@@ -183,9 +245,13 @@ detail: what remains visible is an effect varying **between items inside a block
 ### CSV header
 `# elotto v3 mode= focus= score= items=<measured>/<planned> ranked= excl= void= blocks= paused_ms=
 pass_* v_eff= null_flags= flush_timeouts= drift_t= unlimited= runs_cap= rounds= run_s= run_segs=
-gap_s= fw=<version>/<elf sha>`, then `# nodes=<ip list, discovery order>` and
+gap_s= compacted= ent_w= ent_win= ent_h0= ent_sd= ent_n= ent_clamp= rank_mean= rank_sigma=
+fw=<version>/<elf sha>`, then `# nodes=<ip list, discovery order>` and
 `# fw_nodes=<sha per node, same order>` (`?` = never answered).
-`?all=1` appends a **`round` column last** so older parsers still line up.
+`?all=1` appends a **`round` column last**, then `zh_ctr;key;h0..h3` after it, so older parsers
+still line up. The summary file gains `zh_ctr;key` at the end of its row. `h0..h3` are per-node
+RAW z_h in the same discovery order as `z0..z3`; empty means that node reported no H, which is
+**not** the same as an H of zero.
 ⚠ The window travels in BOTH units: `run_s` alone cannot separate instrument generations `[D1]`.
 ⚠ "All four run the same code" is a policy, not a fact — check `fw_nodes`.
 
@@ -202,6 +268,7 @@ separate arm `[D1]`.
 | extraction speed-up 2026-08-18 | one side — same `?run=`, 1,85× the bits per item |
 | onset flush 2026-08-19 | one side — the bit-to-item mapping changed |
 | `focus=on` vs `off` | one arm; attended and unattended are never mixed |
+| `ent_w` (2026-08-25) | one weight — for the TABLES. `z_raw`/`z_ctr` pool across weights |
 | v3 vs any v2.x | v3 only |
 
 Unlimited-mode data carries two more: split on `round` before pooling with a single-pass session, and
@@ -323,7 +390,7 @@ The enclosure is **LIT, not dark** `[D28]`.
   the reply carries the **read-back** setting. Not sticky: the next sweep overwrites it, which is correct.
   ⚠ `cfg.max_uri_handlers` must exceed (endpoints here) + 5 from elotto_ota. Registration past the cap
   fails and **the return value is checked nowhere**, so an endpoint just 404s silently. Currently
-  16 + 5 = 21 against a cap of 24.
+  17 + 5 = 22 against a cap of 24 (`/spectest` added 2026-08-25).
 - **main/sensor.c** – GCP analysis, scoring/pooling, baseline, the pass, blocks, centring, drift,
   soft-down, publishing. **main/sensor.h** – types and declarations.
 - **main/nodes.c** – the array: UDP link, discovery, calibration handshake, per-node health, drop/reboot
@@ -342,6 +409,8 @@ The enclosure is **LIT, not dark** `[D28]`.
   ⚠ The remaining soft-float calls per segment are deliberate `[D26]`; only `__subdf3` was removable
     without moving a stored z.
   `/camtest` checks `cam_popcount32` against `__builtin_popcount` over 200.000 values.
+  Plus `gcp_spec.c`: the Welch spectral-entropy channel (float32 packed real FFT, closed-form
+  null). `/spectest` holds it against a reference DFT — see **Spectral entropy** above.
 - **components/elotto_ota/** – update endpoint + boot safety (rollback, boot counter, mark-valid;
   `/update` `/boot` `/reboot` `/poison` `/otainfo`). `BOOT_FAIL_LIMIT` 3, `HEALTHY_UPTIME_MS` 30000.
 
@@ -353,7 +422,8 @@ commit them together.
 
 ### Wire protocol
 `P` discovery · `B<runs>,<seg>` baseline · `M<seg>` measure · `K<budget_ms>,<segs>` calibrate ·
-`D` diagnostics · `A` abort · `R` reboot. Replies `OK`, `Z:`, `D:`, `E:<reason>`.
+`D` diagnostics · `A` abort · `R` reboot. Replies `OK`, `Z:<z>[,<H_norm>]`, `D:`, `E:<reason>`,
+`V:<reason>` (void, not a fault).
 
 UDP loss is handled explicitly: every frame carries the sequence number it answers, mismatches are
 dropped and counted (`net_stale`), and a timed-out command is resent under the same sequence so a node
@@ -488,6 +558,22 @@ reconstructing the abort time from slave camera counters.
 time and `round_base` was taken from `items_done` where it had to come from `runs_completed`: the
 round after the compaction wrote past the compacted array and the dropped rows were counted twice.
 `pass_n_valid` 15806 for 8019 items. Fixed the same day `[D42]`.
+
+**Spectral entropy went in 2026-08-25** (see the section above), flashed to all four and verified on
+hardware the same day. Master `dcf44ad31c6e8e2d`, all three slaves `a0a5d77e03fcb942`.
+
+What was checked: `/spectest` `worst_rel` 2,8e-06 and the null moments identical to the Python
+reference at both window counts · `/camtest` still `equal:true`, so the z path is untouched · the key
+reproduces by hand from the CSV columns (`(0,5·0,2771 − 0,5·(−0,8199))/√0,5 = 0,7757`, the published
+value) · Top-5 ordered by the key with negative `zh_ctr` throughout · the optional wire field
+degrading correctly, with one node deliberately left on the pre-FFT image writing an empty `h3` and a
+`k_h` of 3 while still contributing its z · and the bit-rate control above.
+
+**Still not exercised**: a long run with real 15-minute blocks, so the entropy channel has never been
+BLOCK-CENTRED on more than a couple of blocks — every check so far ran at `?calint=0` on provisional
+values. ⚠ Watch the per-node spread: in the first run the master sat at z_h ≈ −2,9 while the slaves
+were near +1,7, which is the offset centring is there to remove and the reason it must be confirmed
+over many blocks before any ranking is believed.
 
 **Open, in the order I would pick them up:**
 1. **Does an offset survive on a GATED rung?** The 08-19 blocks at exp ≥ 16 average −0,05…+0,09, but

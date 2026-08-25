@@ -28,6 +28,17 @@
  * GET /camtest and by comparing a z against a pre-change run, not by eye. */
 gcp_result_t gcp_zscore_raw(int nseg, bool (*on_yield)(void), double *out)
 {
+    return gcp_zscore_spec(nseg, on_yield, out, NULL);
+}
+
+/* ⚠ The z line below is UNCHANGED and must stay so. gcp_spec_push() is handed
+ * the `ones` this loop already counted and touches nothing else — adding the
+ * second channel does not move a stored z by a bit, and therefore does not
+ * split the pooling table for z. Verify with GET /camtest and by comparing a z
+ * against a pre-change run, not by eye. */
+gcp_result_t gcp_zscore_spec(int nseg, bool (*on_yield)(void), double *out,
+                             gcp_spec_t *sp)
+{
     /* Hoisted, as the slave's copy already had it: the master recomputed it per
      * segment for the same value. */
     const int poll  = nseg / 4 + 1;
@@ -47,6 +58,16 @@ gcp_result_t gcp_zscore_raw(int nseg, bool (*on_yield)(void), double *out)
         ones += (int)cam_popcount32(w & 0xFFu);
 
         z_sum += (ones - GCP_SEGMENT_MEAN_I) / GCP_SEGMENT_SD;
+
+        /* The second channel. One float store per segment, one 512-point FFT
+         * per 1024 of them. Arithmetic says ~4 MFLOP per 5 s run, i.e. under
+         * 1 % of a core — but that is an ESTIMATE and this project does not get
+         * to assert it: the cost is paid by the GCP consumer, which outranks the
+         * extraction task, so any error comes out of the BIT RATE.
+         * ⚠ Prove it with focus_win_ms and ms_extract under load, never at idle
+         * — the same rule every other extraction-path change is held to.
+         * NULL disables it entirely. */
+        gcp_spec_push(sp, ones);
 
         /* The camera path already yields inside camera_read_word() whenever it
          * waits on the producer, which is most of the time. This one is for

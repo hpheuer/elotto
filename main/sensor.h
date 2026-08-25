@@ -411,7 +411,36 @@ typedef struct {
     uint8_t    skip_rank;  // 1 = exclude from pass mean/σ/Top-Bottom (trigger block)
     uint8_t    nums[6];
     uint8_t    euro[2];
+    /* BLOCK-CENTRED combined spectral-entropy z: Σ(z_h,i − m_h,i,block)/√k_h
+     * over the nodes that reported an H for this item. 0 = no entropy value
+     * (no node reported one, or the PSRAM archive is missing), which the
+     * ranking key reads as "exactly average entropy" — see rank_key().
+     *
+     * ⚠ FREE, and that is why it is here and the raw per-node values are not.
+     * The struct had 5 bytes of tail padding, so one float costs 0 bytes of
+     * .bss; a second one would cost 8 KB × … and results[] is in INTERNAL RAM,
+     * where a few KB more fails the LINK (see NUM_RUNS above). The raw
+     * per-node H lives in the PSRAM archive beside s_node_z and reaches the CSV
+     * through results_row_z(). */
+    float      zh_ctr;
 } RunResult;
+
+/* ── The entropy channel (2026-08-25) ─────────────────────────────────────
+ * ENT_W_DEFAULT is the weight of the entropy half of the ranking key. 0.5 is
+ * the user's opening choice ("wir probieren mal 50:50") and is deliberately a
+ * SESSION PARAMETER (?went=), not a constant: a weight that is being tried out
+ * has to be recorded per session or the archive cannot say which sessions were
+ * ranked the same way. 0 reproduces the pure-z ranking exactly.
+ *
+ * ENT_Z_CLAMP bounds the entropy term IN THE RANKING KEY only — the archived
+ * z_h is never clamped. Without it a single camera glitch (a stuck frame, a
+ * torn row) puts one item at z_h = −200 and that item owns Top-5 for the rest
+ * of the session, which is a hardware artefact wearing a result's clothes. 12 σ
+ * is far outside anything the null produces (the Bonferroni bar over 8000 items
+ * is ~4,4) and still lets a genuinely extreme item reach the top of the table.
+ * Items that hit the clamp are counted and published as `ent_clamped`. */
+#define ENT_W_DEFAULT   0.50
+#define ENT_Z_CLAMP     12.0
 
 // Focus display: what is on screen right now, for
 // exactly the window its bits are collected in. The observer is meant to be
@@ -624,6 +653,27 @@ typedef struct {
     double           v_eff;               // Var(Σz_i/√k) under measured σ and r
                                           // (1.0 = independent unit nodes)
     uint8_t          null_flags;          // NULL_FLAG_* — non-zero ⇒ ranking not decisive
+    /* ── The entropy channel ───────────────────────────────────────────
+     * ⚠ These RANK. They do not test. pass_mean/pass_sigma/pass_chi2, the
+     * Bonferroni line and null_flags above stay on z alone, because the
+     * closed-form entropy null is the IDEAL one and this instrument does not
+     * exactly meet it (1600 consecutive segments share a frame pair, so
+     * per-frame structure is a real spectral line). Block centring removes that
+     * as the constant it is; calling the residue a p-value would not be
+     * honest. See gcp.h. */
+    double           ent_w;               // weight of the entropy half of the key
+                                          // (?went=, 0 = pure-z ranking)
+    double           rank_mean;           // mean of rank_key() over ranked items
+    double           rank_sigma;          // its sample σ — what the UI's Z* and
+                                          // the nearest-mean table are built on
+    int              ent_n;               // ranked items that carry an entropy value
+    int              ent_clamped;         // of those, items pinned at ENT_Z_CLAMP
+    double           ent_h_last;          // last item's combined H/ln(K), for the UI
+    double           ent_zh_last;         // and its combined z_h
+    int              ent_windows;         // Welch windows per run at this ?run=
+                                          // (= run_segments / GCP_SPEC_W); 0 = the
+                                          // window is too short to carry entropy
+    double           ent_h0, ent_sd;      // the null H₀ and σ at that window count
     double           loop_sigma;          // per-run σ of the LAST CLOSED BLOCK (1.0 = ideal)
     int              loops_done;          // BLOCKS closed and folded into the drift stats
     int              loop_hist_n;         // entries valid in loop_hist[] (<= LOOP_HIST)
@@ -844,4 +894,12 @@ void results_archive_init(void);
  * compaction cannot pair a row from the old layout with z-values from the new
  * one. Returns false if the archive is missing or j is out of range.
  * out_z[MAX_NODES] gets NaN for nodes that did not contribute that run. */
-bool results_row_z(int j, RunResult *out_row, float out_z[MAX_NODES]);
+bool results_row_z(int j, RunResult *out_row, float out_z[MAX_NODES],
+                   float out_h[MAX_NODES]);
+
+/* The combined ranking key of one row: the block-centred z and the block-centred
+ * entropy z, weighted by ent_w and rescaled to unit variance under H₀. The ONE
+ * accessor every table and every survivor choice goes through, for the same
+ * reason rank_z() is the only reader of z_ctr — two keys that nothing forces to
+ * agree would be indistinguishable from a result. */
+double rank_key(const RunResult *r);

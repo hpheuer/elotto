@@ -71,7 +71,7 @@ int  nodes_collect(int timeout_ms, bool critical);
  * answer or replied 'E:' (in which case the camera-fault policy has already
  * run and the node is dropped). The z travels through the out-parameter rather
  * than a struct the caller reaches into, so the per-slave table stays private. */
-bool node_take_z(int k, double *out_z);
+bool node_take_z(int k, double *out_z, bool *out_have_h, double *out_h);
 
 /* ── Baseline, calibration, diagnostics ────────────────────────────── */
 

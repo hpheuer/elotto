@@ -621,15 +621,23 @@ void slave_abort(void)
 /* Parse one node's reply into s_link[k].z. Returns false if the node did not
  * contribute a usable value this run.
  *
- *   "Z:<float>"  the run completed on camera bits
+ *   "Z:<float>[,<H_norm>]"  the run completed on camera bits
  *   "E:<reason>" the camera stopped delivering — the node is faulted and
  *                rebooted, not silently omitted
  *
  * The old ",<C|T>" source tag is gone with the TRNG: there is only one source
  * now, so a completed run cannot have come from anywhere else, and a run that
- * could not complete says so explicitly instead of reporting a substituted z. */
-bool node_take_z(int k, double *out_z)
+ * could not complete says so explicitly instead of reporting a substituted z.
+ *
+ * ⚠ The trailing ",<H_norm>" (2026-08-25) is OPTIONAL by construction. A slave
+ * whose firmware predates it, or whose PSRAM allocation for the FFT buffers
+ * failed, sends the bare "Z:<float>" and that arm contributes to z but not to
+ * the entropy combine — *out_have_h false, k unchanged. Never infer a missing
+ * entropy value from a missing z or the other way round: the two channels drop
+ * out independently and the CSV records both counts. */
+bool node_take_z(int k, double *out_z, bool *out_have_h, double *out_h)
 {
+    if (out_have_h) *out_have_h = false;
     if (!s_link[k].replied) return false;
     const char *resp = s_link[k].reply;
 
@@ -651,6 +659,16 @@ bool node_take_z(int k, double *out_z)
     if (resp[0] != 'Z' || resp[1] != ':') return false;
     s_link[k].z = atof(resp + 2);
     if (out_z) *out_z = s_link[k].z;
+
+    const char *comma = strchr(resp + 2, ',');
+    if (comma && out_have_h && out_h) {
+        double h = atof(comma + 1);
+        /* H/ln(K) is in (0,1] by construction, and a value outside it means the
+         * field was not what we think it is — a truncated frame, or a future
+         * protocol putting something else after the comma. Drop it rather than
+         * feed a nonsense number into a ranking key. */
+        if (h > 0.0 && h <= 1.0) { *out_h = h; *out_have_h = true; }
+    }
     return true;
 }
 
