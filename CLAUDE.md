@@ -187,6 +187,13 @@ bits, at no extra measuring time. Welch over `GCP_SPEC_W` 1024-segment windows, 
 - Wire: `Z:<z>,<H_norm>` — **appended and optional**, 8 decimals (6 would quantise z_h at `?run=5`).
   M does not travel: every node measures the commanded `nseg`, so M = nseg/1024 on all of them.
   A slave without the field contributes to z and not to entropy.
+- **`GET /specdump?segs=<n>`** dumps the mean Welch periodogram of a real window, 511 normalised
+  bins, CSV, **on every node** — unlike `/spectest`, because here the DATA is what differs. It
+  answers where the power sits, which H by construction cannot. **The row-line hypothesis died on
+  it**: bin 256 reads below the mean in every condition, and the excess is at the LOWEST bins, i.e.
+  drift `[D43]`. ⛔ A stride fold and spatial shuffling are dead with it. ⚠ **Exposure, not the
+  fold, is the variable** — at exp 64 both arms are flat, at exp 128 both are disturbed and the
+  fold only suppresses. 409 while measuring.
 - **`GET /spectest`** holds the packed real FFT against a reference DFT and prints the null moments
   at the session's window count. **Master only**, like `/camtest`, and for the same reason: the test
   is pure arithmetic out of the shared component, so all four nodes run the identical object code —
@@ -382,6 +389,11 @@ The enclosure is **LIT, not dark** `[D28]`.
   `/abort` `/loops` `/results.csv` `/focus` `/pause` `/calibrate` `/pool` `/ready` `/probe` `/expose`,
   plus `/diag` (four-camera health page) and `/diagjson` (the master's own stats; slaves serve the same
   JSON at their `/diag`).
+  **`GET /diagjson?all=1` is the COLLECTOR** (2026-08-26): one request returns the whole array's
+  front-end health — live exposure/gain, folded bias/σ, **pre-fold** bias/σ, rate, stalls, soft_down,
+  reboots, fw_sha — in discovery order with the IP on each row `[D43]`. 409 while measuring.
+  ⚠ `cal_fold`/`cal_exp` are what the last SWEEP chose; `exposure`/`gain` are LIVE, and they differ
+  after a manual `/expose` or an uncertified sweep.
   `/loops` is per-**block** health and carries the block's own exclusion verdict: `clear_sig`, `quar`,
   and `soft`/`trip`/`mflag` per node.
   `POST /expose?exp=<lines>[&gain=<g>]` sets one node's operating point by hand, served by every node
@@ -390,7 +402,9 @@ The enclosure is **LIT, not dark** `[D28]`.
   the reply carries the **read-back** setting. Not sticky: the next sweep overwrites it, which is correct.
   ⚠ `cfg.max_uri_handlers` must exceed (endpoints here) + 5 from elotto_ota. Registration past the cap
   fails and **the return value is checked nowhere**, so an endpoint just 404s silently. Currently
-  17 + 5 = 22 against a cap of 24 (`/spectest` added 2026-08-25).
+  18 + 5 = 23 against a cap of 24 (`/spectest` 2026-08-25, `/specdump` 2026-08-26) — **one slot
+  left.** The slave is at 5 + 5 = 10 against 12. ⚠ The collector is `?all=1` on an existing endpoint
+  precisely because of this — a new handler would have taken the last slot.
 - **main/sensor.c** – GCP analysis, scoring/pooling, baseline, the pass, blocks, centring, drift,
   soft-down, publishing. **main/sensor.h** – types and declarations.
 - **main/nodes.c** – the array: UDP link, discovery, calibration handshake, per-node health, drop/reboot
@@ -401,6 +415,14 @@ The enclosure is **LIT, not dark** `[D28]`.
   one project must be updatable by the others.
 - **ota_firmware/** – the network updater, its own IDF project. Ethernet + HTTP + esp_ota only.
 - **components/elotto_camera/** – OV5647 entropy extraction (camera.c, extract.c, include/camera.h).
+  **`raw_bias`/`raw_sigma` in `/diag` are the PRE-FOLD stream** (`cam_raw_t`, 2026-08-26) — everything
+  else published about the bits is measured after the fold, and the raw stream in between used to be
+  unmonitored `[D43]`. Also per rung in `/calibrate` and per node in `/diagjson?all=1`.
+  ⚠ With the fold OFF the raw and folded pairs must agree exactly; a divergence is a bug, not a
+  finding.
+  ⚠ **The monitor costs +28,6 % of the extraction loop** (`ns_raw` vs `ns_fast` in `/camtest`), so it
+  runs on every `CAM_RAW_EVERY` = 8th frame pair — ~3,6 % amortised, invisible at idle, and it must
+  stay gated: under load the loop is compute-bound `[D25]`.
 - **components/elotto_link/** – the UDP wire format (`EL1 <seq> <payload>`, ports 5000/5001), plus
   `EL_SEG_MIN`/`EL_SEG_MAX` as ONE definition for both firmwares.
 - **components/elotto_gcp/** – the z-score primitive (`gcp_zscore_raw()`) and `gcp_z_per_bias()`.
@@ -541,9 +563,9 @@ the slave sources did not move). The 08-19 checks still hold: all four certify a
 `# fw_nodes=` in a fresh CSV.
 ⚠ The 2026-08-20 history rewrite renumbered every commit from `18074b5` on. **Match a pre-08-20 build
 by ELF SHA, not by the version string.**
-⚠ **Not exercised on hardware**: `mflag` firing (needs a real |mean| > 1,5 excursion, and the gated
-rungs are what used to produce them), and the `round_base` fix — compaction itself has now run, see
-below.
+⚠ **Not exercised on hardware**: the `round_base` fix — compaction itself has now run, see below.
+(`mflag` firing is no longer on this list: it fired in 3 of 35 blocks on 2026-08-26, on the master,
+on a certified rung `[D11]`.)
 ⚠ Flash master and all three slaves **together**: `K` carries a field and `D` another. Both
 mismatches degrade safely (legacy bias bar / no sha in the header), but a half-flashed array is not
 one instrument.
@@ -576,14 +598,17 @@ were near +1,7, which is the offset centring is there to remove and the reason i
 over many blocks before any ranking is believed.
 
 **Open, in the order I would pick them up:**
-1. **Does an offset survive on a GATED rung?** The 08-19 blocks at exp ≥ 16 average −0,05…+0,09, but
-   individual blocks still reach ±0,6 at an SE of 0,08 — real offsets, just no longer big enough to
-   fire anything. Watch `mflag` in `/loops`. (What is closed: the master is not a bad arm, its
-   exposure rung was `[D11]`.)
-2. **Verify the centring on a full pass.** Verified on a short run (closed blocks at mean(z_ctr)
-   exactly 0,0000); never on a full session.
-3. **Does calibration reduce the RATE of bad blocks?** The control pair only asked "does it add
+1. **Does calibration reduce the RATE of bad blocks?** The control pair only asked "does it add
    variance?" (no). The tail question needs a count of excursions over many blocks, not a mean.
+
+**Closed 2026-08-26**, both on the 7354-item / 35-block session in
+`docs/data/2026-08-26_aborted7354_rescue/`:
+- **An offset DOES survive on a gated rung.** The master reported `cam_cal=1` in every block and
+  still averaged **−0,4648** (min −4,141), with `mflag` in 3 blocks — at σ 0,9951, no trip, no
+  soft-down. A pure location effect, which is the split `[D11]` rests on.
+- **Centring verified over 35 blocks**, not just a short run: Σ`z_ctr`/√n = **−0,0000** for the whole
+  session and max |Stouffer| 5,5e-5 per block. ⚠ On `z_raw` the same statistic is **−19,01**, of which
+  the master alone is −39,8 — the raw cumulative Z measures the exposure rung, not an effect.
 
 **Recently closed:** the master's block offsets `[D11]` · slave1's σ excess follows the board, not the
 camera `[D15]` · why the last two extraction changes bought nothing `[D24]` · which side goes quiet
@@ -604,5 +629,8 @@ before proposing anything that sounds obvious.
 | `2026-08-18_6of49_unlim_run1s/` | first unlimited-mode session |
 | `2026-08-19_6of49_unlim_overnight/` | 29 blocks; the session that produced `[D11]`, `[D18]`, `[D19]` |
 | `2026-08-19_6of49_unlim_full8000/` | 8000 items, 18 rounds, 11,6 h — hit the buffer stop; the replay set for `[D42]` |
+| `2026-08-26_aborted7354_rescue/` | 7354 items, 36 rounds, σ 1,004056 — pulled from RAM before the fold-off trial |
+| `2026-08-26_foldoff_trial_slave0/` | the D17 re-test: slave0 fold-off against three folded nodes |
+| `2026-08-26_specdump/` | the periodograms that refuted the row line and named the drift `[D43]` |
 | `_live_*` / `_short_*` | a complete 5005 pass (13,4 h, curl-started, no gates); a 1995/5005 partial |
 | `_analyze_*.py` | the operator's own analysis scripts — they skip `#` header lines |

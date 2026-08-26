@@ -43,6 +43,20 @@ typedef struct {
     double   zero_diff_frac;      // fraction of pixels with diff==0 (noise below 1 ADU).
                                   // Diagnostic: diff==0 has LSB 0, so a high value here
                                   // directly explains a deficit-of-ones bias.
+    /* ── PRE-FOLD, i.e. the stream the SENSOR produced (2026-08-26) ────────
+     * Everything above describes the stream after the XOR fold. These two
+     * describe it before, and they are the front-end health the instrument
+     * used to be blind to: on 2026-08-26 a fold-off node read raw_bias 0,4934
+     * and raw_sigma 1,7233 where its folded peers were at 0,49994 / 1,0080,
+     * and seeing that took a firmware flash. Same definitions as `bias` and
+     * `sigma`, same 3200-bit mini-run.
+     * ⚠ With the fold OFF these are the SAME bits as `bias`/`sigma` and the
+     * pairs must agree; a divergence there is a bug, not a finding. */
+    double   raw_bias;            // pre-fold ones / pre-fold bits (ideal 0.5)
+    double   raw_sigma;           // stddev of per-mini-run z, pre-fold (ideal 1.0)
+    int      raw_sigma_samples;   // mini-runs folded into raw_sigma
+    uint64_t raw_bits;            // pre-fold bits == pixels consumed
+
     uint32_t ring_drops;          // words discarded: consumer behind, ring full
     uint32_t consumer_waits;      // times a read had to wait for the producer (normal
                                   // backpressure -- the GCP task outruns the sensor)
@@ -122,6 +136,9 @@ bool camera_set_exposure(uint32_t exposure, uint32_t gain);
 void camera_get_exposure(uint32_t *exposure, uint32_t *gain);
 
 bool camera_get_xor_fold(void);
+/* Capture geometry. The WIDTH is the row length a spatial period in the bit
+ * stream aliases against, which is what /specdump's prediction is built on. */
+void camera_get_geometry(uint32_t *w, uint32_t *h);
 
 /* Time `frames` frames with the extraction STOPPED and every buffer queued, and
  * return the frames per second the sensor delivers on its own. Blocks for about
@@ -176,6 +193,14 @@ typedef struct {
     double   bias, sigma, mbit_per_sec;
     double   autocorr_max;      // max |lag 1..4|
     double   mean_pixel_level, zero_diff_frac;
+    /* PRE-FOLD, for this candidate's window (D43). Recorded but NOT GATED ON:
+     * the fold masks part of a drifting front end, so a rung can score well on
+     * `bias`/`sigma` above while the raw stream is already degrading, and this
+     * is what would show it. On the live array good rungs sit at raw_sigma
+     * 1,05-1,08, so a naive |raw_sigma-1| <= 0,05 bar would reject exposures
+     * the instrument uses successfully — the threshold has to be replayed
+     * against /loops before it can become a gate. */
+    double   raw_bias, raw_sigma;
     uint32_t stuck_frames;
     uint32_t fail;              // CAM_CAL_FAIL_* bitmask, 0 = passed
 } camera_cal_step_t;
@@ -186,6 +211,7 @@ typedef struct {
     uint32_t exposure, gain;    // what the camera is running on now
     bool     xor_fold;
     double   bias, sigma, mbit_per_sec, autocorr_max, mean_pixel_level;
+    double   raw_bias, raw_sigma;   // PRE-FOLD, of the setting actually chosen (D43)
     int      nsteps;
     uint32_t elapsed_ms;
     /* The z-per-unit-bias the bias gate was scaled to (see

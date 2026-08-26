@@ -502,6 +502,22 @@ typedef struct {
     uint8_t  cam_cal_ok;    // 1 = a candidate passed every gate; 0 = the node
                             // kept its previous setting because none did
     float    cam_bias;      // bias of the window that chose it
+    /* PRE-FOLD health from the last 'D' query (D43). 0 = this node did not
+     * report it, which is NOT the same as a raw bias of zero. */
+    float    cam_raw_bias;
+    float    cam_raw_sigma;
+    /* The LIVE operating point from that same 'D' query. ⚠ Not cam_exp: that is
+     * what the last SWEEP chose, and the two differ after a manual
+     * POST /expose or a sweep that certified nothing. */
+    uint32_t cam_exp_now;
+    uint16_t cam_gain_now;
+    /* The FOLDED pair from the same 'D' query, i.e. this node's own /diag
+     * bias/sigma. The wire always carried them; they were parsed and dropped
+     * until the collector needed them. Together with cam_raw_* they also give
+     * the fold state for free: with the fold OFF the two pairs are the SAME
+     * bits and must match exactly. */
+    float    cam_bias_now;
+    float    cam_sigma_now;
     float    cam_cal_mbit;  // rate of that same window
     /* First 8 bytes of the node's app elf sha256, hex — the same 16 characters
      * /status publishes as fw_sha, so the two are directly comparable. From the

@@ -37,6 +37,39 @@ typedef struct {
 /* Called once per completed 32-bit word. */
 typedef void (*cam_emit_fn)(uint32_t word, void *ctx);
 
+/* ── PRE-FOLD monitor (2026-08-26) ─────────────────────────────────────────
+ *
+ * Everything camera.c publishes about the BIT stream — bias, mini-run σ,
+ * lag-1..4 autocorrelation — is measured on the words the extractor EMITS, i.e.
+ * after the XOR fold. The pixel-domain diagnostics (mean_pixel_level,
+ * zero_diff) are pre-fold because they ride out of here separately. Between the
+ * two, the raw LSB stream was unmonitored, and that is where a degrading sensor
+ * shows up first: on 2026-08-26 a node running fold-off read bias 0,4934,
+ * mini-run σ 1,7233 and lag-1..4 autocorr 0,0234 while its folded peers sat at
+ * 0,49994 / 1,0080 / 0,0005. Seeing those numbers required flashing a
+ * fold-off image — the instrument could not report on its own front end.
+ *
+ * This struct closes that. It is INTEGER-ONLY on purpose: the extractor is the
+ * hot loop and stays free of soft-float, so σ is reduced from the sums at
+ * publish time in camera.c, not here.
+ *
+ * `bits` counts PIXELS, one raw LSB each, fold or no fold. With the fold off
+ * the raw stream and the emitted stream are the same bits, and the two sets of
+ * statistics must then agree — which is a free consistency check.
+ *
+ * NULL disables it at no cost beyond one branch per call. */
+#define CAM_RAW_MINIRUN_BITS 3200u   /* == MINIRUN_BITS in camera.c */
+
+typedef struct {
+    uint64_t ones;       /* pre-fold LSB ones                                  */
+    uint64_t bits;       /* pre-fold bits == pixels consumed                   */
+    uint32_t run_ones;   /* ones in the mini-run being filled                  */
+    uint32_t run_bits;   /* bits in the mini-run being filled                  */
+    uint32_t mr_n;       /* completed mini-runs                                */
+    uint64_t mr_sum;     /* Σ ones over completed mini-runs                    */
+    uint64_t mr_sumsq;   /* Σ ones² — max 3200² per term, uint64 cannot wrap   */
+} cam_raw_t;
+
 /* Both return the number of bytes consumed (== n) and report, via the out
  * params, the two frame-level diagnostics the caller publishes:
  *   *out_zeros  += pixels whose diff was 0 (feeds zero_diff_frac)
@@ -60,10 +93,12 @@ typedef void (*cam_emit_fn)(uint32_t word, void *ctx);
  * they are zero on exactly the same frames, which is the whole contract. */
 void cam_extract_ref (const uint8_t *a, const uint8_t *b, uint32_t n, bool fold,
                       cam_pack_t *st, cam_emit_fn emit, void *ctx,
-                      uint32_t *out_zeros, uint32_t *out_any, uint32_t *out_psum);
+                      uint32_t *out_zeros, uint32_t *out_any, uint32_t *out_psum,
+                      cam_raw_t *raw);
 void cam_extract_fast(const uint8_t *a, const uint8_t *b, uint32_t n, bool fold,
                       cam_pack_t *st, cam_emit_fn emit, void *ctx,
-                      uint32_t *out_zeros, uint32_t *out_any, uint32_t *out_psum);
+                      uint32_t *out_zeros, uint32_t *out_any, uint32_t *out_psum,
+                      cam_raw_t *raw);
 
 /* Result of the on-target self-test + micro-benchmark. Times are nanoseconds
  * PER PIXEL, which is the unit that compares against the 2,78 ns budget one
@@ -86,6 +121,7 @@ typedef struct {
     float    ns_fast;        // word-wise extraction
     float    ns_stats;       // word-wise + the per-word statistics of process_word
     uint32_t bench_bytes;    // frame size the benchmark actually ran on
+    float    ns_raw;         // word-wise extraction WITH the pre-fold monitor
     /* cam_popcount32 vs __builtin_popcount over a value sweep on this silicon.
      * It now feeds a z (gcp_zscore_raw), and the word comparison above would
      * not catch a wrong popcount: the extractor's emitted words do not depend

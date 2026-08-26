@@ -144,6 +144,22 @@ bool gcp_spec_finish(gcp_spec_t *sp, double *out_h, int *out_m);
  * follows the segment count, which follows ?run= and the camera's delivered
  * rate. A hard-coded pair would silently mean something else at another window
  * length, the same defect gcp_z_per_bias() exists to prevent for the bias bar. */
+/* ── The periodogram itself (2026-08-26) ───────────────────────────────────
+ * gcp_spec_finish() reduces the accumulator to ONE number, and H is blind to
+ * WHERE the power sits — a line at bin 256 and the same power spread over
+ * bins 200..300 give different H, but neither says "bin 256". That location is
+ * the whole question when asking whether the structure follows the sensor's
+ * ROW geometry: extraction runs in raster order, so a spatial period aliases
+ * to a fixed segment period and therefore to a fixed bin, while a timing clock
+ * (MIPI/CSI) cannot — the bits are read from a completed frame in PSRAM, not
+ * synchronously with the lane.
+ *
+ * Copies out the accumulated Welch periodogram, NORMALISED to sum 1 over the
+ * K published bins so nodes are directly comparable regardless of window count.
+ * Valid between gcp_spec_finish() and the next gcp_spec_begin(). `n` is the
+ * caller's array length and must be >= GCP_SPEC_BINS. */
+bool gcp_spec_bins(float *out, int n, int *out_m);
+
 bool gcp_spec_null(int m, double *out_h0, double *out_sd);
 /* (H_norm − H₀)/σ at `m` windows. NEGATIVE = less spectral disorder than white
  * noise, which is the direction of interest. */

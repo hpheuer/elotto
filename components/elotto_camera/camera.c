@@ -41,6 +41,10 @@ static const char *TAG_CAM = "cam";
 static int      s_fd = -1;
 static bool     s_video_inited = false;   // esp_video_init() succeeded (for fail-path deinit)
 static uint32_t s_frame_size = 0;
+/* Width and height, kept because the ROW length is what a spatial period in
+ * the bit stream aliases against — see /specdump. s_frame_size alone cannot
+ * give it. */
+static uint32_t s_frame_w = 0, s_frame_h = 0;
 static uint8_t *s_bufs[CAM_BUF_COUNT];
 static uint32_t s_buf_len[CAM_BUF_COUNT];   // mmap length per buffer, for fail-path munmap
 #if CONFIG_ELOTTO_CAM_XCLK_PIN > 0
@@ -94,6 +98,28 @@ static void ring_reset_tail(void)
 /* Frame pairs between idle-task yields; see camera_task(). */
 #define CAM_YIELD_PAIRS       4
 static uint64_t s_bits_extracted = 0, s_ones_count = 0;
+
+/* PRE-FOLD monitor (2026-08-26). Everything else on this page describes the
+ * stream AFTER the fold; this describes the one the sensor actually produced.
+ * See the note on cam_raw_t in extract.h for why that gap mattered. */
+static cam_raw_t s_raw;
+
+/* ⚠ The monitor is NOT free: /camtest measures ns_raw 68,5 against ns_fast
+ * 53,3 ns/pixel, i.e. +28,6 % on the extraction loop. At idle that is invisible
+ * (ms_pair_ext 39,2, unchanged) because the loop waits on the sensor and the
+ * cost is absorbed in DQBUF — the same asymmetry the pixel-sum note in
+ * extract.h documents. Under MEASUREMENT load the loop is compute-bound (D25)
+ * and it would come straight off the bit rate.
+ *
+ * So it runs on every CAM_RAW_EVERY-th frame pair instead of all of them:
+ * ~3,6 % amortised, and the statistics barely notice. One frame is 640000
+ * pixels = exactly 200 complete 3200-bit mini-runs, so skipping whole frames
+ * never straddles a mini-run boundary and needs no carry. At 1-in-8 the sample
+ * count falls from ~143000 mini-runs to ~18000, still two orders above the 200
+ * the sigma gate asks for, and drift — the thing this is for — moves on
+ * seconds, far slower than the 0,45 s between samples. */
+#define CAM_RAW_EVERY   8
+static uint32_t s_raw_pair;
 static uint64_t s_run_ones = 0, s_run_bits = 0;
 static double   s_z_mean = 0.0, s_z_m2 = 0.0;
 static int      s_z_n = 0;
@@ -303,7 +329,9 @@ static void diff_and_extract(const uint8_t *a, const uint8_t *b, uint32_t n)
      * the definition of correct: GET /camtest runs both over six cases on this
      * silicon and compares the emitted words, the zero count, the stuck verdict
      * and the leftover packer state. Do not switch this line without it. */
-    cam_extract_fast(a, b, n, s_xor_fold, &s_pack, emit_word_cb, NULL, &zeros, &any, &psum);
+    bool watch = (++s_raw_pair % CAM_RAW_EVERY) == 0;
+    cam_extract_fast(a, b, n, s_xor_fold, &s_pack, emit_word_cb, NULL, &zeros, &any, &psum,
+                     watch ? &s_raw : NULL);
 
     s_zero_diffs += zeros;
     s_diff_n += n;
@@ -324,6 +352,20 @@ static void publish_stats(void)
     double mbps = (elapsed_s > 0) ? (s_bits_extracted / 1e6) / elapsed_s : 0.0;
     double mean_px = s_pixel_n ? (double)s_pixel_sum / (double)s_pixel_n : 0.0;
 
+    /* Reduce the pre-fold sums to the same two numbers the folded stream
+     * publishes. The mini-run z is (ones - BITS/2)/sqrt(BITS/4) — linear in
+     * `ones` — so sd(z) = sd(ones)/sqrt(BITS/4) and the integer sums are
+     * sufficient. Var over the completed mini-runs, n-1. */
+    double raw_bias = s_raw.bits ? (double)s_raw.ones / (double)s_raw.bits : 0.0;
+    double raw_sigma = 0.0;
+    if (s_raw.mr_n > 1) {
+        double n  = (double)s_raw.mr_n;
+        double mu = (double)s_raw.mr_sum / n;
+        double ss = (double)s_raw.mr_sumsq - n * mu * mu;
+        if (ss > 0.0)
+            raw_sigma = sqrt(ss / (n - 1.0)) / sqrt(CAM_RAW_MINIRUN_BITS * 0.25);
+    }
+
     xSemaphoreTake(s_mutex, portMAX_DELAY);
     s_stats.ready             = true;
     s_stats.bits_extracted    = s_bits_extracted;
@@ -334,6 +376,10 @@ static void publish_stats(void)
     s_stats.mean_pixel_level  = mean_px;
     s_stats.mbit_per_sec      = mbps;
     s_stats.zero_diff_frac    = s_diff_n ? (double)s_zero_diffs / (double)s_diff_n : 0.0;
+    s_stats.raw_bias          = raw_bias;
+    s_stats.raw_sigma         = raw_sigma;
+    s_stats.raw_sigma_samples = s_raw.mr_n;
+    s_stats.raw_bits          = s_raw.bits;
     s_stats.ring_drops        = s_ring_drops;
     s_stats.consumer_waits    = s_consumer_waits;
     s_stats.stalls            = s_stalls;
@@ -375,6 +421,8 @@ static void stats_reset_locked(void)
     for (int L = 0; L < 4; L++) { s_autocorr_both1[L] = 0; s_autocorr_pairs[L] = 0; }
     s_pixel_sum = 0; s_pixel_n = 0;
     s_zero_diffs = 0; s_diff_n = 0;
+    memset(&s_raw, 0, sizeof(s_raw));    // pre-fold monitor, same window as the rest
+    s_raw_pair = 0;
     s_us_wait = 0; s_us_ext = 0; s_us_rest = 0; s_us_cycle = 0;
     s_acct_pairs = 0; s_last_pair_us = 0;
     memset(&s_pack, 0, sizeof(s_pack));  // a half-folded pair must not straddle
@@ -671,6 +719,8 @@ esp_err_t camera_init(void)
     }
     s_frame_size = fmt.fmt.pix.sizeimage ? fmt.fmt.pix.sizeimage
                                          : (uint32_t)fmt.fmt.pix.width * fmt.fmt.pix.height;
+    s_frame_w = fmt.fmt.pix.width;
+    s_frame_h = fmt.fmt.pix.height;
     ESP_LOGI(TAG_CAM, "format " V4L2_FMT_STR " %ux%u size=%u",
              V4L2_FMT_STR_ARG(fmt.fmt.pix.pixelformat),
              (unsigned)fmt.fmt.pix.width, (unsigned)fmt.fmt.pix.height, (unsigned)s_frame_size);
@@ -858,6 +908,11 @@ void camera_get_exposure(uint32_t *exposure, uint32_t *gain)
 }
 
 bool camera_get_xor_fold(void)    { return s_xor_fold; }
+void camera_get_geometry(uint32_t *w, uint32_t *h)
+{
+    if (w) *w = s_frame_w;
+    if (h) *h = s_frame_h;
+}
 
 void camera_ring_flush(int pairs)
 {
@@ -1093,6 +1148,8 @@ static bool cal_step(camera_cal_step_t *st, uint32_t exposure, uint32_t gain,
     st->mbit_per_sec     = cs.mbit_per_sec;
     st->mean_pixel_level = cs.mean_pixel_level;
     st->zero_diff_frac   = cs.zero_diff_frac;
+    st->raw_bias         = cs.raw_bias;
+    st->raw_sigma        = cs.raw_sigma;
     st->stuck_frames     = cs.stuck_frame_count;
     double amax = 0.0;
     for (int L = 0; L < 4; L++)
@@ -1276,6 +1333,8 @@ bool camera_calibrate(int budget_ms, bool (*abort_cb)(void), camera_cal_t *out)
         out->mbit_per_sec     = out->step[rep].mbit_per_sec;
         out->autocorr_max     = out->step[rep].autocorr_max;
         out->mean_pixel_level = out->step[rep].mean_pixel_level;
+        out->raw_bias         = out->step[rep].raw_bias;
+        out->raw_sigma        = out->step[rep].raw_sigma;
     }
 
     /* Open a clean window on the setting the session will actually run, so the
@@ -1350,22 +1409,26 @@ esp_err_t camera_cal_send_json(void *httpd_req, const camera_cal_t *c)
     int len = snprintf(buf, sizeof(buf),
         "{\"ran\":true,\"ok\":%s,\"chosen\":%d,\"exposure\":%lu,\"gain\":%lu,"
         "\"fold\":%d,\"bias\":%.6f,\"sigma\":%.4f,\"mbit_s\":%.3f,"
+        "\"raw_bias\":%.6f,\"raw_sigma\":%.4f,"
         "\"autocorr\":%.4f,\"mean_px\":%.2f,\"ms\":%lu,\"steps\":[",
         c->ok ? "true" : "false", c->chosen,
         (unsigned long)c->exposure, (unsigned long)c->gain, (int)c->xor_fold,
-        c->bias, c->sigma, c->mbit_per_sec, c->autocorr_max,
-        c->mean_pixel_level, (unsigned long)c->elapsed_ms);
+        c->bias, c->sigma, c->mbit_per_sec,
+        c->raw_bias, c->raw_sigma,
+        c->autocorr_max, c->mean_pixel_level, (unsigned long)c->elapsed_ms);
     httpd_resp_send_chunk(req, buf, len);
 
     for (int i = 0; i < c->nsteps && i < CAM_CAL_MAX_STEPS; i++) {
         const camera_cal_step_t *s = &c->step[i];
         len = snprintf(buf, sizeof(buf),
             "%s{\"exposure\":%lu,\"gain\":%lu,\"fold\":%d,\"bits\":%llu,"
+            "\"raw_bias\":%.6f,\"raw_sigma\":%.4f,"
             "\"miniruns\":%d,\"bias\":%.6f,\"sigma\":%.4f,\"mbit_s\":%.3f,"
             "\"autocorr\":%.4f,\"mean_px\":%.2f,\"zero_diff\":%.4f,"
             "\"stuck\":%lu,\"fail\":%lu,\"pass\":%s}",
             i ? "," : "", (unsigned long)s->exposure, (unsigned long)s->gain,
-            (int)s->xor_fold, (unsigned long long)s->bits, s->minirun_n,
+            (int)s->xor_fold, (unsigned long long)s->bits,
+            s->raw_bias, s->raw_sigma, s->minirun_n,
             s->bias, s->sigma, s->mbit_per_sec, s->autocorr_max,
             s->mean_pixel_level, s->zero_diff_frac,
             (unsigned long)s->stuck_frames, (unsigned long)s->fail,
@@ -1474,6 +1537,10 @@ esp_err_t camera_selftest_handle(void *httpd_req, bool busy)
     snprintf(buf, sizeof(buf),
         "{\"equal\":%s,\"cases\":%d,\"failed_case\":%d,\"words\":%lu,"
         "\"ns_read\":%.3f,\"ns_ref\":%.3f,\"ns_fast\":%.3f,\"ns_stats\":%.3f,"
+        /* ns_raw is the word-wise path WITH the pre-fold monitor, against
+         * ns_fast without it -- the price of D43's front-end diagnostics,
+         * measured rather than assumed. */
+        "\"ns_raw\":%.3f,"
         "\"cyc_read\":%.1f,\"cyc_ref\":%.1f,\"cyc_fast\":%.1f,\"cyc_stats\":%.1f,"
         "\"speedup\":%.2f,\"cpu_mhz\":%d,\"bench_bytes\":%lu,"
         "\"frame_bytes\":%lu,\"ms_pair_ext\":%.1f,"
@@ -1482,7 +1549,7 @@ esp_err_t camera_selftest_handle(void *httpd_req, bool busy)
         "\"what\":%d,\"bad_at\":%lu,\"ref_w\":\"%08lx\",\"fast_w\":\"%08lx\","
         "\"ref_z\":%lu,\"fast_z\":%lu}",
         t.equal ? "true" : "false", t.cases, t.failed_case, (unsigned long)t.words,
-        t.ns_read, t.ns_ref, t.ns_fast, t.ns_stats,
+        t.ns_read, t.ns_ref, t.ns_fast, t.ns_stats, t.ns_raw,
         t.ns_read * mhz / 1000.0, t.ns_ref * mhz / 1000.0,
         t.ns_fast * mhz / 1000.0, t.ns_stats * mhz / 1000.0,
         t.ns_stats > 0.0f ? t.ns_ref / t.ns_stats : 0.0, (int)mhz,

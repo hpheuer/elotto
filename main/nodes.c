@@ -693,8 +693,10 @@ void slaves_diag(void)
         unsigned long st = 0, stuck = 0;
         if (sscanf(resp + 2, "%d,%f,%f,%f,%lu,%lu",
                    &ready, &bias, &sigma, &mb, &st, &stuck) < 5) continue;
-        N->cam_mbit   = mb;
-        N->cam_stalls = (uint32_t)st;
+        N->cam_mbit      = mb;
+        N->cam_stalls    = (uint32_t)st;
+        N->cam_bias_now  = bias;
+        N->cam_sigma_now = sigma;
         /* ",fw=<16 hex>" = the node's image, the same 16 characters its own
          * /status calls fw_sha. TAGGED and appended, so the field-order parse
          * above cannot trip over it and a slave too old to send it is simply
@@ -704,6 +706,29 @@ void slaves_diag(void)
         if (fw && strspn(fw + 4, "0123456789abcdef") == 16) {
             memcpy(N->fw_sha, fw + 4, 16);
             N->fw_sha[16] = '\0';
+        }
+        /* ",raw=<bias>,<sigma>" — the PRE-FOLD pair (D43), tagged for the
+         * same reason ,fw= is. Cleared first: a node that stops reporting it
+         * must read as absent, not as whatever it said last time. */
+        N->cam_raw_bias = 0.0f; N->cam_raw_sigma = 0.0f;
+        const char *rw = strstr(resp, ",raw=");
+        if (rw) {
+            float rb = 0, rs = 0;
+            if (sscanf(rw + 5, "%f,%f", &rb, &rs) == 2) {
+                N->cam_raw_bias = rb; N->cam_raw_sigma = rs;
+            }
+        }
+        /* ",exp=<exposure>,<gain>" — what the node is running on RIGHT NOW,
+         * which is NOT cam_exp: that one is what the last sweep CHOSE, and a
+         * manual POST /expose or a sweep that certified nothing makes the two
+         * differ. A diagnostics view needs the live one. */
+        N->cam_exp_now = 0; N->cam_gain_now = 0;
+        const char *ex = strstr(resp, ",exp=");
+        if (ex) {
+            unsigned long e = 0, g = 0;
+            if (sscanf(ex + 5, "%lu,%lu", &e, &g) == 2) {
+                N->cam_exp_now = (uint32_t)e; N->cam_gain_now = (uint16_t)g;
+            }
         }
     }
     // A 'D' miss must not count toward the drop rule — it says nothing about

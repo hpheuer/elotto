@@ -2565,10 +2565,44 @@ static esp_err_t diag_handler(httpd_req_t *req)
  * Was /diag until 2026-07-28. /diag is now the human-facing page that renders
  * all four nodes; this is the raw source behind the master's row, and each
  * slave serves the same shape at its own /diag. */
+/* GET /diagjson[?all=1]
+ *
+ * Without `all` this is the master's own camera, as it always was.
+ *
+ * `?all=1` is the COLLECTOR: it fires the 'D' query at every discovered node
+ * and returns one object with the whole array's front-end health, so a session
+ * post-mortem is one request instead of one per node plus a note of which IP
+ * was which. The per-node block carries `raw_bias`/`raw_sigma` alongside the
+ * folded pair (D43) — the pre-fold numbers are what show a degrading sensor
+ * first, and the fold masks part of them.
+ *
+ * ⚠ 409 while a session is measuring. slaves_diag() is only safe between
+ * loops: firing 'D' between an 'M' and its 'Z:' would collide with the reply
+ * the measurement is waiting for.
+ * ⚠ A node that answers no `,raw=` reports 0/0 — that is ABSENT, not a raw
+ * bias of zero, and it means that node is on an image older than 2026-08-26.
+ * ⚠ This deliberately does NOT run /camtest or /specdump: both are heavy and
+ * both are already master-only single calls. */
 static esp_err_t diagjson_handler(httpd_req_t *req)
 {
-    static char buf[3072];
+    /* 4 KB: the collector adds ~380 B per node on top of the ~700 B cam
+     * block, so four nodes leave the old 3072 uncomfortably close. */
+    static char buf[4096];
     int pos = 0;
+
+    char q[48], v[8];
+    bool all = (httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK &&
+                httpd_query_key_value(q, "all", v, sizeof(v)) == ESP_OK &&
+                v[0] == '1');
+    if (all) {
+        if (g_status.state == ELOTTO_RUNNING) {
+            httpd_resp_set_status(req, "409 Conflict");
+            httpd_resp_set_type(req, "text/plain");
+            httpd_resp_sendstr(req, "a session is measuring -- abort it first");
+            return ESP_OK;
+        }
+        slaves_diag();
+    }
 
     camera_stats_t cam;
     camera_get_stats(&cam);
@@ -2583,13 +2617,15 @@ static esp_err_t diagjson_handler(httpd_req_t *req)
         "\"bias\":%.6f,\"sigma\":%.4f,\"sigma_n\":%d,"
         "\"autocorr\":[%.4f,%.4f,%.4f,%.4f],"
         "\"mean_pixel\":%.2f,\"mbit_s\":%.3f,\"zero_diff\":%.4f,"
+        /* PRE-FOLD: the stream the sensor produced, before the XOR fold. The
+         * fields above describe the folded one. See cam_raw_t in extract.h. */
+        "\"raw_bias\":%.6f,\"raw_sigma\":%.4f,\"raw_sigma_n\":%d,"
         "\"drops\":%lu,\"waits\":%lu,\"stalls\":%lu,"
         /* Where one frame pair's wall time goes. ms_wait is DQBUF, i.e. the
          * loop waiting for the sensor; if that dominates, the extraction code
          * is not what limits the bit rate. */
         "\"ms_pair\":%.2f,\"ms_wait\":%.2f,\"ms_extract\":%.2f,\"ms_rest\":%.2f,"
         "\"exposure\":%lu,\"gain\":%lu,\"fold\":%s"
-        "}"
         "}",
         cam.ready ? "true" : "false",
         (unsigned long long)cam.frame_pairs, (unsigned long long)cam.bits_extracted,
@@ -2597,11 +2633,72 @@ static esp_err_t diagjson_handler(httpd_req_t *req)
         cam.bias, cam.sigma, cam.sigma_samples,
         cam.autocorr_lag[0], cam.autocorr_lag[1], cam.autocorr_lag[2], cam.autocorr_lag[3],
         cam.mean_pixel_level, cam.mbit_per_sec, cam.zero_diff_frac,
+        cam.raw_bias, cam.raw_sigma, cam.raw_sigma_samples,
         (unsigned long)cam.ring_drops, (unsigned long)cam.consumer_waits,
         (unsigned long)cam.stalls,
         cam.ms_pair, cam.ms_wait, cam.ms_extract, cam.ms_rest,
         (unsigned long)exp_now, (unsigned long)gain_now,
         camera_get_xor_fold() ? "true" : "false");
+
+    if (all) {
+        /* The master's own image id, the same 16 characters its /status calls
+         * fw_sha and the CSV's fw_nodes puts first. "All four run the same
+         * code" is a policy, not a fact — this view has to make it checkable. */
+        char master_sha[17] = {0};
+        const esp_app_desc_t *fwd = esp_app_get_description();
+        for (int i = 0; i < 8; i++)
+            snprintf(master_sha + i * 2, 3, "%02x", fwd->app_elf_sha256[i]);
+
+        /* Discovery order — the same order z0..z3 and fw_nodes use — and the IP
+         * rides with each block so nothing is ever mapped by position.
+         * ⚠ Row 0 is the MASTER and slaves_diag() does not fill it: it queries
+         * the slaves over UDP and the master has no one to ask. Its row is
+         * filled here from its own live camera, so the array is uniform and the
+         * four nodes are actually comparable — which is the whole point of a
+         * collector. An unfilled row 0 read as a dead master. */
+        buf_append(buf, sizeof(buf), &pos, ",\"nodes\":[");
+        for (int i = 0; i < g_status.node_count; i++) {
+            const NodeStatus *N = &g_status.nodes[i];
+            bool     me = (i == 0);
+            double   mb   = me ? cam.mbit_per_sec : N->cam_mbit;
+            uint32_t stl  = me ? cam.stalls       : N->cam_stalls;
+            double   rb   = me ? cam.raw_bias     : N->cam_raw_bias;
+            double   rs   = me ? cam.raw_sigma    : N->cam_raw_sigma;
+            double   bi   = me ? cam.bias         : N->cam_bias_now;
+            double   sg   = me ? cam.sigma        : N->cam_sigma_now;
+            uint32_t enow = me ? exp_now          : N->cam_exp_now;
+            uint32_t gnow = me ? gain_now         : N->cam_gain_now;
+            buf_append(buf, sizeof(buf), &pos,
+                "%s{\"ip\":\"%s\",\"ok\":%s,\"mbit_s\":%.3f,\"stalls\":%lu,"
+                /* exposure/gain are LIVE; cal_exp is what the last sweep chose.
+                 * They differ after a manual /expose or an uncertified sweep. */
+                "\"exposure\":%lu,\"gain\":%lu,"
+                "\"cal_exp\":%lu,\"cal_ok\":%d,\"cal_bias\":%.6f,\"cal_fold\":%d,"
+                /* raw_* is PRE-FOLD (D43) and is what shows a degrading front
+                 * end first. ⚠ 0/0 means the node sent no ",raw=" at all, i.e.
+                 * it runs an image older than 2026-08-26 — NOT a raw bias of 0.
+                 * ⚠ cal_fold is what the last SWEEP chose, not the live fold —
+                 * 0 before any sweep has run, on a node that is in fact folded.
+                 * The live state is readable from the pairs instead: with the
+                 * fold OFF raw_bias/raw_sigma and bias/sigma are the SAME bits
+                 * and match exactly. */
+                "\"raw_bias\":%.6f,\"raw_sigma\":%.4f,"
+                "\"bias\":%.6f,\"sigma\":%.4f,"
+                "\"soft_down\":%s,\"lost\":%lu,\"reboots\":%lu,\"fw_sha\":\"%s\"}",
+                i ? "," : "", me ? "master" : N->ip,
+                N->ok ? "true" : "false", mb, (unsigned long)stl,
+                (unsigned long)enow, (unsigned long)gnow,
+                (unsigned long)N->cam_exp, (int)N->cam_cal_ok, N->cam_bias,
+                me ? (camera_get_xor_fold() ? 1 : 0) : (int)N->cam_fold,
+                rb, rs, bi, sg,
+                N->soft_down ? "true" : "false", (unsigned long)N->lost,
+                (unsigned long)N->reboots,
+                me ? master_sha : (N->fw_sha[0] ? N->fw_sha : "?"));
+        }
+        buf_append(buf, sizeof(buf), &pos,
+            "],\"node_count\":%d,\"collected\":true", g_status.node_count);
+    }
+    buf_append(buf, sizeof(buf), &pos, "}");
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
@@ -2679,6 +2776,120 @@ static esp_err_t spectest_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* GET /specdump?segs=<n> -- the mean Welch periodogram of a REAL measurement
+ * window off this node's own camera, 511 normalised bins, as CSV.
+ *
+ * /spectest proves the FFT arithmetic against a reference DFT; it says nothing
+ * about what the sensor puts into it. This says WHERE the power sits, which is
+ * the only way to test whether the structure follows the sensor's row geometry:
+ * extraction walks the frame in raster order, so a SPATIAL period aliases to a
+ * fixed segment period and lands on a fixed bin, while a timing clock cannot —
+ * the bits are read from a completed frame in PSRAM, not in step with the
+ * MIPI lane. Prediction to hold it against, at RAW8 800x800 (2026-08-26):
+ *
+ *   fold ON : 2 bit / 4 px -> 2,0 segments per row -> bin 512 = NYQUIST, and
+ *             the entropy channel drops that bin, so the line is invisible.
+ *   fold OFF: 1 bit / px   -> 4,0 segments per row -> bin 256, mid-band.
+ *
+ * ⚠ 800x800 is the ONLY common geometry that lands on the discarded bin; 640,
+ * 720, 1024 and 1280 all alias into 1..511. That the fold currently hides the
+ * row line is luck, not design.
+ *
+ * Served by EVERY node, unlike /spectest: this one measures data, and the data
+ * is what differs between nodes. 409 while a session is measuring. */
+static esp_err_t specdump_handler(httpd_req_t *req)
+{
+    if (!origin_ok(req)) return ESP_OK;
+    if (g_status.state == ELOTTO_RUNNING) {
+        httpd_resp_set_status(req, "409 Conflict");
+        httpd_resp_set_type(req, "text/plain");
+        httpd_resp_sendstr(req, "a session is measuring -- abort it first");
+        return ESP_OK;
+    }
+
+    /* Default to a full window count at the session's run length; the caller
+     * can ask for more to sharpen the periodogram, which is the point. */
+    int segs = g_status.run_segments > 0 ? g_status.run_segments
+             : (RUN_S_DEFAULT * 1000 * RUN_SEGS_REF / RUN_MS_REF);
+    char qry[64], val[24];
+    if (httpd_req_get_url_query_str(req, qry, sizeof(qry)) == ESP_OK &&
+        httpd_query_key_value(qry, "segs", val, sizeof(val)) == ESP_OK) {
+        int v = atoi(val);
+        if (v >= GCP_SPEC_W * GCP_SPEC_MIN_WIN && v <= EL_SEG_MAX) segs = v;
+    }
+    segs -= segs % GCP_SPEC_W;                 /* whole windows only */
+    if (segs < GCP_SPEC_W * GCP_SPEC_MIN_WIN) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_set_type(req, "text/plain");
+        httpd_resp_sendstr(req, "segs too small for GCP_SPEC_MIN_WIN windows");
+        return ESP_OK;
+    }
+
+    gcp_spec_t sp;
+    double z = 0.0;
+    gcp_spec_begin(&sp);
+    gcp_result_t r = gcp_zscore_spec(segs, NULL, &z, &sp);
+    double h = 0.0; int m = 0;
+    if (r != GCP_OK || !gcp_spec_finish(&sp, &h, &m)) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        httpd_resp_set_type(req, "text/plain");
+        httpd_resp_sendstr(req, "camera did not deliver a full window set");
+        return ESP_OK;
+    }
+
+    float *p = malloc(sizeof(float) * GCP_SPEC_BINS);
+    if (!p || !gcp_spec_bins(p, GCP_SPEC_BINS, NULL)) {
+        free(p);
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_sendstr(req, "no periodogram");
+        return ESP_OK;
+    }
+
+    /* CSV, German separators like every other file this rig writes, so the
+     * dump opens in the same tools as the results. */
+    /* The row-geometry prediction, computed here so the file carries it and a
+     * reader never has to re-derive it. Extraction is raster order, so one row
+     * is `w * bits_per_px` bits = that over 200 segments. A period below two
+     * segments is above Nyquist and ALIASES back, which is why this folds the
+     * frequency into [0, 0.5] rather than just inverting the period. */
+    bool     fold = camera_get_xor_fold();
+    uint32_t fw = 0, fh = 0;
+    camera_get_geometry(&fw, &fh);
+    double bpp = fold ? 0.5 : 1.0;
+    double seg_per_row = (double)fw * bpp / 200.0;
+    double pred_bin = -1.0;
+    if (seg_per_row > 0.0) {
+        double f = 1.0 / seg_per_row;
+        f = f - (double)((long)f);           /* into [0,1) */
+        if (f > 0.5) f = 1.0 - f;            /* and fold to [0,0.5] */
+        pred_bin = (double)GCP_SPEC_W * f;
+    }
+
+    char line[256];
+    httpd_resp_set_type(req, "text/csv");
+    camera_stats_t cam; camera_get_stats(&cam);
+    uint32_t expo = 0, gain = 0;
+    camera_get_exposure(&expo, &gain);
+    int n = snprintf(line, sizeof(line),
+        "# specdump w=%d bins=%d windows=%d segs=%d z=%.6f h_norm=%.8f\n"
+        "# fold=%d exposure=%lu frame=%lux%lu seg_per_row=%.4f pred_bin=%.1f\n"
+        "# raw_bias=%.6f raw_sigma=%.4f bias=%.6f sigma=%.4f\n"
+        "bin;p\n",
+        GCP_SPEC_W, GCP_SPEC_BINS, m, segs, z, h,
+        fold ? 1 : 0, (unsigned long)expo,
+        (unsigned long)fw, (unsigned long)fh, seg_per_row, pred_bin,
+        cam.raw_bias, cam.raw_sigma, cam.bias, cam.sigma);
+    httpd_resp_send_chunk(req, line, n);
+    for (int k = 0; k < GCP_SPEC_BINS; k++) {
+        n = snprintf(line, sizeof(line), "%d;%.9f\n", k + 1, (double)p[k]);
+        for (int i = 0; i < n; i++) if (line[i] == '.') line[i] = ',';
+        httpd_resp_send_chunk(req, line, n);
+    }
+    httpd_resp_send_chunk(req, NULL, 0);
+    free(p);
+    return ESP_OK;
+}
+
 /* ── GET / ────────────────────────────────────────────────────────── */
 static esp_err_t root_handler(httpd_req_t *req)
 {
@@ -2740,6 +2951,7 @@ static void start_webserver(void)
         {"/expose", HTTP_POST, expose_handler, NULL},
         {"/camtest", HTTP_GET, camtest_handler, NULL},
         {"/spectest", HTTP_GET, spectest_handler, NULL},
+        {"/specdump", HTTP_GET, specdump_handler, NULL},
     };
     for (int i = 0; i < (int)(sizeof(uris) / sizeof(uris[0])); i++)
         httpd_register_uri_handler(srv, &uris[i]);

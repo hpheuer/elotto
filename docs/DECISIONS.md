@@ -151,6 +151,30 @@ Three reasons, in order:
 3. **It was not run-length invariant.** 1,50 in z is a bias of 2,3e-4 at `run=2` and 1,5e-4 at
    `run=5`, so the same camera tripped or passed depending on `?run=`.
 
+**2026-08-26 — the offset survives on a GATED rung, and `mflag` has now fired on hardware.**
+Measured on the 7354-item / 35-block session in `docs/data/2026-08-26_aborted7354_rescue/`, in which
+the master reported `cam_cal=1` in **every** block, i.e. it was on a certified rung throughout:
+
+| node | block mean | block σ | mflag | trip |
+|---|---|---|---|---|
+| **master** | **−0,4648** (min −4,141, max +0,056) | 0,9951 | **3** | 0 |
+| slave2 | −0,0232 | 1,0124 | 0 | 0 |
+| slave0 | −0,0372 | 0,9933 | 0 | 0 |
+| slave1 | +0,0813 | 0,9908 | 0 | 0 |
+
+So the answer to the open question is **yes**: gating the dark end shrank the offsets but did not
+abolish them, and three blocks still crossed `NODE_MEAN_REPORT`. It remains a pure LOCATION effect —
+master σ 0,9951 with no trip and no soft-down — which is exactly the split this decision rests on, and
+centring removes it. **Reporting it and not tripping on it was the right call.**
+
+As a cumulative Stouffer over `z_raw` the master's offset is **−39,8** over 7354 items against
+−2,0 / −3,2 / +7,0 for the three slaves, and the combined raw figure is −19,01. ⚠ That number is the
+instrument, not a result: on `z_ctr` the same statistic is **−0,0000** (max 5,5e-5 across all 36
+blocks), identically zero by construction because centring subtracts the block mean. Anyone reading a
+cumulative Z off the raw channel is measuring the master's exposure rung.
+⚠ `drift_t` cannot see this: it regresses the block mean on the block INDEX, and a constant has slope
+zero — this session read `drift_t` 0,85 while the master sat at −0,4645.
+
 ⚠ **2026-08-11 is not a counter-example.** That pass (master mean −7, slave1 +4,6, σ ≈ 1, all kept)
 is why the σ-only rule was WRONG then and right now: it had no centring. Do not cite it against D11.
 
@@ -230,6 +254,33 @@ The cause is that the unfolded LSB bias is NON-STATIONARY: within that same loop
 +8,4e-4 at calibration to −1,3e-3 during the baseline minutes later — 2,1e-3 of travel against a
 1e-3 gate. Neither gate could see it. The bias gate reads one window; the σ gate reads 3200-bit
 mini-runs INSIDE that window, far too short to show drift over seconds.
+
+**Re-tested 2026-08-26 and confirmed, on a much better-instrumented array.** `CONFIG_ELOTTO_CAM_XOR_FOLD=n`
+OTA'd to slave0 alone; master + slave2 + slave1 stayed folded as the within-session control.
+6-of-49, `run=1,5 s`, `calint=4 min`, 346 items, 4 blocks. Three independent failures:
+
+1. **The sweep certifies NOTHING.** `ok:false, chosen:-1` — all 9 rungs fail `CAM_CAL_FAIL_BIAS`
+   **and** `CAM_CAL_FAIL_SIGMA`. Folded slave1 certified 4 of 9 in the same minute. At the same
+   rung 128: bias 0,493375 / σ 1,7233 against 0,499942 / 1,0080.
+2. **Soft-down trips in block 3.** Per-block z σ 1,176 / 1,033 / **1,273** / 1,058 against
+   0,886–1,101 across the three folded nodes; the block was quarantined and `k` fell to 3 for
+   126 of 346 items. Milder than 2026-07-26's 2,153 — shorter run and a better-lit rung — but
+   it still trips `NODE_SIGMA_SOFT` inside three blocks.
+3. **The entropy channel, which did not exist in 2026-07-26, is the sharpest detector by far.**
+   Raw z_h over 346 items: master +0,079 · slave2 +0,054 · slave1 −0,138 · **slave0 −201,7452**
+   (sd 11,0). Two hundred σ off the null. The unfolded LSB stream carries gross per-frame
+   spectral structure that the XOR fold cancels; `ENT_Z_CLAMP` fired on it continuously.
+
+⚠ **The failure is SCALE, not location.** The fold-off block MEANS were −0,61 / −1,07 / −0,13 /
++0,60, i.e. near zero — the damage is entirely in σ. Any correction that only recentres the
+stream therefore cannot rescue fold-off; see the adaptive-bias entry in the dropped list.
+
+⚠ **Open, not chased down.** `cam_bias` 0,493490 converts through the D19 relation to −36 z per
+run at `run_segs` 39130, but the node's measured block mean was −0,61. `gcp.c` reads the same
+ring words the bias statistic counts, so the two should agree and they differ by ~50×. The gate
+verdict is still right; the reason is not fully understood.
+
+Data: `docs/data/2026-08-26_foldoff_trial_slave0/`.
 
 ### D18 — The dark end of the ladder is gated (2026-08-19)
 `CAL_MIN_MEAN_PX` 5,0 and `CAL_MAX_ZERO_DIFF` 0,125. The premise is that photons do the whitening,
@@ -551,6 +602,105 @@ cannot fit and compaction fires after ~3,7 h at `?run=1`.
 
 ---
 
+### D43 — The spectral structure is DRIFT, not a row line; the pre-fold monitor (2026-08-26)
+`GET /specdump?segs=<n>`, on every node: the mean Welch periodogram of a real window off that
+node's own camera, 511 normalised bins. `/spectest` proves the FFT arithmetic; this says WHERE the
+power sits, which is what H by construction cannot.
+
+**The row-geometry prediction was refuted.** At RAW8 800x800 the fold-off row rate is 4,0 segments
+per row and should have put a line on bin 256. Measured over four conditions, bin 256 reads 0,59x
+to 0,94x of the mean — **below it, in every one**. The arithmetic was right, the premise was not:
+there is no spatially periodic structure in the LSB stream for the row rate to alias.
+
+| condition | sd/mean | bin 1 | bins 1-20 | bin 256 |
+|---|---|---|---|---|
+| slave0 fold=1 exp64  | 0,1754 | 1,07x | 4,06 % | 0,94x |
+| slave0 fold=0 exp64  | 0,1752 | 1,14x | 4,27 % | 0,81x |
+| slave0 fold=1 exp128 | 0,6904 | **8,87x** | 8,19 % | 0,59x |
+| slave0 fold=0 exp128 | 1,1396 | **23,81x** | 9,15 % | 0,79x |
+| flat, M=32 | 0,1768 | 1,00x | 3,91 % | 1,00x |
+
+What there is instead is a monotone excess at the LOWEST bins. Bin 1 is a period of 1024 segments,
+the longest the window resolves — **drift inside the window**, and the direct spectral confirmation
+of D17's non-stationary unfolded bias.
+
+⛔ **A stride or shuffle fold is therefore pointless, and so is spatial shuffling** — both attack
+spatial structure and there is none. This closes the option raised the same day; it was never
+built.
+⛔ The MIPI/CSI clock was never a candidate and still is not: extraction reads a completed frame
+out of PSRAM in raster order, not in step with the lane, so a timing clock cannot produce a fixed
+segment period at all.
+
+**EXPOSURE is the variable, not the fold.** At exp 64 both arms are flat; at exp 128 both are
+disturbed. The fold SUPPRESSES the drift without removing it — at 128 it takes bin 1 from 23,81x to
+8,87x and the emitted σ from 1,8359 to 1,4233, still over `NODE_SIGMA_SOFT`.
+⚠ exp 128 is a rung **slave0's own sweep never selects** (it used 16/32/64 through the 7354-item
+session); it was forced by hand with `POST /expose`. The run shows the gates being right, not a
+fault. So the fold's job is correctly named at last: it squares a **drifting bias**, a TEMPORAL
+defect — which is why squaring is the right minimal operation and why nothing spatial would help.
+
+**The pre-fold monitor** — `raw_bias` / `raw_sigma` / `raw_sigma_n` in `/diag`, from `cam_raw_t` in
+`extract.h`. Everything the rig published about the BIT stream was measured after the fold; the
+pixel-domain values (`mean_px`, `zero_diff`) are before it; the raw LSB stream in between was
+unmonitored, and that is where a degrading sensor shows first. It earned itself immediately: at
+exp 128 slave0 reads raw_sigma **1,7680** against an emitted 1,4233, so the front end is degraded
+and the fold is masking part of it — a number that previously required flashing a fold-off image.
+⚠ With the fold OFF the raw and emitted pairs must agree exactly, and do (0,491186 / 1,8359 on both
+sides); `case_equal()` holds ref against fast on the same struct, and cross-checks the count against
+the emitted words at fold-off.
+Cost: `/camtest` `ms_pair_ext` **39,3 ms** with the monitor live, against 39,5-39,8 historically —
+no measurable cost, and `ns_raw` prices it directly against `ns_fast`.
+⚠ Still to confirm under measurement LOAD on a slave, which is the only place D25 says a cost would
+show.
+
+**Cost, measured, and the duty cycle it forced.** `/camtest` prices the monitor directly:
+`ns_raw` **68,5** against `ns_fast` **53,3** ns/pixel, i.e. **+28,6 %** on the extraction loop. At
+idle that is invisible (`ms_pair_ext` unchanged, rate still 5,70-5,72) because the loop waits on the
+sensor and the cost is absorbed in DQBUF — the same asymmetry the pixel-sum note in `extract.h`
+documents. Under measurement load the loop is compute-bound (D25) and it would come straight off the
+bit rate. So it runs on every **`CAM_RAW_EVERY` = 8**-th frame pair: ~3,6 % amortised, verified as a
+clean 1:4 ratio of `raw_sigma_n` to `sigma_n` on hardware.
+⚠ One frame is 640000 px = exactly 200 complete 3200-bit mini-runs, so skipping whole frames never
+straddles a mini-run boundary. If the capture geometry changes that stops being true.
+⚠ `ns_raw` in `/camtest` is the UNGATED cost and stays at +28,6 % — it prices the monitor, not the
+duty cycle.
+
+**The collector.** `GET /diagjson?all=1` fires `D` at every node and returns the whole array's
+front-end health in one object — live exposure/gain, folded bias/σ, pre-fold bias/σ, rate, stalls,
+soft_down, reboots, fw_sha, in discovery order with the IP on each row. `D` grew `,raw=` and `,exp=`,
+both TAGGED and appended like `,fw=`, so a node too old to send them reads as absent rather than
+misread. No new handler was spent: the cap is at 23 of 24.
+⚠ 409 while measuring — `slaves_diag()` is only safe between loops.
+⚠ Row 0 is the master and `slaves_diag()` cannot fill it; it is filled from the master's own camera
+so the four rows are comparable. An unfilled row 0 read as a dead master.
+⚠ `cal_fold`/`cal_exp` are what the last SWEEP chose; `exposure`/`gain` are LIVE. They differ after a
+manual `POST /expose` or a sweep that certified nothing.
+
+**⚠ OPEN, and the strongest candidate change: the sweep's tie-break is noise-limited and the
+pre-fold bias is not.** Among candidates clearing every gate the sweep picks the lowest
+|bias − 0,5| — on the FOLDED bias, which is the quantity the fold has already squared into the
+sampling noise (D19 says the gate is bounded by its own sampling error). The first sweep to publish
+both columns shows what that costs, on the master:
+
+| exp | folded bias | folded σ | raw_bias | raw_σ | mean_px | verdict |
+|---|---|---|---|---|---|---|
+| 4   | 0,499520 | 1,0140 | **0,484580** | **1,2412** | 3,42 | fails DARK+ZDIFF |
+| 16  | 0,500029 | 0,9914 | 0,492230 | 1,0666 | 5,59 | **CHOSEN** |
+| 128 | 0,500050 | 0,9862 | **0,499163** | **0,9551** | 28,63 | passes |
+| 256 | 0,498449 | 1,0619 | 0,487436 | 1,4832 | 53,47 | fails |
+
+exp 16 won by **2e-5 of folded bias** over exp 128 — below the sweep's own resolution — while on the
+pre-fold bias 128 is better by a factor of **8** (|Δ| 8,4e-4 against 7,8e-3) and sits at mean_px
+28,63 against 5,59, barely over the `CAL_MIN_MEAN_PX` floor. D18's premise is that photons do the
+whitening, so the brighter rung should win, and the folded criterion cannot see it.
+⚠ Note also exp 4: folded bias 0,499520 looks FINE. The fold hides how bad the dark rung is, and it
+is caught only by the dark gates. The raw column shows why those gates had to exist.
+**Not changed.** It is one sweep, and moving rung selection moves every node's block offsets, which
+splits the pooling table (D1). It needs replaying against a session's `/loops` with both columns
+before it becomes the criterion — which is now possible, and was not before.
+
+Data and the full write-up: `docs/data/2026-08-26_specdump/`.
+
 ## Dropped and deferred
 
 ⛔ **Dropped by decision — do not re-propose:**
@@ -558,8 +708,46 @@ cannot fit and compaction fires after ~3,7 h at `?run=1`.
 - restoring the master to USB power (D31);
 - raising `CAM_BUF_COUNT` (D24 — measured, no effect);
 - the second-core split for extraction (D23 — no headroom left at idle);
-- reintroducing the on-chip TRNG in any form;
+- reintroducing the on-chip TRNG in any form — **including an LFSR fed from the camera bits**
+  (proposed 2026-08-26). An LFSR whose feedback is XORed with the raw stream IS the canonical
+  whitened-hardware-RNG construction, so it falls under this line; it is named separately because the
+  line did not read as covering it. Simulated over 8,2 Mbit per arm (32-bit polynomial 32/22/2/1):
+  on a source carrying the measured fold-off bias plus a period-4-segment line it reaches
+  bias 0,499929 / σ 0,9971 / autocorr 0,0004 — and the XOR fold reaches 0,496249 / 1,0015 / 0,0009,
+  i.e. **the LFSR buys nothing the fold does not already deliver**.
+  ⛔ What it costs is the instrument: fed a **frozen camera** (every diff zero, every LSB
+  deterministically 0) the LFSR emits bias 0,499993, σ 1,0001, autocorr 0,0004 — **it passes every
+  gate this project has**, where the raw and folded paths both read bias 0,000000 / σ 0,0000 and are
+  caught instantly. The 2026-08-26 fold-off trial detected a merely *degraded* source in three
+  independent channels; behind an LFSR all three would have read clean.
+  Three further reasons: it has STATE, so it smears a time-localised deviation over the register
+  length and beyond, where the fold is memoryless and local (`bit(i) = LSB(2i) ⊕ LSB(2i+1)`); the
+  entropy channel's closed-form null assumes an i.i.d. source and does not hold for an LFSR sequence,
+  so `z_h` would become meaningless; and it puts a PRNG in the z path, which `fast_rng()` is
+  explicitly kept out of. The "cheap in hardware" argument does not transfer — the fold costs no
+  compute at all, it is fused into the extractor (`k = fold ? 2 : 4`), and its 2:1 rate is
+  net **1,22× better** than fold-off once σ is accounted for;
 - chasing down the window/gap split (D2);
+- **adaptive bias correction as a replacement for the XOR fold** (proposed 2026-08-26): estimate p̂ by
+  EWMA over the raw LSB stream and standardise each run on `μ = 200·nseg·p̂`,
+  `σ = √(200·nseg·p̂(1−p̂))` instead of the fixed 0,5 / `GCP_SEGMENT_SD`. It is a LOCATION fix for a
+  SCALE failure and cannot work, quantified against D17's own re-test data:
+  at the measured fold-off p̂ = 0,493375 the σ factor `√(p̂(1−p̂)/0,25)` is 0,999912 — a correction of
+  **8,8e-5 where 1/1,7233 = 0,58, i.e. −42 %, is needed. Short by 4800×.** The overdispersion is not
+  binomial, so no binomial σ built from p̂ reaches it; the entropy channel (z_h −201,7) says it is
+  spectral structure, which no rescaling of location or scale touches at all.
+  Three further reasons, each independently sufficient: **(a)** p̂ is estimated from the same data, so
+  the EWMA subtracts the signal — at α = 0,001 and ~3,2 s/run its time constant is **53 min, 3,6×
+  slower than the 15-min block**, i.e. a second, un-pre-registered centring on top of D8, removing
+  more than block centring already costs, not less. **(b)** A per-node private p̂ trajectory makes
+  `z0..z3` four different statistics, which breaks the Stouffer combine and would feed the p̂ dynamics
+  into `PairAcc` as correlation — exactly what the shared primitive in `elotto_gcp` exists to prevent
+  (D37) — and it moves every stored z, splitting the pooling table (D1).
+  **(c)** The bit-rate premise is wrong even on its own terms: fold-off buys 2× nseg per unit time,
+  worth √2 = 1,414 in z resolution, against a z that is 1,7233× too wide — **net 1,22× worse.**
+  ⚠ With the fold ON the correction is pointless in the other direction: at p̂ = 0,499942 the σ factor
+  is 1 − 6,7e-9. The residual LOCATION term is real (−0,32 z/run) but block centring already removes
+  it, in the pre-registered way;
 - a `docs/data/README.md` index of session generations (user, 2026-08-19: the past will be consulted
   when needed);
 - deleting session data from 2026-08-05 on — each of those is either cited evidence or the only

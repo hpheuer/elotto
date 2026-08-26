@@ -8,9 +8,26 @@
  * Moved verbatim out of camera.c's diff_and_extract(). It is not dead code —
  * it is the definition of what the fast path has to reproduce, and the
  * self-test runs it on the target every time it is asked. */
+/* Close a pre-fold mini-run and start the next. Integer only: the extractor
+ * never calls into soft-float, so the sums go out as sums and camera.c reduces
+ * them to a σ at publish time. Called once per 3200 pixels, i.e. 200 times per
+ * frame against 160000 bulk iterations — it is not on the hot path in any
+ * meaningful sense. */
+static inline void raw_tick(cam_raw_t *raw)
+{
+    if (raw->run_bits < CAM_RAW_MINIRUN_BITS) return;
+    uint64_t o = raw->run_ones;
+    raw->mr_sum   += o;
+    raw->mr_sumsq += o * o;
+    raw->mr_n++;
+    raw->run_ones = 0;
+    raw->run_bits = 0;
+}
+
 void cam_extract_ref(const uint8_t *a, const uint8_t *b, uint32_t n, bool fold,
                      cam_pack_t *st, cam_emit_fn emit, void *ctx,
-                     uint32_t *out_zeros, uint32_t *out_any, uint32_t *out_psum)
+                     uint32_t *out_zeros, uint32_t *out_any, uint32_t *out_psum,
+                     cam_raw_t *raw)
 {
     uint32_t acc = st->bitacc, pend = st->fold_pending;
     int      accn = st->bitacc_n;
@@ -24,6 +41,8 @@ void cam_extract_ref(const uint8_t *a, const uint8_t *b, uint32_t n, bool fold,
         any |= d;
         if (d == 0) zeros++;
         uint32_t bit = d & 1u;
+        if (raw) { raw->ones += bit; raw->run_ones += bit;
+                   raw->bits++; raw->run_bits++; raw_tick(raw); }
         if (fold) {
             if (!have) { pend = bit; have = true; continue; }
             bit ^= pend;
@@ -66,7 +85,8 @@ void cam_extract_ref(const uint8_t *a, const uint8_t *b, uint32_t n, bool fold,
 
 void cam_extract_fast(const uint8_t *a, const uint8_t *b, uint32_t n, bool fold,
                       cam_pack_t *st, cam_emit_fn emit, void *ctx,
-                      uint32_t *out_zeros, uint32_t *out_any, uint32_t *out_psum)
+                      uint32_t *out_zeros, uint32_t *out_any, uint32_t *out_psum,
+                      cam_raw_t *raw)
 {
     uint32_t acc = st->bitacc, pend = st->fold_pending;
     int      accn = st->bitacc_n;
@@ -91,6 +111,8 @@ void cam_extract_fast(const uint8_t *a, const uint8_t *b, uint32_t n, bool fold,
         orx |= d;
         if (d == 0) zeros++;
         uint32_t bit = d & 1u;
+        if (raw) { raw->ones += bit; raw->run_ones += bit;
+                   raw->bits++; raw->run_bits++; raw_tick(raw); }
         if (fold) {
             if (!have) { pend = bit; have = true; i++; continue; }
             bit ^= pend;
@@ -122,6 +144,18 @@ void cam_extract_fast(const uint8_t *a, const uint8_t *b, uint32_t n, bool fold,
         uint32_t zt = ~(((x & LOW7) + LOW7) | x | LOW7);
         zeros += ((zt >> 7) * 0x01010101u) >> 24;
 
+        /* Pre-fold ones for these 4 pixels. `x & LSB_MASK` is already needed
+         * for the gather below, and multiplying a 0/1-per-byte value by
+         * 0x01010101 sums the four bytes into the top byte — the same trick
+         * `zeros` uses, max 4 so it cannot carry out. Three ops, and it reads
+         * no memory the loop was not already holding in registers. */
+        if (raw) {
+            uint32_t ro = ((x & LSB_MASK) * 0x01010101u) >> 24;
+            raw->ones += ro; raw->run_ones += ro;
+            raw->bits += 4;  raw->run_bits += 4;
+            raw_tick(raw);
+        }
+
         uint32_t nib = ((x & LSB_MASK) * GATHER_MUL) >> 24;   // p0 p1 p2 p3
         uint32_t v;
         if (fold) {
@@ -146,6 +180,8 @@ void cam_extract_fast(const uint8_t *a, const uint8_t *b, uint32_t n, bool fold,
         orx |= d;
         if (d == 0) zeros++;
         uint32_t bit = d & 1u;
+        if (raw) { raw->ones += bit; raw->run_ones += bit;
+                   raw->bits++; raw->run_bits++; raw_tick(raw); }
         if (fold) {
             if (!have) { pend = bit; have = true; continue; }
             bit ^= pend;
@@ -240,9 +276,10 @@ static bool case_equal(const uint8_t *a, const uint8_t *b, uint32_t n, bool fold
     cam_pack_t s1 = {0}, s2 = {0};
     collect_t c1 = { wa, 0, cap }, c2 = { wb, 0, cap };
     uint32_t z1 = 0, z2 = 0, a1 = 0, a2 = 0, p1 = 0, p2 = 0;
+    cam_raw_t r1 = {0}, r2 = {0};
 
-    cam_extract_ref (a, b, n, fold, &s1, collect_emit, &c1, &z1, &a1, &p1);
-    cam_extract_fast(a, b, n, fold, &s2, collect_emit, &c2, &z2, &a2, &p2);
+    cam_extract_ref (a, b, n, fold, &s1, collect_emit, &c1, &z1, &a1, &p1, &r1);
+    cam_extract_fast(a, b, n, fold, &s2, collect_emit, &c2, &z2, &a2, &p2, &r2);
 
     if (out_words) *out_words = c1.n;
     rep->ref_z = z1; rep->fast_z = z2;
@@ -251,6 +288,36 @@ static bool case_equal(const uint8_t *a, const uint8_t *b, uint32_t n, bool fold
         return false;
     }
     if (z1 != z2)                    { rep->what = 2; return false; }
+    /* The pre-fold monitor is held to the same standard as the emitted bits.
+     * The bulk path derives its raw count with the byte-sum trick while the
+     * reference adds one bit at a time, so this is a real comparison of two
+     * different computations, not a tautology — and it is the only thing that
+     * would catch the gather mask and the sum mask being confused. */
+    if (r1.ones != r2.ones || r1.bits != r2.bits || r1.mr_n != r2.mr_n ||
+        r1.mr_sum != r2.mr_sum || r1.mr_sumsq != r2.mr_sumsq ||
+        r1.run_ones != r2.run_ones || r1.run_bits != r2.run_bits) {
+        rep->what = 7;
+        rep->ref_w  = (uint32_t)r1.ones;  rep->fast_w = (uint32_t)r2.ones;
+        rep->bad_at = (uint32_t)r1.bits;
+        return false;
+    }
+    /* With the fold OFF the raw stream IS the emitted stream, so the two ones
+     * counts must agree exactly. A free cross-check of the monitor against the
+     * path that has always been trusted. */
+    if (!fold) {
+        uint64_t emitted = 0;
+        for (uint32_t i = 0; i < c1.n; i++) emitted += cam_popcount32(wa[i]);
+        /* The words only carry COMPLETE 32-bit groups; the remainder is still
+         * in the packer. `acc` is built by (acc<<1)|bit from zero, so exactly
+         * its low bitacc_n bits are data and everything above them is zero —
+         * a plain popcount of it is the leftover ones. */
+        emitted += cam_popcount32(s1.bitacc);
+        if (emitted != r1.ones) {
+            rep->what = 8;
+            rep->ref_w = (uint32_t)emitted; rep->fast_w = (uint32_t)r1.ones;
+            return false;
+        }
+    }
     /* The pixel sum is a gate value (CAL_MAX_MEAN_PX), so it is held to the
      * same standard as the bits: exactly equal, not close. */
     if (p1 != p2) { rep->what = 6; rep->ref_w = p1; rep->fast_w = p2; return false; }
@@ -374,18 +441,30 @@ bool cam_extract_selftest(cam_selftest_t *out, uint32_t bytes)
 
     st = (cam_pack_t){0}; z = 0; an = 0; sink = 0;
     t0 = esp_timer_get_time();
-    cam_extract_ref(a, b, N, true, &st, count_emit, (void *)&sink, &z, &an, &ps);
+    cam_extract_ref(a, b, N, true, &st, count_emit, (void *)&sink, &z, &an, &ps, NULL);
     out->ns_ref = (float)((esp_timer_get_time() - t0) * 1000.0 / N);
 
     st = (cam_pack_t){0}; z = 0; an = 0; sink = 0;
     t0 = esp_timer_get_time();
-    cam_extract_fast(a, b, N, true, &st, count_emit, (void *)&sink, &z, &an, &ps);
+    cam_extract_fast(a, b, N, true, &st, count_emit, (void *)&sink, &z, &an, &ps, NULL);
     out->ns_fast = (float)((esp_timer_get_time() - t0) * 1000.0 / N);
+
+    /* The pre-fold monitor priced on its own, against ns_fast directly above.
+     * It is the only number that says whether the monitor may stay always-on
+     * or has to be gated to calibration and idle: the extraction loop is
+     * compute-bound under measurement load (D25), so a cost here is a cost in
+     * the loaded bit rate, and nowhere is it visible at idle. */
+    { cam_raw_t rw; memset(&rw, 0, sizeof(rw));
+      st = (cam_pack_t){0}; z = 0; an = 0; sink = 0;
+      t0 = esp_timer_get_time();
+      cam_extract_fast(a, b, N, true, &st, count_emit, (void *)&sink, &z, &an, &ps, &rw);
+      out->ns_raw = (float)((esp_timer_get_time() - t0) * 1000.0 / N);
+      sink = (uint32_t)rw.ones; }
 
     { statsim_t ss; memset(&ss, 0, sizeof(ss));
       st = (cam_pack_t){0}; z = 0; an = 0;
       t0 = esp_timer_get_time();
-      cam_extract_fast(a, b, N, true, &st, stats_emit, &ss, &z, &an, &ps);
+      cam_extract_fast(a, b, N, true, &st, stats_emit, &ss, &z, &an, &ps, NULL);
       out->ns_stats = (float)((esp_timer_get_time() - t0) * 1000.0 / N);
       sink = (uint32_t)ss.ones; }
 

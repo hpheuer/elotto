@@ -52,6 +52,7 @@
  * already makes about camera_read_word(). */
 static float *s_re, *s_im;             /* SPEC_N each: the packed window       */
 static float *s_acc;                   /* GCP_SPEC_BINS: Σ|X_k|² over windows  */
+static int    s_last_m;                /* windows in the last completed finish  */
 static float *s_twr, *s_twi;           /* SPEC_N/2 each: FFT twiddles          */
 static float *s_unr, *s_uni;           /* SPEC_N each: real-unpack twiddles    */
 static int    s_alloc_tried;
@@ -230,6 +231,21 @@ bool gcp_spec_finish(gcp_spec_t *sp, double *out_h, int *out_m)
     }
     if (out_h) *out_h = h / log((double)GCP_SPEC_BINS);
     if (out_m) *out_m = sp->m;
+    s_last_m = sp->m;
+    return true;
+}
+
+/* Normalised copy of the accumulator. Same denominator gcp_spec_finish() uses,
+ * so bin k here is exactly the p_k that entered the entropy sum — the caller is
+ * seeing the statistic's own input, not a second computation of it. */
+bool gcp_spec_bins(float *out, int n, int *out_m)
+{
+    if (!out || n < GCP_SPEC_BINS || !s_acc) return false;
+    double s = 0.0;
+    for (int k = 0; k < GCP_SPEC_BINS; k++) s += (double)s_acc[k];
+    if (!(s > 0.0)) return false;
+    for (int k = 0; k < GCP_SPEC_BINS; k++) out[k] = (float)((double)s_acc[k] / s);
+    if (out_m) *out_m = s_last_m;
     return true;
 }
 
