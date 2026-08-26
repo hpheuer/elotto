@@ -193,6 +193,22 @@ bool gcp_spec_ready(void);
 gcp_result_t gcp_zscore_spec(int nseg, bool (*on_yield)(void), double *out,
                              gcp_spec_t *sp);
 
+/* gcp_zscore_spec() with the PRE-FOLD z alongside (2026-08-26).
+ *
+ * The XOR fold maps a raw bias e to ~2e², so it suppresses a MEAN-BIAS effect
+ * by sqrt(2)*e — a factor ~7000 at e = 1e-4. That is the quantity a GCP-style
+ * experiment is looking for, so the unfolded stream is scored and archived too.
+ * The fold stays: without it there is no stable null (D17).
+ *
+ * ⚠ RANKING AND ARCHIVE ONLY, never a p-value. Raw sigma is 1,03..1,10 on
+ * certified rungs against 0,997..1,001 folded — the same compromise the
+ * entropy channel makes, for the same reason.
+ * ⚠ It covers MORE bits than the folded z over the same window in TIME.
+ * ⚠ The folded z is bit-identical to what gcp_zscore_raw() returns.
+ * NULL out_pre, or a node without the parallel ring, disables it. */
+gcp_result_t gcp_zscore_pre(int nseg, bool (*on_yield)(void), double *out,
+                            gcp_spec_t *sp, double *out_pre);
+
 #ifdef __cplusplus
 }
 #endif

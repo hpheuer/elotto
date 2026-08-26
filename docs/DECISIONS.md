@@ -701,6 +701,65 @@ before it becomes the criterion — which is now possible, and was not before.
 
 Data and the full write-up: `docs/data/2026-08-26_specdump/`.
 
+### D45 — The pre-fold z: the channel the fold throws away (2026-08-26)
+The XOR fold maps a raw bias ε to ~2ε², so at equal measuring time a MEAN-BIAS effect survives it
+multiplied by **√2·ε**:
+
+| ε | z_roh (1 s) | z_gefaltet | suppression |
+|---|---|---|---|
+| 1e-3 | 4,568 | 6,46e-3 | 707× |
+| **1e-4** | **0,457** | **6,46e-5** | **7071×** |
+| 1e-5 | 0,046 | 6,46e-7 | 70711× |
+
+That is the quantity a GCP-style experiment exists to look for, and the fold was destroying it. The
+defence of the fold up to now was about σ and stationarity and never about signal — an omission.
+
+**The fold stays** — without it there is no stable null (D17: the unfolded bias wanders ~2,1e-3 over
+minutes, twenty times a hypothesised 1e-4 effect) — but the raw stream is now ALSO scored, combined,
+block-centred and archived, as a third channel beside z and z_h.
+
+⚠ **RANKING AND ARCHIVE ONLY, never a p-value.** Raw σ runs 1,03–1,10 on certified rungs where the
+folded stream is at 0,997–1,001. Same compromise as the entropy channel, same reason.
+⚠ **It covers MORE bits than the folded z over the same window in TIME**: a segment pulls seven words
+and uses only 8 bits of the seventh, while all seven were physically measured. Normalised as the
+plain binomial `(ones − N/2)/(√N/2)` over the bits actually consumed, which is identical to
+`Σ(ones−100)/(GCP_SEGMENT_SD·√(N/200))` and needs no fictitious segment count.
+⚠ **Centring matters more here than anywhere.** Measured on hardware, per-node RAW pre-fold z on one
+item: **−7,13 / +0,53 / −46,89 / −27,28**. Uncentred it ranks NODES, not items. After centring the
+combined value was 1,1627.
+⚠ **The provisional value is the worst of the three.** Before its block closes an item's `zp_ctr` is
+uncentred, i.e. dominated by a 20–95σ node offset. A `wpre>0` live table is meaningless until the
+first block closes. (Leaving it unset was a real defect for one build — the record is reused across
+items and held a stale value.)
+
+**Key.** `?wpre=<0..1>`, **default 0**, so the channel is measured and archived from the first session
+without moving a ranking until asked for — added post-hoc, it is a third ticket in the same lottery
+and needs per-session pre-registration exactly as `?went=` did.
+`key = ((1−w−p)·z_ctr − w·z_h + p·z_pre) / √((1−w−p)² + w² + p²)`, three unit-variance independent
+halves so the key stays unit-variance at every weighting. **z_pre enters with a PLUS** — it is a z on
+the same scale and direction as z_ctr; only entropy is negated. `went + wpre > 1` answers **400**: the
+z half would go negative. Clamped on the same `ENT_Z_CLAMP` bar; the archive keeps the real value.
+Verified by hand from the CSV: z_ctr 1,2656 · z_h −0,5849 · z_pre 1,1627 at w=0,5 p=0,3 → **1,4509**,
+the published value.
+
+**Mechanics.** The raw ones count rides WITH each emitted word in a parallel `uint8` ring so the two
+z values cover the same window — a free-running counter advances with the producer and includes bits
+the consumer never saw (ring drops). ⚠ `CAM_RAW_EVERY` is **gone**: a diagnostic may be sampled, a
+measurement channel may not.
+⚠ **`NUM_RUNS` 8000 → 7200.** `results[]` is in INTERNAL RAM and the double in `RunResult` forces
+8-byte alignment, so one more float cost 8 bytes per item — 64 KB — and the image stopped LINKING
+(4913 bytes of discarded sections). The cap is the backstop for a compaction that cannot allocate
+(D42), not the normal end of a session. ⚠ But Eurojackpot's 7920 no longer fits in one uncompacted
+pass; a full Euro run now compacts once near the end. **Verify that, do not assume it.**
+
+Wire: `Z:<z>,<H>,<z_pre>`, appended third; a node with no H sends a literal `nan` to hold the slot
+open rather than shifting the field forward. CSV: `zp_ctr;p0..p3` appended last, `pre_w=` in the
+header. ⚠ **`pre_w` splits the pooling table** for the tables, exactly as `ent_w` does.
+
+⚠ Cost still UNMEASURED under load: the raw counter is now always-on and `/camtest` prices it at idle
+only (`ms_pair_ext` 39,2, unchanged), where the loop waits on the sensor. Watch `ms_extract` and
+`cam_mbit` on a SLAVE during a real session.
+
 ## Dropped and deferred
 
 ⛔ **Dropped by decision — do not re-propose:**

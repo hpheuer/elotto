@@ -71,7 +71,11 @@ int  nodes_collect(int timeout_ms, bool critical);
  * answer or replied 'E:' (in which case the camera-fault policy has already
  * run and the node is dropped). The z travels through the out-parameter rather
  * than a struct the caller reaches into, so the per-slave table stays private. */
-bool node_take_z(int k, double *out_z, bool *out_have_h, double *out_h);
+/* out_have_pre / out_pre carry the PRE-FOLD z (2026-08-26), third field on the
+ * wire. ⚠ Absent is not zero — a node without the parallel ring omits it and
+ * must be left out of that combine, exactly as for a missing H. */
+bool node_take_z(int k, double *out_z, bool *out_have_h, double *out_h,
+                 bool *out_have_pre, double *out_pre);
 
 /* ── Baseline, calibration, diagnostics ────────────────────────────── */
 

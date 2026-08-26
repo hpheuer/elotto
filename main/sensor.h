@@ -9,7 +9,22 @@
  * on the combination space. 8000 and not more because results[] lives in
  * internal RAM, which is full — a few KB more of .bss fails the LINK, not the
  * run. Both pools below fit under it by construction. */
-#define NUM_RUNS      8000
+/* ⚠ 8000 -> 7200 on 2026-08-26, and the reason is the LINKER, not statistics.
+ * results[] lives in INTERNAL RAM (see the resources note) and the pre-fold
+ * channel added a float to RunResult. The double in the record forces 8-byte
+ * alignment, so 4 more bytes cost 8 per item — 64 KB at 8000 — and the image
+ * stopped linking with 4913 bytes of discarded sections. 7200 gives it back
+ * with margin.
+ *
+ * The cost is close to nothing: since round-boundary compaction (D42) the
+ * buffer folds instead of filling, so this cap is the BACKSTOP for a
+ * compaction that cannot allocate, not the normal end of a session. In
+ * practice only Abort ends an unlimited run.
+ * ⚠ It IS still the hard cap for a single pass, and the largest space this
+ * instrument measures is Eurojackpot's 7920 — which no longer fits in one
+ * uncompacted pass. A full Euro pass now compacts once near the end instead of
+ * stopping. Verify that on the next full Euro run rather than assuming it. */
+#define NUM_RUNS      7200
 #define TOP_N            5
 /* ── Round-boundary compaction (2026-08-19) ───────────────────────────────
  * How many items per published table survive a compaction. The three tables
@@ -329,6 +344,13 @@ _Static_assert(((long long)RUN_S_MAX * 1000 * RUN_SEGS_REF) / RUN_MS_REF <= EL_S
  * blocks (4,8 h), 0,5σ in 52,6 blocks (13,1 h).
  * ⚠ Change either constant and the false-alarm rate changes with it — recompute
  * the ARL rather than guessing, and record the new table here. */
+/* Weight of the PRE-FOLD half of the ranking key (D45), ?wpre=<0..1>.
+ * DEFAULT 0: the pre-fold z is measured, combined, centred and archived from
+ * the first session, but it does not move a single ranking until it is asked
+ * for. Adding a channel to the key after the fact is a third ticket in the same
+ * lottery, so it has to be pre-registered per session exactly as ?went= was. */
+#define ENT_W_PRE_DEFAULT    0.0
+
 #define CUSUM_K              0.25   // δ/2, δ = 0,5 standard errors
 #define CUSUM_H             14.0    // ARL₀ 7715 blocks/node; see the table above
 #define CUSUM_WARMUP           4    // blocks used to fix the reference
@@ -448,6 +470,14 @@ typedef struct {
      * per-node H lives in the PSRAM archive beside s_node_z and reaches the CSV
      * through results_row_z(). */
     float      zh_ctr;
+    /* The PRE-FOLD combined z, block-centred on its own accumulator (D45).
+     * ⚠ The fold suppresses a mean-bias effect by sqrt(2)*e — ~7000x at
+     * e = 1e-4 — so this channel carries the very quantity the folded z throws
+     * away. It is RANKED AND ARCHIVED, never tested: its null is the ideal one
+     * and raw sigma runs 1,03..1,10 on certified rungs.
+     * ⚠ 0 means "no pre-fold value for this item", the same convention zh_ctr
+     * uses, and it reads as exactly average. */
+    float      zp_ctr;
 } RunResult;
 
 /* ── The entropy channel (2026-08-25) ─────────────────────────────────────
@@ -741,6 +771,7 @@ typedef struct {
      * as the constant it is; calling the residue a p-value would not be
      * honest. See gcp.h. */
     double           ent_w;               // weight of the entropy half of the key
+    double           pre_w;               // weight of the PRE-FOLD half (D45), ?wpre=
                                           // (?went=, 0 = pure-z ranking)
     double           rank_mean;           // mean of rank_key() over ranked items
     double           rank_sigma;          // its sample σ — what the UI's Z* and
@@ -974,7 +1005,7 @@ void results_archive_init(void);
  * one. Returns false if the archive is missing or j is out of range.
  * out_z[MAX_NODES] gets NaN for nodes that did not contribute that run. */
 bool results_row_z(int j, RunResult *out_row, float out_z[MAX_NODES],
-                   float out_h[MAX_NODES]);
+                   float out_h[MAX_NODES], float out_p[MAX_NODES]);
 
 /* The combined ranking key of one row: the block-centred z and the block-centred
  * entropy z, weighted by ent_w and rescaled to unit variance under H₀. The ONE

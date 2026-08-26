@@ -208,12 +208,18 @@ static bool gcp_zscore_ok(int nseg, double *out)
  * a full measurement in the channel that tests. The BASELINE deliberately does
  * not use this: LoopStat.base is a drift reference for z and entropy has no
  * counterpart to it. */
-static bool gcp_zscore_h_ok(int nseg, double *out, bool *out_have_h, double *out_h)
+static bool gcp_zscore_h_ok(int nseg, double *out, bool *out_have_h, double *out_h,
+                            bool *out_have_pre, double *out_pre)
 {
     gcp_spec_t sp;
     gcp_spec_begin(&sp);
-    bool ok = gcp_zscore_spec(nseg, NULL, out, &sp) == GCP_OK;
+    double pre = 0.0;
+    bool ok = gcp_zscore_pre(nseg, NULL, out, &sp, &pre) == GCP_OK;
     *out_have_h = ok && gcp_spec_finish(&sp, out_h, NULL);
+    /* Absent, not zero, when this node has no parallel ring — the combine must
+     * leave it out rather than average a fabricated 0 into k_p. */
+    *out_have_pre = ok && camera_raw_stream_ok();
+    *out_pre = pre;
     return ok;
 }
 
@@ -317,6 +323,10 @@ static float *s_node_z;   // [NUM_RUNS * MAX_NODES], NaN = did not contribute
  * can report a z without an H (older slave firmware, PSRAM allocation failed),
  * so the two masks are NOT interchangeable — never infer one from the other. */
 static float *s_node_h;   // [NUM_RUNS * MAX_NODES], NaN = no entropy this run
+/* The PRE-FOLD per-node z archive (D45), same shape and the same NaN
+ * convention. It is the channel that keeps what the fold suppresses, so it has
+ * to be recoverable per node offline exactly as z0..z3 are. */
+static float *s_node_p;
 
 /* Serialises pass_compact() (elotto_task) against the archive readers on the
  * HTTP task (results_near_mean, results_row_z).
@@ -375,6 +385,14 @@ static void node_h_store(int j, const double *zh, const bool *have_h)
         row[i] = (have_h && have_h[i]) ? (float)zh[i] : NAN;
 }
 
+static void node_p_store(int j, const double *zp, const bool *have_p)
+{
+    if (!s_node_p || j < 0 || j >= NUM_RUNS) return;
+    float *row = s_node_p + (size_t)j * MAX_NODES;
+    for (int i = 0; i < MAX_NODES; i++)
+        row[i] = (have_p && have_p[i]) ? (float)zp[i] : NAN;
+}
+
 /* Move one archive row, for pass_compact(). The source is left as it was: the
  * caller only ever moves DOWN (w < j) and overwrites what it passes on the way,
  * so a stale tail can never be read -- runs_completed is lowered to the new
@@ -395,6 +413,13 @@ static void node_z_move(int from, int to)
         memcpy(s_node_h + (size_t)to   * MAX_NODES,
                s_node_h + (size_t)from * MAX_NODES,
                MAX_NODES * sizeof(float));
+    /* ⚠ And the pre-fold archive in the SAME call, for the same reason. Three
+     * archives, one move: a channel left behind pairs an item's z with a
+     * neighbour's, and the key that comes out looks entirely plausible. */
+    if (s_node_p)
+        memcpy(s_node_p + (size_t)to   * MAX_NODES,
+               s_node_p + (size_t)from * MAX_NODES,
+               MAX_NODES * sizeof(float));
 }
 
 /* Snapshot one measured item — its RunResult row AND its per-node z — under a
@@ -406,7 +431,7 @@ static void node_z_move(int from, int to)
  * for nodes that did not contribute that run. Lives in PSRAM so results[]
  * itself stays lean. */
 bool results_row_z(int j, RunResult *out_row, float out_z[MAX_NODES],
-                   float out_h[MAX_NODES])
+                   float out_h[MAX_NODES], float out_p[MAX_NODES])
 {
     if (!out_row || !out_z || !s_node_z) return false;
     archive_lock();
@@ -420,6 +445,10 @@ bool results_row_z(int j, RunResult *out_row, float out_z[MAX_NODES],
     if (out_h) {
         const float *hrow = s_node_h ? s_node_h + (size_t)j * MAX_NODES : NULL;
         for (int i = 0; i < MAX_NODES; i++) out_h[i] = hrow ? hrow[i] : NAN;
+    }
+    if (out_p) {
+        const float *prow = s_node_p ? s_node_p + (size_t)j * MAX_NODES : NULL;
+        for (int i = 0; i < MAX_NODES; i++) out_p[i] = prow ? prow[i] : NAN;
     }
     archive_unlock();
     return true;
@@ -827,7 +856,10 @@ static int gather_and_combine(double z_master, bool master_ok,
                               double h_master, bool master_h,
                               double znode[MAX_NODES], bool have[MAX_NODES],
                               double zh[MAX_NODES], bool have_h[MAX_NODES],
-                              double *out_z, uint8_t *out_mask, double *out_zh)
+                              double zp[MAX_NODES], bool have_p[MAX_NODES],
+                              double pre_master, bool master_pre,
+                              double *out_z, uint8_t *out_mask, double *out_zh,
+                              double *out_zp)
 {
     /* Windows per run, from the COMMANDED segment count — identical on every
      * node, so the master standardises every arm's H against the same null.
@@ -839,19 +871,26 @@ static int gather_and_combine(double z_master, bool master_ok,
         have[i]   = false;
         zh[i]     = 0.0;
         have_h[i] = false;
+        zp[i]     = 0.0;
+        have_p[i] = false;
     }
     if (master_ok && g_status.nodes[0].ok) {
         znode[0] = z_master;
         have[0]  = true;
         if (master_h) have_h[0] = gcp_spec_z(h_master, mwin, &zh[0]);
+        /* The pre-fold z is ALREADY a z — no standardisation step, unlike the
+         * entropy channel which arrives as a normalised entropy. */
+        if (master_pre) { zp[0] = pre_master; have_p[0] = true; }
     }
     for (int s = 0; s < nodes_slave_count(); s++) {
-        double zs = 0.0, hs = 0.0;
-        bool   hh = false;
-        if (!g_status.nodes[s + 1].ok || !node_take_z(s, &zs, &hh, &hs)) continue;
+        double zs = 0.0, hs = 0.0, ps = 0.0;
+        bool   hh = false, hp = false;
+        if (!g_status.nodes[s + 1].ok ||
+            !node_take_z(s, &zs, &hh, &hs, &hp, &ps)) continue;
         znode[s + 1] = zs;
         have[s + 1]  = true;
         if (hh) have_h[s + 1] = gcp_spec_z(hs, mwin, &zh[s + 1]);
+        if (hp) { zp[s + 1] = ps; have_p[s + 1] = true; }
     }
 
     /* Soft-exclude only when at least NODE_SOFT_MIN_COMBINE non-soft nodes
@@ -898,6 +937,19 @@ static int gather_and_combine(double z_master, bool master_ok,
         kh++;
     }
     if (out_zh) *out_zh = (kh > 0) ? hsum / sqrt((double)kh) : NAN;
+
+    /* The PRE-FOLD combine, same Stouffer form over its own k again (D45). A
+     * node whose parallel ring failed answers with z and H and no pre-fold z,
+     * so k_p ≤ k independently of k_h. Soft-down applies here too: an arm not
+     * fit to decide a z is not fit to decide a ranking. */
+    double psum = 0.0;
+    int    kp   = 0;
+    for (int i = 0; i < g_status.node_count && i < MAX_NODES; i++) {
+        if (!(mask & (1u << i)) || !have_p[i]) continue;
+        psum += zp[i];
+        kp++;
+    }
+    if (out_zp) *out_zp = (kp > 0) ? psum / sqrt((double)kp) : NAN;
     return k;
 }
 
@@ -931,7 +983,8 @@ static double score_one_run(bool *ok)
     bool   fresh = onset_settle();
     double zm = 0.0, hm = 0.0;
     bool   hok = false;
-    bool   zok = fresh && gcp_zscore_h_ok(nseg, &zm, &hok, &hm);
+    double pm = 0.0; bool pok = false;
+    bool   zok = fresh && gcp_zscore_h_ok(nseg, &zm, &hok, &hm, &pok, &pm);
     // Sampling is over the moment the local run returns; the reply wait below
     // is dark time. The caller lit the panel — see focus_publish().
     focus_off();
@@ -939,12 +992,13 @@ static double score_one_run(bool *ok)
     // Timeout from THIS run's length: at the scoring length the old flat 4 s
     // would expire while every slave was still measuring.
     if (nodes_have_slaves()) nodes_collect(LINK_MEAS_MS_FOR(nseg), true);
-    double znode[MAX_NODES], zhn[MAX_NODES];
-    bool   have[MAX_NODES], haveh[MAX_NODES];
-    double z = 0.0, zh = NAN;
+    double znode[MAX_NODES], zhn[MAX_NODES], zpn[MAX_NODES];
+    bool   have[MAX_NODES], haveh[MAX_NODES], havep[MAX_NODES];
+    double z = 0.0, zh = NAN, zp = NAN;
     uint8_t mask = 0;
     int k = gather_and_combine(zm, zok, hm, hok, znode, have, zhn, haveh,
-                               &z, &mask, &zh);
+                               zpn, havep, pm, pok,
+                               &z, &mask, &zh, &zp);
     (void)mask;
     if (ok) *ok = (k > 0);
     if (k <= 0) return 0.0;
@@ -1053,12 +1107,30 @@ static double rank_z(const RunResult *r) { return (double)r->z_ctr; }
 double rank_key(const RunResult *r)
 {
     double w = g_status.ent_w;
-    if (w <= 0.0) return (double)r->z_ctr;
+    double p = g_status.pre_w;
+    if (w <= 0.0 && p <= 0.0) return (double)r->z_ctr;
+
     double zh = (double)r->zh_ctr;
     if (zh >  ENT_Z_CLAMP) zh =  ENT_Z_CLAMP;
     if (zh < -ENT_Z_CLAMP) zh = -ENT_Z_CLAMP;
-    double a = 1.0 - w;
-    return (a * (double)r->z_ctr - w * zh) / sqrt(a * a + w * w);
+
+    /* The pre-fold z is clamped on the SAME bar and for the same reason: one
+     * glitched frame must not own Top-5 for a session. The archive keeps the
+     * unclamped value, here as there. */
+    double zp = (double)r->zp_ctr;
+    if (zp >  ENT_Z_CLAMP) zp =  ENT_Z_CLAMP;
+    if (zp < -ENT_Z_CLAMP) zp = -ENT_Z_CLAMP;
+
+    /* Three unit-variance, mutually independent halves, so the normaliser is
+     * the root of the summed squares and the key stays unit-variance at every
+     * weighting — the same construction the two-channel key used, extended.
+     * ⚠ z_pre enters with a PLUS: it is a z on the same scale and in the same
+     * direction as z_ctr. Only the entropy term is negated, because LOW
+     * entropy is the interesting direction. */
+    double a = 1.0 - w - p;
+    double n = sqrt(a * a + w * w + p * p);
+    if (!(n > 0.0)) return (double)r->z_ctr;
+    return (a * (double)r->z_ctr - w * zh + p * zp) / n;
 }
 
 static bool result_ranked(const RunResult *r)
@@ -1475,12 +1547,18 @@ static NodeAcc s_nacc[MAX_NODES];
  * different denominators and sharing one would centre the entropy on a mean
  * divided by the wrong count. Cleared with s_nacc by pairs_fold_loop(). */
 static NodeAcc s_hacc[MAX_NODES];
+/* The PRE-FOLD channel's own block accumulator (D45). Its own denominator for
+ * the same reason s_hacc has one: a node can answer with a z and no pre-fold
+ * value, so k_p is not k and sharing an accumulator would centre on a mean
+ * divided by the wrong count. Cleared with the others by pairs_fold_loop(). */
+static NodeAcc s_pacc[MAX_NODES];
 
 static void pairs_reset(void)
 {
     memset(s_pair, 0, sizeof(s_pair));
     memset(s_nacc, 0, sizeof(s_nacc));
     memset(s_hacc, 0, sizeof(s_hacc));
+    memset(s_pacc, 0, sizeof(s_pacc));
 }
 
 /* Fold one run's per-node z_h into the open block. Kept out of pairs_add_run()
@@ -1494,6 +1572,19 @@ static void hacc_add_run(const double *zh, const bool *have_h)
         s_hacc[i].s  += zh[i];
         s_hacc[i].ss += zh[i] * zh[i];
         s_hacc[i].n++;
+    }
+}
+
+/* The same, for the pre-fold channel. It needs centring at least as much as the
+ * other two: the raw per-node offset is the exposure rung showing through
+ * undamped, which is exactly what the fold used to hide. */
+static void pacc_add_run(const double *zp, const bool *have_p)
+{
+    for (int i = 0; i < g_status.node_count && i < MAX_NODES; i++) {
+        if (!have_p[i]) continue;
+        s_pacc[i].s  += zp[i];
+        s_pacc[i].ss += zp[i] * zp[i];
+        s_pacc[i].n++;
     }
 }
 
@@ -1977,6 +2068,24 @@ static void center_block(int block_idx)
         }
     }
 
+    /* ⚠ The PRE-FOLD channel needs this MOST of the three. The raw per-node
+     * bias runs at 1e-3..7e-3 where the folded one is at 1e-5 — the fold was
+     * squaring it away, and without the fold it lands in the z at full size.
+     * Uncentred, z_pre would rank nodes rather than items, far more strongly
+     * than z_h ever did.
+     * ⚠ And it costs the most: a pre-fold effect CONSTANT across a block is
+     * removed with that offset. What survives is variation between items
+     * inside one block — which is the pre-registered bargain (D8), now paid a
+     * third time. */
+    double mp[MAX_NODES] = {0};
+    bool   okp[MAX_NODES] = {false};
+    for (int i = 0; i < g_status.node_count && i < MAX_NODES; i++) {
+        if (s_pacc[i].n >= 2) {
+            mp[i]  = s_pacc[i].s / (double)s_pacc[i].n;
+            okp[i] = true;
+        }
+    }
+
     int ntot = g_status.runs_completed;
     if (ntot > NUM_RUNS) ntot = NUM_RUNS;
     int n = 0;
@@ -2012,6 +2121,20 @@ static void center_block(int block_idx)
             }
         }
         r->zh_ctr = (kh > 0) ? (float)(hsum / sqrt((double)kh)) : 0.0f;
+
+        /* The pre-fold channel, its own arms and its own k again. */
+        const float *prow = s_node_p ? s_node_p + (size_t)j * MAX_NODES : NULL;
+        double psum = 0.0;
+        int    kp   = 0;
+        if (prow) {
+            for (int i = 0; i < MAX_NODES; i++) {
+                if (!(r->have_mask & (1u << i))) continue;
+                if (isnan(prow[i])) continue;
+                psum += (double)prow[i] - (okp[i] ? mp[i] : 0.0);
+                kp++;
+            }
+        }
+        r->zp_ctr = (kp > 0) ? (float)(psum / sqrt((double)kp)) : 0.0f;
     }
     if (n > 0)
         printf("block %d: centred %d items (node means %+.3f %+.3f %+.3f %+.3f)\n",
@@ -2272,6 +2395,16 @@ void elotto_task(void *pvParam)
     if (s_node_h) {
         for (size_t i = 0; i < (size_t)NUM_RUNS * MAX_NODES; i++)
             s_node_h[i] = NAN;
+    }
+    /* ~128 KB of PSRAM, the same as the other two archives. If it fails the
+     * session runs with z and H alone: a third channel is never a precondition
+     * for a measurement, exactly as entropy is not. */
+    if (!s_node_p)
+        s_node_p = heap_caps_malloc((size_t)NUM_RUNS * MAX_NODES * sizeof(float),
+                                    MALLOC_CAP_SPIRAM);
+    if (s_node_p) {
+        for (size_t i = 0; i < (size_t)NUM_RUNS * MAX_NODES; i++)
+            s_node_p[i] = NAN;
     }
     // focus_mode is set by /start and NOT reset here — it is the session's tag.
     focus_reset();
@@ -2606,24 +2739,29 @@ void elotto_task(void *pvParam)
              * computed from bits of unknown provenance. The slaves were already
              * triggered and answer normally; each one withholds its own z the
              * same way if ITS flush timed out, so k simply drops. */
-            bool   zok  = fresh && gcp_zscore_h_ok(nseg, &zraw, &hok, &hraw);
+            double praw = 0.0; bool pok = false;
+            bool   zok  = fresh && gcp_zscore_h_ok(nseg, &zraw, &hok, &hraw,
+                                                   &pok, &praw);
             focus_off();          // sampling done; the reply wait is dark time
             if (fresh && !zok) node_camera_failed(0, "stalled mid-run");
             if (nodes_have_slaves()) nodes_collect(LINK_MEAS_MS_FOR(nseg), true);
 
-            double znode[MAX_NODES], zhn[MAX_NODES];
-            bool   have[MAX_NODES], haveh[MAX_NODES];
-            double z = 0.0, zh = NAN;
+            double znode[MAX_NODES], zhn[MAX_NODES], zpn[MAX_NODES];
+            bool   have[MAX_NODES], haveh[MAX_NODES], havep[MAX_NODES];
+            double z = 0.0, zh = NAN, zp = NAN;
             uint8_t mask = 0;
             int k = gather_and_combine(zraw, zok, hraw, hok, znode, have,
-                                       zhn, haveh, &z, &mask, &zh);
+                                       zhn, haveh, zpn, havep, praw, pok,
+                                       &z, &mask, &zh, &zp);
 
             /* Archive every node that produced a z (including soft-down ones),
              * so post-hoc recombine is possible. */
             node_z_store(slot, znode, have);
             node_h_store(slot, zhn, haveh);
+            node_p_store(slot, zpn, havep);
             pairs_add_run(znode, have);
             hacc_add_run(zhn, haveh);
+            pacc_add_run(zpn, havep);
 
             r->index     = i + 1;
             r->block     = (uint16_t)block;
@@ -2642,6 +2780,17 @@ void elotto_task(void *pvParam)
                  * than they used to; that is the estimator arriving, not drift. */
                 r->z_ctr   = (float)z;
                 r->zh_ctr  = isnan(zh) ? 0.0f : (float)zh;
+                /* ⚠ AND the pre-fold channel, which is by far the worst of the
+                 * three provisionally: the raw per-node offset is the exposure
+                 * rung showing through with nothing squaring it away, and it
+                 * runs 20..95 sigma where z's is under one. Until this block
+                 * closes, a wpre>0 ranking is ordering items by WHICH NODES
+                 * answered, not by anything about the items. Read the live
+                 * tables at wpre>0 only after the first block.
+                 * ⚠ Leaving this unset was a real defect for one build: the
+                 * record is reused across items, so it held a stale value from
+                 * whatever occupied the slot before. */
+                r->zp_ctr  = isnan(zp) ? 0.0f : (float)zp;
                 g_status.ent_zh_last = zh;
                 g_status.ent_h_last  = hok ? hraw : NAN;
                 s_blk_sum += z;  s_blk_sumsq += z * z;  s_blk_n++;
@@ -2651,6 +2800,7 @@ void elotto_task(void *pvParam)
                 r->z_score = 0.0;
                 r->z_ctr   = 0.0f;
                 r->zh_ctr  = 0.0f;
+                r->zp_ctr  = 0.0f;
             }
 
             g_status.runs_completed = slot + 1;  // AFTER the row is complete: readers

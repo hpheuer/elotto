@@ -154,6 +154,27 @@ to 6+4 = 36.
 
 ---
 
+### The pre-fold z — the third channel (2026-08-26)
+**The fold suppresses a mean-bias effect by √2·ε — ~7000× at ε = 1e-4** `[D45]`. That is the quantity
+a GCP experiment looks for, so the unfolded stream is now scored, combined, block-centred and
+archived beside z and z_h. ⛔ The fold stays: without it there is no stable null `[D17]`.
+
+- **`?wpre=<0..1>`, default 0** — measured and archived from the first session, moves no ranking until
+  asked for. ⚠ **`pre_w` splits the pooling table** for the tables, exactly as `ent_w` does.
+- ⚠ **RANKS, DOES NOT TEST.** Raw σ is 1,03–1,10 on certified rungs against 0,997–1,001 folded. Same
+  compromise as the entropy channel.
+- ⚠ **Centring matters more here than anywhere**: per-node RAW pre-fold z on one measured item was
+  **−7,13 / +0,53 / −46,89 / −27,28**. Uncentred it ranks NODES, not items.
+- ⚠ **A `wpre>0` live table is meaningless before the first block closes** — the provisional value is
+  uncentred, i.e. a 20–95σ node offset.
+- ⚠ It covers **more bits** than the folded z over the same window in TIME: a segment pulls 7 words
+  and folds only 8 bits of the 7th. Normalised as the plain binomial over the bits consumed.
+- Wire `Z:<z>,<H>,<z_pre>` — third, appended; a node with no H sends `nan` to hold the slot.
+  CSV `zp_ctr;p0..p3` appended last. ⚠ `CAM_RAW_EVERY` is gone: a measurement channel is not sampled.
+- ⚠ **`NUM_RUNS` 8000 → 7200** — the LINKER, not statistics: `results[]` is internal RAM and one more
+  float in `RunResult` cost 8 bytes/item through alignment. **Eurojackpot's 7920 no longer fits in one
+  uncompacted pass** — a full Euro run now compacts once near the end. Verify, do not assume.
+
 ### Spectral entropy — the second channel (2026-08-25)
 **z is the DC bin.** `Σ(ones−100)` is exactly the 0-th Fourier component of the segment series, so a
 statistic built from bins 1…511 is independent of z under H₀ — a second measurement out of the same
@@ -163,9 +184,11 @@ bits, at no extra measuring time. Welch over `GCP_SPEC_W` 1024-segment windows, 
 - **`?went=<0..1>` is the weight of the entropy half of the ranking key**, default **0,50** (user,
   "wir probieren mal 50:50"). Out of range answers **400**. `?went=0` is the control arm and
   reproduces the pure-z ranking exactly, including the scale.
-  **key = ((1−w)·z_ctr − w·z_h)/√((1−w)²+w²)** — minus z_h because **low entropy is the interesting
-  direction**, and the √ normaliser because both halves are N(0,1) and independent, so the key stays
-  unit-variance at every w. Direction-neutral: `?score=` still only picks the pool.
+  **key = ((1−w−p)·z_ctr − w·z_h + p·z_pre)/√((1−w−p)²+w²+p²)** — minus z_h because **low entropy is
+  the interesting direction**, plus z_pre because it is a z on the same scale and direction as z_ctr,
+  and the √ normaliser because all three halves are N(0,1) and independent, so the key stays
+  unit-variance at every weighting. `p` is `?wpre=` `[D45]`; `went+wpre > 1` answers **400**.
+  Direction-neutral: `?score=` still only picks the pool.
 - ⚠ **It RANKS, it does not TEST.** Top-5/Bottom-5/Nearest and the compaction survivors run on
   `rank_key()`; `pass_mean/σ/χ²`, the Bonferroni line and `null_flags` stay on `rank_z()` — the
   closed-form entropy null is the IDEAL one and this array does not quite meet it (1600 consecutive
@@ -276,6 +299,7 @@ separate arm `[D1]`.
 | onset flush 2026-08-19 | one side — the bit-to-item mapping changed |
 | `focus=on` vs `off` | one arm; attended and unattended are never mixed |
 | `ent_w` (2026-08-25) | one weight — for the TABLES. `z_raw`/`z_ctr` pool across weights |
+| `pre_w` (2026-08-26) | one weight — same rule, same reason `[D45]` |
 | v3 vs any v2.x | v3 only |
 
 Unlimited-mode data carries two more: split on `round` before pooling with a single-pass session, and

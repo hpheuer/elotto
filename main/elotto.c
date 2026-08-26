@@ -1396,7 +1396,7 @@ static esp_err_t status_handler(httpd_req_t *req)
          * RANKING KEY and pass_mean/pass_sigma those of z; the tables are
          * ordered by the former and the null gates fire on the latter. They
          * coincide exactly at ent_w = 0. */
-        "\"ent_w\":%.3f,\"ent_win\":%d,\"ent_h0\":%.8f,\"ent_sd\":%.8f,"
+        "\"ent_w\":%.3f,\"pre_w\":%.3f,\"ent_win\":%d,\"ent_h0\":%.8f,\"ent_sd\":%.8f,"
         "\"ent_n\":%d,\"ent_clamped\":%d,\"ent_h\":%.8f,\"ent_zh\":%.3f,"
         "\"rank_mean\":%.4f,\"rank_sigma\":%.4f,"
         "\"score_dir\":\"%s\","
@@ -1441,7 +1441,8 @@ static esp_err_t status_handler(httpd_req_t *req)
         g_status.pass_n_excl,
         g_status.v_eff, (int)g_status.null_flags,
         (unsigned long)g_status.flush_timeouts,
-        g_status.ent_w, g_status.ent_windows, g_status.ent_h0, g_status.ent_sd,
+        g_status.ent_w, g_status.pre_w, g_status.ent_windows,
+        g_status.ent_h0, g_status.ent_sd,
         g_status.ent_n, g_status.ent_clamped,
         /* NaN is not valid JSON. "no entropy for the last item" travels as 0
          * for H (which is impossible, H > 0 always) and 0 for z_h (which is
@@ -1808,7 +1809,7 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
     int nn = results_near_mean(near, TOP_N, &mean, &sigma);
 
     char mb[32], sb[32], cb[32], vb[32], stb[32], rb[32], gb[32];
-    char ew[32], eh[32], es[32], rm[32], rs[32];
+    char ew[32], eh[32], es[32], rm[32], rs[32];    char pw[16];
     /* The master's own image. The slaves' come from their 'D' replies and are
      * emitted on the fw_nodes line below; a node that never answered one, or
      * runs firmware older than the field, shows "?" rather than nothing, or the
@@ -1864,7 +1865,7 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
          * a non-zero ent_clamp means camera glitches were competing for the
          * table and the rows should be looked at before the ranking is. */
         "run_s=%s run_segs=%d gap_s=%s compacted=%d "
-        "ent_w=%s ent_win=%d ent_h0=%s ent_sd=%s ent_n=%d ent_clamp=%d "
+        "ent_w=%s pre_w=%s ent_win=%d ent_h0=%s ent_sd=%s ent_n=%d ent_clamp=%d "
         "rank_mean=%s rank_sigma=%s fw=%s/%s\n"
         "# nodes=",
         g_status.mode == MODE_EUROJACKPOT ? "euro" : "649",
@@ -1885,6 +1886,7 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
         de_num(gb, sizeof(gb), g_status.gap_ms / 1000.0, 2),
         g_status.compacted,
         de_num(ew, sizeof(ew), g_status.ent_w, 3),
+        de_num(pw, sizeof(pw), g_status.pre_w, 3),
         g_status.ent_windows,
         de_num(eh, sizeof(eh), g_status.ent_h0, 8),
         de_num(es, sizeof(es), g_status.ent_sd, 8),
@@ -1931,10 +1933,18 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
          * archive, exactly as z0..z3 are for z). */
         int len = snprintf(buf, sizeof(buf),
             "order;item;n1;n2;n3;n4;n5;n6;e1;e2;z_raw;z_ctr;block;k;skip_rank;"
-            "z0;z1;z2;z3;round;zh_ctr;key;h0;h1;h2;h3\n");
+            /* ⚠ zp_ctr and p0..p3 are APPENDED LAST again (2026-08-26, D45)
+             * so every parser that already reads through h3 keeps its columns.
+             * zp_ctr is the block-centred combined PRE-FOLD z — the channel
+             * that keeps what the fold suppresses; p0..p3 are the per-node RAW
+             * pre-fold z, same discovery order as z0..z3.
+             * ⚠ Empty means that node reported no pre-fold value, which is NOT
+             * a pre-fold z of zero. */
+            "z0;z1;z2;z3;round;zh_ctr;key;h0;h1;h2;h3;zp_ctr;p0;p1;p2;p3\n");
         send_chunk(req, buf, len, sizeof(buf));
         for (int j = 0; j < n; j++) {
-            char zb[32], ab[32], hb[32], kb[32], nz[MAX_NODES][32], nh[MAX_NODES][32];
+            char zb[32], ab[32], hb[32], kb[32], pb[32];
+            char nz[MAX_NODES][32], nh[MAX_NODES][32], np_[MAX_NODES][32];
             /* Row and per-node z in one locked snapshot, PER ROW. The lock is
              * released before send_chunk, so a round-boundary compaction can
              * still run BETWEEN two rows of this stream — the guarantee is that
@@ -1942,9 +1952,10 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
              * z-values, not that the file is a self-consistent sample. The
              * compacted= header field already says the latter. */
             RunResult row;
-            float nodez[MAX_NODES], nodeh[MAX_NODES];
-            if (!results_row_z(j, &row, nodez, nodeh)) {
-                for (int i = 0; i < MAX_NODES; i++) nodez[i] = nodeh[i] = NAN;
+            float nodez[MAX_NODES], nodeh[MAX_NODES], nodep[MAX_NODES];
+            if (!results_row_z(j, &row, nodez, nodeh, nodep)) {
+                for (int i = 0; i < MAX_NODES; i++)
+                    nodez[i] = nodeh[i] = nodep[i] = NAN;
             }
             for (int i = 0; i < MAX_NODES; i++) {
                 if (isnan((double)nodez[i]))
@@ -1958,10 +1969,15 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
                     nh[i][0] = '\0';
                 else
                     de_num(nh[i], sizeof(nh[i]), (double)nodeh[i], 4);
+                /* Same rule for the pre-fold column: empty, not 0. */
+                if (isnan((double)nodep[i]))
+                    np_[i][0] = '\0';
+                else
+                    de_num(np_[i], sizeof(np_[i]), (double)nodep[i], 4);
             }
             len = snprintf(buf, sizeof(buf),
                 "%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%s;%s;%d;%d;%d;%s;%s;%s;%s;%d;"
-                "%s;%s;%s;%s;%s;%s\n",
+                "%s;%s;%s;%s;%s;%s;%s;%s;%s;%s;%s\n",
                 j + 1, row.index,
                 row.nums[0], row.nums[1], row.nums[2],
                 row.nums[3], row.nums[4], row.nums[5],
@@ -1972,7 +1988,9 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
                 nz[0], nz[1], nz[2], nz[3], (int)row.round,
                 de_num(hb, sizeof(hb), (double)row.zh_ctr, 4),
                 de_num(kb, sizeof(kb), rank_key(&row), 4),
-                nh[0], nh[1], nh[2], nh[3]);
+                nh[0], nh[1], nh[2], nh[3],
+                de_num(pb, sizeof(pb), (double)row.zp_ctr, 4),
+                np_[0], np_[1], np_[2], np_[3]);
             send_chunk(req, buf, len, sizeof(buf));
         }
         httpd_resp_send_chunk(req, NULL, 0);
@@ -2173,6 +2191,7 @@ static esp_err_t start_handler(httpd_req_t *req)
          * cannot be compared with one ranked differently. ?went=0 is the
          * control arm — pure-z ranking, bit for bit what this rig did before. */
         g_status.ent_w          = ENT_W_DEFAULT;
+        g_status.pre_w          = ENT_W_PRE_DEFAULT;
         g_status.ent_windows    = 0;   // derived from run_segments in segments_for()
         g_status.ent_h0 = g_status.ent_sd = 0.0;
         g_status.ent_n = g_status.ent_clamped = 0;
@@ -2289,6 +2308,31 @@ static esp_err_t start_handler(httpd_req_t *req)
                     return ESP_OK;
                 }
                 g_status.ent_w = w;
+            }
+            /* ?wpre= — the PRE-FOLD half of the key (D45). Default 0, so the
+             * channel is measured, centred and archived from the first session
+             * without moving a single ranking until it is asked for.
+             * ⚠ The three weights share one budget: the z half is 1-went-wpre,
+             * so went+wpre > 1 would give it a negative weight and invert the
+             * channel the whole instrument is built on. Refused. */
+            if (httpd_query_key_value(qry, "wpre", val, sizeof(val)) == ESP_OK) {
+                char *end = NULL;
+                double p = strtod(val, &end);
+                if (end == val || p < 0.0 || p > 1.0) {
+                    httpd_resp_set_status(req, "400 Bad Request");
+                    httpd_resp_sendstr(req,
+                        "wpre= is the PRE-FOLD weight in the ranking key and must "
+                        "be 0..1 (0 = the control arm, ranking unchanged)");
+                    return ESP_OK;
+                }
+                if (g_status.ent_w + p > 1.0) {
+                    httpd_resp_set_status(req, "400 Bad Request");
+                    httpd_resp_sendstr(req,
+                        "went + wpre must not exceed 1: the z half of the key is "
+                        "1-went-wpre and would go negative");
+                    return ESP_OK;
+                }
+                g_status.pre_w = p;
             }
         }
         /* Segment count from the resolved window (same cal as sensor.c). Done

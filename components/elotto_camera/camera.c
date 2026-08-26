@@ -63,6 +63,22 @@ static uint32_t *s_ring;
 // Single-producer (camera_task) / single-consumer (GCP task) ring. head is
 // written only by the producer, tail only by the consumer, so no lock is
 // needed -- but both must be volatile so neither side caches the other's index.
+/* Pre-fold ones for the pixels behind each emitted word (2026-08-26).
+ *
+ * The folded word and the raw bits that produced it must be consumed as ONE
+ * unit, or the two z values describe different windows and cannot be paired.
+ * The consumer paces the window by pulling words, so the count has to ride
+ * WITH the word rather than being read out of a free-running counter — that
+ * one advances with the producer and includes bits the consumer never saw
+ * (ring drops).
+ *
+ * One byte per word: with the fold on a 32-bit word comes from 64 pixels, so
+ * the count is 0..64; with it off, 32 pixels and 0..32. Both fit.
+ * ⚠ Same indices as s_ring, written by the same producer under the same
+ * head/tail discipline. Never index one without the other. */
+static uint8_t *s_ring_raw;
+static uint64_t s_raw_at_last_emit;
+
 static volatile uint32_t s_ring_head = 0;
 static volatile uint32_t s_ring_tail = 0;
 static volatile uint32_t s_ring_drops = 0;
@@ -142,8 +158,7 @@ static cam_raw_t s_raw;
  * count falls from ~143000 mini-runs to ~18000, still two orders above the 200
  * the sigma gate asks for, and drift — the thing this is for — moves on
  * seconds, far slower than the 0,45 s between samples. */
-#define CAM_RAW_EVERY   8
-static uint32_t s_raw_pair;
+
 static uint64_t s_run_ones = 0, s_run_bits = 0;
 static double   s_z_mean = 0.0, s_z_m2 = 0.0;
 static int      s_z_n = 0;
@@ -272,11 +287,19 @@ static void process_word(uint32_t w)
     // Publish to the consumer first. Never overwrite an unread slot: dropping
     // fresh bits when the consumer is behind is fine (excess entropy), reusing
     // or clobbering them is not.
+    /* Raw ones for exactly the pixels that produced this word. s_raw.ones is
+     * updated by the extractor as it walks them and this runs synchronously
+     * from its emit callback, so the delta is precisely this word's share. */
+    uint64_t ro = s_raw.ones - s_raw_at_last_emit;
+    s_raw_at_last_emit = s_raw.ones;
+    if (ro > 255) ro = 255;                  /* cannot happen: max 64 */
+
     uint32_t next = (s_ring_head + 1) % RING_WORDS;
     if (next == s_ring_tail) {
         s_ring_drops++;
     } else {
         s_ring[s_ring_head] = w;
+        if (s_ring_raw) s_ring_raw[s_ring_head] = (uint8_t)ro;
         s_ring_head = next;
     }
 
@@ -353,9 +376,17 @@ static void diff_and_extract(const uint8_t *a, const uint8_t *b, uint32_t n)
      * the definition of correct: GET /camtest runs both over six cases on this
      * silicon and compares the emitted words, the zero count, the stuck verdict
      * and the leftover packer state. Do not switch this line without it. */
-    bool watch = (++s_raw_pair % CAM_RAW_EVERY) == 0;
+    /* ⚠ ALWAYS ON since 2026-08-26, and the duty cycle is gone with it. It was
+     * 1-in-8 while the raw stream was only a DIAGNOSTIC, to keep its +28,6 %
+     * of the extraction loop off the loaded bit rate. The raw stream is now a
+     * MEASUREMENT CHANNEL (the pre-fold z), and a measurement cannot be
+     * sampled: every bit the consumer sees must be counted, or the z is over a
+     * window nobody can name.
+     * ⚠ That makes the cost load-bearing and it is still UNMEASURED under
+     * load — /camtest prices it at idle only, where the loop waits on the
+     * sensor. Watch ms_extract and cam_mbit on a SLAVE during a real session. */
     cam_extract_fast(a, b, n, s_xor_fold, &s_pack, emit_word_cb, NULL, &zeros, &any, &psum,
-                     watch ? &s_raw : NULL);
+                     &s_raw);
 
     s_zero_diffs += zeros;
     s_diff_n += n;
@@ -453,7 +484,7 @@ static void stats_reset_locked(void)
     s_pixel_sum = 0; s_pixel_n = 0;
     s_zero_diffs = 0; s_diff_n = 0;
     memset(&s_raw, 0, sizeof(s_raw));    // pre-fold monitor, same window as the rest
-    s_raw_pair = 0;
+    s_raw_at_last_emit = 0;
     s_us_wait = 0; s_us_ext = 0; s_us_rest = 0; s_us_cycle = 0;
     s_acct_pairs = 0; s_last_pair_us = 0;
     memset(&s_pack, 0, sizeof(s_pack));  // a half-folded pair must not straddle
@@ -665,6 +696,11 @@ esp_err_t camera_init(void)
     if (!s_mutex) return ESP_ERR_NO_MEM;
 
     s_ring = heap_caps_malloc(RING_WORDS * sizeof(uint32_t), MALLOC_CAP_SPIRAM);
+    /* 16 KB beside the 64 KB word ring. If THIS one fails the node still
+     * measures — camera_read_word() is unaffected and only the pre-fold z goes
+     * away, exactly as entropy does when its buffers fail. Never a
+     * precondition for a measurement. */
+    s_ring_raw = heap_caps_malloc(RING_WORDS, MALLOC_CAP_SPIRAM);
     if (!s_ring) {
         ESP_LOGE(TAG_CAM, "ring buffer alloc failed (%u bytes, needs PSRAM)",
                  (unsigned)(RING_WORDS * sizeof(uint32_t)));
@@ -883,6 +919,43 @@ bool camera_read_word(uint32_t *out)
     s_consumer_active = false;
     return true;
 }
+
+/* camera_read_word() plus the pre-fold ones count of the very pixels that word
+ * came from, consumed as one unit so the folded and raw z describe the SAME
+ * window (2026-08-26).
+ *
+ * ⚠ *out_raw is 0 and the return still true when the parallel ring is missing
+ * — the node measures, it just has no pre-fold channel. Callers must treat a
+ * missing channel as absent, never as a raw ones count of zero, so the flag
+ * says which: camera_raw_stream_ok().
+ * ⚠ Do NOT mix this with camera_read_word() inside one window. Both advance the
+ * same tail; interleaving them silently splits the raw count across two
+ * accumulators and the pre-fold z ends up over a shorter window than the
+ * folded one. */
+bool camera_read_word_raw(uint32_t *out, uint32_t *out_raw)
+{
+    if (!s_ring || !camera_is_ready()) return false;
+
+    TickType_t waited = 0;
+    const TickType_t limit = pdMS_TO_TICKS(CAM_STALL_TIMEOUT_MS);
+    while (s_ring_tail == s_ring_head) {
+        if (waited == 0) s_consumer_waits++;
+        if (waited >= limit) { s_stalls++; return false; }
+        vTaskDelay(1);
+        waited++;
+    }
+
+    *out = s_ring[s_ring_tail];
+    if (out_raw) *out_raw = s_ring_raw ? s_ring_raw[s_ring_tail] : 0u;
+    s_consumer_active = true;
+    __sync_synchronize();
+    s_ring_tail = (s_ring_tail + 1) % RING_WORDS;
+    __sync_synchronize();
+    s_consumer_active = false;
+    return true;
+}
+
+bool camera_raw_stream_ok(void) { return s_ring_raw != NULL; }
 
 /* ── Calibration control (PLAN.md Task 1) ─────────────────────────────── */
 

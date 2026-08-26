@@ -320,3 +320,12 @@ esp_err_t camera_selftest_handle(void *httpd_req, bool busy);
 // being an instrument, and the caller must fault it (report + reboot) rather
 // than substitute bits from anywhere else.
 bool camera_read_word(uint32_t *out);
+/* The same word, plus the PRE-FOLD ones count of the pixels it came from, taken
+ * as one unit so a folded and an unfolded z cover the SAME window (2026-08-26).
+ * With the fold on a word is 64 pixels (0..64 ones), with it off 32.
+ * ⚠ *out_raw is 0 when this node has no parallel ring — check
+ * camera_raw_stream_ok() rather than reading 0 as a count.
+ * ⚠ Never interleave with camera_read_word() inside one window: both advance
+ * the same tail, and the raw total would silently cover fewer bits. */
+bool camera_read_word_raw(uint32_t *out, uint32_t *out_raw);
+bool camera_raw_stream_ok(void);

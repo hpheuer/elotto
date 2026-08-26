@@ -643,9 +643,11 @@ void slave_abort(void)
  * the entropy combine — *out_have_h false, k unchanged. Never infer a missing
  * entropy value from a missing z or the other way round: the two channels drop
  * out independently and the CSV records both counts. */
-bool node_take_z(int k, double *out_z, bool *out_have_h, double *out_h)
+bool node_take_z(int k, double *out_z, bool *out_have_h, double *out_h,
+                 bool *out_have_pre, double *out_pre)
 {
-    if (out_have_h) *out_have_h = false;
+    if (out_have_h)   *out_have_h   = false;
+    if (out_have_pre) *out_have_pre = false;
     if (!s_link[k].replied) return false;
     const char *resp = s_link[k].reply;
 
@@ -676,6 +678,20 @@ bool node_take_z(int k, double *out_z, bool *out_have_h, double *out_h)
          * protocol putting something else after the comma. Drop it rather than
          * feed a nonsense number into a ranking key. */
         if (h > 0.0 && h <= 1.0) { *out_h = h; *out_have_h = true; }
+    }
+    /* ",<z_pre>" third (2026-08-26). Positional, so it is found past the SECOND
+     * comma and never past the first — a slave with no H sends a literal "nan"
+     * in that slot to hold it open rather than shifting this field forward.
+     * ⚠ Absent is not zero: a node without the parallel ring omits it entirely
+     * and must not be counted into the pre-fold combine. */
+    if (comma && out_have_pre && out_pre) {
+        const char *c2 = strchr(comma + 1, ',');
+        if (c2) {
+            double p = atof(c2 + 1);
+            /* A z, so any finite value is legal — but reject the non-finite
+             * that a malformed field would produce. */
+            if (isfinite(p)) { *out_pre = p; *out_have_pre = true; }
+        }
     }
     return true;
 }
