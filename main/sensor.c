@@ -1631,6 +1631,9 @@ static void drift_add(double x, double y)
     update_null_flags();   /* drift gate may have flipped */
 }
 
+static void cusum_update(const double *mean_n, const double *sig_n,
+                         const int *n_n, int block_idx);
+
 /* Append one closed block to the health table. Must run BEFORE
  * pairs_fold_loop(), which clears the per-block sums this reads. */
 static void record_loop(double loop_mean, int loop_idx)
@@ -1648,6 +1651,16 @@ static void record_loop(double loop_mean, int loop_idx)
     // Solo master: no per-node accumulation happened, so fall back to the
     // combined mean, which is the master's own mean in that case.
     if (s_nacc[0].n < 2) mean_n[0] = loop_mean;
+
+    /* The offset monitor (D44), here because this is where the RAW per-node
+     * block moments exist and before pairs_fold_loop() clears them. It reads
+     * and writes nothing else. */
+    {
+        int n_n[MAX_NODES] = {0};
+        for (int i = 0; i < g_status.node_count && i < MAX_NODES; i++)
+            n_n[i] = s_nacc[i].n;
+        cusum_update(mean_n, sig_n, n_n, loop_idx);
+    }
 
     /* The row this block will occupy, or NULL past LOOP_HIST. The soft-down
      * section at the end of this function stamps its verdict onto it; past the
@@ -1687,6 +1700,9 @@ static void record_loop(double loop_mean, int loop_idx)
             // The operating point this loop was measured AT (§1.5.2). Per-loop
             // re-tuning is only safe because it is recorded: without this the
             // setting change and a drift in the data look the same afterwards.
+            L->die_temp[i] = i ? g_status.nodes[i].die_temp_c : cs.die_temp_c;
+            L->cus_pos[i]  = g_status.nodes[i].cus_pos;
+            L->cus_neg[i]  = g_status.nodes[i].cus_neg;
             L->cam_exp[i]    = g_status.nodes[i].cam_exp;
             L->cam_gain[i]   = g_status.nodes[i].cam_gain;
             L->cam_fold[i]   = g_status.nodes[i].cam_fold;
@@ -2008,6 +2024,96 @@ static void center_block(int block_idx)
  * the drift regression and folds the pairwise moments — everything that used
  * to happen at a loop boundary, now on a wall-clock cadence. Nothing here
  * touches results[]: the measured z's are final the moment they are stored. */
+/* Two-sided tabular CUSUM on the RAW per-node block offset (D44).
+ *
+ * Fed the block mean of this node's RAW z, standardised by its own standard
+ * error, minus the reference the node established over its first CUSUM_WARMUP
+ * blocks. Under a stationary source that input is ~N(0,1) and the arms stay
+ * near zero; a sustained shift walks one of them to CUSUM_H.
+ *
+ * ⚠ It monitors the INSTRUMENT and nothing else. On z_raw a drifting bias and
+ * a hypothetical effect are not distinguishable, so an alarm is a reason to
+ * look at die_temp_c and the exposure rung — never a result. Nothing here
+ * touches the combine, the ranking, soft-down, quarantine or a reboot.
+ * ⚠ On z_ctr this would be identically zero by construction: block centring
+ * removes exactly the component the CUSUM accumulates. The raw channel is the
+ * only one where it means anything, and the archive keeps it (D8).
+ * ⚠ The reference costs the first CUSUM_WARMUP blocks — the monitor is blind
+ * until then, and it carries its own sampling error of σ/√CUSUM_WARMUP. */
+static void cusum_update(const double *mean_n, const double *sig_n, const int *n_n,
+                         int block_idx)
+{
+    for (int i = 0; i < g_status.node_count && i < MAX_NODES; i++) {
+        NodeStatus *N = &g_status.nodes[i];
+        if (n_n[i] < 2 || !(sig_n[i] > 0.0)) continue;   /* no usable block mean */
+
+        double se = sig_n[i] / sqrt((double)n_n[i]);
+        if (!(se > 0.0)) continue;
+
+        N->cus_n++;
+        if (N->cus_n <= CUSUM_WARMUP) {                  /* still fixing the reference */
+            N->cus_ref_sum += (float)mean_n[i];
+            N->cus_ref = (float)(N->cus_ref_sum / (double)N->cus_n);
+            continue;
+        }
+
+        double x = (mean_n[i] - (double)N->cus_ref) / se;
+        double p = (double)N->cus_pos + x - CUSUM_K;
+        double q = (double)N->cus_neg - x - CUSUM_K;
+        N->cus_pos = (float)(p > 0.0 ? p : 0.0);
+        N->cus_neg = (float)(q > 0.0 ? q : 0.0);
+
+        if (N->cus_pos >= CUSUM_H || N->cus_neg >= CUSUM_H) {
+            N->cus_alarms++;
+            N->cus_last = (int16_t)block_idx;
+            /* Reset both arms after an alarm, the standard restart: without it
+             * one shift keeps re-alarming every block and the count stops
+             * meaning "how many times did this node move". */
+            N->cus_pos = N->cus_neg = 0.0f;
+        }
+    }
+}
+
+/* Point the "NB" column at a board (2026-08-26).
+ *
+ * The null gates are PASS-level — mean, σ, Σz², the pairwise matrix — and none
+ * of them has a per-node term, so there is nothing to read off directly. What
+ * the operator actually needs is "which box do I look at first", and for that
+ * the honest proxy is the node whose own block σ sits furthest from 1 among
+ * those that were in this block's combine. A flagged PAIR names two nodes
+ * outright, so both get counted.
+ *
+ * ⚠ This is ATTRIBUTION, not proof, and it is deliberately cheap: it runs once
+ * per closed block and never feeds a decision. Nothing excludes a node on it,
+ * nothing reboots on it, and it is not written to /loops or the CSV — the
+ * exclusion machinery is soft-down and quarantine, and those are unchanged.
+ * ⚠ Counted only at a block CLOSE, so a session with no closed block has all
+ * zeros however loudly the banner is flashing — which is exactly the state
+ * that used to look like a fault. */
+static void nb_attribute(void)
+{
+    if (!g_status.null_flags) return;
+
+    int    worst = -1;
+    double worst_d = -1.0;
+    for (int i = 0; i < g_status.node_count && i < MAX_NODES; i++) {
+        const NodeStatus *N = &g_status.nodes[i];
+        if (!N->ok || N->soft_down) continue;   /* not in this block's combine */
+        if (N->sigma <= 0.0) continue;          /* never measured a block */
+        double d = fabs(N->sigma - 1.0);
+        if (d > worst_d) { worst_d = d; worst = i; }
+    }
+    if (worst >= 0) g_status.nodes[worst].nb_count++;
+
+    /* PAIR names its two nodes; count them too, and do not double-count one
+     * that is already the worst-sigma pick. */
+    if (g_status.null_flags & NULL_FLAG_PAIR) {
+        int a = g_status.pair_r_i, b = g_status.pair_r_j;
+        if (a >= 0 && a < g_status.node_count && a != worst) g_status.nodes[a].nb_count++;
+        if (b >= 0 && b < g_status.node_count && b != worst) g_status.nodes[b].nb_count++;
+    }
+}
+
 static void close_block(int block_idx)
 {
     double m = 0.0, s = 0.0;
@@ -2025,6 +2131,7 @@ static void close_block(int block_idx)
     recompute_pass_ranks();              // centring moved every item in the block
     pairs_fold_loop();
     publish_pair_stats();
+    nb_attribute();                      // after publish_pair_stats: it needs pair_i/pair_j
     s_blk_sum = s_blk_sumsq = 0.0;
     s_blk_n   = 0;
 }

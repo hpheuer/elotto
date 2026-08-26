@@ -351,6 +351,14 @@ void nodes_discover(void)
     memset(s_link, 0, sizeof(s_link));
     memset(g_status.nodes, 0, sizeof(g_status.nodes));
     g_status.nodes[0].ok = true;
+    /* memset gives 0, and 0 is a VALID block index — the offset monitor would
+     * read as "alarmed at block 0" on a session that never alarmed. -1 is the
+     * only value that means never. Same for the temperature: 0,0 °C is
+     * plausible and would be regressed on; NAN is not. */
+    for (int i = 0; i < MAX_NODES; i++) {
+        g_status.nodes[i].cus_last   = -1;
+        g_status.nodes[i].die_temp_c = NAN;
+    }
 
     if (!link_open()) { g_status.slave_connected = s_slave_ok = false; return; }
     link_drain();
@@ -722,6 +730,15 @@ void slaves_diag(void)
          * which is NOT cam_exp: that one is what the last sweep CHOSE, and a
          * manual POST /expose or a sweep that certified nothing makes the two
          * differ. A diagnostics view needs the live one. */
+        /* ",t=<celsius>" — this node's OWN die temperature, the covariate the
+         * offset monitor is regressed on. NAN when the node has no driver, and
+         * NAN is what must travel: a plausible 0,0 would be regressed on. */
+        N->die_temp_c = NAN;
+        const char *tp = strstr(resp, ",t=");
+        if (tp) {
+            float t = 0;
+            if (sscanf(tp + 3, "%f", &t) == 1) N->die_temp_c = t;
+        }
         N->cam_exp_now = 0; N->cam_gain_now = 0;
         const char *ex = strstr(resp, ",exp=");
         if (ex) {

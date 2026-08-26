@@ -57,6 +57,12 @@ typedef struct {
     int      raw_sigma_samples;   // mini-runs folded into raw_sigma
     uint64_t raw_bits;            // pre-fold bits == pixels consumed
 
+    /* P4 die temperature, the covariate for the raw-channel offset monitor
+     * (D44). ⚠ It is the SoC die, NOT the OV5647 — a proxy that shares the
+     * enclosure, never to be reported as sensor temperature.
+     * ⚠ NAN when the driver did not install. Handle it; do not print 0,0. */
+    float    die_temp_c;
+
     uint32_t ring_drops;          // words discarded: consumer behind, ring full
     uint32_t consumer_waits;      // times a read had to wait for the producer (normal
                                   // backpressure -- the GCP task outruns the sensor)

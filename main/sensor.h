@@ -308,6 +308,31 @@ _Static_assert(((long long)RUN_S_MAX * 1000 * RUN_SEGS_REF) / RUN_MS_REF <= EL_S
  * A bad arm in the combine costs more than a small k does (user, 2026-08-13). */
 #define NODE_SOFT_MIN_COMBINE  1     // never soft-exclude below this many live nodes
 /* null_flags bits (also published in /status). */
+/* ── CUSUM design (D44) ────────────────────────────────────────────────────
+ * Two-sided tabular CUSUM, k = δ/2 with δ = 0,5σ, on the block mean of the RAW
+ * per-node z standardised by its own standard error (σ_block/√n).
+ *
+ * ⚠ "1σ" here is ONE STANDARD ERROR OF A BLOCK MEAN, not one z. At ~210 runs
+ * per 15-minute block that is ≈ 0,07 in z units — so this is far more sensitive
+ * than the numbers suggest, which is the point.
+ *
+ * h chosen from the Average Run Length, not by feel. Computed with the
+ * Brook–Evans Markov chain at k = 0,25:
+ *
+ *   h  | ARL₀ (two-sided, per node) | false alarm across 4 nodes at 96 blk/day
+ *   10 |   1027                     | one per   2,7 days
+ *   12 |   2826                     | one per   7,4 days
+ *   14 |   7715                     | one per  20,1 days   <- CUSUM_H
+ *   16 |  20981                     | one per  54,6 days
+ *
+ * Detection latency at h = 14: a 2σ shift in 8,6 blocks (2,2 h), 1σ in 19,4
+ * blocks (4,8 h), 0,5σ in 52,6 blocks (13,1 h).
+ * ⚠ Change either constant and the false-alarm rate changes with it — recompute
+ * the ARL rather than guessing, and record the new table here. */
+#define CUSUM_K              0.25   // δ/2, δ = 0,5 standard errors
+#define CUSUM_H             14.0    // ARL₀ 7715 blocks/node; see the table above
+#define CUSUM_WARMUP           4    // blocks used to fix the reference
+
 #define NULL_FLAG_SIGMA        0x01  // pass_σ outside [PASS_SIGMA_LO, PASS_SIGMA_HI]
 #define NULL_FLAG_DRIFT        0x02  // |drift_t| > DRIFT_FLAG_T
 #define NULL_FLAG_CHI2         0x04  // Σz²/n far from 1 (same band as σ, large n)
@@ -487,6 +512,14 @@ typedef struct {
     double   z_mean;        // online mean of this node's raw per-run z
     uint32_t z_n;           // runs behind z_mean (for SE = 1/√n)
     uint32_t lost;          // runs this node failed to answer in time
+    /* Blocks closed with the pass null broken where THIS node was the worst
+     * contributor — the "NB" column (2026-08-26). Attribution, not proof: the
+     * null_flags are pass-level statistics and have no per-node term, so the
+     * rule is the largest |block σ − 1| among the nodes actually in that
+     * block's combine, plus both members of a flagged pair. It answers "which
+     * board should I look at first", not "this node is at fault".
+     * ⚠ Session-scoped and monotone; reset only at session start. */
+    uint32_t nb_count;
     uint8_t  soft_down;     // 1 = excluded from combine after a block σ excursion
                             // (quality collapse, not a hard camera stall). Cleared
                             // when a later block is clean. Never reboots.
@@ -518,6 +551,29 @@ typedef struct {
      * bits and must match exactly. */
     float    cam_bias_now;
     float    cam_sigma_now;
+    float    die_temp_c;    // this node's P4 die temperature; NAN = not reported
+
+    /* ── Two-sided tabular CUSUM on the RAW block offset (D44) ─────────────
+     * ⚠ INSTRUMENT MONITOR, not an effect detector. It runs on z_raw, where a
+     * drifting bias and a hypothetical signal are NOT distinguishable — which
+     * is why die_temp_c is carried per block and why nothing here feeds the
+     * combine, the ranking, soft-down or a reboot.
+     *
+     * It exists because drift_t is structurally blind to a CONSTANT offset: a
+     * constant has slope zero, and on 2026-08-26 drift_t read 0,85 while the
+     * master sat at mean −0,4645, cumulatively −39,8σ.
+     *
+     * Reference: the node's OWN mean over the first CUSUM_WARMUP closed blocks.
+     * So it detects a CHANGE from where this node started, not the offset
+     * itself — the offset is a known instrument property that follows the
+     * exposure rung (D11) and firing on it would say nothing new. */
+    float    cus_ref;       // warm-up reference, in z units
+    float    cus_ref_sum;   // accumulator while warming up
+    uint16_t cus_n;         // closed blocks seen by the monitor
+    float    cus_pos;       // upward arm
+    float    cus_neg;       // downward arm (kept positive)
+    uint16_t cus_alarms;    // times either arm crossed CUSUM_H this session
+    int16_t  cus_last;      // block index of the last alarm, -1 = none
     float    cam_cal_mbit;  // rate of that same window
     /* First 8 bytes of the node's app elf sha256, hex — the same 16 characters
      * /status publishes as fw_sha, so the two are directly comparable. From the
@@ -564,6 +620,13 @@ typedef struct {
     // thermal drift, and recording the setting keeps the statistics auditable — but a
     // per-loop change nobody logged is indistinguishable from drift in the data,
     // so the setting travels with the loop it produced.
+    /* Per-node die temperature at this block's close, and the two CUSUM arms
+     * as they stood (D44). The temperature is here and not only in /status
+     * because the monitor is only interpretable against it: without the
+     * covariate an alarm says "something moved" and nothing more.
+     * ⚠ NAN = that node reported no temperature. */
+    float    die_temp[MAX_NODES];
+    float    cus_pos[MAX_NODES], cus_neg[MAX_NODES];
     uint32_t cam_exp[MAX_NODES];    // 0 = not calibrated this loop
     uint16_t cam_gain[MAX_NODES];
     uint8_t  cam_fold[MAX_NODES];

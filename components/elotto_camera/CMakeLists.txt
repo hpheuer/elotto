@@ -8,5 +8,6 @@ idf_component_register(
         esp_video
         esp_timer
         esp_http_server
+        esp_driver_tsens
         freertos
 )

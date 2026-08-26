@@ -11,6 +11,7 @@
 #include "esp_log.h"
 #include "esp_err.h"
 #include "esp_timer.h"
+#include "driver/temperature_sensor.h"
 #include "esp_heap_caps.h"
 #include "linux/videodev2.h"
 #include "esp_video_device.h"
@@ -102,6 +103,29 @@ static uint64_t s_bits_extracted = 0, s_ones_count = 0;
 /* PRE-FOLD monitor (2026-08-26). Everything else on this page describes the
  * stream AFTER the fold; this describes the one the sensor actually produced.
  * See the note on cam_raw_t in extract.h for why that gap mattered. */
+/* ── Die temperature (2026-08-26) ──────────────────────────────────────────
+ * The CUSUM offset monitor on the raw channel is an INSTRUMENT monitor, and an
+ * instrument monitor without a covariate only ever says "something moved". This
+ * is the covariate: the P4's own die sensor, read once per stats publish and
+ * carried per block in /loops so an offset shift can be regressed on it.
+ *
+ * ⚠ It is the P4 DIE, not the OV5647. They share an enclosure and track each
+ * other, but this is a proxy — do not report it as sensor temperature.
+ * ⚠ NAN when the driver did not install; every consumer must handle that rather
+ * than printing a plausible 0,0 °C. */
+static temperature_sensor_handle_t s_tsens;
+static float s_die_temp = NAN;
+
+static void tsens_start(void)
+{
+    temperature_sensor_config_t cfg = TEMPERATURE_SENSOR_CONFIG_DEFAULT(-10, 80);
+    if (temperature_sensor_install(&cfg, &s_tsens) != ESP_OK) { s_tsens = NULL; return; }
+    if (temperature_sensor_enable(s_tsens) != ESP_OK) {
+        temperature_sensor_uninstall(s_tsens);
+        s_tsens = NULL;
+    }
+}
+
 static cam_raw_t s_raw;
 
 /* ⚠ The monitor is NOT free: /camtest measures ns_raw 68,5 against ns_fast
@@ -352,6 +376,12 @@ static void publish_stats(void)
     double mbps = (elapsed_s > 0) ? (s_bits_extracted / 1e6) / elapsed_s : 0.0;
     double mean_px = s_pixel_n ? (double)s_pixel_sum / (double)s_pixel_n : 0.0;
 
+    /* Cheap: an SAR read, no bus traffic, once per publish and not per frame. */
+    if (s_tsens) {
+        float t = 0.0f;
+        if (temperature_sensor_get_celsius(s_tsens, &t) == ESP_OK) s_die_temp = t;
+    }
+
     /* Reduce the pre-fold sums to the same two numbers the folded stream
      * publishes. The mini-run z is (ones - BITS/2)/sqrt(BITS/4) — linear in
      * `ones` — so sd(z) = sd(ones)/sqrt(BITS/4) and the integer sums are
@@ -380,6 +410,7 @@ static void publish_stats(void)
     s_stats.raw_sigma         = raw_sigma;
     s_stats.raw_sigma_samples = s_raw.mr_n;
     s_stats.raw_bits          = s_raw.bits;
+    s_stats.die_temp_c        = s_die_temp;
     s_stats.ring_drops        = s_ring_drops;
     s_stats.consumer_waits    = s_consumer_waits;
     s_stats.stalls            = s_stalls;
@@ -622,6 +653,7 @@ esp_err_t camera_init(void)
              "idf.py menuconfig -> Elotto Camera (OV5647, Phase 0 entropy bring-up)");
     return ESP_ERR_NOT_SUPPORTED;
 #else
+    tsens_start();          /* covariate for the offset monitor; NAN if unavailable */
     esp_err_t ret;
 
     /* Do-not-double-init: the boot path calls this once, but a defensive guard

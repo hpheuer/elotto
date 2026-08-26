@@ -1000,7 +1000,24 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "var nb=document.getElementById('nullBanner');"
 /* Null-broken banner: ranking is not decisive while the instrument null fails. */
 "var nf=d.null_flags||0;"
-"if(nf){"
+/* ⚠ Until the first block closes, z_ctr still holds the PROVISIONAL RAW value
+   (D8), so it carries every node's block offset — the master alone ran −0,46
+   over a whole session. σ and Σz² are therefore expected to be out at the start
+   of every run, and the old banner shouted "NULL BROKEN" at a perfectly healthy
+   instrument for the first quarter of an hour. That is a display bug, not a
+   finding: nothing is assessable before centring has anything to centre.
+   The flags are still computed and still shown — but as "not yet assessable",
+   which is what they mean here. */
+"var closed=d.loops_done||0;"
+"if(nf&&!closed){"
+"nb.style.display='block';"
+"nb.style.color='#cfe8cf';"
+"nb.innerHTML='\\u23f3 Null not assessable yet \\u2014 z is UNCENTRED until the first "
+"block closes, so \\u03c3 and \\u03a3z\\u00b2 carry the per-node offsets by design. "
+"Nothing is wrong. First block at '+(d.cal_interval_ms?Math.round(d.cal_interval_ms/60000)+' min "
+"of measuring':'the next round boundary')+'.';"
+"}else if(nf){"
+"nb.style.color='';"
 "var bits=[];"
 "if(nf&1)bits.push('pass \\u03c3 = '+(d.pass_sigma||0).toFixed(3)+' (want ~1)');"
 "if(nf&4)bits.push('\\u03a3z\\u00b2/n off unit');"
@@ -1083,11 +1100,20 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 // combined z averages node differences away, so each arm has to be visible.
 "if(d.nodes&&d.nodes.length){"
 "var s3='<table style=\"width:100%;font-size:.82em;margin-top:6px\">'"
-"+'<tr style=\"color:#90ee90\"><th align=left>node</th>'"
-"+'<th align=left>Z</th><th align=left>p</th>'"
-"+'<th align=left>cam \\u03c3</th><th align=left>Mbit/s</th><th align=left>exp</th>'"
-"+'<th align=left>stalls</th>'"
-"+'<th align=left>lost</th></tr>';"
+/* Every header carries its own definition. Nobody keeps nine of these in
+   their head, and a column whose meaning has to be looked up in CLAUDE.md is
+   a column that gets misread. */
+"+'<tr style=\"color:#90ee90\">'"
+"+'<th align=left title=\"board, and the address it was discovered at. Column order is DISCOVERY order and changes between sessions\">node</th>'"
+"+'<th align=left title=\"session mean of this node\\u2019s RAW per-run z. Not centred: a constant offset here is normal and is removed at block close\">Z</th>'"
+"+'<th align=left title=\"two-sided p that this node\\u2019s mean z differs from 0 (Stouffer: |mean|\\u00b7\\u221an). A per-node health check, NOT a result\">p</th>'"
+"+'<th align=left title=\"this node\\u2019s per-run \\u03c3 over the last closed block. Ideal 1,000; above 1,25 trips soft-down and takes it out of the combine. Blank until the first block closes\">cam \\u03c3</th>'"
+"+'<th align=left title=\"camera extraction rate: ~5,7 idle, ~3,7 under measurement load. The SLOWEST node sets the window length for all four\">Mbit/s</th>'"
+"+'<th align=left title=\"exposure this loop\\u2019s calibration chose. \\u2295 = XOR fold on, ! = the sweep certified nothing and the node kept its previous setting. Nodes land on DIFFERENT rungs on purpose\">exp</th>'"
+"+'<th align=left title=\"camera stalls: frame pairs the sensor failed to deliver. Non-zero means the hardware needs a look\">stalls</th>'"
+"+'<th align=left title=\"runs this node failed to answer in time. Each costs that run\\u2019s share of the combine, not the session\">lost</th>'"
+"+'<th align=left title=\"Null broken: closed blocks where the pass null failed AND this node was the worst contributor (largest |block \\u03c3 \\u2212 1| among nodes in the combine, plus both members of a flagged pair). ATTRIBUTION, not proof \\u2014 it says which board to check first. Nothing is excluded on it, and it counts only at a block CLOSE\">NB</th>'"
+"+'</tr>';"
 "for(var i=0;i<d.nodes.length;i++){var N=d.nodes[i],H=nodeHealth[i]||{};"
 // The master reports ip:"self" (it has no idea what address the client used to
 // reach it), so take the address this page was served from -- which IS the
@@ -1116,7 +1142,9 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "+'<td id=\"nodeMbit'+i+'\">'+(H.mbit>0?H.mbit.toFixed(2):(N.cam_mbit>0?N.cam_mbit.toFixed(2):'\\u2013'))+'</td>'"
 "+'<td title=\"exposure chosen by this loop\\u2019s calibration\">'+ex+'</td>'"
 "+'<td>'+(N.cam_stalls>0?'\\u26a0 '+N.cam_stalls:'0')+'</td>'"
-"+'<td>'+(N.lost>0?'\\u26a0 '+N.lost:'0')+'</td></tr>';}"
+"+'<td>'+(N.lost>0?'\\u26a0 '+N.lost:'0')+'</td>'"
+"+'<td title=\"'+((N.nb||0)>0?'worst contributor in '+N.nb+' broken-null block(s)':'never the worst contributor in a broken-null block')+\">'"
+"+((N.nb||0)>0?'\\u26a0 '+N.nb:'0')+'</td></tr>';}"
 "s3+='</table>';"
 // The fault string is the primary channel: there is no substitute source, so a
 // camera failure ends that node's participation and the operator must see why.
@@ -1186,11 +1214,11 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 // Always show Z and Z* when pass σ is available; p is from Z* (studentized).
 "function renderRunTable(headId,bodyId,res,isEuro,d,st){"
 "document.getElementById(headId).innerHTML="
-"'<tr><th>#</th><th title=\"item within its round; in unlimited mode shown as item/round, because index alone repeats across rounds\">Item</th><th>Z</th>'"
+"'<tr><th title=\"rank within this table, 1 = strongest\">#</th><th title=\"item within its round; in unlimited mode shown as item/round, because index alone repeats across rounds\">Item</th><th title=\"the BLOCK-CENTRED combined z for this item: z = \\u03a3 z_i / \\u221ak over the nodes that answered. Provisional (still raw) until its block closes\">Z</th>'"
 "+((st&&st.w>0)?'<th title=\"combined block-centred spectral-entropy z. NEGATIVE = less spectral disorder than white noise, the direction the ranking rewards. Independent of Z under H0: Z is the DC bin, this is bins 1..511. An em dash means no node reported an H for this item.\">H</th>':'')"
 "+(st?'<th title=\"the published ranking key, studentized: key = ((1-w)*Z_ctr - w*H)/sqrt((1-w)^2+w^2), shown as (key-mean)/sigma. w = ent_w.\">Z*</th>':'')"
-"+'<th>p</th><th title=\"nodes that contributed to this item&#39;s combine, the k in z = \\u03a3 z_i / \\u221ak; 4 = all four; blank = VOID, no usable z\">k</th><th>Numbers</th>'"
-"+(isEuro?'<th>Bonus</th>':'')+'</tr>';"
+"+'<th title=\"two-sided p of this item\\u2019s Z against N(0,1). UNCORRECTED \\u2014 the Bonferroni line under the table is the one that counts\">p</th><th title=\"nodes that contributed to this item\\u2019s combine, the k in z = \\u03a3 z_i / \\u221ak; 4 = all four; blank = VOID, no usable z\">k</th><th title=\"the drawn combination this item measured\">Numbers</th>'"
+"+(isEuro?'<th title=\"the two Euro numbers of this combination\">Bonus</th>':'')+'</tr>';"
 "var tb=document.getElementById(bodyId);tb.innerHTML='';"
 "for(var i=0;i<res.length;i++){"
 "var r=res[i],nums='';"
@@ -1321,8 +1349,17 @@ static int buf_append(char *buf, size_t cap, int *pos, const char *fmt, ...)
 }
 
 /* ── /status JSON ─────────────────────────────────────────────────── */
+/* ⚠ JSON HAS NO NaN. "%.2f" of a NAN emits the bare token `nan`, which is not
+ * valid JSON and makes the WHOLE document unparseable — and /status is what the
+ * entire UI runs on, so one absent temperature took the page down flat. `null`
+ * is the right encoding for "this node did not report it"; a 0,0 would be
+ * plausible and would get regressed on. Every float that can be NAN goes out
+ * through this rule, here and in /loops. */
 static esp_err_t status_handler(httpd_req_t *req)
 {
+    /* The master's own camera, for the fields nodes[0] cannot get from
+     * slaves_diag() — see the note at the node loop below. */
+    camera_stats_t st_cam; camera_get_stats(&st_cam);
     // 30 full top/low/near entries (~110 B each) on top of the fixed head;
     // 6144 was sized for 10 coverage picks and would sit within ~600 B of the
     // cap. A measured 4-node /status is ~3 KB, so the third group fits with
@@ -1504,11 +1541,25 @@ static esp_err_t status_handler(httpd_req_t *req)
     buf_append(buf, sizeof(buf), &pos, "\"nodes\":[");
     for (int i = 0; i < g_status.node_count && i < MAX_NODES; i++) {
         const NodeStatus *N = &g_status.nodes[i];
+        /* ⚠ Row 0 is the master and slaves_diag() cannot fill it — it queries
+         * the SLAVES. Its temperature comes from its own camera stats, or the
+         * master would forever read null while happily reporting 48 °C in
+         * /diagjson. */
+        double dt = i ? (double)N->die_temp_c : (double)st_cam.die_temp_c;
+        char dt_txt[16];
+        if (isfinite(dt)) snprintf(dt_txt, sizeof(dt_txt), "%.2f", dt);
+        else              snprintf(dt_txt, sizeof(dt_txt), "null");
         buf_append(buf, sizeof(buf), &pos,
             "%s{\"id\":%d,\"ip\":\"%s\",\"ok\":%s,\"soft_down\":%s,"
             "\"z\":%.4f,\"z_n\":%lu,\"sigma\":%.4f,"
             "\"lost\":%lu,\"cam_mbit\":%.3f,\"cam_stalls\":%lu,"
-            "\"cam_fault\":%d,\"reboots\":%lu,"
+            "\"cam_fault\":%d,\"reboots\":%lu,\"nb\":%lu,"
+            /* Offset monitor (D44). INSTRUMENT, not effect: cus_pos/neg are
+             * the two CUSUM arms against CUSUM_H, cus_alarms counts crossings
+             * this session, cus_last is the block index of the last one
+             * (-1 = never). die_temp is the covariate an alarm is read with. */
+            "\"cus_pos\":%.2f,\"cus_neg\":%.2f,\"cus_alarms\":%d,"
+            "\"cus_last\":%d,\"cus_n\":%d,\"die_temp\":%s,"
             "\"cam_exp\":%lu,\"cam_gain\":%d,\"cam_fold\":%d,\"cam_cal\":%d,"
             "\"cam_bias\":%.6f,\"cam_cal_mbit\":%.3f}",
             i ? "," : "", i, i ? N->ip : "self", N->ok ? "true" : "false",
@@ -1516,6 +1567,9 @@ static esp_err_t status_handler(httpd_req_t *req)
             N->z_mean, (unsigned long)N->z_n, N->sigma,
             (unsigned long)N->lost, N->cam_mbit, (unsigned long)N->cam_stalls,
             (int)N->cam_fault, (unsigned long)N->reboots,
+            (unsigned long)N->nb_count,
+            N->cus_pos, N->cus_neg, (int)N->cus_alarms,
+            (int)N->cus_last, (int)N->cus_n, dt_txt,
             (unsigned long)N->cam_exp, (int)N->cam_gain, (int)N->cam_fold,
             (int)N->cam_cal_ok, N->cam_bias, N->cam_cal_mbit);
     }
@@ -1637,19 +1691,30 @@ static esp_err_t loops_handler(httpd_req_t *req)
             L->win_ms, L->gap_ms, L->clear_sig, (int)L->quarantined, nn);
         send_chunk(req, buf, len, sizeof(buf));
         for (int k = 0; k < nn; k++) {
+            char lt_txt[16];                       /* NAN -> null, see status_handler */
+            if (isfinite(L->die_temp[k]))
+                snprintf(lt_txt, sizeof(lt_txt), "%.2f", (double)L->die_temp[k]);
+            else
+                snprintf(lt_txt, sizeof(lt_txt), "null");
             // cam_exp/gain/fold are the operating point this loop was MEASURED
             // AT, not a diagnostic: per-loop re-tuning is only defensible
             // because the setting travels with the loop it produced (§1.5.2).
             len = snprintf(buf, sizeof(buf),
                 "%s{\"mean\":%.4f,\"sigma\":%.4f,\"cam_mbit\":%.3f,\"cam_stalls\":%lu,"
                 "\"cam_exp\":%lu,\"cam_gain\":%d,\"cam_fold\":%d,\"cam_cal\":%d,"
-                "\"cam_bias\":%.6f,\"soft\":%d,\"trip\":%d,\"mflag\":%d}",
+                "\"cam_bias\":%.6f,\"soft\":%d,\"trip\":%d,\"mflag\":%d,"
+                /* D44: the offset monitor as it stood at this block's close,
+                 * with the covariate it has to be read against. ⚠ INSTRUMENT
+                 * monitor — an arm near CUSUM_H says this node's raw offset
+                 * moved since its warm-up, not that anything was measured. */
+                "\"die_temp\":%s,\"cus_pos\":%.2f,\"cus_neg\":%.2f}",
                 k ? "," : "", L->mean_n[k], L->sig_n[k], L->cam_mbit[k],
                 (unsigned long)L->cam_stalls[k], (unsigned long)L->cam_exp[k],
                 (int)L->cam_gain[k], (int)L->cam_fold[k], (int)L->cam_cal_ok[k],
                 L->cam_bias[k],
                 (L->soft_mask >> k) & 1, (L->trip_mask >> k) & 1,
-                (L->mean_mask >> k) & 1);
+                (L->mean_mask >> k) & 1,
+                lt_txt, L->cus_pos[k], L->cus_neg[k]);
             send_chunk(req, buf, len, sizeof(buf));
         }
         httpd_resp_send_chunk(req, "]}", 2);
@@ -2442,9 +2507,17 @@ static const char DIAG_HTML[] =
 "tuning the physical light. Refused while a session runs, and the next "
 "calibration sweep overwrites it.</p>"
 "<table><thead><tr>"
-"<th class='l'>Node</th><th>Exp</th><th class='l'>set exp</th><th>Gain</th><th>mean_px</th>"
-"<th>bias&minus;0.5</th><th>&sigma;</th><th>zero_diff</th><th>autocorr</th>"
-"<th>Mbit/s</th><th>stalls</th>"
+"<th class='l' title=\"board and address. This page polls each node directly, so a row here is that node answering for itself\">Node</th>"
+"<th title=\"exposure the node is running on RIGHT NOW. Nodes land on DIFFERENT rungs on purpose &mdash; different sensors, different light\">Exp</th>"
+"<th class='l' title=\"halve or double this node&#39;s exposure by hand and reset its statistics, so mean_px answers in a second or two. Refused while a session runs; the next sweep overwrites it\">set exp</th>"
+"<th title=\"analog gain. Left at 1023 on this rig; the light is tuned with exposure and the lamp, not with gain\">Gain</th>"
+"<th title=\"mean raw pixel byte. Must stay in [5,0 , 100,0]: below that the frame is partly frozen (a zero difference has a deterministic LSB), above it the sensor is heading for saturation\">mean_px</th>"
+"<th title=\"ones fraction of the POST-FOLD stream, minus 0,5. The fold squares the raw bias, so this is small by construction &mdash; compare raw_bias in /diagjson to see the front end itself\">bias&minus;0.5</th>"
+"<th title=\"standard deviation of the per-mini-run z (3200 bits each). Ideal 1,000; the calibration gate wants |&sigma;&minus;1| &le; 0,05\">&sigma;</th>"
+"<th title=\"fraction of pixels whose frame difference was exactly 0. A zero difference has LSB 0, so a high value directly explains a deficit-of-ones bias. Gated at 0,125\">zero_diff</th>"
+"<th title=\"largest |autocorrelation| over lags 1..4 of the bit stream. Gated at 0,01. It is a GATE, so it is never subsampled\">autocorr</th>"
+"<th title=\"sustained extraction rate: ~5,7 idle, ~3,7 under measurement load. The slowest node sets the measuring window for the whole array\">Mbit/s</th>"
+"<th title=\"frame pairs the sensor failed to deliver. Non-zero means this camera needs a look; a node whose camera stops is dropped and rebooted\">stalls</th>"
 "</tr></thead><tbody id='rows'><tr><td class='l' colspan='11'>loading&hellip;</td></tr>"
 "</tbody></table>"
 "<p class='sub' id='msg' style='margin-top:12px;color:#cfe8cf;min-height:1.2em'></p>"
@@ -2620,6 +2693,8 @@ static esp_err_t diagjson_handler(httpd_req_t *req)
         /* PRE-FOLD: the stream the sensor produced, before the XOR fold. The
          * fields above describe the folded one. See cam_raw_t in extract.h. */
         "\"raw_bias\":%.6f,\"raw_sigma\":%.4f,\"raw_sigma_n\":%d,"
+        /* P4 DIE temperature, not the sensor's. null = no driver. */
+        "\"die_temp\":%.2f,"
         "\"drops\":%lu,\"waits\":%lu,\"stalls\":%lu,"
         /* Where one frame pair's wall time goes. ms_wait is DQBUF, i.e. the
          * loop waiting for the sensor; if that dominates, the extraction code
@@ -2633,7 +2708,7 @@ static esp_err_t diagjson_handler(httpd_req_t *req)
         cam.bias, cam.sigma, cam.sigma_samples,
         cam.autocorr_lag[0], cam.autocorr_lag[1], cam.autocorr_lag[2], cam.autocorr_lag[3],
         cam.mean_pixel_level, cam.mbit_per_sec, cam.zero_diff_frac,
-        cam.raw_bias, cam.raw_sigma, cam.raw_sigma_samples,
+        cam.raw_bias, cam.raw_sigma, cam.raw_sigma_samples, cam.die_temp_c,
         (unsigned long)cam.ring_drops, (unsigned long)cam.consumer_waits,
         (unsigned long)cam.stalls,
         cam.ms_pair, cam.ms_wait, cam.ms_extract, cam.ms_rest,
@@ -2668,6 +2743,10 @@ static esp_err_t diagjson_handler(httpd_req_t *req)
             double   sg   = me ? cam.sigma        : N->cam_sigma_now;
             uint32_t enow = me ? exp_now          : N->cam_exp_now;
             uint32_t gnow = me ? gain_now         : N->cam_gain_now;
+            double   ct   = me ? (double)cam.die_temp_c : (double)N->die_temp_c;
+            char ct_txt[16];
+            if (isfinite(ct)) snprintf(ct_txt, sizeof(ct_txt), "%.2f", ct);
+            else              snprintf(ct_txt, sizeof(ct_txt), "null");
             buf_append(buf, sizeof(buf), &pos,
                 "%s{\"ip\":\"%s\",\"ok\":%s,\"mbit_s\":%.3f,\"stalls\":%lu,"
                 /* exposure/gain are LIVE; cal_exp is what the last sweep chose.
@@ -2684,15 +2763,18 @@ static esp_err_t diagjson_handler(httpd_req_t *req)
                  * and match exactly. */
                 "\"raw_bias\":%.6f,\"raw_sigma\":%.4f,"
                 "\"bias\":%.6f,\"sigma\":%.4f,"
-                "\"soft_down\":%s,\"lost\":%lu,\"reboots\":%lu,\"fw_sha\":\"%s\"}",
+                /* The covariate the offset monitor is read against (D44).
+                 * ⚠ P4 DIE, not the OV5647. null = this node did not report it. */
+                "\"die_temp\":%s,\"cus_alarms\":%d,"
+                "\"soft_down\":%s,\"lost\":%lu,\"nb\":%lu,\"reboots\":%lu,\"fw_sha\":\"%s\"}",
                 i ? "," : "", me ? "master" : N->ip,
                 N->ok ? "true" : "false", mb, (unsigned long)stl,
                 (unsigned long)enow, (unsigned long)gnow,
                 (unsigned long)N->cam_exp, (int)N->cam_cal_ok, N->cam_bias,
                 me ? (camera_get_xor_fold() ? 1 : 0) : (int)N->cam_fold,
-                rb, rs, bi, sg,
+                rb, rs, bi, sg, ct_txt, (int)N->cus_alarms,
                 N->soft_down ? "true" : "false", (unsigned long)N->lost,
-                (unsigned long)N->reboots,
+                (unsigned long)N->nb_count, (unsigned long)N->reboots,
                 me ? master_sha : (N->fw_sha[0] ? N->fw_sha : "?"));
         }
         buf_append(buf, sizeof(buf), &pos,
