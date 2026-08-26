@@ -2849,10 +2849,15 @@ static esp_err_t spectest_handler(httpd_req_t *req)
         "\"windows\":%d,\"h0\":%.8f,\"sd\":%.8f,\"null_ok\":%s,"
         /* ⚠ in_psram true = this node's FFT buffers fell back to PSRAM and it
          * will run ~a third slower than its peers. Measured, not feared. */
-        "\"in_psram\":%s}",
+        "\"in_psram\":%s,"
+        /* Non-zero = this node's FFT buffers failed to allocate at least once,
+         * so it ran without an entropy channel for a while. It retries on a
+         * backoff; `spec_ready` is the state right now. */
+        "\"alloc_fails\":%d,\"spec_ready\":%s}",
         ok ? "true" : "false", worst, GCP_SPEC_W, GCP_SPEC_BINS,
         m, h0, sd, nul ? "true" : "false",
-        gcp_spec_in_psram() ? "true" : "false");
+        gcp_spec_in_psram() ? "true" : "false",
+        gcp_spec_alloc_fails(), gcp_spec_ready() ? "true" : "false");
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, body, n);
     return ESP_OK;

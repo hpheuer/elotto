@@ -156,7 +156,9 @@ bool gcp_spec_finish(gcp_spec_t *sp, double *out_h, int *out_m);
  *
  * Copies out the accumulated Welch periodogram, NORMALISED to sum 1 over the
  * K published bins so nodes are directly comparable regardless of window count.
- * Valid between gcp_spec_finish() and the next gcp_spec_begin(). `n` is the
+ * Valid between gcp_spec_finish() and the next gcp_spec_begin(), and that is
+ * ENFORCED: called at any other time it returns false rather than handing back
+ * a partial accumulation carrying the previous run's window count. `n` is the
  * caller's array length and must be >= GCP_SPEC_BINS. */
 bool gcp_spec_bins(float *out, int n, int *out_m);
 
@@ -177,6 +179,12 @@ bool gcp_spec_selftest(double *out_worst);
  * runs at ~3,8 Mbit/s against ~5,7 for its peers, because the buffers then share
  * the bus the extractor streams frames over. Published by /spectest. */
 bool gcp_spec_in_psram(void);
+/* Failed FFT-buffer allocations. Non-zero = this node lost the entropy channel
+ * at least once; it retries on a backoff and recovers on its own, but the
+ * count is what distinguishes "reported no H" from "cannot compute H".
+ * gcp_spec_ready() is the live state: false = no buffers right now. */
+int  gcp_spec_alloc_fails(void);
+bool gcp_spec_ready(void);
 
 /* gcp_zscore_raw() with the spectral accumulator running alongside. The z
  * arithmetic is the SAME loop and stays bit-identical — `sp` only receives the

@@ -53,9 +53,35 @@
 static float *s_re, *s_im;             /* SPEC_N each: the packed window       */
 static float *s_acc;                   /* GCP_SPEC_BINS: Σ|X_k|² over windows  */
 static int    s_last_m;                /* windows in the last completed finish  */
+/* Whether s_acc currently holds a COMPLETED accumulation. gcp.h promises that
+ * gcp_spec_bins() is valid only between finish() and the next begin(), and
+ * until now that was documentation and nothing else: mid-accumulation the
+ * buffer holds however many windows have been folded so far while s_last_m
+ * still names the PREVIOUS run's count, so a caller would get partial bins
+ * labelled with a stale M — wrong, and wrong in a way that looks plausible.
+ * ⚠ Cleared where s_acc actually changes (a completed window), not per push:
+ * pushing samples touches s_re/s_im only, and this must not cost a store per
+ * segment on a path that runs ~130.000 times per run at ?run=5. */
+static bool   s_acc_final;
 static float *s_twr, *s_twi;           /* SPEC_N/2 each: FFT twiddles          */
 static float *s_unr, *s_uni;           /* SPEC_N each: real-unpack twiddles    */
-static int    s_alloc_tried;
+/* ⚠ This used to be a one-shot latch: one failed allocation disabled the
+ * entropy channel for the REST OF THE FIRMWARE'S LIFE, even once memory freed
+ * up again. A node that hit a moment of internal-RAM pressure lost z_h for
+ * every future session, and said nothing about it — the operator saw only that
+ * the h columns had gone empty.
+ *
+ * It retries now, but on a backoff rather than every call: spec_alloc() runs
+ * from gcp_spec_begin(), i.e. once per measured item, and hammering seven
+ * heap_caps_malloc()s per run under genuine memory pressure is its own problem.
+ * One attempt every SPEC_RETRY_EVERY begins is ~2 minutes at a 1 s window, so
+ * the channel comes back on its own shortly after the pressure lifts.
+ * ⚠ Entropy is never a precondition for a measurement: a failure still degrades
+ * to z alone, and a run without H is a full measurement in the channel that
+ * tests. What was wrong was that it never came back. */
+#define SPEC_RETRY_EVERY  64
+static int    s_alloc_skip;            /* begins to wait before the next attempt */
+static int    s_alloc_fails;           /* failed attempts, published by /spectest */
 /* 1 = at least one buffer had to go to PSRAM. Published by /spectest, because
  * a node in that state runs measurably slower than its peers and nothing else
  * would say why. */
@@ -64,8 +90,7 @@ static int    s_in_psram;
 static bool spec_alloc(void)
 {
     if (s_acc) return true;
-    if (s_alloc_tried) return false;
-    s_alloc_tried = 1;
+    if (s_alloc_skip > 0) { s_alloc_skip--; return false; }
 
     /* Internal first for every buffer; PSRAM only if internal is exhausted, and
      * a node that lands there will show it as a lower cam_mbit than its peers. */
@@ -86,6 +111,12 @@ static bool spec_alloc(void)
         free(s_re);  free(s_im);  free(s_acc);
         free(s_twr); free(s_twi); free(s_unr); free(s_uni);
         s_re = s_im = s_acc = s_twr = s_twi = s_unr = s_uni = NULL;
+        /* Partial success can leave s_in_psram set from a buffer that was then
+         * freed. Clear it: it must describe the buffers that EXIST, and the
+         * next successful attempt sets it again from scratch. */
+        s_in_psram   = 0;
+        s_alloc_fails++;
+        s_alloc_skip = SPEC_RETRY_EVERY;
         return false;
     }
 
@@ -196,6 +227,8 @@ void gcp_spec_begin(gcp_spec_t *sp)
     if (!spec_alloc()) return;
     sp->ok = true;
     memset(s_acc, 0, sizeof(float) * GCP_SPEC_BINS);
+    s_acc_final = false;
+    s_last_m    = 0;
 }
 
 void gcp_spec_push(gcp_spec_t *sp, int ones)
@@ -211,6 +244,7 @@ void gcp_spec_push(gcp_spec_t *sp, int ones)
         spec_fold();
         sp->fill = 0;
         sp->m++;
+        s_acc_final = false;      /* s_acc moved: any earlier result is stale */
     }
 }
 
@@ -231,7 +265,8 @@ bool gcp_spec_finish(gcp_spec_t *sp, double *out_h, int *out_m)
     }
     if (out_h) *out_h = h / log((double)GCP_SPEC_BINS);
     if (out_m) *out_m = sp->m;
-    s_last_m = sp->m;
+    s_last_m    = sp->m;
+    s_acc_final = true;
     return true;
 }
 
@@ -241,6 +276,11 @@ bool gcp_spec_finish(gcp_spec_t *sp, double *out_h, int *out_m)
 bool gcp_spec_bins(float *out, int n, int *out_m)
 {
     if (!out || n < GCP_SPEC_BINS || !s_acc) return false;
+    /* The contract in gcp.h, now enforced instead of merely stated: without
+     * this a call during accumulation returns partial bins carrying the
+     * previous run's window count. Refusing is the only safe answer — there is
+     * no correct partial periodogram to hand back. */
+    if (!s_acc_final) return false;
     double s = 0.0;
     for (int k = 0; k < GCP_SPEC_BINS; k++) s += (double)s_acc[k];
     if (!(s > 0.0)) return false;
@@ -348,6 +388,12 @@ bool gcp_spec_z(double h_norm, int m, double *out_z)
  * at the top of this file. A node in that state loses about a third of its bit
  * rate, so it must be visible rather than merely slow. */
 bool gcp_spec_in_psram(void) { return s_in_psram != 0; }
+/* Failed buffer allocations so far. Non-zero on a node whose entropy channel
+ * went away at least once — the h columns going empty is otherwise the only
+ * symptom, and that reads like "this node reported no H" rather than "this
+ * node cannot compute H". Zero on a healthy node forever. */
+int  gcp_spec_alloc_fails(void) { return s_alloc_fails; }
+bool gcp_spec_ready(void)       { return s_acc != NULL; }
 
 bool gcp_spec_selftest(double *out_worst)
 {
