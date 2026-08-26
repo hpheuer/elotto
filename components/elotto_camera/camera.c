@@ -77,7 +77,6 @@ static uint32_t *s_ring;
  * ⚠ Same indices as s_ring, written by the same producer under the same
  * head/tail discipline. Never index one without the other. */
 static uint8_t *s_ring_raw;
-static uint64_t s_raw_at_last_emit;
 
 static volatile uint32_t s_ring_head = 0;
 static volatile uint32_t s_ring_tail = 0;
@@ -92,13 +91,31 @@ static volatile uint32_t s_stalls = 0;
  * consumer is not reading, so the race is excluded by call structure — this
  * flag makes it true mechanically instead of by contract.
  *
- * `s_consumer_active` is set around ONLY the two-instruction window in
- * camera_read_word() that reads the tail, reads the word and bumps the tail.
- * It is deliberately NOT held across the blocking wait-for-data loop: a
- * producer that wanted to reset the tail would otherwise spin on a consumer
- * that is itself waiting on the producer — a deadlock. As scoped, the flag is
- * held for a handful of cycles, so the producer's wait below is bounded to
- * microseconds and can never deadlock. */
+ * `s_consumer_active` is set around ONLY the short window that reads the tail,
+ * reads the word and bumps the tail. It is deliberately NOT held across the
+ * blocking wait-for-data loop: a producer that wanted to reset the tail would
+ * otherwise spin on a consumer that is itself waiting on the producer — a
+ * deadlock. As scoped, the flag is held for a handful of cycles, so the
+ * producer's wait below is bounded to microseconds and can never deadlock.
+ *
+ * ⚠ It must be raised BEFORE the tail is read, and the tail read exactly ONCE
+ * into a local. Until 2026-08-26 it was raised after the reads, which left two
+ * holes that the comment above claimed were closed:
+ *
+ *   1. A reset landing between the read and the bump was UNDONE by the bump:
+ *      the consumer had captured tail T, the producer set tail = head, and the
+ *      consumer then wrote back T+1. The window carried on over the words the
+ *      flush existed to discard, silently — nothing counts it, and it is not
+ *      what flush_timeouts reports.
+ *   2. camera_read_word_raw() indexed the volatile tail TWICE, once per ring.
+ *      A reset in between decoupled the word from its pre-fold count: the two
+ *      came from different slots, which is exactly the pairing the raw ring
+ *      exists to guarantee. camera_read_word() could not do this — one read,
+ *      nothing to tear — so this one was new with the raw ring, not inherited.
+ *
+ * After raising the flag the emptiness test has to be REPEATED, because a
+ * reset may have landed just before it went up; a reset always leaves
+ * tail == head, so re-testing catches every one of them. */
 static volatile bool s_consumer_active = false;
 
 /* Producer-side reset of the ring tail: wait out an in-flight consumer pop,
@@ -151,13 +168,19 @@ static cam_raw_t s_raw;
  * extract.h documents. Under MEASUREMENT load the loop is compute-bound (D25)
  * and it would come straight off the bit rate.
  *
- * So it runs on every CAM_RAW_EVERY-th frame pair instead of all of them:
- * ~3,6 % amortised, and the statistics barely notice. One frame is 640000
- * pixels = exactly 200 complete 3200-bit mini-runs, so skipping whole frames
- * never straddles a mini-run boundary and needs no carry. At 1-in-8 the sample
- * count falls from ~143000 mini-runs to ~18000, still two orders above the 200
- * the sigma gate asks for, and drift — the thing this is for — moves on
- * seconds, far slower than the 0,45 s between samples. */
+ * ⛔ Sampling it is not the answer. CAM_RAW_EVERY ran it on one frame pair in
+ * eight for exactly that reason, and it was deleted when the pre-fold z became
+ * a measurement channel: a channel that is scored, combined and archived has
+ * to cover every bit the folded one covers, or the two are not the same
+ * window. It runs on every pair.
+ *
+ * What was done instead is to make it cheap. The +28,6 % was never the
+ * arithmetic — three ops per four pixels — it was the seven counters living in
+ * a struct the emit callback could alias, reloaded across every indirect call
+ * and four of them 64-bit on a 32-bit machine. They are locals now; see the
+ * note in cam_extract_fast(). ⚠ Re-measure with ns_raw vs ns_fast in
+ * /camtest, and the live cost with ms_extract UNDER LOAD — at idle this loop
+ * waits on the sensor and any CPU saving vanishes into DQBUF. */
 
 static uint64_t s_run_ones = 0, s_run_bits = 0;
 static double   s_z_mean = 0.0, s_z_m2 = 0.0;
@@ -282,16 +305,16 @@ static void cam_verify_regs(const char *when)
 
 // Pack one LSB-diff word: update ring buffer, bias, per-mini-run sigma and
 // lag-1..4 bit autocorrelation across the word stream (see PLAN Phase 0 gate).
-static void process_word(uint32_t w)
+static void process_word(uint32_t w, uint32_t ro)
 {
     // Publish to the consumer first. Never overwrite an unread slot: dropping
     // fresh bits when the consumer is behind is fine (excess entropy), reusing
     // or clobbering them is not.
-    /* Raw ones for exactly the pixels that produced this word. s_raw.ones is
-     * updated by the extractor as it walks them and this runs synchronously
-     * from its emit callback, so the delta is precisely this word's share. */
-    uint64_t ro = s_raw.ones - s_raw_at_last_emit;
-    s_raw_at_last_emit = s_raw.ones;
+    /* `ro` is the pre-fold ones for exactly the pixels that produced this
+     * word, handed over by the extractor. It used to be read back out of
+     * s_raw.ones as a delta against the previous emit — correct, but it forced
+     * the whole monitor to be memory-live inside the bulk loop, which is what
+     * made it expensive (see the locals note in cam_extract_fast). */
     if (ro > 255) ro = 255;                  /* cannot happen: max 64 */
 
     uint32_t next = (s_ring_head + 1) % RING_WORDS;
@@ -358,7 +381,8 @@ static volatile bool s_xor_fold =
  * statistics when it reaches 0, so the window starts clean. */
 static volatile int s_settle_pairs = 0;
 
-static void emit_word_cb(uint32_t w, void *ctx) { (void)ctx; process_word(w); }
+static void emit_word_cb(uint32_t w, uint32_t ro, void *ctx)
+{ (void)ctx; process_word(w, ro); }
 
 /* One frame pair. The extraction itself lives in extract.c as two
  * implementations the on-target self-test holds against each other; this picks
@@ -484,7 +508,6 @@ static void stats_reset_locked(void)
     s_pixel_sum = 0; s_pixel_n = 0;
     s_zero_diffs = 0; s_diff_n = 0;
     memset(&s_raw, 0, sizeof(s_raw));    // pre-fold monitor, same window as the rest
-    s_raw_at_last_emit = 0;
     s_us_wait = 0; s_us_ext = 0; s_us_rest = 0; s_us_cycle = 0;
     s_acct_pairs = 0; s_last_pair_us = 0;
     memset(&s_pack, 0, sizeof(s_pack));  // a half-folded pair must not straddle
@@ -894,32 +917,6 @@ bool camera_is_ready(void)
     return ready;
 }
 
-bool camera_read_word(uint32_t *out)
-{
-    if (!s_ring || !camera_is_ready()) return false;
-
-    TickType_t waited = 0;
-    const TickType_t limit = pdMS_TO_TICKS(CAM_STALL_TIMEOUT_MS);
-
-    while (s_ring_tail == s_ring_head) {
-        if (waited == 0) s_consumer_waits++;
-        if (waited >= limit) {
-            s_stalls++;
-            return false;       // caller faults the node rather than hanging
-        }
-        vTaskDelay(1);          // wait for real bits; never invent them
-        waited++;
-    }
-
-    *out = s_ring[s_ring_tail];
-    s_consumer_active = true;
-    __sync_synchronize();
-    s_ring_tail = (s_ring_tail + 1) % RING_WORDS;
-    __sync_synchronize();
-    s_consumer_active = false;
-    return true;
-}
-
 /* camera_read_word() plus the pre-fold ones count of the very pixels that word
  * came from, consumed as one unit so the folded and raw z describe the SAME
  * window (2026-08-26).
@@ -938,21 +935,51 @@ bool camera_read_word_raw(uint32_t *out, uint32_t *out_raw)
 
     TickType_t waited = 0;
     const TickType_t limit = pdMS_TO_TICKS(CAM_STALL_TIMEOUT_MS);
-    while (s_ring_tail == s_ring_head) {
-        if (waited == 0) s_consumer_waits++;
-        if (waited >= limit) { s_stalls++; return false; }
-        vTaskDelay(1);
-        waited++;
-    }
 
-    *out = s_ring[s_ring_tail];
-    if (out_raw) *out_raw = s_ring_raw ? s_ring_raw[s_ring_tail] : 0u;
-    s_consumer_active = true;
-    __sync_synchronize();
-    s_ring_tail = (s_ring_tail + 1) % RING_WORDS;
-    __sync_synchronize();
-    s_consumer_active = false;
-    return true;
+    for (;;) {
+        while (s_ring_tail == s_ring_head) {
+            if (waited == 0) s_consumer_waits++;
+            if (waited >= limit) {
+                s_stalls++;
+                return false;   // caller faults the node rather than hanging
+            }
+            vTaskDelay(1);      // wait for real bits; never invent them
+            waited++;
+        }
+
+        /* Raised BEFORE the tail is touched, so a producer reset either
+         * completes entirely ahead of this (caught by the re-test below) or
+         * waits for the bump. See the note on s_consumer_active above. */
+        s_consumer_active = true;
+        __sync_synchronize();
+        if (s_ring_tail == s_ring_head) {   // a reset landed in the gap
+            s_consumer_active = false;
+            __sync_synchronize();
+            continue;                       // honour the flush, wait again
+        }
+
+        /* ONE read of the volatile tail, into a local. Both rings are then
+         * indexed with the same value, so the word and its pre-fold count
+         * cannot come from different slots. */
+        uint32_t t = s_ring_tail;
+        *out = s_ring[t];
+        if (out_raw) *out_raw = s_ring_raw ? s_ring_raw[t] : 0u;
+        __sync_synchronize();
+        s_ring_tail = (t + 1) % RING_WORDS;
+        __sync_synchronize();
+        s_consumer_active = false;
+        return true;
+    }
+}
+
+/* The folded-only reader is the raw one with the side value thrown away.
+ * Written as a forwarder rather than a second copy of the sequence above: the
+ * tail protocol is subtle enough that two hand-kept copies is how one of them
+ * ends up a fix behind — which is precisely what happened to the flag ordering
+ * this pair used to share. NULL costs one branch that predicts perfectly. */
+bool camera_read_word(uint32_t *out)
+{
+    return camera_read_word_raw(out, NULL);
 }
 
 bool camera_raw_stream_ok(void) { return s_ring_raw != NULL; }

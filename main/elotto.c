@@ -217,14 +217,13 @@ static const char HTML[] =
 "<input id='chkUnlim' type='checkbox' onchange='unlimToggle()' "
 "style='width:16px;height:16px'>"
 "<label for='chkUnlim' style='color:#6ab0e8;font-size:.9em' "
-"title='Repeat until Abort: score every number, keep the best that fit the run "
-"budget, measure that pool out, score again. Results from all rounds stay and "
-"rank together.'>&#8734; Unlimited mode (rounds until Abort)</label>"
+"title='Repeat until Abort: score, keep the best that fit the run budget, "
+"measure that pool out, score again. All rounds rank together.'>&#8734; Unlimited mode (rounds until Abort)</label>"
 "</span>"
 "</div>"
 "<div class='frow' id='rowUnlim' style='display:none'>"
-"<label for='numUnlimRuns' title='Measurement runs ONE round may spend. The "
-"pool is sized so its whole combination space fits inside this.'>"
+"<label for='numUnlimRuns' title='Measurement runs ONE round may spend. The pool is sized so its whole "
+"combination space fits inside it.'>"
 "Runs per round:</label>"
 "<span style='display:flex;align-items:center;gap:8px'>"
 "<input id='numUnlimRuns' class='fin' type='number'"
@@ -236,8 +235,8 @@ static const char HTML[] =
 "</span>"
 "</div>"
 "<div class='frow'>"
-"<label for='selScore' title='Pre-registered Phase-0 pool rule. Only affects "
-"which numbers enter the pool, never the measurement pass.'>Score direction:</label>"
+"<label for='selScore' title='Pre-registered Phase-0 pool rule. Picks the pool only, never the "
+"measurement pass.'>Score direction:</label>"
 "<select id='selScore' class='fin' style='padding:4px 6px'>"
 "<option value='high' selected>highest z (default)</option>"
 "<option value='low'>lowest z</option>"
@@ -252,7 +251,7 @@ static const char HTML[] =
 "extra time -- z is the DC bin of the segment series, H is bins 1..511. It ranks; "
 "the null gates and the Bonferroni line stay on z.'>Entropy weight:</label>"
 "<input id='numEntW' class='fin' type='number' min='0' max='1' step='0.05' "
-"value='" EL_STR(ENT_W_DEFAULT) "'>"
+"value='" EL_STR(ENT_W_DEFAULT) "' oninput='wAdj(this)'>"
 "</div>"
 "<div class='frow'>"
 "<label for='numPreW' title='Weight of the PRE-FOLD half of the ranking key. The "
@@ -266,9 +265,13 @@ static const char HTML[] =
 "before the first block closes: the uncentred per-node offset is 20..95 "
 "sigma.'>Pre-fold weight:</label>"
 "<input id='numPreW' class='fin' type='number' min='0' max='1' step='0.05' "
-"value='" EL_STR(ENT_W_PRE_FORM) "'>"
+"value='" EL_STR(ENT_W_PRE_FORM) "' oninput='wAdj(this)'>"
 "</div>"
-"<div class='sub' id='wErr' style='color:#ff9c6e;min-height:1.1em'></div>"
+/* ⚠ grid-column:1/-1. This sits in the same grid as the two start buttons,
+   so without it the div eats one cell and pushes Euro-Lotto into the
+   second column and 6-of-49 onto the next row. */
+"<div class='sub' id='wErr' style='grid-column:1/-1;color:#ff9c6e;"
+"min-height:1.1em'></div>"
 "<button class='btn btn-euro' style='width:100%' onclick='doStart(0)'>&#127808; Euro-Lotto</button>"
 "<button class='btn btn-649' style='width:100%' onclick='doStart(1)'>&#127808; 6 of 49</button>"
 "</div>"
@@ -313,9 +316,8 @@ static const char HTML[] =
 // keep their old cal* names so nothing else has to change.
 "<div style='color:#f0c040;font-size:.88em;margin-bottom:4px' "
 "title='Reference runs with the display off, repeated at every block "
-"insertion. Feeds the cross-block drift regression (drift_slope/drift_t); "
-"nothing is subtracted from any z. This is NOT the camera exposure "
-"calibration.'><span id='calTitle'>&#128207; Baseline &#8212; drift reference</span>"
+"insertion. Drift reference only (drift_slope/drift_t) &mdash; nothing is "
+"subtracted from any z. NOT the camera exposure sweep.'><span id='calTitle'>&#128207; Baseline &#8212; drift reference</span>"
 "<span id='calCheck'></span></div>"
 "<div class='prog-wrap' style='height:18px'>"
 "<div id='pfCal' style='background:linear-gradient(90deg,#a08030,#f0c040);"
@@ -519,6 +521,24 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "h.innerHTML='Euro '+e.p+'+'+e.q+' = '+e.c+' runs \u00b7 \u2248 '"
 "+fmt(roundMs(true,e.c))+'/round<br>6of49 '+l.p+' = '+l.c"
 "+' runs \u00b7 \u2248 '+fmt(roundMs(false,l.c))+'/round';}"
+/* The three weights share one budget: the z half of the key is 1-w-p, so the
+   pair can never sum past 1. Rather than refusing the combination and making
+   the operator work out which field to lower, the field being TYPED IN wins and
+   the other one gives way -- 1,00 in the pre-fold field drives the entropy
+   weight to 0 by itself, and vice versa. The line under the fields always shows
+   the resulting three-way split, so "z 0,00" is visible rather than implied. */
+"function wAdj(el){"
+"var a=document.getElementById('numEntW'),b=document.getElementById('numPreW');"
+"var we=parseFloat(a.value),wp=parseFloat(b.value);"
+"if(!(we>=0&&we<=1))we=0;"
+"if(!(wp>=0&&wp<=1))wp=0;"
+"if(we+wp>1){"
+"if(el===b){we=1-wp;a.value=we.toFixed(2);}"
+"else{wp=1-we;b.value=wp.toFixed(2);}}"
+"var e=document.getElementById('wErr');e.style.color='#8fae8f';"
+"e.textContent='key: z '+(1-we-wp).toFixed(2)+' \u00b7 H '+we.toFixed(2)"
+"+' \u00b7 pre '+wp.toFixed(2)"
+"+(wp>0?'  \u26a0 pre-fold ranks, it does not test':'');}"
 "function unlimToggle(){"
 "document.getElementById('rowUnlim').style.display="
 "document.getElementById('chkUnlim').checked?'':'none';"
@@ -527,6 +547,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "document.getElementById('subtitle').textContent="
 "mode===0?'Eurojackpot • 5 of 50 + 2 bonus numbers':'6 of 49 Lotto';}"
 "window.onload=function(){"
+"wAdj(null);"
 "fetch('/status').then(function(r){return r.json();}).then(function(d){"
 "if(d.state==='running'){"
 "curMode=d.mode==='euro'?0:1;setMode(curMode);"
@@ -682,11 +703,12 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
    pair that gets the session refused -- say so here instead of letting the
    fetch fail with a bare error line. */
 "if(wEnt+wPre>1){"
+"document.getElementById('wErr').style.color='#ff9c6e';"
 "document.getElementById('wErr').textContent="
 "'\u26a0 Entropy + pre-fold weight must not exceed 1 (currently '"
 "+(wEnt+wPre).toFixed(2)+') \u2014 the z half would go negative';"
 "return;}"
-"document.getElementById('wErr').textContent='';"
+"wAdj(null);"
 "document.getElementById('runsErr').textContent='';"
 "document.getElementById('sCalTotal').textContent=base;"
 "document.getElementById('pfScore').style.width='0%';"
@@ -1093,7 +1115,8 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "if(d.ent_h>0)e+=' \\u00b7 last H '+d.ent_h.toFixed(6)+' (z '+(d.ent_zh||0).toFixed(2)+')';"
 "if(d.pass_n_valid>0)e+=' \\u00b7 with H '+(d.ent_n||0)+'/'+d.pass_n_valid"
 "+((d.ent_n<d.pass_n_valid)?' \\u26a0':'');"
-"if(d.ent_clamped>0)e+=' \\u00b7 \\u26a0 '+d.ent_clamped+' clamped';"
+"if(d.ent_clamped>0)e+=' \\u00b7 \\u26a0 '+d.ent_clamped+' H clamped';"
+"if(d.pre_clamped>0)e+=' \\u00b7 \\u26a0 '+d.pre_clamped+' pre clamped';"
 "s2+='<br>'+e;}"
 // Carried into the results line because the Focus card — where these normally
 // live — is hidden once the session ends. `missed` is a gate, not a curiosity:
@@ -1132,17 +1155,17 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
    their head, and a column whose meaning has to be looked up in CLAUDE.md is
    a column that gets misread. */
 "+'<tr style=\"color:#90ee90\">'"
-"+'<th align=left title=\"board, and the address it was discovered at. Column order is DISCOVERY order and changes between sessions\">node</th>'"
-"+'<th align=left title=\"session mean of this node\\u2019s RAW per-run z. Not centred: a constant offset here is normal and is removed at block close\">Z</th>'"
-"+'<th align=left title=\"two-sided p that this node\\u2019s mean z differs from 0 (Stouffer: |mean|\\u00b7\\u221an). A per-node health check, NOT a result\">p</th>'"
-"+'<th align=left title=\"this node\\u2019s per-run \\u03c3 over the last closed block. Ideal 1,000; above 1,25 trips soft-down and takes it out of the combine. Blank until the first block closes\">cam \\u03c3</th>'"
-"+'<th align=left title=\"camera extraction rate: ~5,7 idle, ~3,7 under measurement load. The SLOWEST node sets the window length for all four\">Mbit/s</th>'"
-"+'<th align=left title=\"exposure this loop\\u2019s calibration chose. \\u2295 = XOR fold on, ! = the sweep certified nothing and the node kept its previous setting. Nodes land on DIFFERENT rungs on purpose\">exp</th>'"
-"+'<th align=left title=\"camera stalls: frame pairs the sensor failed to deliver. Non-zero means the hardware needs a look\">stalls</th>'"
-"+'<th align=left title=\"runs this node failed to answer in time. Each costs that run\\u2019s share of the combine, not the session\">lost</th>'"
-"+'<th align=left title=\"Two-sided CUSUM on this node\\u2019s RAW block offset, shown as the larger of the two arms against the alarm bar of 14. It catches a CONSTANT offset shift, which drift_t cannot see at all (a constant has slope zero). Reference is this node\\u2019s own mean over its first 4 closed blocks, so it detects a CHANGE from where it started, not the offset itself. Blank while warming up. INSTRUMENT MONITOR: nothing is excluded on it, and on the raw channel a drifting bias and an effect are not distinguishable \\u2014 read an alarm together with the die temperature\">CUSUM</th>'"
-"+'<th align=left title=\"This node\\u2019s P4 DIE temperature, the covariate the offset monitor has to be read against: without it an alarm only says that something moved and nothing more. It is the SoC die, NOT the OV5647 \\u2014 a proxy that shares the enclosure. Blank = this node did not report it\">T \\u00b0C</th>'"
-"+'<th align=left title=\"Null broken: closed blocks where the pass null failed AND this node was the worst contributor (largest |block \\u03c3 \\u2212 1| among nodes in the combine, plus both members of a flagged pair). ATTRIBUTION, not proof \\u2014 it says which board to check first. Nothing is excluded on it, and it counts only at a block CLOSE\">NB</th>'"
+"+'<th align=left title=\"board and discovery address. Column order is DISCOVERY order and changes between sessions\">node</th>'"
+"+'<th align=left title=\"session mean of this node\\u2019s RAW per-run z. Uncentred \\u2014 a constant offset is normal\">Z</th>'"
+"+'<th align=left title=\"two-sided p of this node\\u2019s mean z (Stouffer). Health check, NOT a result\">p</th>'"
+"+'<th align=left title=\"per-run \\u03c3 over the last closed block. Ideal 1,000; above 1,25 trips soft-down. Blank until the first block closes\">cam \\u03c3</th>'"
+"+'<th align=left title=\"extraction rate: ~5,7 idle, ~3,7 under load. The SLOWEST node sets the window for all four\">Mbit/s</th>'"
+"+'<th align=left title=\"exposure this block\\u2019s sweep chose. \\u2295 = XOR fold on, ! = nothing certified, previous setting kept. Different rungs per node are normal\">exp</th>'"
+"+'<th align=left title=\"frame pairs the sensor failed to deliver. Non-zero = check the hardware\">stalls</th>'"
+"+'<th align=left title=\"runs this node missed. Each costs that run\\u2019s share of the combine, not the session\">lost</th>'"
+"+'<th align=left title=\"two-sided CUSUM on the RAW block offset: larger arm against the alarm bar 14. Catches a CONSTANT offset shift, which drift_t cannot (slope zero). Reference = this node\\u2019s first 4 blocks, so it sees a CHANGE, not the offset. Monitor only \\u2014 read an alarm with the die temperature\">CUSUM</th>'"
+"+'<th align=left title=\"P4 DIE temperature \\u2014 the covariate a CUSUM alarm must be read against. SoC die, NOT the OV5647. Blank = not reported\">T \\u00b0C</th>'"
+"+'<th align=left title=\"Null broken: closed blocks where the pass null failed and this node was the worst contributor. ATTRIBUTION, not proof \\u2014 which board to check first. Nothing is excluded on it\">NB</th>'"
 "+'</tr>';"
 "for(var i=0;i<d.nodes.length;i++){var N=d.nodes[i],H=nodeHealth[i]||{};"
 // The master reports ip:"self" (it has no idea what address the client used to
@@ -1233,7 +1256,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "lastDisplayed=d.top;"
 // Z* studentizes the RANKING KEY, so it takes the key's own moments;
 // rank_mean/rank_sigma equal pass_mean/pass_sigma exactly at went=0.
-"var st={m:d.rank_mean||0,s:d.rank_sigma||0,w:d.ent_w||0};"
+"var st={m:d.rank_mean||0,s:d.rank_sigma||0,w:d.ent_w||0,p:d.pre_w||0};"
 "document.getElementById('resTitle').innerHTML="
 "'\\uD83C\\uDFC6 Top '+d.top.length+' of '+d.comparisons+' valid'"
 "+(isEuro?' \\u2014 Eurojackpot':' \\u2014 6-of-49')"
@@ -1247,10 +1270,11 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 // Always show Z and Z* when pass σ is available; p is from Z* (studentized).
 "function renderRunTable(headId,bodyId,res,isEuro,d,st){"
 "document.getElementById(headId).innerHTML="
-"'<tr><th title=\"rank within this table, 1 = strongest\">#</th><th title=\"item within its round; in unlimited mode shown as item/round, because index alone repeats across rounds\">Item</th><th title=\"the BLOCK-CENTRED combined z for this item: z = \\u03a3 z_i / \\u221ak over the nodes that answered. Provisional (still raw) until its block closes\">Z</th>'"
-"+((st&&st.w>0)?'<th title=\"combined block-centred spectral-entropy z. NEGATIVE = less spectral disorder than white noise, the direction the ranking rewards. Independent of Z under H0: Z is the DC bin, this is bins 1..511. An em dash means no node reported an H for this item.\">H</th>':'')"
-"+(st?'<th title=\"the published ranking key, studentized: key = ((1-w)*Z_ctr - w*H)/sqrt((1-w)^2+w^2), shown as (key-mean)/sigma. w = ent_w.\">Z*</th>':'')"
-"+'<th title=\"two-sided p of this item\\u2019s Z against N(0,1). UNCORRECTED \\u2014 the Bonferroni line under the table is the one that counts\">p</th><th title=\"nodes that contributed to this item\\u2019s combine, the k in z = \\u03a3 z_i / \\u221ak; 4 = all four; blank = VOID, no usable z\">k</th><th title=\"the drawn combination this item measured\">Numbers</th>'"
+"'<tr><th title=\"rank in this table, 1 = strongest\">#</th><th title=\"item within its round; item/round in unlimited mode, because the index repeats across rounds\">Item</th><th title=\"block-centred combined z: \\u03a3 z_i / \\u221ak over the nodes that answered. Provisional (still raw) until its block closes\">Z</th>'"
+"+((st&&st.w>0)?'<th title=\"combined block-centred entropy z. NEGATIVE = less spectral disorder, the direction ranked. Independent of Z under H0. \\u2014 = no node reported an H\">H</th>':'')"
+"+((st&&st.p>0)?'<th title=\"combined block-centred PRE-FOLD z, the unfolded stream. Same scale and direction as Z, and \\u03c3 is 1,03..1,10 rather than 1,00 \\u2014 it ranks, it does not test\">P</th>':'')"
+"+(st?'<th title=\"the ranking key, studentized as (key\\u2212rank_mean)/rank_sigma. key = ((1\\u2212w\\u2212p)*Z \\u2212 w*H/\\u03c3H + p*P/\\u03c3P)/\\u221a((1\\u2212w\\u2212p)\\u00b2+w\\u00b2+p\\u00b2); each channel is divided by its own measured \\u03c3 so the weights are the variance shares they claim\">Z*</th>':'')"
+"+'<th title=\"two-sided p of Z* against N(0,1). UNCORRECTED \\u2014 the Bonferroni line under the table is the one that counts\">p</th><th title=\"the drawn combination this item measured\">Numbers</th>'"
 "+(isEuro?'<th title=\"the two Euro numbers of this combination\">Bonus</th>':'')+'</tr>';"
 "var tb=document.getElementById(bodyId);tb.innerHTML='';"
 "for(var i=0;i<res.length;i++){"
@@ -1269,17 +1293,18 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "var z=r.z,kk=(r.key===undefined?(r.z_ctr===undefined?z:r.z_ctr):r.key);"
 "var zs=(st&&st.s>0)?(kk-st.m)/st.s:0;"
 "var hc=(st&&st.w>0)?('<td>'+((!r.zh)?'\\u2014':r.zh.toFixed(2))+'</td>'):'';"
+"var pc=(st&&st.p>0)?('<td>'+((r.zp===undefined||!r.zp)?'\\u2014':r.zp.toFixed(2))+'</td>'):'';"
 "var itm=(d.unlimited&&r.round)?(r.run+'/'+r.round):r.run;"
 "tb.innerHTML+='<tr><td>'+(i+1)+'</td><td>'+itm+'</td>"
-"<td>'+z.toFixed(4)+'</td>'+hc+(st?'<td>'+zs.toFixed(3)+'</td>':'')+'"
-"<td>'+pfmt(p2(st?zs:z))+'</td><td>'+(r.k||'')+'</td><td>'+nums+'</td>"
+"<td>'+z.toFixed(4)+'</td>'+hc+pc+(st?'<td>'+zs.toFixed(3)+'</td>':'')+'"
+"<td>'+pfmt(p2(st?zs:z))+'</td><td>'+nums+'</td>"
 "'+(isEuro?'<td>'+estr+'</td>':'')+'</tr>';"
 "}"
 "}"
 "function showLow(d){"
 "var res=d.low,isEuro=d.mode==='euro';"
 "if(!res||res.length===0){document.getElementById('resCardLow').style.display='none';return;}"
-"var st={m:d.rank_mean||0,s:d.rank_sigma||0,w:d.ent_w||0};"
+"var st={m:d.rank_mean||0,s:d.rank_sigma||0,w:d.ent_w||0,p:d.pre_w||0};"
 "document.getElementById('resTitleLow').innerHTML="
 "'\\u2B07 Bottom '+res.length+' (lowest Z*'"
 "+((d.ent_w>0)?': low Z and high entropy':'')+')';"
@@ -1293,7 +1318,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "function showNear(d){"
 "var res=d.near,isEuro=d.mode==='euro';"
 "if(!res||res.length===0){document.getElementById('resCardZero').style.display='none';return;}"
-"var st={m:d.rank_mean||0,s:d.rank_sigma||0,w:d.ent_w||0};"
+"var st={m:d.rank_mean||0,s:d.rank_sigma||0,w:d.ent_w||0,p:d.pre_w||0};"
 "document.getElementById('resTitleZero').innerHTML="
 "'\\u25CE Nearest zero '+res.length+' (least remarkable)';"
 "document.getElementById('zeroNote').innerHTML="
@@ -1317,25 +1342,28 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
  * round, so the UI hides it there rather than printing a constant "/1". */
 static int emit_run(char *buf, int cap, const RunResult *r, bool euro)
 {
-    /* `zh` and `key` travel per row so the table can show the entropy that put
-     * an item where it is, and so the UI never has to recompute the key — one
-     * definition of the ordering, in C, exactly as rank_key() is for the
-     * firmware's own tables. */
+    /* `zh`, `zp` and `key` travel per row so the table can show the channel
+     * that put an item where it is, and so the UI never has to recompute the
+     * key — one definition of the ordering, in C, exactly as rank_key() is for
+     * the firmware's own tables.
+     * ⚠ `zp` is here for the same reason `zh` is: at ?wpre=1 the pre-fold z is
+     * the ONLY thing that ordered the table, and a table that cannot show the
+     * number it was ordered by is not readable. */
     if (euro)
         return snprintf(buf, cap,
             "{\"run\":%d,\"round\":%d,\"z\":%.4f,\"z_ctr\":%.4f,\"zh\":%.3f,"
-            "\"key\":%.4f,\"k\":%d,"
+            "\"zp\":%.3f,\"key\":%.4f,\"k\":%d,"
             "\"nums\":[%d,%d,%d,%d,%d],\"euro\":[%d,%d]}",
             r->index, (int)r->round, r->z_score, (double)r->z_ctr,
-            (double)r->zh_ctr, rank_key(r), (int)r->k,
+            (double)r->zh_ctr, (double)r->zp_ctr, rank_key(r), (int)r->k,
             r->nums[0], r->nums[1], r->nums[2], r->nums[3], r->nums[4],
             r->euro[0], r->euro[1]);
     return snprintf(buf, cap,
         "{\"run\":%d,\"round\":%d,\"z\":%.4f,\"z_ctr\":%.4f,\"zh\":%.3f,"
-        "\"key\":%.4f,\"k\":%d,"
+        "\"zp\":%.3f,\"key\":%.4f,\"k\":%d,"
         "\"nums\":[%d,%d,%d,%d,%d,%d],\"euro\":[]}",
         r->index, (int)r->round, r->z_score, (double)r->z_ctr,
-        (double)r->zh_ctr, rank_key(r), (int)r->k,
+        (double)r->zh_ctr, (double)r->zp_ctr, rank_key(r), (int)r->k,
         r->nums[0], r->nums[1], r->nums[2],
         r->nums[3], r->nums[4], r->nums[5]);
 }
@@ -1431,6 +1459,12 @@ static esp_err_t status_handler(httpd_req_t *req)
          * coincide exactly at ent_w = 0. */
         "\"ent_w\":%.3f,\"pre_w\":%.3f,\"ent_win\":%d,\"ent_h0\":%.8f,\"ent_sd\":%.8f,"
         "\"ent_n\":%d,\"ent_clamped\":%d,\"ent_h\":%.8f,\"ent_zh\":%.3f,"
+        /* pre_clamped is the pre-fold twin of ent_clamped and exists because
+         * ent_clamped never watched that channel. rank_sig_h/rank_sig_p are
+         * the per-channel σ rank_key() standardises by — publish them, or a
+         * reader cannot reproduce the key from the CSV columns. */
+        "\"pre_n\":%d,\"pre_clamped\":%d,"
+        "\"rank_sig_h\":%.4f,\"rank_sig_p\":%.4f,"
         "\"rank_mean\":%.4f,\"rank_sigma\":%.4f,"
         "\"score_dir\":\"%s\","
         "\"loop_sigma\":%.4f,"
@@ -1477,6 +1511,8 @@ static esp_err_t status_handler(httpd_req_t *req)
         g_status.ent_w, g_status.pre_w, g_status.ent_windows,
         g_status.ent_h0, g_status.ent_sd,
         g_status.ent_n, g_status.ent_clamped,
+        g_status.pre_n, g_status.pre_clamped,
+        g_status.rank_sig_h, g_status.rank_sig_p,
         /* NaN is not valid JSON. "no entropy for the last item" travels as 0
          * for H (which is impossible, H > 0 always) and 0 for z_h (which is
          * merely the null's own centre) — the UI reads ent_h == 0 as absent. */
@@ -1825,7 +1861,7 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
      * here does not crash — it silently shortens the archive's own provenance
      * line, which is the field nobody re-reads until they need it. Recount when
      * adding a header field. */
-    char buf[768], qry[64], val[8];
+    char buf[1024], qry[64], val[8];
     bool all = false;
     if (httpd_req_get_url_query_str(req, qry, sizeof(qry)) == ESP_OK &&
         httpd_query_key_value(qry, "all", val, sizeof(val)) == ESP_OK)
@@ -1843,6 +1879,7 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
 
     char mb[32], sb[32], cb[32], vb[32], stb[32], rb[32], gb[32];
     char ew[32], eh[32], es[32], rm[32], rs[32];    char pw[16];
+    char gh[32], gp[32];
     /* The master's own image. The slaves' come from their 'D' replies and are
      * emitted on the fw_nodes line below; a node that never answered one, or
      * runs firmware older than the field, shows "?" rather than nothing, or the
@@ -1896,9 +1933,14 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
          * ent_n counts the ranked items that actually carried an entropy value,
          * ent_clamp those whose z_h was pinned at ENT_Z_CLAMP for the key —
          * a non-zero ent_clamp means camera glitches were competing for the
-         * table and the rows should be looked at before the ranking is. */
+         * table and the rows should be looked at before the ranking is.
+         * pre_n/pre_clamp are the same two for the PRE-FOLD channel, which
+         * ent_clamp never watched. ent_sig/pre_sig are the per-channel σ the
+         * key standardises by; without them the published key cannot be
+         * reproduced from the zh_ctr/zp_ctr columns. */
         "run_s=%s run_segs=%d gap_s=%s compacted=%d "
         "ent_w=%s pre_w=%s ent_win=%d ent_h0=%s ent_sd=%s ent_n=%d ent_clamp=%d "
+        "pre_n=%d pre_clamp=%d ent_sig=%s pre_sig=%s "
         "rank_mean=%s rank_sigma=%s fw=%s/%s\n"
         "# nodes=",
         g_status.mode == MODE_EUROJACKPOT ? "euro" : "649",
@@ -1924,6 +1966,9 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
         de_num(eh, sizeof(eh), g_status.ent_h0, 8),
         de_num(es, sizeof(es), g_status.ent_sd, 8),
         g_status.ent_n, g_status.ent_clamped,
+        g_status.pre_n, g_status.pre_clamped,
+        de_num(gh, sizeof(gh), g_status.rank_sig_h, 6),
+        de_num(gp, sizeof(gp), g_status.rank_sig_p, 6),
         de_num(rm, sizeof(rm), g_status.rank_mean, 6),
         de_num(rs, sizeof(rs), g_status.rank_sigma, 6),
         fw_desc->version, master_sha);
@@ -2584,17 +2629,17 @@ static const char DIAG_HTML[] =
 "tuning the physical light. Refused while a session runs, and the next "
 "calibration sweep overwrites it.</p>"
 "<table><thead><tr>"
-"<th class='l' title=\"board and address. This page polls each node directly, so a row here is that node answering for itself\">Node</th>"
-"<th title=\"exposure the node is running on RIGHT NOW. Nodes land on DIFFERENT rungs on purpose &mdash; different sensors, different light\">Exp</th>"
-"<th class='l' title=\"halve or double this node&#39;s exposure by hand and reset its statistics, so mean_px answers in a second or two. Refused while a session runs; the next sweep overwrites it\">set exp</th>"
-"<th title=\"analog gain. Left at 1023 on this rig; the light is tuned with exposure and the lamp, not with gain\">Gain</th>"
-"<th title=\"mean raw pixel byte. Must stay in [5,0 , 100,0]: below that the frame is partly frozen (a zero difference has a deterministic LSB), above it the sensor is heading for saturation\">mean_px</th>"
-"<th title=\"ones fraction of the POST-FOLD stream, minus 0,5. The fold squares the raw bias, so this is small by construction &mdash; compare raw_bias in /diagjson to see the front end itself\">bias&minus;0.5</th>"
-"<th title=\"standard deviation of the per-mini-run z (3200 bits each). Ideal 1,000; the calibration gate wants |&sigma;&minus;1| &le; 0,05\">&sigma;</th>"
-"<th title=\"fraction of pixels whose frame difference was exactly 0. A zero difference has LSB 0, so a high value directly explains a deficit-of-ones bias. Gated at 0,125\">zero_diff</th>"
-"<th title=\"largest |autocorrelation| over lags 1..4 of the bit stream. Gated at 0,01. It is a GATE, so it is never subsampled\">autocorr</th>"
-"<th title=\"sustained extraction rate: ~5,7 idle, ~3,7 under measurement load. The slowest node sets the measuring window for the whole array\">Mbit/s</th>"
-"<th title=\"frame pairs the sensor failed to deliver. Non-zero means this camera needs a look; a node whose camera stops is dropped and rebooted\">stalls</th>"
+"<th class='l' title=\"board and address. Each row is that node answering for itself\">Node</th>"
+"<th title=\"exposure RIGHT NOW. Different rungs per node are normal &mdash; different sensors, different light\">Exp</th>"
+"<th class='l' title=\"halve or double this exposure by hand and reset the statistics, so mean_px answers in ~2 s. Refused while measuring; the next sweep overwrites it\">set exp</th>"
+"<th title=\"analog gain. Left at 1023 &mdash; the light is tuned with exposure and the lamp\">Gain</th>"
+"<th title=\"mean raw pixel byte. Must stay in [5,0 , 100,0]: below = partly frozen frames, above = heading for saturation\">mean_px</th>"
+"<th title=\"ones fraction of the POST-FOLD stream minus 0,5. Small by construction &mdash; raw_bias in /diagjson is the front end itself\">bias&minus;0.5</th>"
+"<th title=\"&sigma; of the per-mini-run z (3200 bits each). Gate wants |&sigma;&minus;1| &le; 0,05\">&sigma;</th>"
+"<th title=\"fraction of pixels with frame difference exactly 0. Their LSB is 0, so a high value explains a deficit of ones. Gated at 0,125\">zero_diff</th>"
+"<th title=\"largest |autocorrelation| over lags 1..4. Gated at 0,01, so it is never subsampled\">autocorr</th>"
+"<th title=\"extraction rate: ~5,7 idle, ~3,7 under load. The slowest node sets the window for the whole array\">Mbit/s</th>"
+"<th title=\"frame pairs the sensor failed to deliver. A node whose camera stops is dropped and rebooted\">stalls</th>"
 "</tr></thead><tbody id='rows'><tr><td class='l' colspan='11'>loading&hellip;</td></tr>"
 "</tbody></table>"
 "<p class='sub' id='msg' style='margin-top:12px;color:#cfe8cf;min-height:1.2em'></p>"

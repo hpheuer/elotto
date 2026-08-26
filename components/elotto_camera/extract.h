@@ -35,7 +35,18 @@ typedef struct {
 } cam_pack_t;
 
 /* Called once per completed 32-bit word. */
-typedef void (*cam_emit_fn)(uint32_t word, void *ctx);
+/* `raw_ones` is the number of PRE-FOLD LSB ones among exactly the pixels that
+ * produced this word — 0..64 folded, 0..32 not, and 0 when the caller passed
+ * no cam_raw_t.
+ *
+ * ⚠ It is a parameter and not a field the callback reads back out of the
+ * cam_raw_t, which is what it used to be. The callback is reached through a
+ * function POINTER, so the compiler has to assume every indirect call may
+ * write through that struct: the monitor's counters could not stay in
+ * registers across an emit and the bulk loop paid a full 64-bit load-modify-
+ * store per four pixels for each of them. Handing the count over cuts the
+ * dependency, and the extractor keeps the whole monitor in locals. */
+typedef void (*cam_emit_fn)(uint32_t word, uint32_t raw_ones, void *ctx);
 
 /* ── PRE-FOLD monitor (2026-08-26) ─────────────────────────────────────────
  *

@@ -34,6 +34,7 @@ void cam_extract_ref(const uint8_t *a, const uint8_t *b, uint32_t n, bool fold,
     bool     have = st->fold_have;
     uint32_t zeros = 0, psum = 0;
     uint8_t  any = 0;
+    uint32_t rw = 0;                 /* pre-fold ones since the last emit */
 
     for (uint32_t i = 0; i < n; i++) {
         psum += a[i];
@@ -41,7 +42,7 @@ void cam_extract_ref(const uint8_t *a, const uint8_t *b, uint32_t n, bool fold,
         any |= d;
         if (d == 0) zeros++;
         uint32_t bit = d & 1u;
-        if (raw) { raw->ones += bit; raw->run_ones += bit;
+        if (raw) { raw->ones += bit; raw->run_ones += bit; rw += bit;
                    raw->bits++; raw->run_bits++; raw_tick(raw); }
         if (fold) {
             if (!have) { pend = bit; have = true; continue; }
@@ -49,7 +50,7 @@ void cam_extract_ref(const uint8_t *a, const uint8_t *b, uint32_t n, bool fold,
             have = false;
         }
         acc = (acc << 1) | bit;
-        if (++accn == 32) { emit(acc, ctx); acc = 0; accn = 0; }
+        if (++accn == 32) { emit(acc, rw, ctx); acc = 0; accn = 0; rw = 0; }
     }
 
     st->bitacc = acc; st->bitacc_n = accn;
@@ -95,6 +96,46 @@ void cam_extract_fast(const uint8_t *a, const uint8_t *b, uint32_t n, bool fold,
     const int k = fold ? 2 : 4;          // bits produced per 4 pixels
     uint32_t i = 0;
 
+    /* ── The pre-fold monitor, entirely in LOCALS for the duration ───────
+     * It used to run out of *raw directly, and that cost far more than the
+     * arithmetic in it: emit() is an INDIRECT call, so the compiler had to
+     * assume every word emitted might write through `raw` and reloaded all
+     * seven counters afterwards. Four of them are uint64_t, which on RV32 is a
+     * two-word load-modify-store with a carry each — the bulk loop was paying
+     * roughly twenty-five instructions per four pixels for bookkeeping worth
+     * about six, and /camtest measured the whole monitor at +28,6 % of the
+     * extraction loop (ns_raw 68,5 against ns_fast 53,3).
+     *
+     * Locals are invisible to emit() by construction, so the whole monitor
+     * lives in registers and is written back once, at the end.
+     *
+     * ⚠ `ones` and `bits` are uint32 here on purpose: both are bounded by `n`,
+     * one frame is 640000 pixels, and the widening happens at write-back. The
+     * mini-run sums stay 64-bit — mr_sumsq grows by up to 3200² per term.
+     * ⚠ `bits` counts PIXELS CONSUMED and every path below consumes all of
+     * them, so it is not incremented in any loop: it is `n`, added at the end.
+     * That alone removed a 64-bit accumulate per four pixels. */
+    uint32_t r_word     = 0;             /* ones since the last emit         */
+    uint32_t r_ones     = 0;             /* ones in the words already emitted */
+    uint32_t r_run_ones = raw ? raw->run_ones : 0u;
+    uint32_t r_run_bits = raw ? raw->run_bits : 0u;
+    uint32_t r_mr_n     = 0;
+    uint64_t r_mr_sum   = 0, r_mr_sumsq = 0;
+
+    /* raw_tick() against the locals. Same test, same moment, same result — the
+     * self-test compares mr_n, mr_sum, mr_sumsq, run_ones and run_bits against
+     * the reference path on every case, so a divergence here cannot ship. */
+#define RAW_TICK()                                                      \
+    do {                                                                \
+        if (r_run_bits >= CAM_RAW_MINIRUN_BITS) {                       \
+            uint64_t o_ = r_run_ones;                                   \
+            r_mr_sum += o_; r_mr_sumsq += o_ * o_; r_mr_n++;            \
+            r_run_ones = 0; r_run_bits = 0;                             \
+        }                                                               \
+    } while (0)
+#define RAW_EMIT()  do { emit(acc, r_word, ctx);                        \
+                         r_ones += r_word; r_word = 0; } while (0)
+
     /* The bulk path emits k bits at a time, so it can only run from a state
      * where that cannot straddle a word boundary, and with no half-collected
      * fold pair. A byte-wise prologue walks into that state; in practice the
@@ -111,15 +152,14 @@ void cam_extract_fast(const uint8_t *a, const uint8_t *b, uint32_t n, bool fold,
         orx |= d;
         if (d == 0) zeros++;
         uint32_t bit = d & 1u;
-        if (raw) { raw->ones += bit; raw->run_ones += bit;
-                   raw->bits++; raw->run_bits++; raw_tick(raw); }
+        if (raw) { r_word += bit; r_run_ones += bit; r_run_bits++; RAW_TICK(); }
         if (fold) {
             if (!have) { pend = bit; have = true; i++; continue; }
             bit ^= pend;
             have = false;
         }
         acc = (acc << 1) | bit;
-        if (++accn == 32) { emit(acc, ctx); acc = 0; accn = 0; }
+        if (++accn == 32) { RAW_EMIT(); acc = 0; accn = 0; }
         i++;
     }
 
@@ -151,9 +191,8 @@ void cam_extract_fast(const uint8_t *a, const uint8_t *b, uint32_t n, bool fold,
          * no memory the loop was not already holding in registers. */
         if (raw) {
             uint32_t ro = ((x & LSB_MASK) * 0x01010101u) >> 24;
-            raw->ones += ro; raw->run_ones += ro;
-            raw->bits += 4;  raw->run_bits += 4;
-            raw_tick(raw);
+            r_word += ro; r_run_ones += ro; r_run_bits += 4;
+            RAW_TICK();
         }
 
         uint32_t nib = ((x & LSB_MASK) * GATHER_MUL) >> 24;   // p0 p1 p2 p3
@@ -171,7 +210,7 @@ void cam_extract_fast(const uint8_t *a, const uint8_t *b, uint32_t n, bool fold,
         }
         acc = (acc << k) | v;
         accn += k;
-        if (accn == 32) { emit(acc, ctx); acc = 0; accn = 0; }
+        if (accn == 32) { RAW_EMIT(); acc = 0; accn = 0; }
     }
 
     for (; i < n; i++) {                 // tail
@@ -180,15 +219,24 @@ void cam_extract_fast(const uint8_t *a, const uint8_t *b, uint32_t n, bool fold,
         orx |= d;
         if (d == 0) zeros++;
         uint32_t bit = d & 1u;
-        if (raw) { raw->ones += bit; raw->run_ones += bit;
-                   raw->bits++; raw->run_bits++; raw_tick(raw); }
+        if (raw) { r_word += bit; r_run_ones += bit; r_run_bits++; RAW_TICK(); }
         if (fold) {
             if (!have) { pend = bit; have = true; continue; }
             bit ^= pend;
             have = false;
         }
         acc = (acc << 1) | bit;
-        if (++accn == 32) { emit(acc, ctx); acc = 0; accn = 0; }
+        if (++accn == 32) { RAW_EMIT(); acc = 0; accn = 0; }
+    }
+
+    if (raw) {
+        raw->ones     += r_ones + r_word;   /* r_word: the unemitted partial */
+        raw->bits     += n;                 /* every path consumed all of it */
+        raw->run_ones  = r_run_ones;
+        raw->run_bits  = r_run_bits;
+        raw->mr_n     += r_mr_n;
+        raw->mr_sum   += r_mr_sum;
+        raw->mr_sumsq += r_mr_sumsq;
     }
 
     st->bitacc = acc; st->bitacc_n = accn;
@@ -197,6 +245,8 @@ void cam_extract_fast(const uint8_t *a, const uint8_t *b, uint32_t n, bool fold,
     if (out_any)   *out_any   |= orx;
     if (out_psum)  *out_psum  += psum;
 }
+#undef RAW_TICK
+#undef RAW_EMIT
 
 /* ── On-target self-test and micro-benchmark ───────────────────────────────
  * Runs on the node, in the binary that will do the measuring, because that is
@@ -218,16 +268,17 @@ void cam_extract_fast(const uint8_t *a, const uint8_t *b, uint32_t n, bool fold,
 
 typedef struct { uint32_t *buf; uint32_t n, cap; } collect_t;
 
-static void collect_emit(uint32_t w, void *ctx)
+static void collect_emit(uint32_t w, uint32_t ro, void *ctx)
 {
     collect_t *c = (collect_t *)ctx;
+    (void)ro;
     if (c->n < c->cap) c->buf[c->n] = w;
     c->n++;
 }
 
-static void count_emit(uint32_t w, void *ctx)
+static void count_emit(uint32_t w, uint32_t ro, void *ctx)
 {
-    (void)w;
+    (void)w; (void)ro;
     (*(volatile uint32_t *)ctx)++;   /* volatile: must not be optimised away */
 }
 
@@ -243,9 +294,10 @@ typedef struct {
     int      n;
 } statsim_t;
 
-static void stats_emit(uint32_t w, void *ctx)
+static void stats_emit(uint32_t w, uint32_t ro, void *ctx)
 {
     statsim_t *s = (statsim_t *)ctx;
+    (void)ro;
     int ones = (int)cam_popcount32(w);
     s->bits += 32; s->ones += ones;
     s->run_ones += ones; s->run_bits += 32;

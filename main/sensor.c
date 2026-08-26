@@ -1110,23 +1110,71 @@ double rank_key(const RunResult *r)
     double p = g_status.pre_w;
     if (w <= 0.0 && p <= 0.0) return (double)r->z_ctr;
 
-    double zh = (double)r->zh_ctr;
+    /* Each channel by its OWN measured σ before anything else. z_ctr is left
+     * alone: it is the reference scale, it really does run at σ = 1, and
+     * rescaling it would move the ?went=0 ?wpre=0 control arm. */
+    double sh = g_status.rank_sig_h, sp = g_status.rank_sig_p;
+    if (!(sh > 0.0)) sh = 1.0;
+    if (!(sp > 0.0)) sp = 1.0;
+
+    double zh = (double)r->zh_ctr / sh;
     if (zh >  ENT_Z_CLAMP) zh =  ENT_Z_CLAMP;
     if (zh < -ENT_Z_CLAMP) zh = -ENT_Z_CLAMP;
 
     /* The pre-fold z is clamped on the SAME bar and for the same reason: one
      * glitched frame must not own Top-5 for a session. The archive keeps the
      * unclamped value, here as there. */
-    double zp = (double)r->zp_ctr;
+    double zp = (double)r->zp_ctr / sp;
     if (zp >  ENT_Z_CLAMP) zp =  ENT_Z_CLAMP;
     if (zp < -ENT_Z_CLAMP) zp = -ENT_Z_CLAMP;
 
-    /* Three unit-variance, mutually independent halves, so the normaliser is
-     * the root of the summed squares and the key stays unit-variance at every
-     * weighting — the same construction the two-channel key used, extended.
-     * ⚠ z_pre enters with a PLUS: it is a z on the same scale and in the same
+    /* ⚠ z_pre enters with a PLUS: it is a z on the same scale and in the same
      * direction as z_ctr. Only the entropy term is negated, because LOW
-     * entropy is the interesting direction. */
+     * entropy is the interesting direction.
+     *
+     * The normaliser is the root of the summed squares, which is exact for
+     * three UNCORRELATED UNIT-VARIANCE terms. Both halves of that need saying.
+     *
+     * Uncorrelated: yes, and for z against z_pre it is exact rather than
+     * approximate. For one pair (a,b) of fair bits the raw contribution is
+     * a+b and the folded one a^b; E[(a+b)(a^b)] = 1/2 and E[a+b]·E[a^b] =
+     * 1·1/2, so the covariance is 0 at any n. The fold extracts the PARITY,
+     * which is orthogonal to the SUM — that orthogonality is the whole reason
+     * the fold works, and "z_pre sees the same bits" does not overturn it.
+     * (For a single pair the two are perfectly DEPENDENT — a^b = 1 iff
+     * a+b = 1 — and still uncorrelated; over 200 pairs it washes out into
+     * asymptotic independence.) Under H1 a coupling appears with a NEGATIVE
+     * sign, d(folded)/de = -4ne against d(raw)/de = +2n, and at e ~ 1e-4 it is
+     * nothing. Measured on the 1008-item session of 2026-08-26, within-block
+     * and per node: r(z,p) = +0,016 / +0,028 / -0,011 / +0,045 against an SE
+     * of 0,032, one sign change, largest 1,4 sigma.
+     *
+     * Unit-variance: only because it is ENFORCED here, since 2026-08-26. It
+     * is not true of the channels as measured. Folded z runs at sigma 1,00 and
+     * z_h at 1,02, but block-centred z_pre pooled to sigma 2,81 on the
+     * 1008-item session (1,6..2,4 per node). Left raw, that made the WEIGHTS
+     * LIE: at the nominal "50:50" of went=0,5 wpre=0,5 the pre-fold channel
+     * carried 88 % of the key's variance against the entropy's 12 %. Dividing
+     * each channel by its own measured sigma is what makes ?went= and ?wpre=
+     * the variance share they claim, and what makes ENT_Z_CLAMP a 12σ bar on
+     * every channel instead of only on z_h.
+     *
+     * The old scale was checkable: 0,707·sqrt(2,81² + 1,024²) = 2,115 against
+     * a measured sigma(key) of 2,1105, with no cross term at all — which is
+     * itself the sharpest evidence that the correlation really is zero.
+     *
+     * ⚠ POOLING SPLIT. A session ranked before this change and one ranked
+     * after are different instruments for anything read off the three tables.
+     * z_raw and z_ctr still pool, as always — this touches nothing they use.
+     * ⚠ rank_sig_h / rank_sig_p are re-estimated at every publish, so the key
+     * VALUES move early in a session and can reorder while the two sigmas are
+     * still settling relative to each other. They converge within the first
+     * block; freezing them instead would let one bad opening block own the
+     * scale for the whole session, which is the worse failure.
+     * ⚠ None of this reaches Z*. rank_sigma is the key's OWN empirical sigma
+     * over the ranked items (see recompute_pass_ranks), so the studentized
+     * column absorbs whatever scale is left. What the scale affects is the
+     * meaning of the weights above. */
     double a = 1.0 - w - p;
     double n = sqrt(a * a + w * w + p * p);
     if (!(n > 0.0)) return (double)r->z_ctr;
@@ -1151,6 +1199,14 @@ static bool result_ranked(const RunResult *r)
  * describe the TABLES (top/bottom/nearest, zmax) must not. */
 static double s_drop_sum, s_drop_sumsq;
 static int    s_drop_n, s_drop_void, s_drop_excl;
+/* The same, for the two side channels — needed since rank_key() standardises
+ * by their measured σ. Without these, σ after a compaction would be the σ OF
+ * THE SURVIVORS, which are the extremes by construction: it would read high,
+ * shrink the channel it is dividing, and quietly reweight the key at every
+ * round boundary. Their own counts, because an item can be ranked and carry no
+ * H and no pre-fold value. */
+static double s_drop_hsum, s_drop_hsumsq, s_drop_psum, s_drop_psumsq;
+static int    s_drop_hn, s_drop_pn;
 
 /* Recompute pass mean/σ/χ², studentized Top-N / Bottom-N, and Bonferroni p
  * from the ranked prefix. O(n·TOP_N) after each valid item — exact against
@@ -1184,7 +1240,11 @@ static void recompute_pass_ranks(void)
         g_status.p_corrected = 1.0;
         g_status.comparisons = 0;
         g_status.rank_mean = g_status.rank_sigma = 0.0;
+        /* Cleared with the rest: a stale σ from the previous session would
+         * standardise the first items of this one against the wrong scale. */
+        g_status.rank_sig_h = g_status.rank_sig_p = 0.0;
         g_status.ent_n = g_status.ent_clamped = 0;
+        g_status.pre_n = g_status.pre_clamped = 0;
         update_null_flags();
         return;
     }
@@ -1207,8 +1267,40 @@ static void recompute_pass_ranks(void)
      * the UI's Z* and the nearest-mean table have to be studentized against
      * the key that ordered them, not against z's moments. At ?went=0 the key
      * IS z_ctr and the two pairs coincide exactly. */
+    /* ── First: each side channel's own σ, from the UNCLAMPED archive ──────
+     * rank_key() divides by these, so they have to be settled before it is
+     * called even once below. Seeded with the compaction moments for the same
+     * reason the z statistics above are: over held rows alone, after a
+     * compaction, this would be the σ of the extremes.
+     * ⚠ Population-style two-pass is not possible here without a second walk,
+     * so it is the usual Σx, Σx² form — the channels sit at |mean| well under
+     * 1 in units of their own σ, so the cancellation is not delicate. */
+    double hsum = s_drop_hsum, hsumsq = s_drop_hsumsq;
+    double psum = s_drop_psum, psumsq = s_drop_psumsq;
+    int    hn = s_drop_hn, pn = s_drop_pn;
+    for (int j = 0; j < ntot; j++) {
+        const RunResult *r = &g_status.results[j];
+        if (!result_ranked(r)) continue;
+        if (r->zh_ctr != 0.0f) {
+            double h = (double)r->zh_ctr;
+            hsum += h; hsumsq += h * h; hn++;
+        }
+        if (r->zp_ctr != 0.0f) {
+            double pv = (double)r->zp_ctr;
+            psum += pv; psumsq += pv * pv; pn++;
+        }
+    }
+    double hss = hsumsq - (hn > 0 ? hsum * hsum / (double)hn : 0.0);
+    double pss = psumsq - (pn > 0 ? psum * psum / (double)pn : 0.0);
+    g_status.rank_sig_h = (hn > 1 && hss > 0.0) ? sqrt(hss / (double)(hn - 1)) : 0.0;
+    g_status.rank_sig_p = (pn > 1 && pss > 0.0) ? sqrt(pss / (double)(pn - 1)) : 0.0;
+
+    /* Now the key, which reads those two. The clamp counters are tested on the
+     * STANDARDISED value, because that is what the bar applies to. */
+    double sh = g_status.rank_sig_h > 0.0 ? g_status.rank_sig_h : 1.0;
+    double sp = g_status.rank_sig_p > 0.0 ? g_status.rank_sig_p : 1.0;
     double ksum = 0.0, ksumsq = 0.0;
-    int    kn = 0, ent_n = 0, ent_clamped = 0;
+    int    kn = 0, ent_n = 0, ent_clamped = 0, pre_n = 0, pre_clamped = 0;
     for (int j = 0; j < ntot; j++) {
         const RunResult *r = &g_status.results[j];
         if (!result_ranked(r)) continue;
@@ -1216,7 +1308,11 @@ static void recompute_pass_ranks(void)
         ksum += kk; ksumsq += kk * kk; kn++;
         if (r->zh_ctr != 0.0f) {
             ent_n++;
-            if (fabs((double)r->zh_ctr) >= ENT_Z_CLAMP) ent_clamped++;
+            if (fabs((double)r->zh_ctr) / sh >= ENT_Z_CLAMP) ent_clamped++;
+        }
+        if (r->zp_ctr != 0.0f) {
+            pre_n++;
+            if (fabs((double)r->zp_ctr) / sp >= ENT_Z_CLAMP) pre_clamped++;
         }
     }
     /* ⚠ NOT seeded with the compaction moments, unlike the z statistics above.
@@ -1232,6 +1328,8 @@ static void recompute_pass_ranks(void)
     g_status.rank_sigma  = ksigma;
     g_status.ent_n       = ent_n;
     g_status.ent_clamped = ent_clamped;
+    g_status.pre_n       = pre_n;
+    g_status.pre_clamped = pre_clamped;
 
     /* Subtracting the mean and dividing by σ is monotone, so it reorders
      * nothing; it only sets the scale the UI prints. zmax_abs is kept
@@ -1376,6 +1474,16 @@ static void pass_compact(void)
                 s_drop_sum   += z;
                 s_drop_sumsq += z * z;
                 s_drop_n++;
+                /* 0 means "no value for this item", the same convention
+                 * rank_key() and ent_n use — it must not enter a σ. */
+                if (r->zh_ctr != 0.0f) {
+                    double h = (double)r->zh_ctr;
+                    s_drop_hsum += h; s_drop_hsumsq += h * h; s_drop_hn++;
+                }
+                if (r->zp_ctr != 0.0f) {
+                    double pv = (double)r->zp_ctr;
+                    s_drop_psum += pv; s_drop_psumsq += pv * pv; s_drop_pn++;
+                }
             }
             dropped++;
             continue;
@@ -1632,8 +1740,17 @@ static void pairs_fold_loop(void)
          * is what ends their block. Clearing them anywhere else would let one
          * block's items be centred on another block's mean — the failure would
          * show as an entropy offset drifting with the block index, which is
-         * indistinguishable from the thermal drift this rig is looking for. */
+         * indistinguishable from the thermal drift this rig is looking for.
+         * ⚠ s_pacc belongs in the SAME place and was missing here until
+         * 2026-08-26. It cost the pre-fold channel outright: mp[] became a
+         * cumulative mean over every block so far, so from the second block on
+         * every item was centred on the wrong number and zp_ctr carried the
+         * running difference. The 1008-item session read mean zp_ctr +20,05
+         * against a per-block mean of 0 — and the failure is invisible in
+         * z_ctr and zh_ctr, which centre correctly, so only the pre-fold
+         * channel's own mean shows it. */
         s_hacc[i].s = s_hacc[i].ss = 0.0; s_hacc[i].n = 0;
+        s_pacc[i].s = s_pacc[i].ss = 0.0; s_pacc[i].n = 0;
 
         for (int j = i + 1; j < MAX_NODES; j++) {
             PairAcc *p = &s_pair[i][j];
@@ -2328,6 +2445,8 @@ void elotto_task(void *pvParam)
     g_status.compacted       = 0;
     s_drop_sum = s_drop_sumsq = 0.0;
     s_drop_n = s_drop_void = s_drop_excl = 0;
+    s_drop_hsum = s_drop_hsumsq = s_drop_psum = s_drop_psumsq = 0.0;
+    s_drop_hn = s_drop_pn = 0;
     // unlimited / runs_cap are session parameters from /start and are NOT reset
     // here — they tag the session, exactly like focus_mode.
     g_status.round           = 0;

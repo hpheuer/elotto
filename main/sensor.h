@@ -502,6 +502,17 @@ typedef struct {
  * is ~4,4) and still lets a genuinely extreme item reach the top of the table.
  * Items that hit the clamp are counted and published as `ent_clamped`. */
 #define ENT_W_DEFAULT   0.50
+/* ⚠ This is a bar in units of the CHANNEL'S OWN σ, not in raw z. rank_key()
+ * standardises every channel by rank_sig_h / rank_sig_p first, so 12 means 12σ
+ * for the entropy and the pre-fold channel alike.
+ * ⚠ It did not always. Until 2026-08-26 the bar was a raw 12 applied to
+ * unstandardised values: fine for z_h, which runs at σ ≈ 1,02, and wrong for
+ * the pre-fold channel, which runs at σ ≈ 2,81 — there a raw 12 is a 4,3σ bar
+ * that cuts into the honest tail of the distribution. It showed on hardware:
+ * at ?wpre=0,85 all five Bottom-5 rows sat at −12,2…−12,4, i.e. pinned, and
+ * what ordered them was the leftover z term rather than the channel that was
+ * supposed to rank. `ent_clamped` said 0 throughout, because it only ever
+ * watched z_h — hence pre_clamped. */
 #define ENT_Z_CLAMP     12.0
 
 // Focus display: what is on screen right now, for
@@ -785,6 +796,14 @@ typedef struct {
                                           // the nearest-mean table are built on
     int              ent_n;               // ranked items that carry an entropy value
     int              ent_clamped;         // of those, items pinned at ENT_Z_CLAMP
+    int              pre_n;               // ranked items that carry a pre-fold value
+    int              pre_clamped;         // of those, items pinned at the clamp
+    /* Measured σ of the entropy and pre-fold channels over the ranked items,
+     * from the UNCLAMPED archive. rank_key() divides each channel by its own
+     * before weighting, which is what makes ENT_Z_CLAMP a 12σ bar on all three
+     * and what makes ?went=/?wpre= mean the variance share they claim. 0 =
+     * not enough items yet; rank_key() then falls back to 1.0. */
+    double           rank_sig_h, rank_sig_p;
     double           ent_h_last;          // last item's combined H/ln(K), for the UI
     double           ent_zh_last;         // and its combined z_h
     int              ent_windows;         // Welch windows per run at this ?run=
