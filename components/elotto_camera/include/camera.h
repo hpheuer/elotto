@@ -56,6 +56,31 @@ typedef struct {
     double   raw_sigma;           // stddev of per-mini-run z, pre-fold (ideal 1.0)
     int      raw_sigma_samples;   // mini-runs folded into raw_sigma
     uint64_t raw_bits;            // pre-fold bits == pixels consumed
+    /* ── The RUNS channel, pre-fold (2026-08-27) ──────────────────────────
+     * The entropy a rung delivers is short by two terms: one from the bits
+     * being unbalanced, one from them depending on each other. `raw_bias` is
+     * the first term — it IS the monobit test. This is the second.
+     *
+     * `raw_runs_z` is the NIST runs statistic over the pre-fold stream, with
+     * one deliberate departure: E[V] and SD[V] are taken from the OBSERVED
+     * proportion of ones, not from 1/2. NIST refuses to run the runs test at
+     * all unless |pi - 1/2| <= 2/sqrt(n), and at these bit counts that bar is
+     * ~6e-4 against a raw bias that misses 0,5 by up to 5e-3 — every rung
+     * would be refused. Conditioning on the observed pi is what makes the
+     * number useful HERE: it measures clustering GIVEN the imbalance, so it
+     * says something monobit does not, instead of restating it.
+     *
+     * Sign is informative. NEGATIVE = fewer runs than the marginal implies,
+     * i.e. the bits clump — which is the dark-end failure, where zero pixel
+     * differences give deterministic zeros and those sit together in dark
+     * regions. POSITIVE = more runs than implied, i.e. alternation.
+     * ⚠ NOT a gate and NOT in the ranking (2026-08-27). Measured and published
+     * so it can be replayed across all four nodes first; whether it orders the
+     * certified rungs at all is exactly the open question.
+     * ⚠ 0,0 means the channel was not armed or the window is empty — it is not
+     * a reading of "perfectly random". Check `raw_trans`. */
+    uint64_t raw_trans;           // pre-fold adjacent bit pairs that differ
+    double   raw_runs_z;          // NIST runs z, conditioned on the observed bias
 
     /* P4 die temperature, the covariate for the raw-channel offset monitor
      * (D44). ⚠ It is the SoC die, NOT the OV5647 — a proxy that shares the
@@ -185,6 +210,7 @@ double camera_fps_probe(int frames, int timeout_ms);
 #define CAM_CAL_FAIL_LIGHT   0x40   // mean pixel level above the light-leak floor
 #define CAM_CAL_FAIL_DARK    0x80   // mean pixel level below the shot-noise floor
 #define CAM_CAL_FAIL_ZDIFF  0x100   // too many zero pixel differences
+#define CAM_CAL_FAIL_RSIG   0x200   // PRE-FOLD per-mini-run sigma above the bar
 
 #define CAM_CAL_MAX_STEPS   12
 
@@ -199,14 +225,14 @@ typedef struct {
     double   bias, sigma, mbit_per_sec;
     double   autocorr_max;      // max |lag 1..4|
     double   mean_pixel_level, zero_diff_frac;
-    /* PRE-FOLD, for this candidate's window (D43). Recorded but NOT GATED ON:
-     * the fold masks part of a drifting front end, so a rung can score well on
-     * `bias`/`sigma` above while the raw stream is already degrading, and this
-     * is what would show it. On the live array good rungs sit at raw_sigma
-     * 1,05-1,08, so a naive |raw_sigma-1| <= 0,05 bar would reject exposures
-     * the instrument uses successfully — the threshold has to be replayed
-     * against /loops before it can become a gate. */
+    /* PRE-FOLD, for this candidate's window (D43). GATED since 2026-08-27 —
+     * both of them, and the comment this replaces was the reason it took so
+     * long: a naive |raw_sigma-1| <= 0,05 bar WOULD reject rungs the array uses
+     * successfully, so the bar is one-sided and set from the measured gap
+     * instead. See CAL_MAX_RAW_BIAS and CAL_RAW_SIGMA_MAX in camera.c. */
     double   raw_bias, raw_sigma;
+    double   raw_runs_z;        // pre-fold runs statistic; measured, NOT gated
+    uint64_t raw_bits;          // pre-fold bits behind raw_bias/raw_runs_z
     uint32_t stuck_frames;
     uint32_t fail;              // CAM_CAL_FAIL_* bitmask, 0 = passed
 } camera_cal_step_t;
@@ -218,6 +244,8 @@ typedef struct {
     bool     xor_fold;
     double   bias, sigma, mbit_per_sec, autocorr_max, mean_pixel_level;
     double   raw_bias, raw_sigma;   // PRE-FOLD, of the setting actually chosen (D43)
+    double   raw_runs_z;            // PRE-FOLD runs statistic of that setting
+    bool     kept;                  // the incumbent rung was kept (hysteresis)
     int      nsteps;
     uint32_t elapsed_ms;
     /* The z-per-unit-bias the bias gate was scaled to (see

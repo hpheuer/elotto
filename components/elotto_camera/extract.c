@@ -13,6 +13,11 @@
  * them to a σ at publish time. Called once per 3200 pixels, i.e. 200 times per
  * frame against 160000 bulk iterations — it is not on the hot path in any
  * meaningful sense. */
+/* popcount of a 4-bit value. One byte load against seven ALU ops, and the
+ * table is 16 bytes — it lives in the same cache line for the life of the
+ * loop. Used by the runs channel in both extractors. */
+static const uint8_t s_pc4[16] = { 0,1,1,2,1,2,2,3,1,2,2,3,2,3,3,4 };
+
 static inline void raw_tick(cam_raw_t *raw)
 {
     if (raw->run_bits < CAM_RAW_MINIRUN_BITS) return;
@@ -43,7 +48,11 @@ void cam_extract_ref(const uint8_t *a, const uint8_t *b, uint32_t n, bool fold,
         if (d == 0) zeros++;
         uint32_t bit = d & 1u;
         if (raw) { raw->ones += bit; raw->run_ones += bit; rw += bit;
-                   raw->bits++; raw->run_bits++; raw_tick(raw); }
+                   raw->bits++; raw->run_bits++; raw_tick(raw);
+                   if (raw->want_runs) {
+                       if (raw->have_prev) raw->trans += (bit ^ raw->prev);
+                       raw->prev = bit; raw->have_prev = true;
+                   } }
         if (fold) {
             if (!have) { pend = bit; have = true; continue; }
             bit ^= pend;
@@ -122,6 +131,15 @@ void cam_extract_fast(const uint8_t *a, const uint8_t *b, uint32_t n, bool fold,
     uint32_t r_run_bits = raw ? raw->run_bits : 0u;
     uint32_t r_mr_n     = 0;
     uint64_t r_mr_sum   = 0, r_mr_sumsq = 0;
+    /* Runs channel, same locals-only treatment as the rest of the monitor.
+     * `r_tmask` folds have_prev into the transition mask so the "no previous
+     * bit yet" case costs a move rather than a test: 0x7 drops the leading
+     * transition of the very first nibble, and every path sets it to 0xF the
+     * moment it has consumed a bit. */
+    const bool wr       = raw && raw->want_runs;
+    uint32_t r_trans    = 0;
+    uint32_t r_prev     = wr ? raw->prev : 0u;
+    uint32_t r_tmask    = (wr && raw->have_prev) ? 0xFu : 0x7u;
 
     /* raw_tick() against the locals. Same test, same moment, same result — the
      * self-test compares mr_n, mr_sum, mr_sumsq, run_ones and run_bits against
@@ -154,6 +172,8 @@ void cam_extract_fast(const uint8_t *a, const uint8_t *b, uint32_t n, bool fold,
         if (d == 0) zeros++;
         uint32_t bit = d & 1u;
         if (raw) { r_word += bit; r_run_ones += bit; r_run_bits++; RAW_TICK(); }
+        if (wr) { r_trans += (r_tmask >> 3) & (bit ^ r_prev);
+                  r_prev = bit; r_tmask = 0xFu; }
         if (fold) {
             if (!have) { pend = bit; have = true; i++; continue; }
             bit ^= pend;
@@ -197,6 +217,18 @@ void cam_extract_fast(const uint8_t *a, const uint8_t *b, uint32_t n, bool fold,
         }
 
         uint32_t nib = ((x & LSB_MASK) * GATHER_MUL) >> 24;   // p0 p1 p2 p3
+
+        /* Transitions among prev,p0,p1,p2,p3. Stack the carried bit on top of
+         * the nibble and XOR against a one-bit right shift: bit 3 becomes
+         * prev^p0, bits 2..0 the three internal pairs. Masking with r_tmask
+         * drops bit 3 on the very first nibble of a window. */
+        if (wr) {
+            uint32_t w = (r_prev << 4) | nib;
+            r_trans += s_pc4[(w ^ (w >> 1)) & r_tmask];
+            r_prev = nib & 1u;                              /* p3 */
+            r_tmask = 0xFu;
+        }
+
         uint32_t v;
         if (fold) {
             /* ⚠ SHIFT LEFT. nib holds p0 p1 p2 p3 from bit 3 down, so the
@@ -221,6 +253,8 @@ void cam_extract_fast(const uint8_t *a, const uint8_t *b, uint32_t n, bool fold,
         if (d == 0) zeros++;
         uint32_t bit = d & 1u;
         if (raw) { r_word += bit; r_run_ones += bit; r_run_bits++; RAW_TICK(); }
+        if (wr) { r_trans += (r_tmask >> 3) & (bit ^ r_prev);
+                  r_prev = bit; r_tmask = 0xFu; }
         if (fold) {
             if (!have) { pend = bit; have = true; continue; }
             bit ^= pend;
@@ -238,6 +272,16 @@ void cam_extract_fast(const uint8_t *a, const uint8_t *b, uint32_t n, bool fold,
         raw->mr_n     += r_mr_n;
         raw->mr_sum   += r_mr_sum;
         raw->mr_sumsq += r_mr_sumsq;
+        /* Only when armed: with the channel off r_prev/r_tmask were never
+         * advanced and writing them back would leave `prev` describing a bit
+         * that is now thousands of pixels behind. r_tmask == 0xF is exactly
+         * "have_prev was already set, or this call consumed at least one
+         * pixel", so it doubles as the new have_prev. */
+        if (wr) {
+            raw->trans    += r_trans;
+            raw->prev      = r_prev;
+            raw->have_prev = (r_tmask == 0xFu);
+        }
     }
 
     st->bitacc = acc; st->bitacc_n = accn;
@@ -329,7 +373,10 @@ static bool case_equal(const uint8_t *a, const uint8_t *b, uint32_t n, bool fold
     cam_pack_t s1 = {0}, s2 = {0};
     collect_t c1 = { wa, 0, cap }, c2 = { wb, 0, cap };
     uint32_t z1 = 0, z2 = 0, a1 = 0, a2 = 0, p1 = 0, p2 = 0;
+    /* The runs channel is ARMED here: it is gated at runtime, and a self-test
+     * that left it off would compare two zeros and call the paths equal. */
     cam_raw_t r1 = {0}, r2 = {0};
+    r1.want_runs = true; r2.want_runs = true;
 
     cam_extract_ref (a, b, n, fold, &s1, collect_emit, &c1, &z1, &a1, &p1, &r1);
     cam_extract_fast(a, b, n, fold, &s2, collect_emit, &c2, &z2, &a2, &p2, &r2);
@@ -351,6 +398,19 @@ static bool case_equal(const uint8_t *a, const uint8_t *b, uint32_t n, bool fold
         r1.run_ones != r2.run_ones || r1.run_bits != r2.run_bits) {
         rep->what = 7;
         rep->ref_w  = (uint32_t)r1.ones;  rep->fast_w = (uint32_t)r2.ones;
+        rep->bad_at = (uint32_t)r1.bits;
+        return false;
+    }
+    /* The runs channel, held to the same standard. The reference compares one
+     * bit against its predecessor; the bulk path derives four transitions at a
+     * time out of a nibble and a carried bit, so this is a real comparison of
+     * two different computations. The carried state is compared too — a path
+     * that counted correctly but left `prev` wrong would drop or invent one
+     * transition per frame pair, which no aggregate here would show. */
+    if (r1.trans != r2.trans || r1.prev != r2.prev ||
+        r1.have_prev != r2.have_prev) {
+        rep->what = 9;
+        rep->ref_w  = (uint32_t)r1.trans; rep->fast_w = (uint32_t)r2.trans;
         rep->bad_at = (uint32_t)r1.bits;
         return false;
     }

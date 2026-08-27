@@ -2500,6 +2500,7 @@ void elotto_task(void *pvParam)
     g_status.round           = 0;
     g_status.round_base      = 0;
     g_status.round_item_base = 0;
+    g_status.round_start_ms  = 0;
     g_status.round_total     = 0;
     g_status.baseline_done   = 0;
     g_status.scoring_done    = 0;
@@ -2811,6 +2812,12 @@ void elotto_task(void *pvParam)
          * mean or sigma, so the D42 sanity check does not catch this. */
         g_status.round_base      = g_status.runs_completed;
         g_status.round_item_base = g_status.items_done;
+        /* Stamped HERE and not at `round++`: the sweep, baseline and scoring
+         * pass sit between the two, and none of them measures a combination.
+         * Taking the mark at the boundary would put a minute or more of
+         * preparation into the round's measuring clock and make the panel's
+         * pace figure disagree with its own ETA. */
+        g_status.round_start_ms  = (uint32_t)elapsed_ms_now();
         int room = NUM_RUNS - g_status.runs_completed;
         int round_total = full_combos;
         if (round_total > room) { round_total = room; space_full = true; }

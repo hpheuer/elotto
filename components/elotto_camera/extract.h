@@ -79,6 +79,30 @@ typedef struct {
     uint32_t mr_n;       /* completed mini-runs                                */
     uint64_t mr_sum;     /* Σ ones over completed mini-runs                    */
     uint64_t mr_sumsq;   /* Σ ones² — max 3200² per term, uint64 cannot wrap   */
+    /* ── The RUNS channel (2026-08-27) ────────────────────────────────────
+     * `trans` counts adjacent pre-fold bit pairs that DIFFER, over the whole
+     * stream and across call boundaries. The NIST runs statistic wants the
+     * number of runs V = trans + 1, and camera.c reduces it to a z at publish
+     * time — integer-only in here, like everything else in this struct.
+     *
+     * Why transitions and not runs directly: a run straddles frame pairs, so a
+     * run counter would need the same carried state AND a special case for the
+     * very first bit. Transitions need only the previous bit, which is exactly
+     * `prev`/`have_prev`, and V = trans + 1 recovers the count in one add.
+     *
+     * ⚠ `want_runs` gates it because it is NOT free: the bulk loop pays about
+     * nine more ops per four pixels, roughly doubling the pre-fold monitor,
+     * and this loop is compute-bound under measurement load (D25). It is armed
+     * at a stats reset and never mid-window — toggling it while a window is
+     * open leaves `prev` stale against the bits already consumed and costs one
+     * spurious transition, so the ratio trans/bits would describe two
+     * different spans.
+     * ⚠ With the fold OFF the raw stream IS the emitted stream, so this counts
+     * transitions of the measured bits themselves. */
+    uint64_t trans;      /* adjacent pre-fold bit pairs that differ            */
+    uint32_t prev;       /* last pre-fold bit seen (0/1)                       */
+    bool     have_prev;  /* false only before the very first bit of a window   */
+    bool     want_runs;  /* arm the transition count; see above                */
 } cam_raw_t;
 
 /* Both return the number of bytes consumed (== n) and report, via the out
@@ -121,7 +145,9 @@ typedef struct {
     int      failed_case;    // 1-based index of the first mismatch, 0 = none
     /* What exactly diverged, so a failure is diagnosable from the endpoint
      * instead of by guessing and reflashing. `what`: 1 word count, 2 zero
-     * count, 3 stuck verdict, 4 leftover packer state, 5 a word. */
+     * count, 3 stuck verdict, 4 leftover packer state, 5 a word, 6 pixel sum,
+     * 7 the pre-fold monitor, 8 fold-off raw-vs-emitted cross-check,
+     * 9 the runs channel (transitions or the carried bit). */
     int      what;
     uint32_t bad_at;         // index of the first differing word
     uint32_t ref_w, fast_w;  // and the two values there

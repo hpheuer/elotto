@@ -161,6 +161,34 @@ static void tsens_start(void)
 }
 
 static cam_raw_t s_raw;
+/* Runs channel on/off, read only at a stats reset. OFF outside a sweep, and
+ * that is the whole design (2026-08-27, measured).
+ *
+ * It was armed permanently for one session. Two things came out of it:
+ *
+ *  - On the FAILING rungs the statistic is enormous — .103 read -157 at
+ *    exposure 128 and -416 at 256, where negative means the bits clump. As a
+ *    detector of a bad operating point it is far sharper than bias.
+ *  - Among the CERTIFIED rungs, i.e. where the choice is actually made, all
+ *    four nodes sat between -1,4 and +1,7. It does not order them.
+ *
+ * So it is a GATE candidate and not a ranking key, and a gate only has to run
+ * where the gating happens: in the sweep. That also removes its cost from the
+ * measurement, where the loop is compute-bound (D25) — /camtest measured the
+ * pre-fold monitor at +5,9 % of the extraction loop with it armed, and the
+ * array read 5,38 Mbit/s idle against 5,66 before.
+ *
+ * ⚠ During a measurement window raw_runs_z therefore publishes 0,0. That is
+ * "not armed", NOT "perfectly random" — raw_trans 0 is what says which.
+ * ⚠ Read only by stats_reset_locked(). The channel carries one bit of state
+ * across calls, so flipping this inside an open window would make trans and
+ * bits describe two different spans. The sweep sets it before its first
+ * candidate reset and clears it before the closing one. */
+static volatile bool s_raw_runs_on = false;
+/* s_raw is static, so want_runs starts FALSE and only stats_reset_locked()
+ * moves it. Kept as a named call so camera_init() states the initial value
+ * rather than relying on the zero-initialiser to mean the right thing. */
+static void raw_runs_arm_initial(void) { s_raw.want_runs = s_raw_runs_on; }
 
 /* ⚠ The monitor is not free, but it is no longer expensive. /camtest on
  * hardware 2026-08-27: ns_raw 59,18 against ns_fast 54,04 ns/pixel, i.e.
@@ -458,6 +486,24 @@ static void publish_stats(void)
             raw_sigma = sqrt(ss / (n - 1.0)) / sqrt(CAM_RAW_MINIRUN_BITS * 0.25);
     }
 
+    /* The runs statistic, conditioned on the observed proportion of ones —
+     * see raw_runs_z in camera.h for why it is not the textbook 1/2 form.
+     *   V    = trans + 1                    (runs from transitions)
+     *   E[V] = 2*n*pi*(1-pi) + 1
+     *   SD[V]= 2*sqrt(2n)*pi*(1-pi)
+     * Guarded on a real window: with pi at 0 or 1 the SD is zero and there is
+     * nothing to standardise. */
+    double raw_runs_z = 0.0;
+    if (s_raw.want_runs && s_raw.bits > 1 && s_raw.ones > 0 &&
+        s_raw.ones < s_raw.bits) {
+        double n  = (double)s_raw.bits;
+        double pi = (double)s_raw.ones / n;
+        double q  = pi * (1.0 - pi);
+        double sd = 2.0 * sqrt(2.0 * n) * q;
+        if (sd > 0.0)
+            raw_runs_z = ((double)s_raw.trans + 1.0 - (2.0 * n * q + 1.0)) / sd;
+    }
+
     xSemaphoreTake(s_mutex, portMAX_DELAY);
     s_stats.ready             = true;
     s_stats.bits_extracted    = s_bits_extracted;
@@ -472,6 +518,8 @@ static void publish_stats(void)
     s_stats.raw_sigma         = raw_sigma;
     s_stats.raw_sigma_samples = s_raw.mr_n;
     s_stats.raw_bits          = s_raw.bits;
+    s_stats.raw_trans         = s_raw.trans;
+    s_stats.raw_runs_z        = raw_runs_z;
     s_stats.die_temp_c        = s_die_temp;
     s_stats.ring_drops        = s_ring_drops;
     s_stats.consumer_waits    = s_consumer_waits;
@@ -515,6 +563,11 @@ static void stats_reset_locked(void)
     s_pixel_sum = 0; s_pixel_n = 0;
     s_zero_diffs = 0; s_diff_n = 0;
     memset(&s_raw, 0, sizeof(s_raw));    // pre-fold monitor, same window as the rest
+    /* Re-arm the runs channel: the memset above cleared the flag with the
+     * counters. Arming it HERE and nowhere else is the contract — the channel
+     * carries one bit of state across calls, and toggling it inside an open
+     * window would make trans/bits describe two different spans. */
+    s_raw.want_runs = s_raw_runs_on;
     s_us_wait = 0; s_us_ext = 0; s_us_rest = 0; s_us_cycle = 0;
     s_acct_pairs = 0; s_last_pair_us = 0;
     memset(&s_pack, 0, sizeof(s_pack));  // a half-folded pair must not straddle
@@ -715,6 +768,7 @@ esp_err_t camera_init(void)
     return ESP_ERR_NOT_SUPPORTED;
 #else
     tsens_start();          /* covariate for the offset monitor; NAN if unavailable */
+    raw_runs_arm_initial(); /* off until a sweep arms it; see s_raw_runs_on */
     esp_err_t ret;
 
     /* Do-not-double-init: the boot path calls this once, but a defensive guard
@@ -1186,6 +1240,118 @@ static const uint32_t s_cal_ladder[] = { 4, 8, 16, 32, 64, 128, 256, 512 };
  * Both limits are reported per step, so a sweep says which one bound it. */
 #define CAL_MAX_Z_OFFSET      1.0
 #define CAL_BIAS_SE_K         3.0
+/* ── The bias gate moves BEFORE the fold (2026-08-27) ─────────────────────
+ * Everything above this block is still true and is the reason the gate had to
+ * move: the bar is noise-limited, it cannot resolve the health bar it feeds.
+ * What the 2026-08-27 session showed is that it is worse than noise-limited —
+ * measured on the FOLDED stream there is nothing left to resolve.
+ *
+ * The fold maps a raw bias e to ~2e^2 (see gcp_zscore_pre). The master's
+ * ladder that day, as distance from 0,5 in units of 1e-3:
+ *
+ *     exp        4      8     16     32     64    128    256    512
+ *     raw     11,7    8,4    5,4    2,4    0,5    5,5   10,3   26,8
+ *     folded   ...          0,03   0,21   0,04
+ *
+ * Squaring 5,4e-3 gives 5,9e-5, and the window's own SE(bias) is 2,3e-4. The
+ * fold pushes every certified rung four times below the noise floor of the
+ * measurement, so |bias-0,5| after it is a coin toss: the sweep picked
+ * exposure 16 over 64 by 6e-6, a fortieth of its own standard error, and the
+ * two rungs then differed by a factor of TEN in the offset they actually
+ * produced (-0,64 against -0,06 z per run over 50 blocks).
+ *
+ * The raw column is the same physical quantity BEFORE the fold squashes it: a
+ * clean U with one minimum, ~20x its own noise between neighbouring rungs, and
+ * it orders the rungs exactly as their measured offsets do. It is also the
+ * monobit test, i.e. the first-order term of the entropy deficit — the
+ * quantity this instrument is trying to maximise in the first place.
+ *
+ * So both the SELECTION and the GATE run on raw_bias, and the folded bias is
+ * kept as a published diagnostic only.
+ *
+ * ⚠ The old bar CANNOT be carried over. CAL_MAX_Z_OFFSET converts through
+ * gcp_z_per_bias, which is the FOLDED coupling; applied to a raw bias it would
+ * reject the entire ladder including the best rung. The bar below is set the
+ * way CAL_MIN_MEAN_PX and CAL_MAX_ZERO_DIFF were — cut between the lowest rung
+ * that behaves and the highest that does not, on measured evidence:
+ *
+ *   behaves : exp 16/32/64, raw distance 5,4 / 2,4 / 0,5 e-3
+ *   does not: exp 8 at 8,4e-3 (and it already fails DARK), 128 at 5,5e-3
+ *             (and it already fails SIGMA at 1,208)
+ *
+ * ⛔ There is NO absolute bar on the raw bias, and the attempt to set one is
+ * why this paragraph exists. A 6,0e-3 bar was fitted to the ladder above and
+ * failed on the very next sweep 25 minutes later: every node's raw distance
+ * had roughly TRIPLED — master exp 64 from 1,13e-3 to 3,42e-3, .155's best
+ * rung from 1,94e-3 to 7,63e-3 — and .155 came back with CAM_CAL_FAIL_BIAS on
+ * all nine rungs, i.e. CERTIFIED-EMPTY while its camera was fine.
+ *
+ * The raw bias is NON-STATIONARY on the timescale of a session. This file
+ * already records that for the fold-off case further down ("+8,4e-4 at
+ * calibration to -1,3e-3 during the baseline minutes later"); it holds with the
+ * fold on too, and it is a large part of why the fold exists at all.
+ *
+ * What survives is that the raw bias is an excellent RELATIVE key: across two
+ * sweeps 25 minutes apart it ordered each node's ladder the same way both
+ * times, even as the level moved under it — master 64 best on both, .145 32/64
+ * best on both. So it SELECTS and it does not GATE. A relative key cannot
+ * certify a node empty, which is precisely the failure an absolute bar walked
+ * into.
+ *
+ * The folded bias bar stays the gate: toothless, as the paragraph above says,
+ * but bounded, and it cannot blank a node. */
+#define CAL_MAX_RAW_BIAS      6.0e-3   /* retained ONLY as cal_key_se()'s fallback */
+/* Standard errors of the CHALLENGER's own bias measurement that it must beat
+ * the incumbent by before the rung is changed. 3 is the same "outside its own
+ * noise" convention CAL_BIAS_SE_K uses, and on the master's ladder it is worth
+ * about 5e-4 in raw-bias units — wide enough to stop the 16-vs-64 coin toss
+ * (6e-6 apart), narrow enough that the genuine 5e-3 spread across the ladder
+ * still moves the rung when the light really changes.
+ * ⚠ Raising this makes the array slower to follow a lamp that is actually
+ * drifting, which is the failure mode on the other side. */
+#define CAL_KEEP_MARGIN_K     3.0
+/* ── The dispersion gate moves BEFORE the fold too (2026-08-27) ───────────
+ * Same disease as the bias gate, found in the same sweep. CAL_SIGMA_TOL reads
+ * the FOLDED mini-run sigma, and the fold pulls dispersion in as it pulls bias
+ * in. Rungs the folded gate CERTIFIED, with their raw figure beside it:
+ *
+ *     .155 exp 256   raw 1,3405   folded 1,0202
+ *     .145 exp  64   raw 1,2964   folded 0,9741
+ *
+ * A front end dispersed by a third reads clean after the fold. That matters
+ * more than it used to: the pre-fold z is a scored channel (D45), it is what
+ * `?wpre=` weights, and its sigma IS this number.
+ *
+ * ⛔ RELATIVE, not absolute, and for the same reason the raw bias does not
+ * gate at all. An absolute 1,20 bar was fitted to one sweep; on the next one
+ * 25 minutes later .103 read raw_sigma 1,24-1,37 across its ENTIRE certified
+ * ladder — 1,00 to 1,08 on the sweep before, same node, same rungs, nothing
+ * touched. The bar would have blanked it. The raw dispersion moves with the
+ * front end's operating point, so only its SHAPE across the ladder is stable.
+ *
+ * So the bar is CAL_RAW_SIGMA_K times the lowest raw_sigma among the rungs
+ * that cleared every other gate — the node's own best front end, this sweep.
+ * It travels with the level and, by construction, can never reject the rung it
+ * is computed from: certifying-empty is impossible.
+ *
+ * ⚠ ONE-SIDED. The folded bar is two-sided because an under-dispersed folded
+ * stream is as wrong as an over-dispersed one. The raw stream is not
+ * symmetric: every physical failure here — clumped zeros at the dark end,
+ * correlated structure at the bright one — inflates it.
+ *
+ * K = 1,35 against both measured sweeps: it rejects .103 exp 64 (2,40 against
+ * a 1,24 best), .145 exp 128 (1,45 against 1,02), master exp 128 (1,49 against
+ * 1,04) and every rung above them, and it rejects nothing any node chose.
+ * ⚠ Honestly stated: on these two sweeps it rejects nothing the FOLDED sigma
+ * gate did not already reject, so its value today is prospective — it is the
+ * gate that will see a front end degrading while the fold still hides it. It
+ * does NOT catch the two rungs that motivated it (.155/256 at 1,31 against a
+ * 1,05 best is a ratio of 1,25, inside K). Tightening K to catch them would
+ * put the bar under the drift measured above. That is the trade, and it is
+ * made in favour of never blanking a node.
+ * ⚠ Does NOT replace CAL_SIGMA_TOL: the two test different streams and both
+ * streams are used. A rung has to clear both. */
+#define CAL_RAW_SIGMA_K       1.35
 /* Frame pairs discarded before a window opens. Up to CAM_BUF_COUNT/2 pairs
  * already captured under the OLD setting can be sitting in the driver's queue,
  * so the discard count has to exceed that and then leave the sensor a few more
@@ -1203,7 +1369,9 @@ void camera_cal_set_z_scale(double z_per_bias)
     s_cal_z_scale = (z_per_bias > 0.0) ? z_per_bias : 0.0;
 }
 
-/* The bias bar for ONE window, in bias units. See CAL_MAX_Z_OFFSET above. */
+/* The FOLDED bias bar for ONE window. No longer a gate — kept because the
+ * per-step log and /calibrate still report which limit bound a rung, and
+ * because it is what any pre-2026-08-27 sweep has to be read against. */
 static double cal_bias_bar(uint64_t bits)
 {
     if (s_cal_z_scale <= 0.0 || bits == 0) return CAL_BIAS_TOL;
@@ -1214,10 +1382,32 @@ static double cal_bias_bar(uint64_t bits)
     return bar;
 }
 
+/* ── The selection key and its noise ──────────────────────────────────────
+ * The key is the monobit distance BEFORE the fold, so a smaller key is a
+ * better rung. Falls back to the folded bias only for a node with no parallel
+ * raw stream, which keeps a crippled front end selectable rather than
+ * unselectable — the same fallback cal_gate() makes, for the same reason.
+ *
+ * cal_key_se() is that key's own standard error: SE(bias) = 0,5/sqrt(bits)
+ * over the bits the key was measured on. It is what the hysteresis margin is
+ * expressed in, so the rule tightens by itself when a sweep window grows. */
+static double cal_key(const camera_cal_step_t *s)
+{
+    return (s->raw_bits > 0) ? fabs(s->raw_bias - 0.5) : fabs(s->bias - 0.5);
+}
+
+static double cal_key_se(const camera_cal_step_t *s)
+{
+    uint64_t bits = (s->raw_bits > 0) ? s->raw_bits : s->bits;
+    return bits ? 0.5 / sqrt((double)bits) : CAL_MAX_RAW_BIAS;
+}
+
 static uint32_t cal_gate(const camera_cal_step_t *s)
 {
     uint32_t f = 0;
     if (s->bits < CAL_MIN_BITS || s->minirun_n < CAL_MIN_MINIRUNS) f |= CAM_CAL_FAIL_BITS;
+    /* FOLDED, and deliberately — see CAL_MAX_RAW_BIAS for the sweep that
+     * settled it. The raw bias selects; it does not gate. */
     if (fabs(s->bias - 0.5) >= cal_bias_bar(s->bits)) f |= CAM_CAL_FAIL_BIAS;
     if (s->autocorr_max >= CAL_AUTOC_TOL)       f |= CAM_CAL_FAIL_AUTOC;
     if (fabs(s->sigma - 1.0) > CAL_SIGMA_TOL)   f |= CAM_CAL_FAIL_SIGMA;
@@ -1289,6 +1479,8 @@ static bool cal_step(camera_cal_step_t *st, uint32_t exposure, uint32_t gain,
     st->zero_diff_frac   = cs.zero_diff_frac;
     st->raw_bias         = cs.raw_bias;
     st->raw_sigma        = cs.raw_sigma;
+    st->raw_runs_z       = cs.raw_runs_z;
+    st->raw_bits         = cs.raw_bits;
     st->stuck_frames     = cs.stuck_frame_count;
     double amax = 0.0;
     for (int L = 0; L < 4; L++)
@@ -1318,6 +1510,12 @@ bool camera_calibrate(int budget_ms, bool (*abort_cb)(void), camera_cal_t *out)
     out->chosen = -1;
     out->z_scale = s_cal_z_scale;   // what the bias gate was scaled to, for the record
     if (s_fd < 0 || !camera_is_ready()) return false;
+
+    /* Arm the runs channel for the duration of the sweep and only that. Set
+     * BEFORE the first candidate's stats reset, which is what actually turns it
+     * on, and cleared on every exit path below — including `aborted`, whose
+     * closing reset would otherwise leave it armed through the whole session. */
+    s_raw_runs_on = true;
 
     int64_t t0 = esp_timer_get_time();
 
@@ -1374,6 +1572,31 @@ bool camera_calibrate(int budget_ms, bool (*abort_cb)(void), camera_cal_t *out)
      * squares the bias away and is left permanently on, as Kconfig sets it. */
     out->nsteps = n;
 
+    /* ── The RELATIVE pre-fold dispersion gate ────────────────────────────
+     * Runs here and not in cal_gate() because it needs the whole ladder: the
+     * bar is CAL_RAW_SIGMA_K times the best raw_sigma among rungs that cleared
+     * everything else. See CAL_RAW_SIGMA_K for why it is relative.
+     *
+     * Two passes: find the reference, then apply. The reference is taken over
+     * rungs with fail == 0 at this point, i.e. after every other gate, so a
+     * grossly broken rung cannot become the reference and pull the bar up
+     * behind itself. If nothing passed there is nothing to reference and the
+     * gate does not fire — a node with no certified rung is already reporting
+     * that fact, and adding a flag to it would only obscure which gate came
+     * first. */
+    double rsig_ref = 0.0;
+    for (int i = 0; i < n; i++)
+        if (!out->step[i].fail && out->step[i].raw_bits > 0 &&
+            out->step[i].raw_sigma > 0.0 &&
+            (rsig_ref == 0.0 || out->step[i].raw_sigma < rsig_ref))
+            rsig_ref = out->step[i].raw_sigma;
+    if (rsig_ref > 0.0) {
+        double rbar = CAL_RAW_SIGMA_K * rsig_ref;
+        for (int i = 0; i < n; i++)
+            if (!out->step[i].fail && out->step[i].raw_sigma > rbar)
+                out->step[i].fail |= CAM_CAL_FAIL_RSIG;
+    }
+
     /* Selection: only gated candidates are eligible, LOWEST |bias-0.5| wins.
      *
      * This used to select the FASTEST passing candidate, from the assumption
@@ -1422,16 +1645,73 @@ bool camera_calibrate(int budget_ms, bool (*abort_cb)(void), camera_cal_t *out)
      * not always predict the session's: .145's exposure 32 measured inside
      * [0.95, 1.05] often enough to be chosen 91 times, then produced 3.0 in
      * use. Verified not to disturb the healthy nodes — replayed against all
-     * four measured ladders, master/.103/.155 keep exactly the rung they had. */
+     * four measured ladders, master/.103/.155 keep exactly the rung they had.
+     *
+     * ── PRE-FOLD BIAS + HYSTERESIS (2026-08-27) ───────────────────
+     * Two changes, one cause. See CAL_MAX_RAW_BIAS above for the measurement.
+     *
+     * 1. The key is |raw_bias - 0,5|, the monobit distance BEFORE the fold.
+     *    After the fold every certified rung sits four times below the window's
+     *    own sampling error, so the old key was comparing three numbers that
+     *    are all the same — the same defect the RATE tie-break had, one layer
+     *    down. Before the fold the ladder is a clean U with ~20x the noise
+     *    between neighbours, and it orders the rungs the way their measured
+     *    per-block offsets do.
+     *
+     * 2. The incumbent rung is KEPT unless a challenger is decisively better.
+     *    The sweep re-decides from scratch every 15 minutes, so even a good key
+     *    makes it hop whenever two rungs are within noise of each other — and
+     *    a hop is not free: the master's offset jumped from -0,06 to -0,90 the
+     *    block it moved from 64 to 16, and the drift regression, which is the
+     *    per-block mean of exactly this node, flagged the pass null broken in
+     *    17 of 50 blocks that session. Nothing was wrong with the instrument;
+     *    the operating point moved underneath it.
+     *
+     *    The bar for displacing the incumbent is CAL_KEEP_MARGIN_K standard
+     *    errors of the challenger's own bias measurement, so "decisively" is
+     *    measured, not a fixed fraction — a longer sweep window naturally makes
+     *    the rule pickier. The incumbent must still PASS every gate: this is
+     *    hysteresis, not tenure. A rung that starts failing is left at once.
+     *
+     *    ⚠ The incumbent is the rung the camera is on when the sweep STARTS
+     *    (e0/g0), which after a manual /expose is not what the last sweep
+     *    chose. That is deliberate — the operator's setting is the running
+     *    program, and /expose already says it is not sticky past the next
+     *    sweep. It does mean a hand-set rung gets one sweep of protection. */
     int pick = -1;
     for (int pass = 0; pass < 2 && pick < 0; pass++) {
         const double stol = pass ? CAL_SIGMA_TOL : (CAL_SIGMA_TOL / 2.0);
         for (int i = 0; i < n; i++) {
             if (out->step[i].fail) continue;
             if (fabs(out->step[i].sigma - 1.0) > stol) continue;
-            if (pick < 0 || fabs(out->step[i].bias - 0.5) <
-                            fabs(out->step[pick].bias - 0.5))
+            if (pick < 0 || cal_key(&out->step[i]) < cal_key(&out->step[pick]))
                 pick = i;
+        }
+    }
+
+    /* Hysteresis. Find the incumbent among the candidates that PASSED, then
+     * keep it unless `pick` beats it by more than the challenger's own noise. */
+    bool kept = false;
+    if (pick >= 0) {
+        int inc = -1;
+        for (int i = 0; i < n; i++) {
+            if (out->step[i].fail) continue;
+            if (out->step[i].exposure == e0 && out->step[i].gain == g0 &&
+                out->step[i].xor_fold == fold0) { inc = i; break; }
+        }
+        if (inc >= 0 && inc != pick) {
+            double margin = CAL_KEEP_MARGIN_K * cal_key_se(&out->step[pick]);
+            if (cal_key(&out->step[inc]) - cal_key(&out->step[pick]) <= margin) {
+                ESP_LOGI(TAG_CAM, "cal: keeping exposure=%lu (key %.2e) over %lu "
+                         "(key %.2e, margin %.2e) -- not decisive",
+                         (unsigned long)out->step[inc].exposure, cal_key(&out->step[inc]),
+                         (unsigned long)out->step[pick].exposure, cal_key(&out->step[pick]),
+                         margin);
+                pick = inc;
+                kept = true;
+            }
+        } else if (inc >= 0 && inc == pick) {
+            kept = true;
         }
     }
 
@@ -1453,6 +1733,7 @@ bool camera_calibrate(int budget_ms, bool (*abort_cb)(void), camera_cal_t *out)
     }
 
     out->chosen   = pick;
+    out->kept     = kept && (pick >= 0);
     out->ok       = (pick >= 0);
     out->exposure = use_e;
     out->gain     = use_g;
@@ -1474,7 +1755,10 @@ bool camera_calibrate(int budget_ms, bool (*abort_cb)(void), camera_cal_t *out)
         out->mean_pixel_level = out->step[rep].mean_pixel_level;
         out->raw_bias         = out->step[rep].raw_bias;
         out->raw_sigma        = out->step[rep].raw_sigma;
+        out->raw_runs_z       = out->step[rep].raw_runs_z;
     }
+
+    s_raw_runs_on = false;   /* the measurement window must not carry the cost */
 
     /* Open a clean window on the setting the session will actually run, so the
      * per-loop bias/rate in /status and /loops describe THIS loop's operating
@@ -1495,6 +1779,7 @@ bool camera_calibrate(int budget_ms, bool (*abort_cb)(void), camera_cal_t *out)
     return out->ok;
 
 aborted:
+    s_raw_runs_on = false;
     out->nsteps = n;
     camera_set_exposure(e0, g0);
     s_xor_fold = fold0;
@@ -1548,12 +1833,14 @@ esp_err_t camera_cal_send_json(void *httpd_req, const camera_cal_t *c)
     int len = snprintf(buf, sizeof(buf),
         "{\"ran\":true,\"ok\":%s,\"chosen\":%d,\"exposure\":%lu,\"gain\":%lu,"
         "\"fold\":%d,\"bias\":%.6f,\"sigma\":%.4f,\"mbit_s\":%.3f,"
-        "\"raw_bias\":%.6f,\"raw_sigma\":%.4f,"
+        "\"raw_bias\":%.6f,\"raw_sigma\":%.4f,\"raw_runs_z\":%.2f,"
+        "\"kept\":%s,"
         "\"autocorr\":%.4f,\"mean_px\":%.2f,\"ms\":%lu,\"steps\":[",
         c->ok ? "true" : "false", c->chosen,
         (unsigned long)c->exposure, (unsigned long)c->gain, (int)c->xor_fold,
         c->bias, c->sigma, c->mbit_per_sec,
-        c->raw_bias, c->raw_sigma,
+        c->raw_bias, c->raw_sigma, c->raw_runs_z,
+        c->kept ? "true" : "false",
         c->autocorr_max, c->mean_pixel_level, (unsigned long)c->elapsed_ms);
     httpd_resp_send_chunk(req, buf, len);
 
@@ -1561,13 +1848,15 @@ esp_err_t camera_cal_send_json(void *httpd_req, const camera_cal_t *c)
         const camera_cal_step_t *s = &c->step[i];
         len = snprintf(buf, sizeof(buf),
             "%s{\"exposure\":%lu,\"gain\":%lu,\"fold\":%d,\"bits\":%llu,"
-            "\"raw_bias\":%.6f,\"raw_sigma\":%.4f,"
+            "\"raw_bias\":%.6f,\"raw_sigma\":%.4f,\"raw_runs_z\":%.2f,"
+            "\"raw_bits\":%llu,\"key\":%.2e,"
             "\"miniruns\":%d,\"bias\":%.6f,\"sigma\":%.4f,\"mbit_s\":%.3f,"
             "\"autocorr\":%.4f,\"mean_px\":%.2f,\"zero_diff\":%.4f,"
             "\"stuck\":%lu,\"fail\":%lu,\"pass\":%s}",
             i ? "," : "", (unsigned long)s->exposure, (unsigned long)s->gain,
             (int)s->xor_fold, (unsigned long long)s->bits,
-            s->raw_bias, s->raw_sigma, s->minirun_n,
+            s->raw_bias, s->raw_sigma, s->raw_runs_z,
+            (unsigned long long)s->raw_bits, cal_key(s), s->minirun_n,
             s->bias, s->sigma, s->mbit_per_sec, s->autocorr_max,
             s->mean_pixel_level, s->zero_diff_frac,
             (unsigned long)s->stuck_frames, (unsigned long)s->fail,

@@ -367,13 +367,31 @@ _Static_assert(((long long)RUN_S_MAX * 1000 * RUN_SEGS_REF) / RUN_MS_REF <= EL_S
  * for. Adding a channel to the key after the fact is a third ticket in the same
  * lottery, so it has to be pre-registered per session exactly as ?went= was. */
 #define ENT_W_PRE_DEFAULT    0.0
-/* ⚠ The FORM pre-fills 0,3 while the API default above stays 0. Deliberate and
- * asymmetric (user, 2026-08-26): a curl-started session must not silently
- * acquire a channel it never asked for, but a session started from the page is
- * an operator choosing deliberately, and the field shows what they are
+/* ⚠ The FORM pre-fills a weight while the API default above stays 0.
+ * Deliberate and asymmetric (user, 2026-08-26): a curl-started session must not
+ * silently acquire a channel it never asked for, but a session started from the
+ * page is an operator choosing deliberately, and the field shows what they are
  * choosing. So the arm a run was on is never implicit — it is in the CSV
- * header as pre_w= either way. */
-#define ENT_W_PRE_FORM       0.3
+ * header as pre_w= either way.
+ *
+ * 0,3 -> 0,8 on 2026-08-27 (user): the pre-fold z is the channel this project
+ * is actually looking at now, because the XOR fold suppresses a mean-bias
+ * effect by sqrt(2)*e (D45) and that is the quantity the experiment is after.
+ * The fold stays (D17) and the folded z still carries every p-value; what the
+ * weight moves is the ranking, and 0,8 says the ranking follows the unfolded
+ * channel. ⚠ It is the channel with the WORSE null — raw sigma leaves its band
+ * as soon as the light does — so a table ranked at 0,8 is a shortlist, never
+ * evidence. That is what pre_w= in the CSV header is for. */
+#define ENT_W_PRE_FORM       0.8
+/* The form's entropy weight, split from ENT_W_DEFAULT on 2026-08-27 for the
+ * same reason ENT_W_PRE_FORM is split from ENT_W_PRE_DEFAULT: the page offers
+ * the operator's current arm, the API keeps the documented default so a
+ * scripted session's ranking does not move under it.
+ * ⚠ ENT_W_FORM + ENT_W_PRE_FORM == 1,0 exactly, which is allowed and leaves the
+ * folded z with weight ZERO in the key. Legal (the ?went=/?wpre= gate rejects
+ * only a SUM above 1) and intended, but it means the top tables are ranked with
+ * no contribution from the channel the p-values come from. */
+#define ENT_W_FORM           0.2
 
 #define CUSUM_K              0.25   // δ/2, δ = 0,5 standard errors
 #define CUSUM_H             14.0    // ARL₀ 7715 blocks/node; see the table above
@@ -771,6 +789,12 @@ typedef struct {
     bool             unlimited;        // rounds repeat until Abort / results full
     int              runs_cap;         // measurement runs a round may spend
     int              round;            // 1-based; 0 before the first round starts
+    /* elapsed_ms at the moment this round began. Same clock elapsed_ms itself
+     * runs on, so paused time is already excluded from any difference taken
+     * against it. 0 outside unlimited mode and before the first round.
+     * The UI's progress panel is round-relative in items, percentage and ETA;
+     * without this its clock was the only figure still session-relative. */
+    uint32_t         round_start_ms;
     int              round_item_base;  // items_done when this round started. The
                                        // ITEM-space twin of round_base, and the
                                        // only one a progress figure may use:

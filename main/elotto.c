@@ -100,8 +100,9 @@ static const char HTML[] =
 ".prog-fill{background:linear-gradient(90deg,#4a9e4a,#90ee90);height:100%;"
 "border-radius:20px;width:0%;transition:width .6s}"
 ".stats{display:flex;gap:12px;margin-top:8px}"
-".stat{flex:1;text-align:center;background:rgba(0,0,0,.25);border-radius:8px;padding:10px}"
-".sv{font-size:1.8em;font-weight:700;color:#90ee90}"
+".stats+.stats{margin-top:6px}"
+".stat{flex:1;text-align:center;background:rgba(0,0,0,.25);border-radius:8px;padding:6px}"
+".sv{font-size:.9em;font-weight:700;color:#90ee90}"
 ".sl{font-size:.78em;color:#aaa;margin-top:3px}"
 "#msg{text-align:center;margin-top:12px;font-size:1.05em;font-weight:700;min-height:22px}"
 "table{width:100%;border-collapse:collapse;font-size:.92em}"
@@ -161,10 +162,10 @@ static const char HTML[] =
 "#btnPause,#btnAbort{min-width:126px}"
 ".frow{grid-template-columns:128px 1fr;gap:6px}"
 ".frow>label,.frow>span:first-child{font-size:.8em}"
-".sv{font-size:1.3em}"
-".sl{font-size:.68em}"
+".sv{font-size:.85em}"
+".sl{font-size:.62em}"
 ".stats{gap:6px}"
-".stat{padding:7px 4px}"
+".stat{padding:5px 3px}"
 "table{font-size:.8em}"
 "th,td{padding:6px 3px}"
 ".num{width:26px;height:26px;font-size:.8em}"
@@ -251,7 +252,7 @@ static const char HTML[] =
 "extra time -- z is the DC bin of the segment series, H is bins 1..511. It ranks; "
 "the null gates and the Bonferroni line stay on z.'>Entropy weight:</label>"
 "<input id='numEntW' class='fin' type='number' min='0' max='1' step='0.05' "
-"value='" EL_STR(ENT_W_DEFAULT) "' oninput='wAdj(this)'>"
+"value='" EL_STR(ENT_W_FORM) "' oninput='wAdj(this)'>"
 "</div>"
 "<div class='frow'>"
 "<label for='numPreW' title='Weight of the PRE-FOLD half of the ranking key. The "
@@ -304,11 +305,6 @@ static const char HTML[] =
 /* The item counter replaced the loop counter (v3): items measured out of the
    whole combination space, plus which block the pass is in. Fed from /status
    (the DEVICE's numbers), so a session started by curl still labels itself. */
-"<div style='display:flex;align-items:center;justify-content:center;gap:10px;"
-"flex-wrap:wrap;margin-bottom:10px'>"
-"<div id='itemBadge' style='display:none;color:#f0c040;"
-"font-weight:700;font-size:1.05em'></div>"
-"</div>"
 "<div id='calArea'>"
 // Labelled "Baseline", NOT "Calibration". This bar tracks the baseline runs;
 // the camera exposure sweep is a different phase entirely (and says so in
@@ -345,11 +341,27 @@ static const char HTML[] =
 "<div style='color:#90ee90;font-size:.88em;margin-bottom:4px'>&#128202; Measurement"
 "<span id='measCheck'></span></div>"
 "<div class='prog-wrap'><div class='prog-fill' id='pf'></div></div>"
+/* Two rows, and the split is the point: the TOP row is round-relative in all
+   four figures and the BOTTOM row is session-relative in all four. Mixing them
+   is what the old single row did — a round item count beside a session clock —
+   and it is the same class of error as reporting progress from runs_completed.
+   The bottom row is unlimited-mode only: in a single pass the round IS the
+   session and every field would repeat the one above it. */
 "<div class='stats'>"
 "<div class='stat'><div class='sv' id='sDone'>0</div><div class='sl'>Items</div></div>"
 "<div class='stat'><div class='sv' id='sPct'>0%</div><div class='sl'>Progress</div></div>"
 "<div class='stat'><div class='sv' id='sTime'>0 min</div><div class='sl'>Time</div></div>"
 "<div class='stat'><div class='sv' id='sEta'>-</div><div class='sl'>ETA</div></div>"
+"</div>"
+"<div class='stats' id='stats2' style='display:none'>"
+"<div class='stat'><div class='sv' id='sRound'>-</div>"
+"<div class='sl'>Current Round</div></div>"
+"<div class='stat'><div class='sv' id='sRounds'>-</div>"
+"<div class='sl'>Rounds</div></div>"
+"<div class='stat'><div class='sv' id='sTotal'>-</div>"
+"<div class='sl'>Total Measured</div></div>"
+"<div class='stat'><div class='sv' id='sTotTime'>-</div>"
+"<div class='sl'>Total Time</div></div>"
 "</div>"
 "</div>"
 "</div>"
@@ -564,7 +576,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 // must show it too — the session is blocked until somebody presses Start.
 "if(d.phase==='ready')readyShow();"
 "lastSlowMbit=slowMbit(d)||lastSlowMbit;"
-"updateItemBadge(d);updatePoolBadge(d);updateParamBadge(d);"
+"updatePoolBadge(d);updateParamBadge(d);"
 "document.getElementById('sCalTotal').textContent=d.baseline_total;"
 "setScoreTotal(d);"
 "if(d.scoring_total>0){"
@@ -640,23 +652,18 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 ":'off'));"
 "p.push(pItem('Key',(d.ent_w>0||d.pre_w>0)?('z '+(1-(d.ent_w||0)-(d.pre_w||0)).toFixed(2)+' / H '+(d.ent_w||0).toFixed(2)+' / pre '+(d.pre_w||0).toFixed(2)):'z alone'));"
 "p.push(pItem('Score',d.score_dir||'high'));"
+/* The block count moved here from the item line (2026-08-27). It belongs with
+   the session's structure and not with its progress: what it actually tells
+   the operator is how many /loops rows -- i.e. drift points -- exist so far,
+   which is a property of the run, not a position in it. Counts the OPEN block
+   too while the session is live, because that is the one being filled. */
+"if(d.loops_done>0||d.state==='running')"
+"p.push(pItem('Blocks',(d.loops_done||0)+((d.state==='running')?1:0)));"
 "p.push(pItem('Focus',d.focus?'attended':'unattended'));"
 "if(d.unlimited)p.push(pItem('Unlimited',(d.runs_cap||0)+' runs/round'"
 "+((d.round_total>0)?' \u2192 '+d.round_total+' combos':'')));"
 "if(d.paused_ms>0)p.push(pItem('Paused',fmt(d.paused_ms)+' (excluded)'));"
 "b.innerHTML=p.join(\" <span style='opacity:.3'>\u00b7</span> \");"
-"}"
-"function updateItemBadge(d){"
-"var b=document.getElementById('itemBadge');"
-"if(d.state!=='running'&&d.state!=='done'&&d.state!=='aborted'){"
-"b.style.display='none';return;}"
-"var rt=roundTotal(d);"
-"if(!(rt>0)){b.style.display='none';return;}"
-"b.style.display='';"
-"b.textContent='\\uD83C\\uDFAF Item '+roundDone(d)+' / '+rt"
-"+(d.unlimited?' \\u00b7 round '+(d.round||1)+' \\u00b7 '+(d.completed||0)"
-"+' measured total':'')"
-"+((d.loops_done>0)?' \\u00b7 block '+(d.loops_done+((d.state==='running')?1:0)):'');"
 "}"
 /* The numbers scoring picked, under the bar that picked them. Same chips as the
    result tables and the Focus panel, so a bonus number reads as a star here too.
@@ -695,7 +702,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 // outside 0..1 rather than falling back, so the form must not be able to send
 // a value that gets the session refused. parseFloat of '' is NaN -> default.
 "var wEnt=parseFloat(document.getElementById('numEntW').value);"
-"if(!(wEnt>=0&&wEnt<=1))wEnt=" EL_STR(ENT_W_DEFAULT) ";"
+"if(!(wEnt>=0&&wEnt<=1))wEnt=" EL_STR(ENT_W_FORM) ";"
 "var wPre=parseFloat(document.getElementById('numPreW').value);"
 "if(!(wPre>=0&&wPre<=1))wPre=" EL_STR(ENT_W_PRE_FORM) ";"
 /* The two weights share one budget with the z half, which is 1-w-p. /start
@@ -714,6 +721,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "document.getElementById('pfScore').style.width='0%';"
 "document.getElementById('sScoreDone').textContent='0';"
 "document.getElementById('measArea').style.display='none';"
+"document.getElementById('stats2').style.display='none';"
 "fetch('/start?mode='+mode+'&baseline='+base"
 "+'&run='+runS+'&gap='+gapS"
 "+'&focus='+foc+'&score='+score"
@@ -742,7 +750,6 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "document.getElementById('resCardLow').style.display='none';"
 "document.getElementById('resCardZero').style.display='none';"
 "document.getElementById('nullBanner').style.display='none';"
-"document.getElementById('itemBadge').style.display='none';"
 "document.getElementById('msg').textContent='';"
 "setMode(mode);"
 "if(timer)clearInterval(timer);"
@@ -919,7 +926,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "function poll(){"
 "fetch('/status').then(function(r){return r.json();}).then(function(d){"
 "lastSlowMbit=slowMbit(d)||lastSlowMbit;"
-"updateItemBadge(d);updatePoolBadge(d);updateParamBadge(d);"
+"updatePoolBadge(d);updateParamBadge(d);"
 "updateFocusInfo(d);"
 // Raise the prompt as soon as the device parks on it, and take it down again
 // the moment it moves on (an answer from another browser tab, or the timeout).
@@ -986,7 +993,24 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "document.getElementById('pf').style.width=pct+'%';"
 "document.getElementById('sDone').textContent=rd+'/'+rt;"
 "document.getElementById('sPct').textContent=pct+'%';"
-"document.getElementById('sTime').textContent=fmt(d.elapsed_ms);"
+/* Round-relative, so it belongs beside the round's items, percentage and ETA.
+   round_start_ms rides on the same clock as elapsed_ms, so paused time is
+   already out of the difference. A device on older firmware does not send it
+   and falls back to the session clock rather than showing a wrong small
+   number. */
+"var rms=(d.unlimited&&d.round_start_ms>0&&d.elapsed_ms>d.round_start_ms)"
+"?(d.elapsed_ms-d.round_start_ms):d.elapsed_ms;"
+"document.getElementById('sTime').textContent=fmt(rms);"
+/* The session row. Shown only in unlimited mode -- see the markup. */
+"var s2=document.getElementById('stats2');"
+"if(d.unlimited){s2.style.display='';"
+"document.getElementById('sRound').textContent=(d.round||1);"
+/* Rounds COMPLETED, i.e. one less than the one being measured. The current
+   round is the field to its left; repeating it here would waste a card. */
+"document.getElementById('sRounds').textContent=Math.max((d.round||1)-1,0);"
+"document.getElementById('sTotal').textContent=(d.completed||0);"
+"document.getElementById('sTotTime').textContent=fmt(d.elapsed_ms);"
+"}else s2.style.display='none';"
 "showSlaveBadge(d);"
 /* ETA from the measured per-item pace over what remains. The elapsed clock
    includes scoring/baseline, so the first items overestimate slightly and it
@@ -1507,6 +1531,7 @@ static esp_err_t status_handler(httpd_req_t *req)
          * bar has to use round_done/round_total, or its denominator moves. */
         "\"unlimited\":%s,\"runs_cap\":%d,\"round\":%d,"
         "\"round_base\":%d,\"round_done\":%d,\"round_total\":%d,"
+        "\"round_start_ms\":%lu,"
         "\"pool_confirm\":%d,\"pool_auto\":%d,"
         "\"pool_need_main\":%d,\"pool_need_euro\":%d,",
         state_str, mode_str, phase_str,
@@ -1579,6 +1604,7 @@ static esp_err_t status_handler(httpd_req_t *req)
         g_status.items_done > g_status.round_item_base
             ? g_status.items_done - g_status.round_item_base : 0,
         g_status.round_total,
+        (unsigned long)g_status.round_start_ms,
         g_status.pool_confirm, g_status.pool_auto,
         g_status.pool_need_main, g_status.pool_need_euro);
 
@@ -2832,6 +2858,7 @@ static esp_err_t diagjson_handler(httpd_req_t *req)
         /* PRE-FOLD: the stream the sensor produced, before the XOR fold. The
          * fields above describe the folded one. See cam_raw_t in extract.h. */
         "\"raw_bias\":%.6f,\"raw_sigma\":%.4f,\"raw_sigma_n\":%d,"
+        "\"raw_runs_z\":%.2f,"
         /* P4 DIE temperature, not the sensor's. null = no driver. */
         "\"die_temp\":%.2f,"
         "\"drops\":%lu,\"waits\":%lu,\"stalls\":%lu,"
@@ -2847,7 +2874,8 @@ static esp_err_t diagjson_handler(httpd_req_t *req)
         cam.bias, cam.sigma, cam.sigma_samples,
         cam.autocorr_lag[0], cam.autocorr_lag[1], cam.autocorr_lag[2], cam.autocorr_lag[3],
         cam.mean_pixel_level, cam.mbit_per_sec, cam.zero_diff_frac,
-        cam.raw_bias, cam.raw_sigma, cam.raw_sigma_samples, cam.die_temp_c,
+        cam.raw_bias, cam.raw_sigma, cam.raw_sigma_samples, cam.raw_runs_z,
+        cam.die_temp_c,
         (unsigned long)cam.ring_drops, (unsigned long)cam.consumer_waits,
         (unsigned long)cam.stalls,
         cam.ms_pair, cam.ms_wait, cam.ms_extract, cam.ms_rest,
