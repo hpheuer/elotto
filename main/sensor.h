@@ -230,6 +230,23 @@ _Static_assert(((long long)RUN_S_MAX * 1000 * RUN_SEGS_REF) / RUN_MS_REF <= EL_S
 #define PASS_SIGMA_LO          0.85  // pass sample σ below this → null broken
 #define PASS_SIGMA_HI          1.15  // pass sample σ above this → null broken
 #define PASS_NULL_MIN_N       30     // need this many valid items before σ gate
+/* ⚠ A FIXED band cannot be the whole criterion, because the thing it bounds
+ * gets sharper with n while the band does not. SE(σ) ≈ 1/√(2n): at the
+ * MIN_N of 30 that is 0,129, so the ±0,15 band sits barely one standard error
+ * out and the gate fires on sampling noise as a matter of course. It did, on
+ * hardware 2026-08-27 — "NULL BROKEN, pass σ = 1,171" at 85 items, from an
+ * instrument that read σ 1,059 and null_flags 0 forty items later, with
+ * nothing repaired in between.
+ *
+ * So a trip now needs the deviation to be outside the band AND to be worth
+ * this many standard errors. The band still governs once n is large — the two
+ * cross at n ≈ 356 (4/√(2n) = 0,15) — so this can only ever make the gate
+ * STRICTER at small n, never looser where it matters.
+ *
+ * ⚠ It is not only the banner. null_flags also feeds the per-node NB
+ * attribution counter at every block close, so a spurious trip credited a
+ * healthy board with a broken null. */
+#define PASS_NULL_K            4.0  // standard errors a σ/χ² trip must also clear
 #define NODE_SIGMA_SOFT        1.25  // block per-node σ above this → soft-exclude
 /* ── |block mean| REPORTS, it no longer excludes (2026-08-19) ──────────────
  *
@@ -480,8 +497,15 @@ typedef struct {
     /* The PRE-FOLD combined z, block-centred on its own accumulator (D45).
      * ⚠ The fold suppresses a mean-bias effect by sqrt(2)*e — ~7000x at
      * e = 1e-4 — so this channel carries the very quantity the folded z throws
-     * away. It is RANKED AND ARCHIVED, never tested: its null is the ideal one
-     * and raw sigma runs 1,03..1,10 on certified rungs.
+     * away. It is RANKED AND ARCHIVED, never tested.
+     * ⚠ Two different sigmas live near this field and they are NOT the same
+     * number. `raw_sigma` in /diag is the per-mini-run sigma of one node's raw
+     * bit stream: measured 1,06..1,28 across the four nodes on certified rungs
+     * (2026-08-27), against 0,997..1,001 folded, and it degrades hard outside
+     * them — 1,69 at mean_px 5, above 10 when over-lit. THIS field is the
+     * block-centred COMBINED z, whose sigma is rank_sig_p: measured 2,12 and
+     * 3,79 on the two sessions that carried it. rank_key() divides by that one,
+     * not by raw_sigma.
      * ⚠ 0 means "no pre-fold value for this item", the same convention zh_ctr
      * uses, and it reads as exactly average. */
     float      zp_ctr;
@@ -500,14 +524,17 @@ typedef struct {
  * of the session, which is a hardware artefact wearing a result's clothes. 12 σ
  * is far outside anything the null produces (the Bonferroni bar over 8000 items
  * is ~4,4) and still lets a genuinely extreme item reach the top of the table.
- * Items that hit the clamp are counted and published as `ent_clamped`. */
+ * Items that hit the clamp are counted per channel and published as
+ * `ent_clamped` and `pre_clamped` — one counter each, because a single one
+ * watching only z_h read 0 while the pre-fold channel was pinned. */
 #define ENT_W_DEFAULT   0.50
 /* ⚠ This is a bar in units of the CHANNEL'S OWN σ, not in raw z. rank_key()
  * standardises every channel by rank_sig_h / rank_sig_p first, so 12 means 12σ
  * for the entropy and the pre-fold channel alike.
  * ⚠ It did not always. Until 2026-08-26 the bar was a raw 12 applied to
  * unstandardised values: fine for z_h, which runs at σ ≈ 1,02, and wrong for
- * the pre-fold channel, which runs at σ ≈ 2,81 — there a raw 12 is a 4,3σ bar
+ * the pre-fold channel, which measured σ 2,12 and 3,79 on the two sessions
+ * that carried it — there a raw 12 is a 3,2..5,7σ bar
  * that cuts into the honest tail of the distribution. It showed on hardware:
  * at ?wpre=0,85 all five Bottom-5 rows sat at −12,2…−12,4, i.e. pinned, and
  * what ordered them was the leftover z term rather than the channel that was
@@ -774,7 +801,15 @@ typedef struct {
     double           pass_sigma;          // sample σ (df = n−1) of valid raw z
     double           pass_chi2;           // Σ z² over valid items (≈ χ²(n) under H₀)
     double           pass_stouffer;       // mean · √n — test of a common offset
-    int              pass_n_valid;        // ranked items (k>0 and not skip_rank)
+    int              pass_n_valid;        // ranked items in CLOSED blocks — the set
+                                          // every pass statistic is computed over
+    /* Ranked items whose block is still OPEN. Measured and archived, but not yet
+     * assessable: z_ctr holds the provisional RAW value until close_block()
+     * centres it (D8), so these carry the per-node offsets and belong in no
+     * statistic. They join pass_n_valid at the next block close. ⚠ Published so
+     * "measured" and "assessed" can be told apart — they differ by up to one
+     * block, and a reader who assumes they are the same will misread n. */
+    int              pass_n_open;
     int              pass_n_void;         // incomplete combines (k=0), archived only
     int              pass_n_excl;         // k>0 but skip_rank (trigger-block quarantine)
     double           v_eff;               // Var(Σz_i/√k) under measured σ and r

@@ -57,8 +57,10 @@ gcp_result_t gcp_zscore_spec(int nseg, bool (*on_yield)(void), double *out,
  * for, so the raw stream is now ALSO scored and archived.
  *
  * ⚠ RANKING AND ARCHIVE ONLY. Its null is the ideal one and this array does not
- * meet it: raw sigma sits at 1,03..1,10 on certified rungs where the folded
- * stream is at 0,997..1,001. A p-value from it would not be honest, exactly as
+ * meet it: raw sigma sits at 1,06..1,28 on certified rungs where the folded
+ * stream is at 0,997..1,001 (measured on all four nodes 2026-08-27; it was
+ * quoted as 1,03..1,10 from a single earlier reading). Outside a certified
+ * rung it is far worse — 1,69 at mean_px 5, above 10 over-lit. A p-value from it would not be honest, exactly as
  * for the entropy channel, and for the same reason.
  *
  * ⚠ It covers MORE bits than the folded z, not the same ones: a segment pulls

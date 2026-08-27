@@ -25,7 +25,8 @@
 // OV5647 noise source. See include/camera.h on why "dark frame" is a label.
 // Extraction: non-overlapping frame pairs, diff = f[2k+1] - f[2k] per pixel
 // (cancels fixed-pattern noise exactly), LSB of each diff packed into a
-// ring buffer, XOR-folded. camera_read_word() feeds noise_word() in sensor.c.
+// ring buffer, XOR-folded. camera_read_word_raw() feeds gcp_zscore_pre() in
+// the shared elotto_gcp component, which is where a z is defined.
 // SHARED between the master and slave repos -- a change here affects both nodes.
 
 static const char *TAG_CAM = "cam";
@@ -161,12 +162,13 @@ static void tsens_start(void)
 
 static cam_raw_t s_raw;
 
-/* ⚠ The monitor is NOT free: /camtest measures ns_raw 68,5 against ns_fast
- * 53,3 ns/pixel, i.e. +28,6 % on the extraction loop. At idle that is invisible
- * (ms_pair_ext 39,2, unchanged) because the loop waits on the sensor and the
- * cost is absorbed in DQBUF — the same asymmetry the pixel-sum note in
- * extract.h documents. Under MEASUREMENT load the loop is compute-bound (D25)
- * and it would come straight off the bit rate.
+/* ⚠ The monitor is not free, but it is no longer expensive. /camtest on
+ * hardware 2026-08-27: ns_raw 59,18 against ns_fast 54,04 ns/pixel, i.e.
+ * +9,5 % on the extraction loop. It was +28,6 % (68,5 vs 53,3) until the
+ * counters moved into locals — see cam_extract_fast(). At idle either figure is
+ * invisible, because the loop waits on the sensor and the cost is absorbed in
+ * DQBUF — the same asymmetry the pixel-sum note in extract.h documents. Under
+ * MEASUREMENT load the loop is compute-bound (D25) and it comes off the rate.
  *
  * ⛔ Sampling it is not the answer. CAM_RAW_EVERY ran it on one frame pair in
  * eight for exactly that reason, and it was deleted when the pre-fold z became
@@ -401,14 +403,19 @@ static void diff_and_extract(const uint8_t *a, const uint8_t *b, uint32_t n)
      * silicon and compares the emitted words, the zero count, the stuck verdict
      * and the leftover packer state. Do not switch this line without it. */
     /* ⚠ ALWAYS ON since 2026-08-26, and the duty cycle is gone with it. It was
-     * 1-in-8 while the raw stream was only a DIAGNOSTIC, to keep its +28,6 %
-     * of the extraction loop off the loaded bit rate. The raw stream is now a
-     * MEASUREMENT CHANNEL (the pre-fold z), and a measurement cannot be
-     * sampled: every bit the consumer sees must be counted, or the z is over a
-     * window nobody can name.
-     * ⚠ That makes the cost load-bearing and it is still UNMEASURED under
-     * load — /camtest prices it at idle only, where the loop waits on the
-     * sensor. Watch ms_extract and cam_mbit on a SLAVE during a real session. */
+     * 1-in-8 while the raw stream was only a DIAGNOSTIC, to keep its cost off
+     * the loaded bit rate. The raw stream is now a MEASUREMENT CHANNEL (the
+     * pre-fold z), and a measurement cannot be sampled: every bit the consumer
+     * sees must be counted, or the z is over a window nobody can name.
+     * ⚠ The cost is +9,5 % of the extraction loop (/camtest 2026-08-27), down
+     * from +28,6 % before the counters moved into locals. Still priced at IDLE
+     * only, where the loop waits on the sensor — the loaded cost remains
+     * unmeasured. Watch ms_extract and cam_mbit on a SLAVE during a session.
+     * ⚠ And ms_extract is not a constant: it measured 45,7 ms at exp 16 and
+     * 59,1 ms at exp 64 on the same node, same build (2026-08-27). Extraction
+     * walks a fixed 640000-pixel frame, so that should not depend on the
+     * exposure at all, and it is unexplained. Compare ms_extract only between
+     * nodes on the SAME rung. */
     cam_extract_fast(a, b, n, s_xor_fold, &s_pack, emit_word_cb, NULL, &zeros, &any, &psum,
                      &s_raw);
 

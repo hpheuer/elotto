@@ -260,7 +260,7 @@ static const char HTML[] =
 "experiment looks for, so the unfolded stream is scored too. The full key is "
 "((1-w-p)*Z - w*H + p*Zpre)/sqrt((1-w-p)^2+w^2+p^2); 0 is the control arm. "
 "Entropy weight + pre-fold weight must not exceed 1. WARNING: it RANKS, it does "
-"not test -- raw sigma is 1.03..1.10 against 0.997..1.001 folded, so the null "
+"not test -- raw sigma is 1.06..1.28 against 0.997..1.001 folded, so the null "
 "gates and the Bonferroni line stay on z. And a table at p>0 means nothing "
 "before the first block closes: the uncentred per-node offset is 20..95 "
 "sigma.'>Pre-fold weight:</label>"
@@ -1052,20 +1052,17 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "var nf=d.null_flags||0;"
 /* ⚠ Until the first block closes, z_ctr still holds the PROVISIONAL RAW value
    (D8), so it carries every node's block offset — the master alone ran −0,46
-   over a whole session. σ and Σz² are therefore expected to be out at the start
-   of every run, and the old banner shouted "NULL BROKEN" at a perfectly healthy
-   instrument for the first quarter of an hour. That is a display bug, not a
-   finding: nothing is assessable before centring has anything to centre.
-   The flags are still computed and still shown — but as "not yet assessable",
-   which is what they mean here. */
+   over a whole session. σ and Σz² are out at the start of every run BY DESIGN,
+   and nothing about the null is assessable before centring has anything to
+   centre. So: nothing is shown at all until a block has closed. Not a
+   placeholder, not a "not yet" note — an operator should hear from this line
+   only when something has actually gone wrong, or the one time it matters it
+   reads like the same message as always (user, 2026-08-27).
+   ⚠ The flag itself also carries a standard-error test now (PASS_NULL_K), so
+   this gate is the second of two, not the only one. */
 "var closed=d.loops_done||0;"
 "if(nf&&!closed){"
-"nb.style.display='block';"
-"nb.style.color='#cfe8cf';"
-"nb.innerHTML='\\u23f3 Null not assessable yet \\u2014 z is UNCENTRED until the first "
-"block closes, so \\u03c3 and \\u03a3z\\u00b2 carry the per-node offsets by design. "
-"Nothing is wrong. First block at '+(d.cal_interval_ms?Math.round(d.cal_interval_ms/60000)+' min "
-"of measuring':'the next round boundary')+'.';"
+"nb.style.display='none';nb.innerHTML='';"
 "}else if(nf){"
 "nb.style.color='';"
 "var bits=[];"
@@ -1267,7 +1264,9 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "showLow(d);"
 "showNear(d);"
 "}"
-// Always show Z and Z* when pass σ is available; p is from Z* (studentized).
+// One column of numbers: Z*, the studentized ranking key. Z, H, P and the
+// uncorrected p were columns until 2026-08-27 and now live in the hover text
+// built below.
 "function renderRunTable(headId,bodyId,res,isEuro,d,st){"
 "document.getElementById(headId).innerHTML="
 "'<tr><th title=\"rank in this table, 1 = strongest\">#</th><th title=\"item within its round; item/round in unlimited mode, because the index repeats across rounds\">Item</th>'"
@@ -1284,10 +1283,10 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "for(var j=0;j<r.euro.length;j++)"
 "estr+='<span class=\"num euro\">'+r.euro[j]+'</span>';"
 // Z* studentizes the RANKING KEY against rank_mean/rank_sigma, which are that
-// key's own moments \u2014 the same key that ordered these five rows. The Z column
-// still shows the raw z, and H the entropy that moved the item. Fallbacks are
-// for a status page served by an older firmware, not for a missing value:
-// r.zh === 0 legitimately means "no entropy for this item" and shows an em dash.
+// key's own moments \u2014 the same key that ordered these five rows. Fallbacks
+// are for a status page served by an older firmware, not for a missing value:
+// r.zh === 0 legitimately means "no entropy for this item" and the hover text
+// shows an em dash for it.
 "var z=r.z,kk=(r.key===undefined?(r.z_ctr===undefined?z:r.z_ctr):r.key);"
 "var zs=(st&&st.s>0)?(kk-st.m)/st.s:0;"
 "var itm=(d.unlimited&&r.round)?(r.run+'/'+r.round):r.run;"
@@ -1459,7 +1458,10 @@ static esp_err_t status_handler(httpd_req_t *req)
         "\"best_z\":%.4f,\"p_corr\":%.6g,\"comparisons\":%d,"
         "\"pass_mean\":%.4f,\"pass_sigma\":%.4f,\"pass_chi2\":%.4f,"
         "\"pass_stouffer\":%.4f,\"pass_n_valid\":%d,\"pass_n_void\":%d,"
-        "\"pass_n_excl\":%d,"
+        /* pass_n_open: measured, archived, not yet assessable — its block has
+         * not closed, so z_ctr is still the raw value. It is NOT part of
+         * pass_n_valid and no pass statistic sees it. */
+        "\"pass_n_excl\":%d,\"pass_n_open\":%d,"
         "\"v_eff\":%.4f,\"null_flags\":%d,\"flush_timeouts\":%lu,"
         /* The entropy channel. ⚠ rank_mean/rank_sigma are the moments of the
          * RANKING KEY and pass_mean/pass_sigma those of z; the tables are
@@ -1513,7 +1515,7 @@ static esp_err_t status_handler(httpd_req_t *req)
         g_status.best_z, g_status.p_corrected, g_status.comparisons,
         g_status.pass_mean, g_status.pass_sigma, g_status.pass_chi2,
         g_status.pass_stouffer, g_status.pass_n_valid, g_status.pass_n_void,
-        g_status.pass_n_excl,
+        g_status.pass_n_excl, g_status.pass_n_open,
         g_status.v_eff, (int)g_status.null_flags,
         (unsigned long)g_status.flush_timeouts,
         g_status.ent_w, g_status.pre_w, g_status.ent_windows,
@@ -1916,7 +1918,7 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
     int nlen = snprintf(buf, sizeof(buf),
         "# elotto v3 mode=%s focus=%s score=%s items=%d/%d ranked=%d excl=%d void=%d "
         "blocks=%d paused_ms=%lld pass_mean=%s pass_sigma=%s pass_chi2=%s "
-        "pass_stouffer=%s v_eff=%s null_flags=%d flush_timeouts=%lu drift_t=%.2f "
+        "pass_stouffer=%s v_eff=%s open=%d null_flags=%d flush_timeouts=%lu drift_t=%.2f "
         "unlimited=%s runs_cap=%d rounds=%d "
         /* ⚠ The window in BOTH units. Seconds alone are not enough: the
          * segs<->ms calibration is a MEASUREMENT and was re-measured on
@@ -1967,6 +1969,7 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
         de_num(cb, sizeof(cb), g_status.pass_chi2, 4),
         de_num(stb, sizeof(stb), g_status.pass_stouffer, 4),
         de_num(vb, sizeof(vb), g_status.v_eff, 4),
+        g_status.pass_n_open,
         (int)g_status.null_flags, (unsigned long)g_status.flush_timeouts,
         g_status.drift_t,
         g_status.unlimited ? "on" : "off", g_status.runs_cap, g_status.round,

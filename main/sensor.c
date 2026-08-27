@@ -1053,13 +1053,23 @@ static void update_null_flags(void)
     uint8_t f = 0;
     int n = g_status.pass_n_valid;
     double sig = g_status.pass_sigma;
+    /* ⚠ Both gates want the band AND the significance — see PASS_NULL_K. The
+     * band is the operating tolerance and the standard-error test is what stops
+     * it firing on noise while n is still small. */
     if (n >= PASS_NULL_MIN_N && sig > 0.0) {
-        if (sig < PASS_SIGMA_LO || sig > PASS_SIGMA_HI) f |= NULL_FLAG_SIGMA;
+        /* SE(σ) ≈ 1/√(2n) for a sample σ near 1. */
+        double se_sig = 1.0 / sqrt(2.0 * (double)n);
+        if ((sig < PASS_SIGMA_LO || sig > PASS_SIGMA_HI) &&
+            fabs(sig - 1.0) > PASS_NULL_K * se_sig)
+            f |= NULL_FLAG_SIGMA;
         /* χ²/n = (Σz²)/n; under H₀ ≈ 1. Same band as σ when mean≈0; when mean
-         * is large, σ can look fine while Σz² is inflated — catch that too. */
+         * is large, σ can look fine while Σz² is inflated — catch that too.
+         * Var(χ²_n/n) = 2/n, so its SE is √(2/n). */
         double chi2_over_n = g_status.pass_chi2 / (double)n;
-        if (chi2_over_n < PASS_SIGMA_LO * PASS_SIGMA_LO ||
-            chi2_over_n > PASS_SIGMA_HI * PASS_SIGMA_HI)
+        double se_chi = sqrt(2.0 / (double)n);
+        if ((chi2_over_n < PASS_SIGMA_LO * PASS_SIGMA_LO ||
+             chi2_over_n > PASS_SIGMA_HI * PASS_SIGMA_HI) &&
+            fabs(chi2_over_n - 1.0) > PASS_NULL_K * se_chi)
             f |= NULL_FLAG_CHI2;
     }
     if (g_status.loops_done >= 6 && fabs(g_status.drift_t) > DRIFT_FLAG_T)
@@ -1217,19 +1227,36 @@ static void recompute_pass_ranks(void)
     if (ntot > NUM_RUNS) ntot = NUM_RUNS;
 
     /* Seeded with what compaction dropped, so mean/σ/χ² describe every item the
-     * session measured and not just the rows still held. */
+     * session measured and not just the rows still held.
+     *
+     * ⚠ CLOSED BLOCKS ONLY, since 2026-08-27. rank_z() is z_ctr, and z_ctr is
+     * the provisional RAW value until close_block() centres it (D8) — so an
+     * item in the open block carries its nodes' offsets, and a mean or a σ
+     * taken over it is measuring the array's own bias, not the null. It showed
+     * as a false alarm: "NULL BROKEN, pass σ = 1,171" at 85 items, then σ 1,059
+     * and null_flags 0 forty items later with nothing repaired. Everything
+     * downstream inherits the gate — null_flags, Σz²/n, the Bonferroni
+     * comparison count, the NB attribution — which is the point: they all have
+     * to describe one set.
+     * The compaction seeds are safe: pass_compact() runs at a round boundary,
+     * i.e. after close_block(), so everything it folded in was centred.
+     * ⚠ VOID and EXCLUDED are counted over EVERYTHING. They are archive facts,
+     * not statistics, and hiding a void run until its block closes would make
+     * the CSV and the live counter disagree. */
     double sum = s_drop_sum, sumsq = s_drop_sumsq;
-    int    nv  = s_drop_n, nvoid = s_drop_void, nexcl = s_drop_excl;
+    int    nv  = s_drop_n, nvoid = s_drop_void, nexcl = s_drop_excl, nopen = 0;
     for (int j = 0; j < ntot; j++) {
         const RunResult *r = &g_status.results[j];
         if (r->k == 0) { nvoid++; continue; }
         if (r->skip_rank) { nexcl++; continue; }
+        if ((int)r->block >= g_status.loops_done) { nopen++; continue; }
         double z = rank_z(r);
         sum += z;
         sumsq += z * z;
         nv++;
     }
     g_status.pass_n_valid = nv;
+    g_status.pass_n_open  = nopen;
     g_status.pass_n_void  = nvoid;
     g_status.pass_n_excl  = nexcl;
     g_status.pass_chi2    = sumsq;
@@ -1281,6 +1308,19 @@ static void recompute_pass_ranks(void)
     for (int j = 0; j < ntot; j++) {
         const RunResult *r = &g_status.results[j];
         if (!result_ranked(r)) continue;
+        /* ⚠ CLOSED BLOCKS ONLY. An item in the OPEN block still holds the
+         * provisional RAW value (D8), which carries the per-node offset — on
+         * the pre-fold channel that offset is 20..95σ. Letting those into the
+         * σ that rank_key() divides by is a feedback loop, and it is not
+         * subtle: on hardware 2026-08-27, 45 uncentred items out of 360 drove
+         * rank_sig_p to 17,16 against a real 2..4, which crushed every item's
+         * pre-fold term and dropped the top Z* from over 3 to under 1. It came
+         * back at the next block close, so the symptom is a sawtooth in Z*,
+         * not a wrong number sitting still.
+         * The compaction seeds above are safe: pass_compact() runs at a round
+         * boundary, i.e. after close_block(), so everything it folded in was
+         * already centred. */
+        if ((int)r->block >= g_status.loops_done) continue;
         if (r->zh_ctr != 0.0f) {
             double h = (double)r->zh_ctr;
             hsum += h; hsumsq += h * h; hn++;
@@ -1304,8 +1344,16 @@ static void recompute_pass_ranks(void)
     for (int j = 0; j < ntot; j++) {
         const RunResult *r = &g_status.results[j];
         if (!result_ranked(r)) continue;
-        double kk = rank_key(r);
-        ksum += kk; ksumsq += kk * kk; kn++;
+        /* ⚠ The key's own moments take closed blocks only, for the same reason
+         * and with the same effect: Z* = (key − rank_mean)/rank_sigma, so an
+         * uncentred item in the scale moves EVERY published Z*, including the
+         * ones that are properly centred. The clamp counters below are
+         * deliberately NOT gated — they report what the key actually did to
+         * every ranked item, open block included. */
+        if ((int)r->block < g_status.loops_done) {
+            double kk = rank_key(r);
+            ksum += kk; ksumsq += kk * kk; kn++;
+        }
         if (r->zh_ctr != 0.0f) {
             ent_n++;
             if (fabs((double)r->zh_ctr) / sh >= ENT_Z_CLAMP) ent_clamped++;
@@ -2464,6 +2512,7 @@ void elotto_task(void *pvParam)
     g_status.best_z          = 0.0;
     g_status.p_corrected     = 1.0;
     g_status.comparisons     = 0;
+    g_status.pass_n_open     = 0;
     g_status.pass_mean       = 0.0;
     g_status.pass_sigma      = 0.0;
     g_status.pass_chi2       = 0.0;

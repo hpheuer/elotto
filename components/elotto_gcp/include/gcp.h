@@ -200,9 +200,11 @@ gcp_result_t gcp_zscore_spec(int nseg, bool (*on_yield)(void), double *out,
  * experiment is looking for, so the unfolded stream is scored and archived too.
  * The fold stays: without it there is no stable null (D17).
  *
- * ⚠ RANKING AND ARCHIVE ONLY, never a p-value. Raw sigma is 1,03..1,10 on
- * certified rungs against 0,997..1,001 folded — the same compromise the
- * entropy channel makes, for the same reason.
+ * ⚠ RANKING AND ARCHIVE ONLY, never a p-value. Per-node raw sigma measured
+ * 1,06..1,28 on certified rungs against 0,997..1,001 folded (2026-08-27), and
+ * it leaves that band fast when the light does — 1,69 at mean_px 5, above 10
+ * over-lit. Combined and block-centred the channel runs at sigma 2..4. Same
+ * compromise the entropy channel makes, for the same reason.
  * ⚠ It covers MORE bits than the folded z over the same window in TIME.
  * ⚠ The folded z is bit-identical to what gcp_zscore_raw() returns.
  * NULL out_pre, or a node without the parallel ring, disables it. */

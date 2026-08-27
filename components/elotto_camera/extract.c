@@ -104,7 +104,8 @@ void cam_extract_fast(const uint8_t *a, const uint8_t *b, uint32_t n, bool fold,
      * two-word load-modify-store with a carry each — the bulk loop was paying
      * roughly twenty-five instructions per four pixels for bookkeeping worth
      * about six, and /camtest measured the whole monitor at +28,6 % of the
-     * extraction loop (ns_raw 68,5 against ns_fast 53,3).
+     * extraction loop (ns_raw 68,5 against ns_fast 53,3). After this change,
+     * on hardware: 59,18 against 54,04, i.e. +9,5 %.
      *
      * Locals are invisible to emit() by construction, so the whole monitor
      * lives in registers and is written back once, at the end.
