@@ -23,7 +23,12 @@
 typedef bool (*elotto_ota_busy_fn)(void);
 
 /* Counts boot attempts that never reached a healthy uptime and falls back to
- * the factory updater after ELOTTO_OTA_BOOT_FAIL_LIMIT of them.
+ * the factory updater after BOOT_ATTEMPT_LIMIT of them.
+ *
+ * ⚠ The count published as `fw_boot_attempts` in /otainfo is ATTEMPTS, not
+ * failures: every boot from a slot increments it and only HEALTHY_UPTIME_MS of
+ * uptime clears it. A node reads 1 for its first 30 seconds after any flash.
+ * Poll it later than that, or it always looks like something went wrong.
  *
  * This is the only escape from a validated image that crash-loops: rollback is
  * disarmed the moment an image is marked valid, so the bootloader would happily

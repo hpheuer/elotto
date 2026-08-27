@@ -456,7 +456,10 @@ The enclosure is **LIT, not dark** `[D28]`.
   Plus `gcp_spec.c`: the Welch spectral-entropy channel (float32 packed real FFT, closed-form
   null). `/spectest` holds it against a reference DFT — see **Spectral entropy** above.
 - **components/elotto_ota/** – update endpoint + boot safety (rollback, boot counter, mark-valid;
-  `/update` `/boot` `/reboot` `/poison` `/otainfo`). `BOOT_FAIL_LIMIT` 3, `HEALTHY_UPTIME_MS` 30000.
+  `/update` `/boot` `/reboot` `/poison` `/otainfo`). `BOOT_ATTEMPT_LIMIT` 3, `HEALTHY_UPTIME_MS` 30000.
+  ⚠ `fw_boot_attempts` in `/otainfo` counts boots since the last run that stayed up 30 s —
+  **not** failures. Every node reads 1 for its first 30 s after a flash. Read it later than
+  that, or a healthy array looks broken (it did, 2026-08-27).
 
 All three components are **shared**: the slave repo pulls them via
 `EXTRA_COMPONENT_DIRS=../elotto/components`, and ota_firmware pulls *only* elotto_ota by pointing at

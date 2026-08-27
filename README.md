@@ -988,7 +988,8 @@ curl.exe -X POST --data-binary "@../elotto_slave/build/elotto_slave.bin" http://
 
 ~750 KB in ~4 s. The node writes the **inactive** slot, reboots, and marks itself valid only
 once its own webserver answers — so a failed transfer or a dead image cannot strand it.
-Confirm with `GET /otainfo` (`fw_sha`, `fw_slot`; `fw_boot_fails` clears after ~30 s healthy uptime).
+Confirm with `GET /otainfo` (`fw_sha`, `fw_slot`; `fw_boot_attempts` counts boots since the last
+run that stayed up 30 s — it reads 1 for the first 30 s after any flash, which is normal).
 
 Always build through `build.ps1`: it pins the VS Code extension's Python venv. Mixing it with
 `export.ps1`'s interpreter pins the build directory to the wrong one and fails with

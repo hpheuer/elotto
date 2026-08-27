@@ -22,12 +22,24 @@
 
 static const char *TAG = "ota";
 
-#define BOOT_FAIL_LIMIT   3
+/* ⚠ ATTEMPTS, not failures. The counter below is incremented on EVERY boot
+ * from an OTA slot and cleared only after HEALTHY_UPTIME_MS of uptime, so a
+ * node that has just come up reads 1 for its first 30 seconds and that is the
+ * design working, not a fault. It was named BOOT_FAIL_LIMIT / fw_boot_fails
+ * until 2026-08-27, which cost a round of "is this a hardware problem?" over
+ * three slaves that were perfectly healthy and had simply been polled inside
+ * their own 30-second window. Read it at least HEALTHY_UPTIME_MS after a
+ * flash, or it will always say 1. */
+#define BOOT_ATTEMPT_LIMIT 3
 #define HEALTHY_UPTIME_MS 30000
 #define UPLOAD_CHUNK      4096
 
 #define NVS_NS         "otaboot"
-#define NVS_KEY_FAILS  "fails"
+/* ⚠ The stored key changed with the rename. The old "fails" byte is abandoned
+ * in NVS on every node that ever ran an earlier image — harmless, one byte, and
+ * deliberately not migrated: the new counter starting from 0 is exactly the
+ * "fresh budget" a new image is supposed to get. */
+#define NVS_KEY_BOOTS  "boots"
 #define NVS_KEY_POISON "poison"
 
 /* Test hooks for the recovery gates. Skipped when running from factory, so the
@@ -75,8 +87,8 @@ bool elotto_ota_running_from_slot(void) { return s_from_slot; }
 static void health_task(void *arg)
 {
     vTaskDelay(pdMS_TO_TICKS(HEALTHY_UPTIME_MS));
-    nvs_set_u8_commit(NVS_KEY_FAILS, 0);
-    ESP_LOGI(TAG, "healthy for %d s — boot-failure counter cleared", HEALTHY_UPTIME_MS / 1000);
+    nvs_set_u8_commit(NVS_KEY_BOOTS, 0);
+    ESP_LOGI(TAG, "healthy for %d s — boot-attempt counter cleared", HEALTHY_UPTIME_MS / 1000);
     vTaskDelete(NULL);
 }
 
@@ -102,15 +114,16 @@ void elotto_ota_boot_check(void)
         abort();
     }
 
-    uint8_t fails = nvs_get_u8_or(NVS_KEY_FAILS, 0) + 1;
-    nvs_set_u8_commit(NVS_KEY_FAILS, fails);
-    ESP_LOGI(TAG, "boot attempt %u since last healthy run", fails);
-    if (fails >= BOOT_FAIL_LIMIT) {
+    uint8_t attempts = nvs_get_u8_or(NVS_KEY_BOOTS, 0) + 1;
+    nvs_set_u8_commit(NVS_KEY_BOOTS, attempts);
+    ESP_LOGI(TAG, "boot attempt %u since last healthy run", attempts);
+    if (attempts >= BOOT_ATTEMPT_LIMIT) {
         const esp_partition_t *fac = esp_partition_find_first(
             ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_FACTORY, NULL);
         if (fac) {
-            ESP_LOGE(TAG, "%u failed boots — falling back to factory updater", fails);
-            nvs_set_u8_commit(NVS_KEY_FAILS, 0);
+            ESP_LOGE(TAG, "%u boots without a healthy run — falling back to the "
+                          "factory updater", attempts);
+            nvs_set_u8_commit(NVS_KEY_BOOTS, 0);
             esp_ota_set_boot_partition(fac);
             esp_restart();
         }
@@ -147,9 +160,9 @@ int elotto_ota_status_json(char *buf, int cap)
 
     return snprintf(buf, cap,
         "\"fw_version\":\"%s\",\"fw_built\":\"%s %s\",\"fw_sha\":\"%s\","
-        "\"fw_slot\":\"%s\",\"fw_state\":%d,\"fw_boot_fails\":%d",
+        "\"fw_slot\":\"%s\",\"fw_state\":%d,\"fw_boot_attempts\":%d",
         desc->version, desc->date, desc->time, sha,
-        run ? run->label : "?", (int)st, (int)nvs_get_u8_or(NVS_KEY_FAILS, 0));
+        run ? run->label : "?", (int)st, (int)nvs_get_u8_or(NVS_KEY_BOOTS, 0));
 }
 
 /* ── handlers ─────────────────────────────────────────────────────────── */
@@ -317,7 +330,7 @@ static esp_err_t update_post_handler(httpd_req_t *req)
         return ESP_FAIL;
     }
 
-    nvs_set_u8_commit(NVS_KEY_FAILS, 0);   /* a fresh image gets a fresh budget */
+    nvs_set_u8_commit(NVS_KEY_BOOTS, 0);   /* a fresh image gets a fresh budget */
 
     char msg[128];
     snprintf(msg, sizeof(msg), "ok: wrote %d bytes to %s, rebooting\n", total, target->label);
@@ -337,7 +350,7 @@ static esp_err_t boot_post_handler(httpd_req_t *req)
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, esp_err_to_name(err));
         return ESP_FAIL;
     }
-    nvs_set_u8_commit(NVS_KEY_FAILS, 0);
+    nvs_set_u8_commit(NVS_KEY_BOOTS, 0);
     char msg[64];
     snprintf(msg, sizeof(msg), "ok: next boot = %s\n", p->label);
     httpd_resp_sendstr(req, msg);
