@@ -131,9 +131,12 @@ only Abort ends it. The stop survives as the backstop for a compaction that cann
 - **Pooling**: see **⚠ Pooling** below — unlimited data carries two extra conditions.
 - A truncated round draws a **random subset** (partial Fisher–Yates over the whole space). Only the
   last round truncates `[D4]`.
-- `/status`: `unlimited`, `runs_cap`, `round`, `round_base`, `round_done`, `round_total`. `completed`
-  is session-wide, `total` is the CURRENT round — ⚠ a progress bar must use `round_done/round_total`
-  or its denominator moves. ETA is to the end of the round.
+- `/status`: `unlimited`, `runs_cap`, `round`, `round_base`, `round_done`, `round_total`,
+  `round_start_ms`. `completed` is session-wide, `total` is the CURRENT round — ⚠ a progress bar must
+  use `round_done/round_total` or its denominator moves. ETA is to the end of the round.
+  `round_start_ms` is `elapsed_ms` when the round's MEASURING began (stamped at `round_base`, not at
+  `round++`, so the sweep/baseline/scoring in between are excluded); paused time is already out of
+  any difference against it. 0 outside unlimited mode.
 - `/status` publishes `pool_main`/`pool_euro` for the whole of every running session. ⚠ `sensor.c`
   withdraws them at the ROUND BOUNDARY (`round++`) and at session start before `state` goes RUNNING —
   clearing at the scoring pass would leave the previous round's numbers on screen through the whole
@@ -157,8 +160,11 @@ to 6+4 = 36.
 a GCP experiment looks for, so the unfolded stream is now scored, combined, block-centred and
 archived beside z and z_h. ⛔ The fold stays: without it there is no stable null `[D17]`.
 
-- **`?wpre=<0..1>`, default 0** — measured and archived from the first session, moves no ranking until
-  asked for. ⚠ **`pre_w` splits the pooling table** for the tables, exactly as `ent_w` does.
+- **`?wpre=<0..1>`, API default 0, FORM pre-fill `ENT_W_PRE_FORM` 0,8** (user, 2026-08-27) — measured
+  and archived from the first session, and the API default keeps a curl-started run from silently
+  acquiring the channel. ⚠ The form's 0,2 entropy + 0,8 pre-fold sums to exactly 1, which is legal
+  (only a sum ABOVE 1 answers 400) and leaves the folded z with weight **zero** in the key: the top
+  tables are then ranked with no contribution from the channel the p-values come from. ⚠ **`pre_w` splits the pooling table** for the tables, exactly as `ent_w` does.
 - ⚠ **RANKS, DOES NOT TEST.** Raw σ is 1,03–1,10 on certified rungs against 0,997–1,001 folded. Same
   compromise as the entropy channel.
 - ⚠ **Centring matters more here than anywhere**: per-node RAW pre-fold z on one measured item was
@@ -179,8 +185,8 @@ statistic built from bins 1…511 is independent of z under H₀ — a second me
 bits, at no extra measuring time. Welch over `GCP_SPEC_W` 1024-segment windows, `GCP_SPEC_BINS` 511
 (DC dropped because it is z; Nyquist dropped because it is χ²₁, not χ²₂), normalised entropy H/ln K.
 
-- **`?went=<0..1>` is the weight of the entropy half of the ranking key**, default **0,50** (user,
-  "wir probieren mal 50:50"). Out of range answers **400**. `?went=0` is the control arm and
+- **`?went=<0..1>` is the weight of the entropy half of the ranking key**, API default **0,50** (user,
+  "wir probieren mal 50:50"), FORM pre-fill `ENT_W_FORM` **0,20** (user, 2026-08-27). Out of range answers **400**. `?went=0` is the control arm and
   reproduces the pure-z ranking exactly, including the scale.
   **key = ((1−w−p)·z_ctr − w·z_h + p·z_pre)/√((1−w−p)²+w²+p²)** — minus z_h because **low entropy is
   the interesting direction**, plus z_pre because it is a z on the same scale and direction as z_ctr,
@@ -258,11 +264,18 @@ detail: what remains visible is an effect varying **between items inside a block
 
 ### UI
 - A **parameter line** at the top of the progress area, for every session — mode, measuring time, gap,
-  segments, s/run, measured window/gap, baseline runs, sweep budget + interval, score direction,
-  attended/unattended, unlimited cap. Built from `/status`, not the form, so a curl-started run and a
+  segments, s/run, measured window/gap, baseline runs, sweep budget + interval, **blocks so far**,
+  key weights, score direction, attended/unattended, unlimited cap. Built from `/status`, not the form, so a curl-started run and a
   reloaded page both label themselves. "per run" is measured pace once ≥ 5 runs exist, else the rate
   model, and it says which. ⚠ The measured value reads high early — `elapsed_ms` also contains the
   opening sweep, which is not a run.
+- **Two rows of four stat cards, and the split is load-bearing**: the top row is round-relative in
+  every figure (items, %, the ROUND's clock, ETA to the round's end), the bottom row session-relative
+  in every figure (Current Round, Rounds completed, Total Measured, Total Time). Mixing them is what
+  the old single row did — a round item count beside a session clock. ⚠ The bottom row is unlimited
+  mode only; in a single pass it would repeat the row above it.
+  The old "Item x / y · round · measured total · block" line is **gone** (2026-08-27): items and
+  round live in the cards, the block count in the parameter line.
 - **Three tables of five**: Top-5, Bottom-5, Nearest-zero-5 (`top[]`/`low[]`/`near[]`), plus
   significance line, item counter + block badge, Save CSV.
   ⚠ **Nearest zero means nearest the PASS MEAN**, not nearest raw 0 `[D9]`. The table shows `Z*`;
@@ -362,16 +375,43 @@ protocol). It changes nothing statistically, so a session is merely **tagged**: 
 ## Camera calibration (per BLOCK)
 At every insertion the master broadcasts `K<budget_ms>,<segs>`, sweeps its own ladder in parallel, and
 waits for every node's `OK:<exp>,<gain>,<fold>,<bias>,<mbit_s>,<G|U>`. Each node keeps the setting with
-the **lowest |bias − 0,5| among candidates clearing the σ gate with margin** (|σ−1| ≤ half the
-tolerance), falling back to the bare gate if none qualify `[D16]`.
+the **lowest |raw_bias − 0,5| — measured BEFORE the fold — among candidates clearing the σ gate with
+margin** (|σ−1| ≤ half the tolerance), falling back to the bare gate if none qualify `[D16]``[D46]`.
 
-Gates a rung must clear: bias (run-scaled, see below), autocorr < `CAL_AUTOC_TOL` 0,01, |σ−1| ≤ 0,05,
-no stuck frames, `mean_px` in **[`CAL_MIN_MEAN_PX` 5,0 , `CAL_MAX_MEAN_PX` 100,0]** `[D18]``[D20]`, and
+⛔ **The key is the PRE-FOLD bias and it is never a gate** `[D46]`. After the fold every certified
+rung sits four times below the window's own sampling error, so the old key picked exposure 16 over 64
+by 6e-6 — and the two rungs then differed by 10× in the offset they produced (−0,64 against −0,06 z
+per run over 50 blocks), which flagged the pass null broken in 17 of them.
+⚠ **The pre-fold statistics are NON-STATIONARY per node, minute to minute.** Across two sweeps 25 min
+apart with nothing touched, the raw distance went master 1,13→3,42, .155 1,94→7,63, .103 3,71→**0,24**
+— different directions, not common-mode. Only the SHAPE across a ladder is stable, which is why it
+selects and does not certify. ⛔ An absolute bar was fitted and left .155 certified-empty on the next
+sweep; do not re-fit one.
+⚠ **The incumbent rung is KEPT** unless a challenger beats it by `CAL_KEEP_MARGIN_K` 3 SE of its own
+measurement (`kept` in `/calibrate`). The incumbent is what the camera runs when the sweep STARTS, so
+a manual `/expose` gets one sweep of protection — deliberate.
+
+Gates a rung must clear: bias (folded, run-scaled, see below), autocorr < `CAL_AUTOC_TOL` 0,01,
+|σ−1| ≤ 0,05, **pre-fold σ ≤ `CAL_RAW_SIGMA_K` 1,35 × the ladder's own best** `[D46]`, no stuck
+frames, `mean_px` in **[`CAL_MIN_MEAN_PX` 5,0 , `CAL_MAX_MEAN_PX` 100,0]** `[D18]``[D20]`, and
 `zero_diff` ≤ `CAL_MAX_ZERO_DIFF` 0,125.
+
+- **The dispersion gate is RELATIVE and one-sided** `[D46]`. The folded σ gate has the same blindness
+  the bias gate had — it certified .155/256 at raw σ 1,34 (folded 1,02) — and that is the stream
+  `?wpre=` ranks on. Relative because raw σ moved 1,00 → 1,29 → 0,98 on a healthy node across three
+  sweeps. It runs after the whole ladder is measured, so it cannot reject the rung it references.
+  ⚠ On both measured sweeps it rejects nothing the folded σ gate did not. Its value is prospective.
+- **The pre-fold runs statistic is measured per rung, published, and gates nothing** `[D46]`. Armed
+  only inside a sweep (`s_raw_runs_on`): permanently on it cost **5,38 Mbit/s against 5,71**. It is
+  huge on failing rungs (−157, −416) and inside ±1,7 on every certified rung of all four nodes, i.e.
+  it does not order the rungs that matter. ⚠ `raw_runs_z` 0,0 in a measurement window means NOT
+  ARMED, not "perfectly random" — `raw_trans` says which.
+  ⚠ Never price it with `/camtest`: the same binary read +5,9 % and +19 % because the self-test
+  benchmarks while the capture task is extracting. The delivered bit rate is the number.
 
 - **The dark end is gated because photons do the whitening** `[D18]`. Exposures 4 and 8 are rejected
   on this rig; 16…128 pass. Dim the lamp and more rungs start failing; the answer is light, not a lower floor.
-- **The bias bar is a z offset**, `CAL_MAX_Z_OFFSET` 1,0, converted with the session's segment count
+- **The FOLDED bias bar is a z offset**, `CAL_MAX_Z_OFFSET` 1,0, converted with the session's segment count
   via `gcp_z_per_bias()` — which is why the count travels on `K`. Never tighter than
   `CAL_BIAS_SE_K`×SE(bias), never looser than the old 1e-3 `[D19]`.
   At a 10 s budget it resolves ~6,9e-4, against the 2,3e-4 the health bar corresponds to — the gate
@@ -386,7 +426,8 @@ no stuck frames, `mean_px` in **[`CAL_MIN_MEAN_PX` 5,0 , `CAL_MAX_MEAN_PX` 100,0
   centring estimates its means from.
 - **Nodes land on different exposures on purpose** (different sensors, different light). What they must
   share is the segment count.
-- `GET /calibrate` serves the whole last sweep per candidate with the gate each failed, **on every
+- `GET /calibrate` serves the whole last sweep per candidate with the gate each failed, plus
+  `raw_bias`/`raw_sigma`/`raw_runs_z`/`raw_bits`/`key` per rung and `kept` for the sweep, **on every
   node** — which is what makes a per-node optical fault diagnosable. The chosen setting is recorded per
   block in `/loops`; a re-tune nobody logged is indistinguishable from drift in the data.
 - ⚠ `camera_get_stats()` is cumulative **since the last `camera_stats_reset()`**, i.e. since the last
@@ -442,9 +483,11 @@ The enclosure is **LIT, not dark** `[D28]`.
   unmonitored `[D43]`. Also per rung in `/calibrate` and per node in `/diagjson?all=1`.
   ⚠ With the fold OFF the raw and folded pairs must agree exactly; a divergence is a bug, not a
   finding.
-  ⚠ **The monitor costs +28,6 % of the extraction loop** (`ns_raw` vs `ns_fast` in `/camtest`), so it
-  runs on every `CAM_RAW_EVERY` = 8th frame pair — ~3,6 % amortised, invisible at idle, and it must
-  stay gated: under load the loop is compute-bound `[D25]`.
+  ⚠ **`CAM_RAW_EVERY` is gone** — a measurement channel is not sampled `[D45]`. The bias/σ half of
+  the monitor runs on every frame pair; the **runs half is armed only inside a sweep**
+  (`s_raw_runs_on`), because permanently on it cost 5,38 Mbit/s against 5,71 `[D46]`.
+  ⚠ Price the monitor with the **delivered bit rate**, never with `/camtest`: the same binary read
+  +5,9 % and +19 % because the self-test benchmarks while the capture task is extracting `[D46]`.
 - **components/elotto_link/** – the UDP wire format (`EL1 <seq> <payload>`, ports 5000/5001), plus
   `EL_SEG_MIN`/`EL_SEG_MAX` as ONE definition for both firmwares.
 - **components/elotto_gcp/** – the z-score primitive (`gcp_zscore_raw()`) and `gcp_z_per_bias()`.

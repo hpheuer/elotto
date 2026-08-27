@@ -5,6 +5,39 @@ CLAUDE.md says it itself — rules live there, evidence in [DECISIONS.md](DECISI
 Keeping a dated status snapshot in the always-loaded file cost every session ~1.200
 tokens to carry a paragraph that is stale within the week.
 
+## 2026-08-27
+
+**The sweep was choosing the operating point at random, and it cost 17 of 50 blocks.**
+See `[D46]` for the measurement. Short version: the selection key was measured after the XOR fold,
+where every certified rung sits four times below the window's own sampling error, so the master hopped
+between exposures 16/32/64 whose real per-block offsets differ by 10×. `null_flags` DRIFT fired in 17
+blocks of the 2026-08-27 session; nothing was faulty.
+
+**Fixed the same day** — pre-fold selection key, hysteresis on the incumbent rung, a relative pre-fold
+dispersion gate, and the runs statistic measured per rung but gating nothing.
+
+**Flashed 2026-08-27** — master `ebe95703e96d9aaf`, all three slaves `76bf6ddfc9468b5e`
+(`elotto` `6329eb9`, `elotto_slave` `88b88a0`).
+
+**Verified on hardware the same day:**
+- All four nodes certify a rung after the change: master 64 · `.103` 16 · `.145` 32 · `.155` 128.
+- Hysteresis holds: `.103` kept exposure 16 against a rung 1e-4 better (`kept=true`).
+- `cam_extract_selftest()` 6/6 equal with the runs channel armed, including the carried bit.
+- Idle rate back to **5,709–5,716 Mbit/s** on all four after the runs channel was confined to sweeps
+  (5,38 with it permanently armed).
+- `round_start_ms` reads 125831 against `elapsed_ms` 135007 at 6 items, i.e. the opening
+  sweep/baseline/scoring is correctly outside the round's clock.
+
+⚠ **Not yet exercised:** the relative dispersion gate has never actually rejected a rung — on both
+measured sweeps it fires nowhere the folded σ gate did not already fire. Its first real trip is
+unobserved. The hysteresis has held across exactly one sweep pair.
+
+⚠ **Open, and it is the interesting one.** The pre-fold bias and σ are non-stationary per node on a
+timescale of minutes, in different directions on different nodes, and nothing in the archive can say
+why: `LoopStat` carries `cam_exp`, `cam_gain`, `cam_bias` and `die_temp` but **not `mean_px`**, and
+`/calibrate` holds only the last sweep. The one covariate that could separate "the lamp moved" from
+"the sensor moved" is the one not being recorded. `[D46]`
+
 ## 2026-08-20
 
 **The instrument is sound and every result so far is null**, which is what a working null instrument

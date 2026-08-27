@@ -828,6 +828,110 @@ log or firmware build older than 2026-08-20 does not resolve** — match those b
 🗑 **Deleted:** `docs/data/_live_now_*`, a superseded partial pull of the 08-19 session. Its
 `.gitignore` entry stays, because that is the name the next live pull will take.
 
+### D46 — The sweep chooses BEFORE the fold, and keeps what works (2026-08-27)
+
+**The criterion was measured on the wrong side of the fold.** `cal_gate()`/selection read
+|bias − 0,5| on the emitted stream. The fold maps a raw bias ε to ~2ε², so at ε = 5,4e-3 the folded
+residual is 5,9e-5 against a window SE(bias) of 2,3e-4 — every certified rung sits four times below
+the noise floor of its own measurement. The master's ladder, distance from 0,5 in units of 1e-3:
+
+| exp | 4 | 8 | 16 | 32 | **64** | 128 | 256 | 512 |
+|---|---|---|---|---|---|---|---|---|
+| raw | 11,7 | 8,4 | 5,4 | 2,4 | **0,5** | 5,5 | 10,3 | 26,8 |
+| folded | | | 0,03 | 0,21 | 0,04 | | | |
+
+A clean U with one minimum before the fold; noise after it. The sweep picked exposure 16 over 64 by
+**6e-6**, a fortieth of its own standard error.
+
+**What that cost, measured over the 2026-08-27 session (50 blocks, 3150 items).** Per-block master
+offset by the rung the sweep had chosen:
+
+| rung | blocks | mean offset | SE |
+|---|---|---|---|
+| 16 | 10 | **−0,643** | 0,095 |
+| 32 | 15 | −0,321 | 0,047 |
+| 64 | 25 | −0,057 | 0,030 |
+
+Monotone, ~10× between the ends, and the choice between them was a coin toss re-thrown every 15
+minutes. `drift_t` — the regression of the MASTER's per-block mean, so literally this quantity — ran
+to 8,4 and flagged `null_flags` DRIFT in **17 of 50 blocks**, all of them attributed to the master by
+`nb_attribute()` in 13 cases. Nothing was faulty; the operating point moved underneath the pass.
+
+**Mechanism at the dark end.** Marginal bias is not what survives: 2ε² at ε = 5,4e-3 is 5,9e-5,
+positive, while the measured operational offset is −1,4e-4. What survives is CORRELATION inside the
+fold pair. `zero_diff` runs 0,0782 → 0,0928 → 0,1085 over exposures 64 → 32 → 16: a zero pixel
+difference has a deterministic LSB of 0 and those zeros cluster spatially, so the two pixels of a
+fold pair are both zero together. Monotone in the same direction as the offset, and it is the same
+physics `[D18]` gates the bottom two rungs on, one rung higher up.
+
+**Three changes.**
+
+1. **Selection key is `|raw_bias − 0,5|`** (`cal_key()`), the monobit distance before the fold.
+   Formally right as well as empirically: the entropy deficit of a bit stream is bias plus
+   dependence, and monobit IS the first-order term. `cal_key_se()` is its own SE over `raw_bits`.
+2. **Hysteresis.** The incumbent rung — the one in force when the sweep STARTS, so a manual
+   `/expose` gets one sweep of protection — is kept unless a challenger beats it by
+   `CAL_KEEP_MARGIN_K` 3 standard errors of the challenger's own measurement. Measured, not a fixed
+   fraction, so a longer window makes the rule pickier by itself. Verified on hardware the same day:
+   `.103` held exposure 16 against a rung 1e-4 better (`kept=true` in `/calibrate`).
+3. **Pre-fold dispersion gate**, `CAM_CAL_FAIL_RSIG`. The folded σ gate has the identical blindness:
+   it certified `.155`/256 at raw σ 1,3405 (folded 1,0202) and `.145`/64 at 1,2964 (folded 0,9741).
+   A front end dispersed by a third reads clean after the fold — and that is the stream `?wpre=`
+   ranks on `[D45]`.
+
+⛔ **Both absolute pre-fold bars are dead ends. Do not re-fit them.** A 6,0e-3 bar on raw bias and a
+1,20 bar on raw σ were cut in the measured gap of the first sweep. The next sweep, **25 minutes
+later with nothing touched**, moved every node:
+
+| node | sweep 1 | sweep 2 | sweep 3 |
+|---|---|---|---|
+| master | 1,13 | 3,42 | 0,31 |
+| .155 | 1,94 | 7,63 | 2,37 |
+| .145 | 0,51 | 2,14 | 2,14 |
+| .103 | 3,71 | **0,24** | 0,14 |
+
+Not common-mode — three worse, one fifteen times better — and not monotone. `.103`'s raw σ ran
+1,00 → 1,29 → 0,98 across the same three sweeps on the same rungs. Under the fitted bars `.155` came
+back **CERTIFIED-EMPTY on all nine rungs** with a healthy camera, and `.103`'s entire good ladder
+would have been rejected. The pre-fold statistics are non-stationary per node on a timescale of
+minutes; only their SHAPE across a ladder is stable. Hence: **raw bias selects and never gates**, and
+the dispersion bar is RELATIVE — `CAL_RAW_SIGMA_K` 1,35 × the lowest raw σ among rungs clearing every
+other gate, computed after the ladder is complete. By construction it cannot reject the rung it is
+computed from, so certifying-empty is impossible.
+⚠ On both measured sweeps the relative bar rejects nothing the folded σ gate did not already reject.
+Its value is prospective. It does NOT catch the two rungs that motivated it (`.155`/256 is a ratio of
+1,25, inside K); tightening K to catch them would put the bar under the drift above. That trade is
+made in favour of never blanking a node.
+⚠ `CAL_RAW_SIGMA_K` is one-sided. The folded bar is two-sided because an under-dispersed folded
+stream is as wrong as an over-dispersed one; every physical failure of the raw stream inflates it.
+
+**The runs channel.** A NIST runs statistic over the pre-fold stream, conditioned on the OBSERVED
+proportion of ones — NIST refuses the test unless |π − ½| ≤ 2/√n, which at these bit counts is ~6e-4
+against a raw bias missing 0,5 by up to 5e-3, so every rung would be refused. Conditioning makes it
+measure clustering GIVEN the imbalance, i.e. the second term of the entropy deficit, which monobit
+cannot see. Negative = the bits clump.
+
+It answered its own question in one sweep. On FAILING rungs it is enormous (`.103` −157 at exposure
+128, −416 at 256). Among CERTIFIED rungs, where the choice is actually made, all four nodes sat
+between −1,4 and +1,7 — **it does not order them**. So it is a gate candidate, never a ranking key,
+and a gate only has to run where the gating happens. `s_raw_runs_on` is armed by `camera_calibrate()`
+and cleared on every exit path including `aborted`.
+⚠ Armed permanently it cost the array **5,38 Mbit/s against 5,71**. `/camtest` priced it at +5,9 %
+and +19 % on two runs of the same binary — the self-test benchmarks while the capture task is
+extracting, so its `ns_*` vary ~10 % and the delivered bit rate is the honest number, not the
+stopwatch. ⚠ During a measurement window `raw_runs_z` publishes 0,0: that is "not armed", not
+"perfectly random". `raw_trans` is what says which.
+⚠ Both extractors count it and `cam_extract_selftest()` compares transitions AND the carried bit
+(`what` 9) — the reference walks bit by bit, the bulk path derives four transitions from a nibble
+plus a carried bit, so it is a real comparison. Verified on hardware: 6/6 cases equal.
+
+**Nodes 2026-08-27 after the change**, all certified: master 64, `.103` 16, `.145` 32, `.155` 128;
+idle rate back to 5,709–5,716 Mbit/s.
+
+**Not settled.** `mean_px` is still not recorded per block — `LoopStat` carries `cam_exp`, `cam_gain`,
+`cam_bias`, `die_temp` but not the light level, and `/calibrate` holds only the last sweep. It is the
+one covariate that could say whether the non-stationarity above is the lamp, and it is missing.
+
 ---
 
 ## Where the rest of the history lives
