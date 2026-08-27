@@ -1256,7 +1256,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "lastDisplayed=d.top;"
 // Z* studentizes the RANKING KEY, so it takes the key's own moments;
 // rank_mean/rank_sigma equal pass_mean/pass_sigma exactly at went=0.
-"var st={m:d.rank_mean||0,s:d.rank_sigma||0,w:d.ent_w||0,p:d.pre_w||0};"
+"var st={m:d.rank_mean||0,s:d.rank_sigma||0,w:d.ent_w||0,p:d.pre_w||0,sh:d.rank_sig_h||0,sp:d.rank_sig_p||0};"
 "document.getElementById('resTitle').innerHTML="
 "'\\uD83C\\uDFC6 Top '+d.top.length+' of '+d.comparisons+' valid'"
 "+(isEuro?' \\u2014 Eurojackpot':' \\u2014 6-of-49')"
@@ -1270,11 +1270,9 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 // Always show Z and Z* when pass σ is available; p is from Z* (studentized).
 "function renderRunTable(headId,bodyId,res,isEuro,d,st){"
 "document.getElementById(headId).innerHTML="
-"'<tr><th title=\"rank in this table, 1 = strongest\">#</th><th title=\"item within its round; item/round in unlimited mode, because the index repeats across rounds\">Item</th><th title=\"block-centred combined z: \\u03a3 z_i / \\u221ak over the nodes that answered. Provisional (still raw) until its block closes\">Z</th>'"
-"+((st&&st.w>0)?'<th title=\"combined block-centred entropy z. NEGATIVE = less spectral disorder, the direction ranked. Independent of Z under H0. \\u2014 = no node reported an H\">H</th>':'')"
-"+((st&&st.p>0)?'<th title=\"combined block-centred PRE-FOLD z, the unfolded stream. Same scale and direction as Z, and \\u03c3 is 1,03..1,10 rather than 1,00 \\u2014 it ranks, it does not test\">P</th>':'')"
-"+(st?'<th title=\"the ranking key, studentized as (key\\u2212rank_mean)/rank_sigma. key = ((1\\u2212w\\u2212p)*Z \\u2212 w*H/\\u03c3H + p*P/\\u03c3P)/\\u221a((1\\u2212w\\u2212p)\\u00b2+w\\u00b2+p\\u00b2); each channel is divided by its own measured \\u03c3 so the weights are the variance shares they claim\">Z*</th>':'')"
-"+'<th title=\"two-sided p of Z* against N(0,1). UNCORRECTED \\u2014 the Bonferroni line under the table is the one that counts\">p</th><th title=\"the drawn combination this item measured\">Numbers</th>'"
+"'<tr><th title=\"rank in this table, 1 = strongest\">#</th><th title=\"item within its round; item/round in unlimited mode, because the index repeats across rounds\">Item</th>'"
+"+(st?'<th title=\"THE ranking number: the weighted key, studentized as (key\\u2212rank_mean)/rank_sigma. Hover a value to see the three channels behind it and what each contributed\">Z*</th>':'')"
+"+'<th title=\"the drawn combination this item measured\">Numbers</th>'"
 "+(isEuro?'<th title=\"the two Euro numbers of this combination\">Bonus</th>':'')+'</tr>';"
 "var tb=document.getElementById(bodyId);tb.innerHTML='';"
 "for(var i=0;i<res.length;i++){"
@@ -1292,19 +1290,29 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 // r.zh === 0 legitimately means "no entropy for this item" and shows an em dash.
 "var z=r.z,kk=(r.key===undefined?(r.z_ctr===undefined?z:r.z_ctr):r.key);"
 "var zs=(st&&st.s>0)?(kk-st.m)/st.s:0;"
-"var hc=(st&&st.w>0)?('<td>'+((!r.zh)?'\\u2014':r.zh.toFixed(2))+'</td>'):'';"
-"var pc=(st&&st.p>0)?('<td>'+((r.zp===undefined||!r.zp)?'\\u2014':r.zp.toFixed(2))+'</td>'):'';"
 "var itm=(d.unlimited&&r.round)?(r.run+'/'+r.round):r.run;"
+// One number in the table, the working out on hover. Z, H and P were columns
+// until 2026-08-27 and it was the wrong trade: five numbers per row, of which
+// only Z* orders anything, plus a "P" one case away from the "p" beside it.
+// The breakdown is still exactly reproducible -- it is the key's own terms --
+// so nothing is lost, it just stops competing with the ranking for attention.
+"var det='Z '+z.toFixed(4)"
+"+' \\u00b7 H '+((!r.zh)?'\\u2014':r.zh.toFixed(2))"
+"+' \\u00b7 P '+((r.zp===undefined||!r.zp)?'\\u2014':r.zp.toFixed(2))"
+"+' \\u00b7 p(Z*) '+pfmt(p2(st?zs:z));"
+"if(st)det+='\\nweights: z '+(1-(st.w||0)-(st.p||0)).toFixed(2)"
+"+' \\u00b7 H '+(st.w||0).toFixed(2)+' \\u00b7 pre '+(st.p||0).toFixed(2);"
+"if(st&&st.sh>0)det+='  (\\u03c3H '+st.sh.toFixed(3)+', \\u03c3P '+st.sp.toFixed(3)+')';"
 "tb.innerHTML+='<tr><td>'+(i+1)+'</td><td>'+itm+'</td>"
-"<td>'+z.toFixed(4)+'</td>'+hc+pc+(st?'<td>'+zs.toFixed(3)+'</td>':'')+'"
-"<td>'+pfmt(p2(st?zs:z))+'</td><td>'+nums+'</td>"
+"'+(st?'<td title=\"'+det+'\">'+zs.toFixed(3)+'</td>':'')+'"
+"<td>'+nums+'</td>"
 "'+(isEuro?'<td>'+estr+'</td>':'')+'</tr>';"
 "}"
 "}"
 "function showLow(d){"
 "var res=d.low,isEuro=d.mode==='euro';"
 "if(!res||res.length===0){document.getElementById('resCardLow').style.display='none';return;}"
-"var st={m:d.rank_mean||0,s:d.rank_sigma||0,w:d.ent_w||0,p:d.pre_w||0};"
+"var st={m:d.rank_mean||0,s:d.rank_sigma||0,w:d.ent_w||0,p:d.pre_w||0,sh:d.rank_sig_h||0,sp:d.rank_sig_p||0};"
 "document.getElementById('resTitleLow').innerHTML="
 "'\\u2B07 Bottom '+res.length+' (lowest Z*'"
 "+((d.ent_w>0)?': low Z and high entropy':'')+')';"
@@ -1318,7 +1326,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "function showNear(d){"
 "var res=d.near,isEuro=d.mode==='euro';"
 "if(!res||res.length===0){document.getElementById('resCardZero').style.display='none';return;}"
-"var st={m:d.rank_mean||0,s:d.rank_sigma||0,w:d.ent_w||0,p:d.pre_w||0};"
+"var st={m:d.rank_mean||0,s:d.rank_sigma||0,w:d.ent_w||0,p:d.pre_w||0,sh:d.rank_sig_h||0,sp:d.rank_sig_p||0};"
 "document.getElementById('resTitleZero').innerHTML="
 "'\\u25CE Nearest zero '+res.length+' (least remarkable)';"
 "document.getElementById('zeroNote').innerHTML="
@@ -1511,13 +1519,19 @@ static esp_err_t status_handler(httpd_req_t *req)
         g_status.ent_w, g_status.pre_w, g_status.ent_windows,
         g_status.ent_h0, g_status.ent_sd,
         g_status.ent_n, g_status.ent_clamped,
-        g_status.pre_n, g_status.pre_clamped,
-        g_status.rank_sig_h, g_status.rank_sig_p,
         /* NaN is not valid JSON. "no entropy for the last item" travels as 0
          * for H (which is impossible, H > 0 always) and 0 for z_h (which is
          * merely the null's own centre) — the UI reads ent_h == 0 as absent. */
         isnan(g_status.ent_h_last)  ? 0.0 : g_status.ent_h_last,
         isnan(g_status.ent_zh_last) ? 0.0 : g_status.ent_zh_last,
+        /* ⚠ AFTER ent_h/ent_zh, because that is where they sit in the format
+         * string above. Put ahead of them once, and every argument from here
+         * down shifted by four: rank_sig_p published −0,1882 (a σ cannot be
+         * negative) and pre_n an eight-digit integer. Nothing computed was
+         * wrong — rank_key() reads g_status directly — but the diagnostics
+         * this pair exists for were unreadable. */
+        g_status.pre_n, g_status.pre_clamped,
+        g_status.rank_sig_h, g_status.rank_sig_p,
         g_status.rank_mean, g_status.rank_sigma,
         score_str,
         g_status.loop_sigma,
