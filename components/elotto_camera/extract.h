@@ -120,7 +120,7 @@ typedef struct {
  * sensor, so a CPU saving is absorbed in DQBUF (camera_task). It pays under
  * measurement load, where the loop is compute-bound, and nowhere else. Reusing the words the diff has in
  * registers makes it nearly free AND samples every pixel instead of every 16th,
- * so the CAL_MAX_MEAN_PX gate gets a better estimate, not a worse one.
+ * so mean_px (and the former CAL_MAX_MEAN_PX reading aid) get a better estimate.
  * ⚠ mean_pixel_level therefore changes slightly in value across this build. It
  * is the same quantity, measured over 16x the samples.
  * ⚠ *out_any is only ever tested against zero. The reference ORs the byte

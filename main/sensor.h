@@ -26,28 +26,12 @@
  * stopping. Verify that on the next full Euro run rather than assuming it. */
 #define NUM_RUNS      7200
 #define TOP_N            5
-/* ── Round-boundary compaction (2026-08-19) ───────────────────────────────
- * How many items per published table survive a compaction. The three tables
- * publish TOP_N = 5 each; this keeps more, because 5 is the exact requirement
- * only under assumptions that a real session can break.
- *
- * Top-N and Bottom-N are EXACT at any K >= TOP_N, and not empirically: the
- * maximum of a union is the maximum of the per-part maxima, so keeping each
- * round's best 5 keeps the session's best 5, whatever the rounds contain. The
- * only precondition is that the values are final when the part is closed, which
- * at a round boundary they are — every block of the round has closed and
- * center_block() has replaced every provisional z_ctr.
- *
- * Nearest-zero is the one that is not exact by construction, because its target
- * (the pass mean) keeps moving as later rounds arrive. In practice it barely
- * moves at all -- centring forces each closed block to mean ~0, so the pass mean
- * sat at +-0,00000 after every one of the 18 rounds of the 2026-08-19 session,
- * and the final nearest-5 were ranked 1,1,1,2,1 within their own rounds. Three
- * places of headroom at K = 5. The margin here costs 11 * 3 * 40 B = 1,3 KB per
- * compaction and covers the cases that headroom does not: a round whose last
- * block is still open, a quarantined block removing several survivors at once,
- * and any future change that lets the pass mean drift. */
-#define PASS_KEEP_PER_TABLE 16
+/* ── Round-boundary compaction (D56) ──────────────────────────────────────
+ * Unlimited rounds keep the 100 most extreme items by |rank_key| (both tails,
+ * so Top-5 and Bottom-5 stay exact). Everything else folds into pass moments.
+ * Offline re-analysis of the dropped rows is not a goal. A single pass still
+ * only compacts if the combination space would not fit uncompacted. */
+#define PASS_KEEP_EXTREME 100
 #define POOL_MAIN_49    15   // C(15,6) = 5005 combinations
 #define POOL_MAIN_50    12   // C(12,5) =  792 combinations
 #define POOL_EURO_12     5   // C(5,2)  =   10 combinations
@@ -59,8 +43,8 @@
  * Every value below is defined HERE and nowhere else. The HTML input
  * attribute, the JavaScript clamp and the C validator in the /start handler all
  * read from this one place, because three copies nothing forces to agree do not
- * stay in agreement: the baseline default was once 50 in the form and 100 in
- * the handler, so a curl session ran a different experiment from a browser one.
+ * stay in agreement: a default was once 50 in the form and 100 in the handler,
+ * so a curl session ran a different experiment from a browser one.
  *
  * The page is a C string literal, so the UI copies are made to reference these
  * through EL_STR() rather than being written out again. A limit changed here
@@ -69,18 +53,14 @@
  * ⚠ Defaults only. Every one is overridable per session on /start, and the
  * matched-control sessions in PLAN.md pass their values explicitly — so
  * changing a default here does NOT retroactively describe an archived run. */
-#define BASELINE_DEFAULT        10       // drift-reference runs per block insertion
-#define BASELINE_MIN            10
-#define BASELINE_MAX          5000
-#define BASELINE_STEP           10
 #define CAL_BUDGET_DEFAULT_MS 10000      // exposure-sweep CAP, split over 9 rungs
 #define CAL_BUDGET_MAX_MS   120000
 /* v3: the interval is the BLOCK length. Every cal_interval_ms the pass parks,
- * runs sweep + baseline together, and the boundary closes a block — the unit
+ * runs the camera sweep, and the boundary closes a block — the unit
  * that inherited everything that used to be per-loop (drift point, pairwise
  * fold, /loops row). 15 min ≈ 205 items/block on the 4.4 s cycle, ~6 %
  * overhead, ~38 blocks over a full Eurojackpot pass — comfortably past
- * DRIFT_MIN_LOOPS. 0 = NO mid-pass insertions (sweep + baseline at session
+ * DRIFT_MIN_LOOPS. 0 = NO mid-pass insertions (one sweep at session
  * start only): with no loops left, "every loop" has nothing to mean, and the
  * zero control that still matters is "no re-tuning mid-pass". */
 #define CAL_INTERVAL_DEFAULT_MS  900000
@@ -92,20 +72,20 @@
  * cycle; measured focus_gap_ms is larger because it also includes slave collect.
  * Segment count is derived from run_s via the segs↔ms cal — wall time can stretch
  * if the camera rate collapses at long windows (that IS the limit). */
-/* ⚠ 1..5 s, FIXED (user, 2026-08-18): the measurement window is never shorter
- * than a second and never longer than five, so nothing outside that should be
- * reachable — not in the form, not on the query string. RUN_S_MAX was 15, which
- * after the 08-18 recalibration could no longer be delivered at all: 15 s asks
- * for 391304 segments against a wire limit of 200000, and the request came back
- * as a silent 7,7 s window. Capping the input removes that failure mode by
- * construction rather than reporting it. */
+/* ⚠ 0,5..5 s (user, 2026-08-28): floor was 1 s from 2026-08-18; half-second
+ * is now legal (~13043 segs / ~2,61 Mbit). Still capped at five — RUN_S_MAX was
+ * 15, which after the 08-18 recalibration could not be delivered: 15 s asks for
+ * 391304 segments against a wire limit of 200000, and the request came back as
+ * a silent 7,7 s window. Capping the input removes that failure mode by
+ * construction rather than reporting it.
+ * Auto-gap stays ≥ GAP_S_MIN 0,5 (40 % of 0,5 s would be 0,2). */
 #define RUN_S_DEFAULT            5
 /* Cap on the per-item ring flush (sensor.c onset_settle). A fresh pair costs
  * ~56 ms idle and ~85 ms under load, so the wait is normally well under this;
  * the cap only bounds the damage if the camera has stopped delivering. */
 #define ONSET_SETTLE_MS        500
 
-#define RUN_S_MIN                1
+#define RUN_S_MIN              0.5
 #define RUN_S_MAX                5
 #define GAP_S_MIN              0.5
 #define GAP_S_MAX               10
@@ -220,39 +200,30 @@ _Static_assert(((long long)RUN_S_MAX * 1000 * RUN_SEGS_REF) / RUN_MS_REF <= EL_S
 /* Diagnostic thresholds that appear in more than one place. */
 #define PAIR_FLAG_T            3.0   // |r|·√n above this = nodes not independent
 #define DRIFT_FLAG_T           3.0   // |drift_t| above this = real cross-block drift
-/* Pass-level null gates (GCP-first). Ranking is secondary while any of these
- * fire: the published Stouffer z is only N(0,1) under unit variance and no
- * drift. Soft node downweight trips on block σ alone; the |mean| wire was
- * removed on 2026-08-19 once block centring made it redundant and the exposure
- * ladder was found to be generating the offsets it fired on — see
- * NODE_MEAN_REPORT for the whole argument, including why the 2026-08-11 pass
- * (master mean −7, .145 +4.6, σ≈1) is not a counter-example any more. */
-#define PASS_SIGMA_LO          0.85  // pass sample σ below this → null broken
-#define PASS_SIGMA_HI          1.15  // pass sample σ above this → null broken
-#define PASS_NULL_MIN_N       30     // need this many valid items before σ gate
-/* ⚠ A FIXED band cannot be the whole criterion, because the thing it bounds
- * gets sharper with n while the band does not. SE(σ) ≈ 1/√(2n): at the
- * MIN_N of 30 that is 0,129, so the ±0,15 band sits barely one standard error
- * out and the gate fires on sampling noise as a matter of course. It did, on
- * hardware 2026-08-27 — "NULL BROKEN, pass σ = 1,171" at 85 items, from an
- * instrument that read σ 1,059 and null_flags 0 forty items later, with
- * nothing repaired in between.
+/* ── When the OPEN block joins the ranking (2026-08-28) ────────────────────
+ * Items are ranked on z_ctr, and z_ctr only means anything once each node's own
+ * offset has been subtracted. For a closed block that mean comes from ~100
+ * items; for the open block it comes from however many it holds so far. Below
+ * this count the estimate is worse than useless — with one item per node the
+ * mean IS that item and centring zeroes it — so the open block stays out and
+ * the tables say so. Above it, the open block is centred live at every publish
+ * and ranks alongside the closed ones.
  *
- * So a trip now needs the deviation to be outside the band AND to be worth
- * this many standard errors. The band still governs once n is large — the two
- * cross at n ≈ 356 (4/√(2n) = 0,15) — so this can only ever make the gate
- * STRICTER at small n, never looser where it matters.
- *
- * ⚠ It is not only the banner. null_flags also feeds the per-node NB
- * attribution counter at every block close, so a spurious trip credited a
- * healthy board with a broken null. */
-#define PASS_NULL_K            4.0  // standard errors a σ/χ² trip must also clear
+ * 4 because that is where a per-node mean stops being dominated by the single
+ * value it is meant to be removed from (the variance of the correction falls as
+ * 1/n, so 1 → 4 items already cuts it fourfold) and because at ~5 s per item it
+ * is under half a minute of waiting. The alternative — 15 minutes of an empty
+ * table, or the whole pass at ?calint=0 — was rejected by the user.
+ * ⚠ A block-centred value is deflated by √(1−1/n) per node, which at n = 4 is
+ * 13 %. That is real but it is the SAME bargain every closed block already
+ * makes (D8), only noisier, and it shrinks as the block fills. */
+#define PASS_OPEN_MIN_N        4    // items in the open block before it is ranked
 #define NODE_SIGMA_SOFT        1.25  // block per-node σ above this → soft-exclude
 /* ── |block mean| REPORTS, it no longer excludes (2026-08-19) ──────────────
  *
  * This was a trip wire at the same value until the 2026-08-19 session, where it
  * put the master soft-down for half the run and the array measured 50 % of its
- * items at k < 4 — the last 3,4 h at k = 2 — with null_flags 0, fault empty and
+ * items at k < 4 — the last 3,4 h at k = 2 — with the pass health clean, fault empty and
  * `ok` true throughout. Three findings, in the order they matter:
  *
  * 1. The offsets it fired on are made by the CALIBRATION SWEEP, not by the node.
@@ -339,33 +310,11 @@ _Static_assert(((long long)RUN_S_MAX * 1000 * RUN_SEGS_REF) / RUN_MS_REF <= EL_S
  * offset intact: (−6.33 + 0.27 + 0.22)/√3 = −3.38, exactly the published value.
  * A bad arm in the combine costs more than a small k does (user, 2026-08-13). */
 #define NODE_SOFT_MIN_COMBINE  1     // never soft-exclude below this many live nodes
-/* null_flags bits (also published in /status). */
-/* ── CUSUM design (D44) ────────────────────────────────────────────────────
- * Two-sided tabular CUSUM, k = δ/2 with δ = 0,5σ, on the block mean of the RAW
- * per-node z standardised by its own standard error (σ_block/√n).
- *
- * ⚠ "1σ" here is ONE STANDARD ERROR OF A BLOCK MEAN, not one z. At ~210 runs
- * per 15-minute block that is ≈ 0,07 in z units — so this is far more sensitive
- * than the numbers suggest, which is the point.
- *
- * h chosen from the Average Run Length, not by feel. Computed with the
- * Brook–Evans Markov chain at k = 0,25:
- *
- *   h  | ARL₀ (two-sided, per node) | false alarm across 4 nodes at 96 blk/day
- *   10 |   1027                     | one per   2,7 days
- *   12 |   2826                     | one per   7,4 days
- *   14 |   7715                     | one per  20,1 days   <- CUSUM_H
- *   16 |  20981                     | one per  54,6 days
- *
- * Detection latency at h = 14: a 2σ shift in 8,6 blocks (2,2 h), 1σ in 19,4
- * blocks (4,8 h), 0,5σ in 52,6 blocks (13,1 h).
- * ⚠ Change either constant and the false-alarm rate changes with it — recompute
- * the ARL rather than guessing, and record the new table here. */
 /* Weight of the PRE-FOLD half of the ranking key (D45), ?wpre=<0..1>.
  * DEFAULT 0: the pre-fold z is measured, combined, centred and archived from
  * the first session, but it does not move a single ranking until it is asked
- * for. Adding a channel to the key after the fact is a third ticket in the same
- * lottery, so it has to be pre-registered per session exactly as ?went= was. */
+ * for. Adding a channel to the key after the fact is a second ticket in the
+ * same lottery, so it has to be pre-registered per session. */
 #define ENT_W_PRE_DEFAULT    0.0
 /* ⚠ The FORM pre-fills a weight while the API default above stays 0.
  * Deliberate and asymmetric (user, 2026-08-26): a curl-started session must not
@@ -383,24 +332,6 @@ _Static_assert(((long long)RUN_S_MAX * 1000 * RUN_SEGS_REF) / RUN_MS_REF <= EL_S
  * as soon as the light does — so a table ranked at 0,8 is a shortlist, never
  * evidence. That is what pre_w= in the CSV header is for. */
 #define ENT_W_PRE_FORM       0.8
-/* The form's entropy weight, split from ENT_W_DEFAULT on 2026-08-27 for the
- * same reason ENT_W_PRE_FORM is split from ENT_W_PRE_DEFAULT: the page offers
- * the operator's current arm, the API keeps the documented default so a
- * scripted session's ranking does not move under it.
- * ⚠ ENT_W_FORM + ENT_W_PRE_FORM == 1,0 exactly, which is allowed and leaves the
- * folded z with weight ZERO in the key. Legal (the ?went=/?wpre= gate rejects
- * only a SUM above 1) and intended, but it means the top tables are ranked with
- * no contribution from the channel the p-values come from. */
-#define ENT_W_FORM           0.2
-
-#define CUSUM_K              0.25   // δ/2, δ = 0,5 standard errors
-#define CUSUM_H             14.0    // ARL₀ 7715 blocks/node; see the table above
-#define CUSUM_WARMUP           4    // blocks used to fix the reference
-
-#define NULL_FLAG_SIGMA        0x01  // pass_σ outside [PASS_SIGMA_LO, PASS_SIGMA_HI]
-#define NULL_FLAG_DRIFT        0x02  // |drift_t| > DRIFT_FLAG_T
-#define NULL_FLAG_CHI2         0x04  // Σz²/n far from 1 (same band as σ, large n)
-#define NULL_FLAG_PAIR         0x08  // worst |r|·√n > PAIR_FLAG_T
 
 /* Phase-0 scoring direction (pre-registered). Only affects WHICH numbers enter
  * the pool — never the Phase-2 measurement statistics. Default HIGH matches
@@ -421,15 +352,15 @@ typedef enum { MODE_EUROJACKPOT = 0, MODE_LOTTO_649 = 1 } ElottoMode;
 typedef enum { ELOTTO_IDLE, ELOTTO_RUNNING, ELOTTO_DONE, ELOTTO_ABORTED } ElottoState;
 // PHASE_CALIBRATE is appended, not inserted: it runs FIRST in a loop but the
 // other three are wired into the UI and the CSV by value.
-typedef enum { PHASE_SCORING, PHASE_BASELINE, PHASE_MEASURING,
+typedef enum { PHASE_SCORING, PHASE_MEASURING,
                PHASE_CALIBRATE, PHASE_POOL_CONFIRM, PHASE_READY } ElottoPhase;
 
 /* PHASE_READY — the observer gate, loop 0 only.
  *
- * Calibration and baseline take ~2 minutes during which nothing is on screen
- * for the operator and nothing is being attended to. Scoring is where the
- * protocol actually begins: it is the first phase whose bits are collected
- * while a target is displayed. Starting it the instant the baseline ends means
+ * The camera sweep takes ~10 s during which nothing is on screen for the
+ * operator and nothing is being attended to. Scoring is where the protocol
+ * actually begins: it is the first phase whose bits are collected while a
+ * target is displayed. Starting it the instant the sweep ends means
  * the first candidate numbers are measured while the observer is still reading
  * the screen and settling — the opposite of the intent.
  *
@@ -453,7 +384,7 @@ bool elotto_pool_reply(PoolAction act,
 /* v3.0: NO ranking modes any more (user decision, 2026-08-02, PLAN.md §2).
  * With every combination measured exactly once there is nothing for the four
  * old rules to differ ABOUT — each item's published Z is its own single raw
- * measurement, stored in results[] untouched: no rewrite, no baseline
+ * measurement, stored in results[] untouched: no rewrite, no
  * subtraction and no cross-item normalization. */
 
 /* ENTROPY IS PHOTONS, AND ONLY PHOTONS (user decision, 2026-07-26).
@@ -475,7 +406,7 @@ typedef struct {
     double     z_score;    // RAW combined Stouffer z (Σz_i/√k) — never rewritten
     /* BLOCK-CENTRED combine: Σ(z_i − m_i,block)/√k over the same nodes that
      * entered z_score, where m_i,block is node i's own mean over this block.
-     * This is what the ranking, pass mean/σ and Bonferroni run on (2026-08-13).
+     * This is what the ranking and pass mean/σ run on (2026-08-13).
      *
      * Why: the 08-13 pass showed per-node σ ≈ 1.0 INSIDE every block while the
      * per-block offsets jumped (master −6.33, .145 +24.13 in single blocks).
@@ -500,18 +431,6 @@ typedef struct {
     uint8_t    skip_rank;  // 1 = exclude from pass mean/σ/Top-Bottom (trigger block)
     uint8_t    nums[6];
     uint8_t    euro[2];
-    /* BLOCK-CENTRED combined spectral-entropy z: Σ(z_h,i − m_h,i,block)/√k_h
-     * over the nodes that reported an H for this item. 0 = no entropy value
-     * (no node reported one, or the PSRAM archive is missing), which the
-     * ranking key reads as "exactly average entropy" — see rank_key().
-     *
-     * ⚠ FREE, and that is why it is here and the raw per-node values are not.
-     * The struct had 5 bytes of tail padding, so one float costs 0 bytes of
-     * .bss; a second one would cost 8 KB × … and results[] is in INTERNAL RAM,
-     * where a few KB more fails the LINK (see NUM_RUNS above). The raw
-     * per-node H lives in the PSRAM archive beside s_node_z and reaches the CSV
-     * through results_row_z(). */
-    float      zh_ctr;
     /* The PRE-FOLD combined z, block-centred on its own accumulator (D45).
      * ⚠ The fold suppresses a mean-bias effect by sqrt(2)*e — ~7000x at
      * e = 1e-4 — so this channel carries the very quantity the folded z throws
@@ -524,40 +443,18 @@ typedef struct {
      * block-centred COMBINED z, whose sigma is rank_sig_p: measured 2,12 and
      * 3,79 on the two sessions that carried it. rank_key() divides by that one,
      * not by raw_sigma.
-     * ⚠ 0 means "no pre-fold value for this item", the same convention zh_ctr
-     * uses, and it reads as exactly average. */
+     * ⚠ 0 means "no pre-fold value for this item" and reads as exactly average. */
     float      zp_ctr;
+    /* Concordance z (D56): leave-one-out Stouffer of per-node half-window
+     * pre-fold z, block-centred. 0 = fewer than two nodes to corroborate.
+     * This is what rank_key() uses when pre_w > 0, not zp_ctr. */
+    float      zc_ctr;
 } RunResult;
 
-/* ── The entropy channel (2026-08-25) ─────────────────────────────────────
- * ENT_W_DEFAULT is the weight of the entropy half of the ranking key. 0.5 is
- * the user's opening choice ("wir probieren mal 50:50") and is deliberately a
- * SESSION PARAMETER (?went=), not a constant: a weight that is being tried out
- * has to be recorded per session or the archive cannot say which sessions were
- * ranked the same way. 0 reproduces the pure-z ranking exactly.
- *
- * ENT_Z_CLAMP bounds the entropy term IN THE RANKING KEY only — the archived
- * z_h is never clamped. Without it a single camera glitch (a stuck frame, a
- * torn row) puts one item at z_h = −200 and that item owns Top-5 for the rest
- * of the session, which is a hardware artefact wearing a result's clothes. 12 σ
- * is far outside anything the null produces (the Bonferroni bar over 8000 items
- * is ~4,4) and still lets a genuinely extreme item reach the top of the table.
- * Items that hit the clamp are counted per channel and published as
- * `ent_clamped` and `pre_clamped` — one counter each, because a single one
- * watching only z_h read 0 while the pre-fold channel was pinned. */
-#define ENT_W_DEFAULT   0.50
-/* ⚠ This is a bar in units of the CHANNEL'S OWN σ, not in raw z. rank_key()
- * standardises every channel by rank_sig_h / rank_sig_p first, so 12 means 12σ
- * for the entropy and the pre-fold channel alike.
- * ⚠ It did not always. Until 2026-08-26 the bar was a raw 12 applied to
- * unstandardised values: fine for z_h, which runs at σ ≈ 1,02, and wrong for
- * the pre-fold channel, which measured σ 2,12 and 3,79 on the two sessions
- * that carried it — there a raw 12 is a 3,2..5,7σ bar
- * that cuts into the honest tail of the distribution. It showed on hardware:
- * at ?wpre=0,85 all five Bottom-5 rows sat at −12,2…−12,4, i.e. pinned, and
- * what ordered them was the leftover z term rather than the channel that was
- * supposed to rank. `ent_clamped` said 0 throughout, because it only ever
- * watched z_h — hence pre_clamped. */
+/* ENT_Z_CLAMP bounds the concordance term IN THE RANKING KEY only — the archived
+ * zc_ctr is never clamped. 12 σ is far outside anything the null produces
+ * (null extreme over 8000 items ~4,4).
+ * ⚠ Bar in units of the CHANNEL'S OWN σ (rank_sig_p), not raw z. */
 #define ENT_Z_CLAMP     12.0
 
 // Focus display: what is on screen right now, for
@@ -605,14 +502,6 @@ typedef struct {
     double   z_mean;        // online mean of this node's raw per-run z
     uint32_t z_n;           // runs behind z_mean (for SE = 1/√n)
     uint32_t lost;          // runs this node failed to answer in time
-    /* Blocks closed with the pass null broken where THIS node was the worst
-     * contributor — the "NB" column (2026-08-26). Attribution, not proof: the
-     * null_flags are pass-level statistics and have no per-node term, so the
-     * rule is the largest |block σ − 1| among the nodes actually in that
-     * block's combine, plus both members of a flagged pair. It answers "which
-     * board should I look at first", not "this node is at fault".
-     * ⚠ Session-scoped and monotone; reset only at session start. */
-    uint32_t nb_count;
     uint8_t  soft_down;     // 1 = excluded from combine after a block σ excursion
                             // (quality collapse, not a hard camera stall). Cleared
                             // when a later block is clean. Never reboots.
@@ -644,29 +533,13 @@ typedef struct {
      * bits and must match exactly. */
     float    cam_bias_now;
     float    cam_sigma_now;
+    /* Mean raw pixel level from that same 'D' query (,px=, 2026-08-28). The one
+     * covariate that separates a light change from a sensor change, which D46
+     * named as missing and nothing recorded until LoopStat.cam_px.
+     * ⚠ 0 = this node did not report it (firmware older than 2026-08-28), not
+     * a dark frame. */
+    float    cam_mean_px;
     float    die_temp_c;    // this node's P4 die temperature; NAN = not reported
-
-    /* ── Two-sided tabular CUSUM on the RAW block offset (D44) ─────────────
-     * ⚠ INSTRUMENT MONITOR, not an effect detector. It runs on z_raw, where a
-     * drifting bias and a hypothetical signal are NOT distinguishable — which
-     * is why die_temp_c is carried per block and why nothing here feeds the
-     * combine, the ranking, soft-down or a reboot.
-     *
-     * It exists because drift_t is structurally blind to a CONSTANT offset: a
-     * constant has slope zero, and on 2026-08-26 drift_t read 0,85 while the
-     * master sat at mean −0,4645, cumulatively −39,8σ.
-     *
-     * Reference: the node's OWN mean over the first CUSUM_WARMUP closed blocks.
-     * So it detects a CHANGE from where this node started, not the offset
-     * itself — the offset is a known instrument property that follows the
-     * exposure rung (D11) and firing on it would say nothing new. */
-    float    cus_ref;       // warm-up reference, in z units
-    float    cus_ref_sum;   // accumulator while warming up
-    uint16_t cus_n;         // closed blocks seen by the monitor
-    float    cus_pos;       // upward arm
-    float    cus_neg;       // downward arm (kept positive)
-    uint16_t cus_alarms;    // times either arm crossed CUSUM_H this session
-    int16_t  cus_last;      // block index of the last alarm, -1 = none
     float    cam_cal_mbit;  // rate of that same window
     /* First 8 bytes of the node's app elf sha256, hex — the same 16 characters
      * /status publishes as fw_sha, so the two are directly comparable. From the
@@ -680,8 +553,8 @@ typedef struct {
 } NodeStatus;
 
 // Per-BLOCK health record (v3; the struct and the /loops endpoint keep their
-// historical names). A block is the span between two sweep+baseline
-// insertions (~15 min); each closed block stores the numbers a drift check
+// historical names). A block is the span between two camera sweeps
+// (~15 min); each closed block stores the numbers a drift check
 // needs — raw offsets and σ per node, plus camera health at that moment — and
 // /loops serves the whole table, one row per block. With raw z published,
 // slow drift is the one thing that widens the extremes, so this table and the
@@ -697,13 +570,12 @@ typedef struct {
 #define LOOP_HIST 1024           // blocks kept in the table; the drift regression
                                  // runs on running sums and is exact beyond it
 typedef struct {
-    float    base;         // master baseline_mean of this loop = raw per-run z offset
     float    mean;         // combined per-run raw z mean over the loop
     float    sigma;        // combined per-run σ (== loop_sigma), ideal 1.0
     uint8_t  nodes;        // nodes contributing to this loop (master included)
     // Per node, index 0 = master. A node that did not take part leaves zeros,
     // which is distinguishable from a measured 0 by `nodes` and by sig_n == 0.
-    float    mean_n[MAX_NODES];   // per-node mean z (after its own baseline)
+    float    mean_n[MAX_NODES];   // per-node mean raw z over this block
     float    sig_n[MAX_NODES];    // per-node per-run σ over this loop, ideal 1.0
     float    cam_mbit[MAX_NODES]; // camera rate at loop end, 0 = not answered
     uint32_t cam_stalls[MAX_NODES];
@@ -713,18 +585,38 @@ typedef struct {
     // thermal drift, and recording the setting keeps the statistics auditable — but a
     // per-loop change nobody logged is indistinguishable from drift in the data,
     // so the setting travels with the loop it produced.
-    /* Per-node die temperature at this block's close, and the two CUSUM arms
-     * as they stood (D44). The temperature is here and not only in /status
-     * because the monitor is only interpretable against it: without the
-     * covariate an alarm says "something moved" and nothing more.
+    /* Per-node die temperature at this block's close: the covariate any moved
+     * offset has to be read against. Without it "something moved" is all a
+     * block-to-block change can ever say.
      * ⚠ NAN = that node reported no temperature. */
     float    die_temp[MAX_NODES];
-    float    cus_pos[MAX_NODES], cus_neg[MAX_NODES];
     uint32_t cam_exp[MAX_NODES];    // 0 = not calibrated this loop
     uint16_t cam_gain[MAX_NODES];
     uint8_t  cam_fold[MAX_NODES];
     uint8_t  cam_cal_ok[MAX_NODES]; // 0 = kept its previous setting, no gate passed
     float    cam_bias[MAX_NODES];   // bias of the window that chose it
+    /* ── What the camera actually did DURING this block (2026-08-28) ───────
+     * Everything above is what the last SWEEP measured — `cam_bias` is the bias
+     * of the window that chose the rung, so two consecutive blocks on the same
+     * setting carry byte-identical values and say nothing about either. These
+     * three are read at block CLOSE, from the master's own camera_get_stats()
+     * and each slave's 'D' reply, i.e. they describe the block's own bits.
+     *
+     * Why it had to change: on 2026-08-28 slave2 produced a block at per-run
+     * σ 6,94 with mean −3,25, and the archive could not say whether the front
+     * end was disturbed or not — every camera figure in the row was the stale
+     * sweep value. A block like that has to be ATTRIBUTABLE, not merely
+     * conspicuous.
+     * ⚠ `cam_px` is the covariate D46 asked for and never got: it is what
+     * separates "the lamp moved" from "the sensor moved". 0 = not reported
+     * (a slave on firmware older than 2026-08-28 sends no ,px= field), which
+     * is NOT the same as a dark frame.
+     * ⚠ `cam_rsig` is the PRE-FOLD σ. It has no null of 1 to be read against
+     * and is non-stationary per node minute to minute (D46) — record it, plot
+     * it against its own history, never gate on its absolute level. */
+    float    cam_sig[MAX_NODES];    // folded per-mini-run σ during the block
+    float    cam_rsig[MAX_NODES];   // pre-fold per-mini-run σ during the block
+    float    cam_px[MAX_NODES];     // mean raw pixel level; 0 = not reported
     uint16_t cal_ms;       // wall time the calibration cost AT THE TOP OF THIS
                            // LOOP. 0 = no sweep ran here (interval not elapsed,
                            // or ?cal=0): the cam_* fields above are then the
@@ -808,19 +700,17 @@ typedef struct {
                                        // assignment in sensor.c
     int              round_total;      // == runs_total, published separately so a
                                        // reader never has to know which one moved
-    volatile int     baseline_done;
-    int              baseline_total;
-    double           baseline_mean;
     int64_t          elapsed_ms;
     volatile int     scoring_done;
     int              scoring_total;
-    double           best_z;              // most extreme |Z*| in the studentized ranking
-    double           p_corrected;         // Bonferroni two-sided p of best_z (on Z*)
     int              comparisons;         // == VALID items so far (voids excluded)
     /* ── Pass-level health (GCP primary endpoints) ─────────────────────
      * Under H₀ with a working instrument: mean ≈ 0, σ ≈ 1, Σz² ≈ n.
-     * Ranking is secondary; when null_flags ≠ 0 the extremes are not
-     * decisive. Updated after every valid item from the valid prefix. */
+     * Ranking is secondary: read these three before any table. Updated after
+     * every valid item from the valid prefix.
+     * ⚠ They are PUBLISHED, not enforced (2026-08-28). The software draws no
+     * verdict from them and excludes nothing on them — exclusion is soft-down
+     * and block quarantine, and neither reads this block. */
     double           pass_mean;           // mean of valid raw z so far
     double           pass_sigma;          // sample σ (df = n−1) of valid raw z
     double           pass_chi2;           // Σ z² over valid items (≈ χ²(n) under H₀)
@@ -838,37 +728,21 @@ typedef struct {
     int              pass_n_excl;         // k>0 but skip_rank (trigger-block quarantine)
     double           v_eff;               // Var(Σz_i/√k) under measured σ and r
                                           // (1.0 = independent unit nodes)
-    uint8_t          null_flags;          // NULL_FLAG_* — non-zero ⇒ ranking not decisive
-    /* ── The entropy channel ───────────────────────────────────────────
-     * ⚠ These RANK. They do not test. pass_mean/pass_sigma/pass_chi2, the
-     * Bonferroni line and null_flags above stay on z alone, because the
-     * closed-form entropy null is the IDEAL one and this instrument does not
-     * exactly meet it (1600 consecutive segments share a frame pair, so
-     * per-frame structure is a real spectral line). Block centring removes that
-     * as the constant it is; calling the residue a p-value would not be
-     * honest. See gcp.h. */
-    double           ent_w;               // weight of the entropy half of the key
+    /* ── The pre-fold ranking channel ──────────────────────────────────
+     * ⚠ It RANKS. It does not test. pass_mean/pass_sigma/pass_chi2 and the
+     * pass mean/σ stay on folded z alone — the pre-fold null is not one
+     * this instrument meets (D45). */
     double           pre_w;               // weight of the PRE-FOLD half (D45), ?wpre=
-                                          // (?went=, 0 = pure-z ranking)
+                                          // (0 = pure-z ranking)
     double           rank_mean;           // mean of rank_key() over ranked items
     double           rank_sigma;          // its sample σ — what the UI's Z* and
                                           // the nearest-mean table are built on
-    int              ent_n;               // ranked items that carry an entropy value
-    int              ent_clamped;         // of those, items pinned at ENT_Z_CLAMP
     int              pre_n;               // ranked items that carry a pre-fold value
     int              pre_clamped;         // of those, items pinned at the clamp
-    /* Measured σ of the entropy and pre-fold channels over the ranked items,
-     * from the UNCLAMPED archive. rank_key() divides each channel by its own
-     * before weighting, which is what makes ENT_Z_CLAMP a 12σ bar on all three
-     * and what makes ?went=/?wpre= mean the variance share they claim. 0 =
-     * not enough items yet; rank_key() then falls back to 1.0. */
-    double           rank_sig_h, rank_sig_p;
-    double           ent_h_last;          // last item's combined H/ln(K), for the UI
-    double           ent_zh_last;         // and its combined z_h
-    int              ent_windows;         // Welch windows per run at this ?run=
-                                          // (= run_segments / GCP_SPEC_W); 0 = the
-                                          // window is too short to carry entropy
-    double           ent_h0, ent_sd;      // the null H₀ and σ at that window count
+    /* Measured σ of the pre-fold channel over the ranked items, from the
+     * UNCLAMPED archive. rank_key() divides by it before weighting. 0 = not
+     * enough items yet; rank_key() then falls back to 1.0. */
+    double           rank_sig_p;
     double           loop_sigma;          // per-run σ of the LAST CLOSED BLOCK (1.0 = ideal)
     int              loops_done;          // BLOCKS closed and folded into the drift stats
     int              loop_hist_n;         // entries valid in loop_hist[] (<= LOOP_HIST)
@@ -1059,26 +933,8 @@ uint32_t fast_rng(void);
  * responded to exposure at all. Served by GET /calibrate. */
 const camera_cal_t *elotto_last_calibration(void);
 
-/* The `cap` VALID items sitting CLOSEST TO THE PASS MEAN, i.e. the least
- * remarkable measurements of the session — the third published group beside
- * Top-N and Bottom-N. Writes up to `cap` entries to out[] (nearest first) and
- * returns how many; *out_mean / *out_sigma receive the pass statistics the
- * selection was made against (sample σ, df = n−1), or 0 when n < 2.
- *
- * ⚠ Nearest the MEAN, not nearest raw zero. Raw z carries the array's common
- * offset — the 2026-08-05 pass ran at mean −1.82 — so |z_raw| ≈ 0 would select
- * items about +1.8σ ABOVE the array's own centre: the opposite of neutral.
- * Ordering by |z − m| is identical to ordering by the studentized |z − m|/σ,
- * so σ only scales what is displayed, never which items are chosen.
- *
- * Void rows (k == 0) are skipped. Computed on demand from the measured prefix
- * rather than maintained incrementally: the mean moves as the pass proceeds.
- * Safe against the running session: runs_completed is bumped only after a row
- * is complete. */
-int results_near_mean(RunResult *out, int cap, double *out_mean, double *out_sigma);
-
 /* Create the archive mutex that serialises pass_compact() against the archive
- * readers (results_row_z, results_near_mean). Called once from app_main before
+ * readers (results_row_z). Called once from app_main before
  * any HTTP reader can run. Eager, not lazy: a heap failure here is a loud
  * startup error instead of a silent return to unlocked behaviour on the first
  * poll. Idempotent. */
@@ -1090,11 +946,10 @@ void results_archive_init(void);
  * one. Returns false if the archive is missing or j is out of range.
  * out_z[MAX_NODES] gets NaN for nodes that did not contribute that run. */
 bool results_row_z(int j, RunResult *out_row, float out_z[MAX_NODES],
-                   float out_h[MAX_NODES], float out_p[MAX_NODES]);
+                   float out_p[MAX_NODES]);
 
-/* The combined ranking key of one row: the block-centred z and the block-centred
- * entropy z, weighted by ent_w and rescaled to unit variance under H₀. The ONE
- * accessor every table and every survivor choice goes through, for the same
- * reason rank_z() is the only reader of z_ctr — two keys that nothing forces to
- * agree would be indistinguishable from a result. */
+/* The combined ranking key of one row: block-centred z and optional pre-fold z,
+ * weighted by pre_w and rescaled to unit variance under H₀. The ONE accessor
+ * every table and every survivor choice goes through, for the same reason
+ * rank_z() is the only reader of z_ctr. */
 double rank_key(const RunResult *r);

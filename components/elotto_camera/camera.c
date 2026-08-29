@@ -44,7 +44,7 @@ static int      s_fd = -1;
 static bool     s_video_inited = false;   // esp_video_init() succeeded (for fail-path deinit)
 static uint32_t s_frame_size = 0;
 /* Width and height, kept because the ROW length is what a spatial period in
- * the bit stream aliases against — see /specdump. s_frame_size alone cannot
+ * the bit stream aliases against (former /specdump). s_frame_size alone cannot
  * give it. */
 static uint32_t s_frame_w = 0, s_frame_h = 0;
 static uint8_t *s_bufs[CAM_BUF_COUNT];
@@ -178,16 +178,12 @@ static cam_raw_t s_raw;
  * pre-fold monitor at +5,9 % of the extraction loop with it armed, and the
  * array read 5,38 Mbit/s idle against 5,66 before.
  *
- * ⚠ During a measurement window raw_runs_z therefore publishes 0,0. That is
- * "not armed", NOT "perfectly random" — raw_trans 0 is what says which.
- * ⚠ Read only by stats_reset_locked(). The channel carries one bit of state
- * across calls, so flipping this inside an open window would make trans and
- * bits describe two different spans. The sweep sets it before its first
- * candidate reset and clears it before the closing one. */
+ * ⚠ Armed only inside a sweep (D46, restored D55). Permanently on it cost
+ * measurable bit rate and the ranking channel that used the per-window z
+ * was deleted. Sweep still resets via stats_reset_locked().
+ * ⚠ Read only by stats_reset_locked() for the flag. Do not flip mid-window. */
 static volatile bool s_raw_runs_on = false;
-/* s_raw is static, so want_runs starts FALSE and only stats_reset_locked()
- * moves it. Kept as a named call so camera_init() states the initial value
- * rather than relying on the zero-initialiser to mean the right thing. */
+/* s_raw is static; want_runs follows s_raw_runs_on at every stats reset. */
 static void raw_runs_arm_initial(void) { s_raw.want_runs = s_raw_runs_on; }
 
 /* ⚠ The monitor is not free, but it is no longer expensive. /camtest on
@@ -768,7 +764,7 @@ esp_err_t camera_init(void)
     return ESP_ERR_NOT_SUPPORTED;
 #else
     tsens_start();          /* covariate for the offset monitor; NAN if unavailable */
-    raw_runs_arm_initial(); /* off until a sweep arms it; see s_raw_runs_on */
+    raw_runs_arm_initial(); /* off at boot; sweep arms it (D46/D55) */
     esp_err_t ret;
 
     /* Do-not-double-init: the boot path calls this once, but a defensive guard
@@ -1163,27 +1159,11 @@ static const uint32_t s_cal_ladder[] = { 4, 8, 16, 32, 64, 128, 256, 512 };
 #define CAL_MIN_BITS        2000000ULL
 #define CAL_TARGET_BITS     8000000ULL
 #define CAL_MIN_MINIRUNS    200
-/* Over-illumination backstop. This was a LIGHT-LEAK floor at 64.0 (a quarter of
- * full scale) back when the cameras were meant to sit in the dark and any raised
- * mean_px meant uncontrolled light getting in. The enclosure is now deliberately
- * LIT (§1.13), so a high mean_px means the lamp is on, not that a leak
- * has appeared — the gate no longer measures what it was written to measure.
- *
- * Raised to 100.0 on measured evidence. At 64.0 it rejected the best rung the
- * rig has ever produced: exposure 64 at mean_px 68.7 gave bias -4.8e-5 (matching
- * the §1.9 open-bench best) with sigma 0.998 and autocorr 0.0009 — no quality
- * failure at all, refused on light level alone by 7%.
- *
- * The value sits inside a measured safe zone: mean_px 68.7 is clean, 118.6 is
- * decisively broken (sigma 1.91, autocorr 0.0097, bias -8.1e-3). 100 admits the
- * good rung and still stops gross over-illumination.
- *
- * Note what this gate does NOT protect against, because the answer is "nothing
- * the others miss": across every lit sweep measured, exposures 128/256/512 fail
- * BIAS and SIGMA on their own, and exposure 64 failed LIGHT *only*. Saturation
- * does not hide from the quality gates — it announces itself. Those are the real
- * protection; this is a coarse backstop. The measured value is reported per step
- * either way, so the choice stays auditable rather than implicit. */
+/* Over-illumination ceiling — PUBLISH ONLY since 2026-08-28 (D52). Was a hard
+ * gate (LIGHT-LEAK floor at 64, then 100). Lit enclosure: high mean_px is the
+ * lamp, not a leak [D20]. Measured: exp 64 at mean_px 68,7 was the best rung
+ * and failed LIGHT alone; saturation at 118+ already fails SIGMA/AUTOC. The
+ * constant stays as a reading aid on /calibrate; cal_gate() no longer ORs it. */
 #define CAL_MAX_MEAN_PX     100.0
 /* ── The DARK end of the ladder (2026-08-19) ──────────────────────────────
  * CAL_MAX_MEAN_PX has had a partner missing since the enclosure was lit. The
@@ -1369,9 +1349,10 @@ void camera_cal_set_z_scale(double z_per_bias)
     s_cal_z_scale = (z_per_bias > 0.0) ? z_per_bias : 0.0;
 }
 
-/* The FOLDED bias bar for ONE window. No longer a gate — kept because the
- * per-step log and /calibrate still report which limit bound a rung, and
- * because it is what any pre-2026-08-27 sweep has to be read against. */
+/* The FOLDED bias bar for ONE window. Publish/audit only since 2026-08-28
+ * (D52) — cal_gate() no longer fails on it. After the fold every certified
+ * rung sits near the window's own SE anyway [D19][D46]; selection is pre-fold
+ * |raw_bias−0,5|. Kept so /calibrate and old sweep CSVs stay comparable. */
 static double cal_bias_bar(uint64_t bits)
 {
     if (s_cal_z_scale <= 0.0 || bits == 0) return CAL_BIAS_TOL;
@@ -1406,13 +1387,12 @@ static uint32_t cal_gate(const camera_cal_step_t *s)
 {
     uint32_t f = 0;
     if (s->bits < CAL_MIN_BITS || s->minirun_n < CAL_MIN_MINIRUNS) f |= CAM_CAL_FAIL_BITS;
-    /* FOLDED, and deliberately — see CAL_MAX_RAW_BIAS for the sweep that
-     * settled it. The raw bias selects; it does not gate. */
-    if (fabs(s->bias - 0.5) >= cal_bias_bar(s->bits)) f |= CAM_CAL_FAIL_BIAS;
+    /* FOLDED bias and CAL_MAX_MEAN_PX are NOT gates (D52, 2026-08-28).
+     * Pre-fold |raw_bias−0,5| selects; folded σ / autocorr / dark / stuck reject.
+     * cal_bias_bar() / CAL_MAX_MEAN_PX stay for /calibrate readability. */
     if (s->autocorr_max >= CAL_AUTOC_TOL)       f |= CAM_CAL_FAIL_AUTOC;
     if (fabs(s->sigma - 1.0) > CAL_SIGMA_TOL)   f |= CAM_CAL_FAIL_SIGMA;
     if (s->stuck_frames != 0)                   f |= CAM_CAL_FAIL_STUCK;
-    if (s->mean_pixel_level >= CAL_MAX_MEAN_PX) f |= CAM_CAL_FAIL_LIGHT;
     /* The dark end. Both, and only when the window actually measured something:
      * a candidate that never got frames already fails BITS, and adding DARK to
      * it would report a light level that was never sampled. */
@@ -1511,10 +1491,7 @@ bool camera_calibrate(int budget_ms, bool (*abort_cb)(void), camera_cal_t *out)
     out->z_scale = s_cal_z_scale;   // what the bias gate was scaled to, for the record
     if (s_fd < 0 || !camera_is_ready()) return false;
 
-    /* Arm the runs channel for the duration of the sweep and only that. Set
-     * BEFORE the first candidate's stats reset, which is what actually turns it
-     * on, and cleared on every exit path below — including `aborted`, whose
-     * closing reset would otherwise leave it armed through the whole session. */
+    /* Runs arm ON for the sweep only (D46). Disarmed again on the way out. */
     s_raw_runs_on = true;
 
     int64_t t0 = esp_timer_get_time();
@@ -1758,7 +1735,7 @@ bool camera_calibrate(int budget_ms, bool (*abort_cb)(void), camera_cal_t *out)
         out->raw_runs_z       = out->step[rep].raw_runs_z;
     }
 
-    s_raw_runs_on = false;   /* the measurement window must not carry the cost */
+    s_raw_runs_on = false;   /* measurement does not rank runs (D55) */
 
     /* Open a clean window on the setting the session will actually run, so the
      * per-loop bias/rate in /status and /loops describe THIS loop's operating
@@ -1779,7 +1756,7 @@ bool camera_calibrate(int budget_ms, bool (*abort_cb)(void), camera_cal_t *out)
     return out->ok;
 
 aborted:
-    s_raw_runs_on = false;
+    s_raw_runs_on = false;  /* measurement does not rank runs (D55) */
     out->nsteps = n;
     camera_set_exposure(e0, g0);
     s_xor_fold = fold0;

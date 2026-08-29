@@ -28,21 +28,17 @@
  * GET /camtest and by comparing a z against a pre-change run, not by eye. */
 gcp_result_t gcp_zscore_raw(int nseg, bool (*on_yield)(void), double *out)
 {
-    return gcp_zscore_spec(nseg, on_yield, out, NULL);
+    return gcp_zscore_pre(nseg, on_yield, out, NULL, NULL, NULL);
 }
 
-/* ⚠ The z line below is UNCHANGED and must stay so. gcp_spec_push() is handed
- * the `ones` this loop already counted and touches nothing else — adding the
- * second channel does not move a stored z by a bit, and therefore does not
- * split the pooling table for z. Verify with GET /camtest and by comparing a z
- * against a pre-change run, not by eye. */
-gcp_result_t gcp_zscore_spec(int nseg, bool (*on_yield)(void), double *out,
-                             gcp_spec_t *sp)
+static double pre_z_from_counts(uint64_t ones, uint64_t words, double bits_per_word)
 {
-    return gcp_zscore_pre(nseg, on_yield, out, sp, NULL);
+    if (words == 0) return 0.0;
+    double n = (double)words * bits_per_word;
+    return ((double)ones - n / 2.0) / (sqrt(n) / 2.0);
 }
 
-/* ⚠ The z line below is STILL UNCHANGED. The pre-fold channel reads the same
+/* ⚠ The z line below is UNCHANGED. The pre-fold channel reads the same
  * words through camera_read_word_raw(), which returns exactly what
  * camera_read_word() would plus a side value — the folded stream, the folded z
  * and every stored z are untouched, and /camtest still holds the extractor to
@@ -60,8 +56,8 @@ gcp_result_t gcp_zscore_spec(int nseg, bool (*on_yield)(void), double *out,
  * meet it: raw sigma sits at 1,06..1,28 on certified rungs where the folded
  * stream is at 0,997..1,001 (measured on all four nodes 2026-08-27; it was
  * quoted as 1,03..1,10 from a single earlier reading). Outside a certified
- * rung it is far worse — 1,69 at mean_px 5, above 10 over-lit. A p-value from it would not be honest, exactly as
- * for the entropy channel, and for the same reason.
+ * rung it is far worse — 1,69 at mean_px 5, above 10 over-lit. A p-value from
+ * it would not be honest.
  *
  * ⚠ It covers MORE bits than the folded z, not the same ones: a segment pulls
  * seven words and uses only 8 bits of the seventh, while all seven were
@@ -73,15 +69,20 @@ gcp_result_t gcp_zscore_spec(int nseg, bool (*on_yield)(void), double *out,
  *
  * `out_pre` NULL, or a node without the parallel ring, disables it. */
 gcp_result_t gcp_zscore_pre(int nseg, bool (*on_yield)(void), double *out,
-                            gcp_spec_t *sp, double *out_pre)
+                            double *out_pre, double *out_h1, double *out_h2)
 {
-    const bool   want_pre = (out_pre != NULL) && camera_raw_stream_ok();
+    const bool   want_pre = (out_pre != NULL || out_h1 != NULL || out_h2 != NULL)
+                         && camera_raw_stream_ok();
     /* Deterministic: with the fold on a 32-bit word is 64 pixels, off it is 32.
      * Read once — it cannot change inside a window (camera.c reads s_xor_fold
      * per frame and calibration clears the packer). */
     const double bits_per_word = camera_get_xor_fold() ? 64.0 : 32.0;
     uint64_t raw_ones = 0, raw_words = 0;
+    uint64_t mid_ones = 0, mid_words = 0;
+    const int n1 = nseg / 2;
     if (out_pre) *out_pre = 0.0;
+    if (out_h1)  *out_h1  = 0.0;
+    if (out_h2)  *out_h2  = 0.0;
 
     /* Hoisted, as the slave's copy already had it: the master recomputed it per
      * segment for the same value. */
@@ -109,15 +110,7 @@ gcp_result_t gcp_zscore_pre(int nseg, bool (*on_yield)(void), double *out,
 
         z_sum += (ones - GCP_SEGMENT_MEAN_I) / GCP_SEGMENT_SD;
 
-        /* The second channel. One float store per segment, one 512-point FFT
-         * per 1024 of them. Arithmetic says ~4 MFLOP per 5 s run, i.e. under
-         * 1 % of a core — but that is an ESTIMATE and this project does not get
-         * to assert it: the cost is paid by the GCP consumer, which outranks the
-         * extraction task, so any error comes out of the BIT RATE.
-         * ⚠ Prove it with focus_win_ms and ms_extract under load, never at idle
-         * — the same rule every other extraction-path change is held to.
-         * NULL disables it entirely. */
-        gcp_spec_push(sp, ones);
+        if (seg + 1 == n1) { mid_ones = raw_ones; mid_words = raw_words; }
 
         /* The camera path already yields inside camera_read_word() whenever it
          * waits on the producer, which is most of the time. This one is for
@@ -131,8 +124,13 @@ gcp_result_t gcp_zscore_pre(int nseg, bool (*on_yield)(void), double *out,
     *out = z_sum / sqrt((double)nseg);
 
     if (want_pre && raw_words > 0) {
-        double n = (double)raw_words * bits_per_word;     /* raw bits consumed */
-        *out_pre = ((double)raw_ones - n / 2.0) / (sqrt(n) / 2.0);
+        if (out_pre)
+            *out_pre = pre_z_from_counts(raw_ones, raw_words, bits_per_word);
+        if (out_h1 && n1 > 0)
+            *out_h1 = pre_z_from_counts(mid_ones, mid_words, bits_per_word);
+        if (out_h2 && nseg > n1)
+            *out_h2 = pre_z_from_counts(raw_ones - mid_ones,
+                                        raw_words - mid_words, bits_per_word);
     }
     return GCP_OK;
 }

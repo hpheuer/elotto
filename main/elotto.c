@@ -11,6 +11,7 @@
 #include "esp_event.h"
 #include "esp_http_server.h"
 #include "nvs_flash.h"
+#include "nvs.h"
 #include "esp_timer.h"
 #include "esp_app_desc.h"   /* the running image's version/sha for the CSV header */
 #include "gcp.h"           /* GCP_SEGMENT_BITS, for the round-length model */
@@ -21,6 +22,8 @@
 #include "elotto_ota.h"
 
 static const char *TAG = "ELOTTO";
+
+static void prefs_save(void);
 
 #define ETH_MDC_GPIO      31
 #define ETH_MDIO_GPIO     52
@@ -182,13 +185,6 @@ static const char HTML[] =
 "<div class='card'>"
 "<div id='runsRow' style='display:grid;grid-template-columns:1fr 1fr;gap:8px 14px;margin-bottom:10px'>"
 "<div class='frow'>"
-"<label for='numBaseline'>Baseline runs:</label>"
-"<input id='numBaseline' class='fin' type='number'"
-" value='" EL_STR(BASELINE_DEFAULT) "' min='" EL_STR(BASELINE_MIN) "'"
-" max='" EL_STR(BASELINE_MAX) "' step='" EL_STR(BASELINE_STEP) "'"
-" oninput='unlimHint()'>"
-"</div>"
-"<div class='frow'>"
 "<label for='numRunS'>Measuring Time (s):</label>"
 "<span style='display:flex;align-items:center;gap:8px'>"
 "<input id='numRunS' class='fin' type='number'"
@@ -237,42 +233,26 @@ static const char HTML[] =
 "</div>"
 "<div class='frow'>"
 "<label for='selScore' title='Pre-registered Phase-0 pool rule. Picks the pool only, never the "
-"measurement pass.'>Score direction:</label>"
+"measurement pass.'>Z-Score direction:</label>"
 "<select id='selScore' class='fin' style='padding:4px 6px'>"
-"<option value='high' selected>highest z (default)</option>"
-"<option value='low'>lowest z</option>"
-"<option value='abs'>largest |z|</option>"
+"<option value='high' selected>High</option>"
+"<option value='low'>low</option>"
+"<option value='abs'>|Z|</option>"
 "</select>"
-"</div>"
-"<div class='frow'>"
-"<label for='numEntW' title='Weight of the spectral-entropy half of the ranking "
-"key. The key is ((1-w)*Z - w*H)/sqrt((1-w)^2+w^2), so 0.5 ranks equally on a "
-"high z and a LOW entropy, and 0 is the control arm: ranking on z alone, exactly "
-"as before this channel existed. Entropy is measured from the same bits at no "
-"extra time -- z is the DC bin of the segment series, H is bins 1..511. It ranks; "
-"the null gates and the Bonferroni line stay on z.'>Entropy weight:</label>"
-"<input id='numEntW' class='fin' type='number' min='0' max='1' step='0.05' "
-"value='" EL_STR(ENT_W_FORM) "' oninput='wAdj(this)'>"
 "</div>"
 "<div class='frow'>"
 "<label for='numPreW' title='Weight of the PRE-FOLD half of the ranking key. The "
 "XOR fold maps a raw bias e to ~2e^2, so it suppresses a MEAN-BIAS effect by "
 "sqrt(2)*e -- a factor of about 7000 at e = 1e-4. That is the quantity a GCP "
-"experiment looks for, so the unfolded stream is scored too. The full key is "
-"((1-w-p)*Z - w*H + p*Zpre)/sqrt((1-w-p)^2+w^2+p^2); 0 is the control arm. "
-"Entropy weight + pre-fold weight must not exceed 1. WARNING: it RANKS, it does "
-"not test -- raw sigma is 1.06..1.28 against 0.997..1.001 folded, so the null "
-"gates and the Bonferroni line stay on z. And a table at p>0 means nothing "
-"before the first block closes: the uncentred per-node offset is 20..95 "
-"sigma.'>Pre-fold weight:</label>"
+"experiment looks for, so the unfolded stream is scored too. The key is "
+"((1-p)*Z + p*Zpre)/sqrt((1-p)^2+p^2); 0 is the control arm. "
+"WARNING: it RANKS, it does not test -- raw sigma is 1.06..1.28 against "
+"0.997..1.001 folded, so the null gates stay on z. "
+"And a table at p>0 means nothing before the first block closes: the uncentred "
+"per-node offset is 20..95 sigma.'>Pre-fold weight:</label>"
 "<input id='numPreW' class='fin' type='number' min='0' max='1' step='0.05' "
-"value='" EL_STR(ENT_W_PRE_FORM) "' oninput='wAdj(this)'>"
+"value='" EL_STR(ENT_W_PRE_FORM) "'>"
 "</div>"
-/* ⚠ grid-column:1/-1. This sits in the same grid as the two start buttons,
-   so without it the div eats one cell and pushes Euro-Lotto into the
-   second column and 6-of-49 onto the next row. */
-"<div class='sub' id='wErr' style='grid-column:1/-1;color:#ff9c6e;"
-"min-height:1.1em'></div>"
 "<button class='btn btn-euro' style='width:100%' onclick='doStart(0)'>&#127808; Euro-Lotto</button>"
 "<button class='btn btn-649' style='width:100%' onclick='doStart(1)'>&#127808; 6 of 49</button>"
 "</div>"
@@ -306,20 +286,18 @@ static const char HTML[] =
    whole combination space, plus which block the pass is in. Fed from /status
    (the DEVICE's numbers), so a session started by curl still labels itself. */
 "<div id='calArea'>"
-// Labelled "Baseline", NOT "Calibration". This bar tracks the baseline runs;
-// the camera exposure sweep is a different phase entirely (and says so in
-// #msg). Calling both "calibration" in one interface was ambiguous. Element ids
-// keep their old cal* names so nothing else has to change.
+/* Camera exposure sweep only — the baseline phase is deleted (D48). Element
+   ids keep their old cal* names so nothing else has to change. */
 "<div style='color:#f0c040;font-size:.88em;margin-bottom:4px' "
-"title='Reference runs with the display off, repeated at every block "
-"insertion. Drift reference only (drift_slope/drift_t) &mdash; nothing is "
-"subtracted from any z. NOT the camera exposure sweep.'><span id='calTitle'>&#128207; Baseline &#8212; drift reference</span>"
+"title='Exposure ladder at every block boundary. Parks the pass, re-tunes each "
+"node, then continues. Drift reference is block centring, not a separate "
+"baseline.'><span id='calTitle'>&#128295; Camera calibration &#8212; exposure sweep</span>"
 "<span id='calCheck'></span></div>"
 "<div class='prog-wrap' style='height:18px'>"
 "<div id='pfCal' style='background:linear-gradient(90deg,#a08030,#f0c040);"
 "height:100%;border-radius:20px;width:0%;transition:width .5s'></div></div>"
 "<div style='color:#f0c040;font-size:.9em;text-align:center;margin-top:4px'>"
-"<span id='calCount'><span id='sCalDone'>0</span> / <span id='sCalTotal'>50</span> Runs</span></div>"
+"<span id='calCount'>-</span></div>"
 "</div>"
 "<div id='scoreArea' style='margin-top:14px'>"
 "<div style='color:#6ab0e8;font-size:.88em;margin-bottom:4px'>&#127919; Number scoring"
@@ -341,23 +319,16 @@ static const char HTML[] =
 "<div style='color:#90ee90;font-size:.88em;margin-bottom:4px'>&#128202; Measurement"
 "<span id='measCheck'></span></div>"
 "<div class='prog-wrap'><div class='prog-fill' id='pf'></div></div>"
-/* Two rows, and the split is the point: the TOP row is round-relative in all
-   four figures and the BOTTOM row is session-relative in all four. Mixing them
-   is what the old single row did — a round item count beside a session clock —
-   and it is the same class of error as reporting progress from runs_completed.
-   The bottom row is unlimited-mode only: in a single pass the round IS the
-   session and every field would repeat the one above it. */
+/* Two rows of three: TOP round-relative (Items, Progress, Time/ETA), BOTTOM
+   session-relative and unlimited-only (Current Round, Total Measured, Total Time). */
 "<div class='stats'>"
 "<div class='stat'><div class='sv' id='sDone'>0</div><div class='sl'>Items</div></div>"
 "<div class='stat'><div class='sv' id='sPct'>0%</div><div class='sl'>Progress</div></div>"
-"<div class='stat'><div class='sv' id='sTime'>0 min</div><div class='sl'>Time</div></div>"
-"<div class='stat'><div class='sv' id='sEta'>-</div><div class='sl'>ETA</div></div>"
+"<div class='stat'><div class='sv' id='sTime'>0 / -</div><div class='sl'>Time / ETA</div></div>"
 "</div>"
 "<div class='stats' id='stats2' style='display:none'>"
 "<div class='stat'><div class='sv' id='sRound'>-</div>"
-"<div class='sl'>Current Round</div></div>"
-"<div class='stat'><div class='sv' id='sRounds'>-</div>"
-"<div class='sl'>Rounds</div></div>"
+"<div class='sl'>rounds · combos</div></div>"
 "<div class='stat'><div class='sv' id='sTotal'>-</div>"
 "<div class='sl'>Total Measured</div></div>"
 "<div class='stat'><div class='sv' id='sTotTime'>-</div>"
@@ -400,7 +371,7 @@ static const char HTML[] =
 "box-shadow:0 8px 40px rgba(0,0,0,.6)'>"
 "<div style='color:#90ee90;font-size:1.05em;margin-bottom:6px'>System ready</div>"
 "<div style='color:#cfe8cf;font-size:.9em;margin-bottom:22px;line-height:1.5'>"
-"Cameras calibrated and baseline recorded.<br>"
+"Cameras calibrated.<br>"
 "Take your time. Press Start when you are settled and ready to attend."
 "</div>"
 /* The reminder rides ON the button rather than beside it: it is the last thing
@@ -423,9 +394,6 @@ static const char HTML[] =
 "</div>"
 "<div class='card' id='resCard' style='display:none'>"
 "<h3 id='resTitle' style='color:#6ab0e8;margin-bottom:4px'></h3>"
-"<div id='nullBanner' style='display:none;color:#ff9c6e;font-weight:700;"
-"font-size:.9em;margin-bottom:8px;padding:8px;border:1px solid #ff9c6e;"
-"border-radius:6px;background:rgba(255,100,50,.12)'></div>"
 "<div id='sigLine' style='color:#a0c0a0;font-size:.82em;margin-bottom:4px'></div>"
 "<table><thead id='resHead'></thead>"
 "<tbody id='resBody'></tbody></table>"
@@ -433,19 +401,13 @@ static const char HTML[] =
 /* Full pass is the archival record (never re-measured). Summary is secondary. */
 "<button id='btnSave' class='btn' onclick='doSave()' style='display:none;background:#2e7d32;color:#fff;padding:10px 28px'>&#128190; Save full pass CSV</button>"
 "<div id='saveAll' style='display:none;margin-top:8px;font-size:.8em'>"
-"<a href='/results.csv' style='color:#90ee90'>summary only (15 rows) &#8594; /results.csv</a></div>"
+"<a href='/results.csv' style='color:#90ee90'>summary only (10 rows) &#8594; /results.csv</a></div>"
 "</div>"
 "</div>"
 "<div class='card' id='resCardLow' style='display:none'>"
 "<h3 id='resTitleLow' style='color:#e8a0a0;margin-bottom:4px'></h3>"
 "<table><thead id='resHeadLow'></thead>"
 "<tbody id='resBodyLow'></tbody></table>"
-"</div>"
-"<div class='card' id='resCardZero' style='display:none'>"
-"<h3 id='resTitleZero' style='color:#c0c0a0;margin-bottom:4px'></h3>"
-"<div id='zeroNote' style='color:#a0c0a0;font-size:.78em;margin-bottom:4px'></div>"
-"<table><thead id='resHeadZero'></thead>"
-"<tbody id='resBodyZero'></tbody></table>"
 "</div>"
 "</div>"
 "<script>"
@@ -495,9 +457,9 @@ static const char HTML[] =
    an hour at run=15 — and in this mode there is no session end to discover that
    from later. Model in sensor.h (CYCLE_LOAD_MBIT_X100); once a session is live the ETA
    comes from the device's measured pace instead. A round is: the scoring sweep
-   (49 or 62 runs), the pool's combinations, one sweep+baseline insertion at the
-   round boundary, plus one more per calint of MEASURING time — which is what
-   the device's block timer actually counts. */
+   (49 or 62 runs), the pool's combinations, one camera sweep at the round
+   boundary, plus one more per calint of MEASURING time — which is what the
+   device's block timer actually counts. */
 /* One measurement cycle, in ms. Model in sensor.h: the bits a run needs over
    the rate the SLOWEST node produces them at, plus the fixed per-run overhead
    and the requested gap. `mbit` is the live minimum from /status when there is
@@ -518,11 +480,9 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "if(runS>" EL_STR(RUN_S_MAX) ")runS=" EL_STR(RUN_S_MAX) ";"
 "var gapS=Math.round(runS*0.4*10)/10;"
 "if(gapS<0.5)gapS=0.5;if(gapS>10)gapS=10;"
-"var base=parseInt(document.getElementById('numBaseline').value)"
-"||" EL_STR(BASELINE_DEFAULT) ";"
 "var cyc=cycleMs(segsFor(runS),gapS,lastSlowMbit);"
 "var meas=combos*cyc;"
-"var ins=" EL_STR(CAL_BUDGET_DEFAULT_MS) "+base*cyc;"
+"var ins=" EL_STR(CAL_BUDGET_DEFAULT_MS) ";"
 "var nins=1+Math.floor(meas/" EL_STR(CAL_INTERVAL_DEFAULT_MS) ");"
 "return (euro?62:49)*cyc+meas+nins*ins;}"
 "function unlimHint(){"
@@ -533,24 +493,6 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "h.innerHTML='Euro '+e.p+'+'+e.q+' = '+e.c+' runs \u00b7 \u2248 '"
 "+fmt(roundMs(true,e.c))+'/round<br>6of49 '+l.p+' = '+l.c"
 "+' runs \u00b7 \u2248 '+fmt(roundMs(false,l.c))+'/round';}"
-/* The three weights share one budget: the z half of the key is 1-w-p, so the
-   pair can never sum past 1. Rather than refusing the combination and making
-   the operator work out which field to lower, the field being TYPED IN wins and
-   the other one gives way -- 1,00 in the pre-fold field drives the entropy
-   weight to 0 by itself, and vice versa. The line under the fields always shows
-   the resulting three-way split, so "z 0,00" is visible rather than implied. */
-"function wAdj(el){"
-"var a=document.getElementById('numEntW'),b=document.getElementById('numPreW');"
-"var we=parseFloat(a.value),wp=parseFloat(b.value);"
-"if(!(we>=0&&we<=1))we=0;"
-"if(!(wp>=0&&wp<=1))wp=0;"
-"if(we+wp>1){"
-"if(el===b){we=1-wp;a.value=we.toFixed(2);}"
-"else{wp=1-we;b.value=wp.toFixed(2);}}"
-"var e=document.getElementById('wErr');e.style.color='#8fae8f';"
-"e.textContent='key: z '+(1-we-wp).toFixed(2)+' \u00b7 H '+we.toFixed(2)"
-"+' \u00b7 pre '+wp.toFixed(2)"
-"+(wp>0?'  \u26a0 pre-fold ranks, it does not test':'');}"
 "function unlimToggle(){"
 "document.getElementById('rowUnlim').style.display="
 "document.getElementById('chkUnlim').checked?'':'none';"
@@ -559,7 +501,6 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "document.getElementById('subtitle').textContent="
 "mode===0?'Eurojackpot • 5 of 50 + 2 bonus numbers':'6 of 49 Lotto';}"
 "window.onload=function(){"
-"wAdj(null);"
 "fetch('/status').then(function(r){return r.json();}).then(function(d){"
 "if(d.state==='running'){"
 "curMode=d.mode==='euro'?0:1;setMode(curMode);"
@@ -577,7 +518,6 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "if(d.phase==='ready')readyShow();"
 "lastSlowMbit=slowMbit(d)||lastSlowMbit;"
 "updatePoolBadge(d);updateParamBadge(d);"
-"document.getElementById('sCalTotal').textContent=d.baseline_total;"
 "setScoreTotal(d);"
 "if(d.scoring_total>0){"
 "var sp=Math.round(d.scoring_done*100/d.scoring_total);"
@@ -638,19 +578,22 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "p.push(pItem('Measuring',(d.run_s||0).toFixed(1)+' s'));"
 "p.push(pItem('Gap',(d.gap_s||0).toFixed(1)+' s'));"
 "p.push(pItem('Segments',d.run_segs||0));"
-"var n=(d.baseline_done||0)+(d.scoring_done||0)+(d.completed||0);"
+"var n=(d.scoring_done||0)+(d.completed||0);"
 "if(n>=5&&d.elapsed_ms>0)"
 "p.push(pItem('per run',(d.elapsed_ms/n/1000).toFixed(1)+' s measured'));"
 "else p.push(pItem('per run','\u2248 '+(cycleMs(d.run_segs||segsFor(d.run_s||0),"
 "d.gap_s||0,slowMbit(d))/1000).toFixed(1)+' s est.'));"
 "if(d.focus_win_ms>0)p.push(pItem('window/gap',Math.round(d.focus_win_ms)"
 "+' / '+Math.round(d.focus_gap_ms||0)+' ms'));"
-"p.push(pItem('Baseline',(d.baseline_total||0)+' runs'));"
 "p.push(pItem('Sweep',d.cal_budget_ms>0"
 "?((d.cal_budget_ms/1000)+' s'+(d.cal_interval_ms>0"
 "?' every '+Math.round(d.cal_interval_ms/60000)+' min':' at start only'))"
 ":'off'));"
-"p.push(pItem('Key',(d.ent_w>0||d.pre_w>0)?('z '+(1-(d.ent_w||0)-(d.pre_w||0)).toFixed(2)+' / H '+(d.ent_w||0).toFixed(2)+' / pre '+(d.pre_w||0).toFixed(2)):'z alone'));"
+"var kz=1-(d.pre_w||0);"
+"var ktxt=(d.pre_w>0)"
+"?('z '+kz.toFixed(2)+' / conc '+(d.pre_w||0).toFixed(2))"
+":'z alone';"
+"p.push(pItem('Key',ktxt));"
 "p.push(pItem('Score',d.score_dir||'high'));"
 /* The block count moved here from the item line (2026-08-27). It belongs with
    the session's structure and not with its progress: what it actually tells
@@ -660,8 +603,6 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "if(d.loops_done>0||d.state==='running')"
 "p.push(pItem('Blocks',(d.loops_done||0)+((d.state==='running')?1:0)));"
 "p.push(pItem('Focus',d.focus?'attended':'unattended'));"
-"if(d.unlimited)p.push(pItem('Unlimited',(d.runs_cap||0)+' runs/round'"
-"+((d.round_total>0)?' \u2192 '+d.round_total+' combos':'')));"
 "if(d.paused_ms>0)p.push(pItem('Paused',fmt(d.paused_ms)+' (excluded)'));"
 "b.innerHTML=p.join(\" <span style='opacity:.3'>\u00b7</span> \");"
 "}"
@@ -674,10 +615,10 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "if(d.state!=='running'||!d.pool_main||!d.pool_main.length){"
 "pb.style.display='none';return;}"
 "pb.style.display='';"
+"var nn=d.pool_main.length+(d.pool_euro&&d.pool_euro.length?d.pool_euro.length:0);"
+"var cc=d.round_total||0;"
 "var h=\"<span style='color:#6ab0e8'>\""
-"+(d.unlimited?'Round '+(d.round||1)+' numbers':'Selected numbers')"
-"+' ('+d.pool_main.length+(d.pool_euro&&d.pool_euro.length"
-"?'+'+d.pool_euro.length:'')+\"):</span> \";"
+"+nn+' numbers'+(cc?(', '+cc+' combos'):'')+\":</span> \";"
 "d.pool_main.forEach(function(x){h+=\"<span class='num'>\"+x.n+\"</span>\";});"
 "if(d.pool_euro)d.pool_euro.forEach(function(x){"
 "h+=\"<span class='num euro'>\"+x.n+\"</span>\";});"
@@ -685,7 +626,6 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "}"
 "function doStart(mode){"
 "curMode=mode;"
-"var base=parseInt(document.getElementById('numBaseline').value)||" EL_STR(BASELINE_DEFAULT) ";"
 "var runS=parseFloat(document.getElementById('numRunS').value);"
 "if(!(runS>=" EL_STR(RUN_S_MIN) "))runS=" EL_STR(RUN_S_DEFAULT) ";"
 "if(runS>" EL_STR(RUN_S_MAX) ")runS=" EL_STR(RUN_S_MAX) ";"
@@ -701,31 +641,17 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 // Clamped here as well as validated in C: /start answers 400 for anything
 // outside 0..1 rather than falling back, so the form must not be able to send
 // a value that gets the session refused. parseFloat of '' is NaN -> default.
-"var wEnt=parseFloat(document.getElementById('numEntW').value);"
-"if(!(wEnt>=0&&wEnt<=1))wEnt=" EL_STR(ENT_W_FORM) ";"
 "var wPre=parseFloat(document.getElementById('numPreW').value);"
 "if(!(wPre>=0&&wPre<=1))wPre=" EL_STR(ENT_W_PRE_FORM) ";"
-/* The two weights share one budget with the z half, which is 1-w-p. /start
-   answers 400 rather than clamping, so the form must not be able to send a
-   pair that gets the session refused -- say so here instead of letting the
-   fetch fail with a bare error line. */
-"if(wEnt+wPre>1){"
-"document.getElementById('wErr').style.color='#ff9c6e';"
-"document.getElementById('wErr').textContent="
-"'\u26a0 Entropy + pre-fold weight must not exceed 1 (currently '"
-"+(wEnt+wPre).toFixed(2)+') \u2014 the z half would go negative';"
-"return;}"
-"wAdj(null);"
 "document.getElementById('runsErr').textContent='';"
-"document.getElementById('sCalTotal').textContent=base;"
 "document.getElementById('pfScore').style.width='0%';"
 "document.getElementById('sScoreDone').textContent='0';"
 "document.getElementById('measArea').style.display='none';"
 "document.getElementById('stats2').style.display='none';"
-"fetch('/start?mode='+mode+'&baseline='+base"
+"fetch('/start?mode='+mode"
 "+'&run='+runS+'&gap='+gapS"
 "+'&focus='+foc+'&score='+score"
-"+'&went='+wEnt+'&wpre='+wPre"
+"+'&wpre='+wPre"
 "+'&unlimited='+unl+'&maxruns='+mxr+'&confirm=1',{method:'POST'})"
 ".then(function(r){if(!r.ok){"
 "document.getElementById('runsErr').textContent="
@@ -748,8 +674,6 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "document.getElementById('saveAll').style.display='none';"
 "document.getElementById('resCard').style.display='none';"
 "document.getElementById('resCardLow').style.display='none';"
-"document.getElementById('resCardZero').style.display='none';"
-"document.getElementById('nullBanner').style.display='none';"
 "document.getElementById('msg').textContent='';"
 "setMode(mode);"
 "if(timer)clearInterval(timer);"
@@ -935,8 +859,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 // The observer gate: raise it while the device is parked, take it down the
 // moment it moves on (another tab answered, or the session was aborted).
 "if(d.state==='running'&&d.phase==='ready')readyShow();else readyHide();"
-"preparing=(d.state==='running'&&(d.phase==='calibrating'||d.phase==='baseline'"
-"||d.phase==='ready'));"
+"preparing=(d.state==='running'&&(d.phase==='calibrating'||d.phase==='ready'));"
 // Calibration is the first thing a loop does and nothing is on screen for it —
 // the panel stays hidden, since nothing is being attended to while the sensor is
 // tuned. Say so, or a 30 s pause at the top of every loop looks like a stall.
@@ -954,14 +877,10 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "if(d.scoring_total>0&&d.scoring_done>=d.scoring_total)"
 "document.getElementById('scoreCheck').innerHTML=\" <span style='color:#90ee90;font-size:1.1em'>&#10004;</span>\";"
 "else document.getElementById('scoreCheck').innerHTML='';"
-/* The baseline bar doubles as the calibration bar. Reusing it rather than adding
-   a second one is deliberate: the two never run at once, and the operator needs
-   ONE place to look to see that something is happening. Without this a ~25 s
-   silent gap at the head of every loop reads as a crash.
-   Progress is estimated against the LAST sweep's measured duration, not the
-   budget: the budget is a cap (30 s) while a sweep actually takes ~24 s, so a
-   budget-based bar would visibly stall at 80%. Falls back to the budget on the
-   first loop, when there is no previous sweep to estimate from. */
+/* Camera-sweep progress. Estimated against the LAST sweep's measured duration,
+   not the budget: the budget is a cap while a sweep actually finishes sooner,
+   so a budget-based bar would visibly stall. Falls back to the budget on the
+   first loop. Idle between sweeps: bar at 100% once a sweep has completed. */
 "if(d.phase==='calibrating'){"
 "var est=(d.cal_ms>0?d.cal_ms:(d.cal_budget_ms||" EL_STR(CAL_BUDGET_DEFAULT_MS) "));"
 "var el=d.cal_elapsed_ms||0;"
@@ -971,20 +890,20 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "Math.max(0,Math.min(100,Math.round(el*100/est)))+'%';"
 "document.getElementById('calCount').textContent="
 "left>0?left+' s left':'finishing\\u2026';"
-"}else{"
-"document.getElementById('calTitle').innerHTML='&#128207; Baseline &#8212; drift reference';"
-"var calPct=d.baseline_total>0?Math.round(d.baseline_done*100/d.baseline_total):0;"
-"document.getElementById('pfCal').style.width=calPct+'%';"
-"document.getElementById('calCount').innerHTML='<span id=\"sCalDone\">'+(d.baseline_done||0)"
-"+'</span> / <span id=\"sCalTotal\">'+(d.baseline_total||0)+'</span> Runs';"
-"}"
-"if(d.baseline_done>=d.baseline_total&&d.baseline_total>0)"
+"document.getElementById('calCheck').innerHTML='';"
+"}else if(d.cal_did_sweep||d.cal_ms>0){"
+"document.getElementById('calTitle').innerHTML='\\uD83D\\uDD27 Camera calibration \\u2014 exposure sweep';"
+"document.getElementById('pfCal').style.width='100%';"
+"document.getElementById('calCount').textContent='done';"
 "document.getElementById('calCheck').innerHTML=\" <span style='color:#90ee90;font-size:1.1em'>&#10004;</span>\";"
-"else document.getElementById('calCheck').innerHTML='';"
+"}else{"
+"document.getElementById('pfCal').style.width='0%';"
+"document.getElementById('calCount').textContent='-';"
+"document.getElementById('calCheck').innerHTML='';"
+"}"
 /* The measurement bar's 100 % is the WHOLE combination space — the v3
-   progress contract. During a mid-pass sweep/baseline insertion the phase
-   leaves 'measuring' but the bar and counters keep their values: the pass is
-   parked, not reset. */
+   progress contract. During a mid-pass sweep the phase leaves 'measuring'
+   but the bar and counters keep their values: the pass is parked, not reset. */
 "if(d.phase==='measuring'||stDone||(d.completed>0)){"
 "document.getElementById('measArea').style.display='';"
 "if(!stDone)document.getElementById('measCheck').innerHTML='';"
@@ -1000,29 +919,19 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
    number. */
 "var rms=(d.unlimited&&d.round_start_ms>0&&d.elapsed_ms>d.round_start_ms)"
 "?(d.elapsed_ms-d.round_start_ms):d.elapsed_ms;"
-"document.getElementById('sTime').textContent=fmt(rms);"
-/* The session row. Shown only in unlimited mode -- see the markup. */
+"var etaTxt='-';"
+"if(d.completed>0&&d.elapsed_ms>0&&rt>rd){"
+"var msPer=d.elapsed_ms/((d.scoring_done||0)+d.completed);"
+"etaTxt=fmtEta(Math.round(msPer*(rt-rd)));"
+"}"
+"document.getElementById('sTime').textContent=fmt(rms)+' / '+etaTxt;"
 "var s2=document.getElementById('stats2');"
 "if(d.unlimited){s2.style.display='';"
-"document.getElementById('sRound').textContent=(d.round||1);"
-/* Rounds COMPLETED, i.e. one less than the one being measured. The current
-   round is the field to its left; repeating it here would waste a card. */
-"document.getElementById('sRounds').textContent=Math.max((d.round||1)-1,0);"
+"document.getElementById('sRound').textContent=(d.round||1)+' \\u00b7 '+(d.round_total||0);"
 "document.getElementById('sTotal').textContent=(d.completed||0);"
 "document.getElementById('sTotTime').textContent=fmt(d.elapsed_ms);"
 "}else s2.style.display='none';"
 "showSlaveBadge(d);"
-/* ETA from the measured per-item pace over what remains. The elapsed clock
-   includes scoring/baseline, so the first items overestimate slightly and it
-   converges as the pass runs — good enough for a wall-clock this long. */
-/* In unlimited mode this is the ETA to the END OF THIS ROUND — there is no
-   session end to count down to, which is the point of the mode. */
-"if(d.completed>0&&d.elapsed_ms>0&&rt>rd){"
-"var msPer=d.elapsed_ms/((d.baseline_done||0)+(d.scoring_done||0)+d.completed);"
-"var eta=Math.round(msPer*(rt-rd));"
-"document.getElementById('sEta').textContent=fmtEta(eta)"
-"+(d.unlimited?' (round)':'');"
-"}else document.getElementById('sEta').textContent='-';"
 "}"
 "if(d.state==='running'&&d.top&&d.top.length)showResults(d);"
 "if(d.state==='done'||d.state==='aborted'){"
@@ -1071,34 +980,8 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "function showResults(d){"
 "var isEuro=d.mode==='euro';"
 "var sl=document.getElementById('sigLine');"
-"var nb=document.getElementById('nullBanner');"
-/* Null-broken banner: ranking is not decisive while the instrument null fails. */
-"var nf=d.null_flags||0;"
-/* ⚠ Until the first block closes, z_ctr still holds the PROVISIONAL RAW value
-   (D8), so it carries every node's block offset — the master alone ran −0,46
-   over a whole session. σ and Σz² are out at the start of every run BY DESIGN,
-   and nothing about the null is assessable before centring has anything to
-   centre. So: nothing is shown at all until a block has closed. Not a
-   placeholder, not a "not yet" note — an operator should hear from this line
-   only when something has actually gone wrong, or the one time it matters it
-   reads like the same message as always (user, 2026-08-27).
-   ⚠ The flag itself also carries a standard-error test now (PASS_NULL_K), so
-   this gate is the second of two, not the only one. */
-"var closed=d.loops_done||0;"
-"if(nf&&!closed){"
-"nb.style.display='none';nb.innerHTML='';"
-"}else if(nf){"
-"nb.style.color='';"
-"var bits=[];"
-"if(nf&1)bits.push('pass \\u03c3 = '+(d.pass_sigma||0).toFixed(3)+' (want ~1)');"
-"if(nf&4)bits.push('\\u03a3z\\u00b2/n off unit');"
-"if(nf&2)bits.push('drift |t| = '+Math.abs(d.drift_t||0).toFixed(1));"
-"if(nf&8)bits.push('node pair correlated');"
-"nb.style.display='block';"
-"nb.innerHTML='\\u26a0 NULL BROKEN \\u2014 Top/Bottom are NOT decisive: '+bits.join(' \\u00b7 ')"
-"+'. Read pass health first.';"
-"}else{nb.style.display='none';nb.innerHTML='';}"
-/* Pass health is the GCP primary endpoint; ranking is secondary. */
+/* Pass health is the GCP primary endpoint; ranking is secondary.
+   null_flags / NB / CUSUM are deleted (D47) — the numbers stay, the banner does not. */
 "var ph='';"
 "if((d.pass_n_valid||0)>0){"
 "ph='pass mean '+(d.pass_mean||0).toFixed(3)"
@@ -1110,34 +993,14 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "+((d.pass_n_excl>0)?(' \\u00b7 excl '+d.pass_n_excl):'')"
 "+((d.pass_n_void>0)?(' \\u00b7 void '+d.pass_n_void):'');"
 "}"
-/* Significance on studentized |Z*|; Bonferroni comparisons = valid items. */
-"if(d.comparisons>0&&d.top&&d.top.length){"
-"var zx=Math.abs(d.best_z||0),pcv=d.p_corr||0;"
-"var pc=pcv<0.001?pcv.toExponential(1):pcv.toFixed(3);"
-"var sig=nf?'ranking suspended':(pcv<0.05?'significant':'consistent with chance');"
-"sl.innerHTML=(ph?ph+'<br>':'')+'Studentized ranking (|Z*|)'"
-"+' \\u00b7 most extreme |Z*| = '+zx.toFixed(2)"
-"+' \\u00b7 corrected p = '+pc+' over '+d.comparisons+' valid ('+sig+')';"
-"}else sl.innerHTML=ph||'';"
+"sl.innerHTML=ph||'';"
 "var s2='';"
-// Which condition produced these numbers. An attended session is not equivalent
-// to an unattended one, so the two must never be pooled later.
-"s2+=(s2?' \\u00b7 ':'')+(d.focus?'\\uD83C\\uDFAF attended (focus)':'unattended (control)');"
-"if(d.score_dir)s2+=' \\u00b7 score='+d.score_dir;"
-// The entropy channel, in its own line: it changes what the three tables MEAN,
-// so it must not be findable only by reading the CSV header afterwards. The
-// count of items that actually carried an entropy value is there because a
-// silently entropy-less session (old slave firmware, PSRAM short) would
-// otherwise look exactly like one where the channel did nothing.
-"if(d.ent_w>0){"
-"var e='\\u2211 entropy w='+d.ent_w.toFixed(2)"
-"+' \\u00b7 '+d.ent_win+' Welch windows/run \\u00b7 H\\u2080 '+(d.ent_h0||0).toFixed(6)"
-"+' \\u00b1 '+(d.ent_sd||0).toExponential(1);"
-"if(d.ent_h>0)e+=' \\u00b7 last H '+d.ent_h.toFixed(6)+' (z '+(d.ent_zh||0).toFixed(2)+')';"
-"if(d.pass_n_valid>0)e+=' \\u00b7 with H '+(d.ent_n||0)+'/'+d.pass_n_valid"
-"+((d.ent_n<d.pass_n_valid)?' \\u26a0':'');"
-"if(d.ent_clamped>0)e+=' \\u00b7 \\u26a0 '+d.ent_clamped+' H clamped';"
-"if(d.pre_clamped>0)e+=' \\u00b7 \\u26a0 '+d.pre_clamped+' pre clamped';"
+/* Pre-fold channel health when weight is on. */
+"if((d.pre_w||0)>0){"
+"var e='\u2211 pre-fold';"
+"if(d.pass_n_valid>0)e+=' \u00b7 with pre '+(d.pre_n||0)+'/'+d.pass_n_valid"
+"+((d.pre_n<d.pass_n_valid)?' \u26a0':'');"
+"if(d.pre_clamped>0)e+=' \u00b7 \u26a0 '+d.pre_clamped+' pre clamped';"
 "s2+='<br>'+e;}"
 // Carried into the results line because the Focus card — where these normally
 // live — is hidden once the session ends. `missed` is a gate, not a curiosity:
@@ -1164,7 +1027,8 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "var u=i===0?'/diagjson':'http://'+N.ip+'/diag';"
 "fetch(u).then(function(r){return r.json();}).then(function(x){var c=x.cam||{};"
 "var sg=document.getElementById('nodeSig'+i),mb=document.getElementById('nodeMbit'+i);"
-"if(c.sigma>0){nodeHealth[i]=nodeHealth[i]||{};nodeHealth[i].sigma=c.sigma;if(sg)sg.textContent=c.sigma.toFixed(3);}"
+"if(c.raw_sigma>0){nodeHealth[i]=nodeHealth[i]||{};nodeHealth[i].sigma=c.raw_sigma;if(sg)sg.textContent=c.raw_sigma.toFixed(3);}"
+"else if(c.sigma>0){nodeHealth[i]=nodeHealth[i]||{};nodeHealth[i].sigma=c.sigma;if(sg)sg.textContent=c.sigma.toFixed(3);}"
 "if(c.mbit_s>0){nodeHealth[i]=nodeHealth[i]||{};nodeHealth[i].mbit=c.mbit_s;if(mb)mb.textContent=c.mbit_s.toFixed(2);}"
 "}).catch(function(){});})(d.nodes[i],i);}"
 "}"
@@ -1179,14 +1043,12 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "+'<th align=left title=\"board and discovery address. Column order is DISCOVERY order and changes between sessions\">node</th>'"
 "+'<th align=left title=\"session mean of this node\\u2019s RAW per-run z. Uncentred \\u2014 a constant offset is normal\">Z</th>'"
 "+'<th align=left title=\"two-sided p of this node\\u2019s mean z (Stouffer). Health check, NOT a result\">p</th>'"
-"+'<th align=left title=\"per-run \\u03c3 over the last closed block. Ideal 1,000; above 1,25 trips soft-down. Blank until the first block closes\">cam \\u03c3</th>'"
+"+'<th align=left title=\"PRE-FOLD per-mini-run \\u03c3 (cam_rsig). Folded \\u03c3 is ~1,00 on a healthy rung and is what trips soft-down; this column is the channel the ranking rides.\">pre \\u03c3</th>'"
 "+'<th align=left title=\"extraction rate: ~5,7 idle, ~3,7 under load. The SLOWEST node sets the window for all four\">Mbit/s</th>'"
 "+'<th align=left title=\"exposure this block\\u2019s sweep chose. \\u2295 = XOR fold on, ! = nothing certified, previous setting kept. Different rungs per node are normal\">exp</th>'"
 "+'<th align=left title=\"frame pairs the sensor failed to deliver. Non-zero = check the hardware\">stalls</th>'"
 "+'<th align=left title=\"runs this node missed. Each costs that run\\u2019s share of the combine, not the session\">lost</th>'"
-"+'<th align=left title=\"two-sided CUSUM on the RAW block offset: larger arm against the alarm bar 14. Catches a CONSTANT offset shift, which drift_t cannot (slope zero). Reference = this node\\u2019s first 4 blocks, so it sees a CHANGE, not the offset. Monitor only \\u2014 read an alarm with the die temperature\">CUSUM</th>'"
-"+'<th align=left title=\"P4 DIE temperature \\u2014 the covariate a CUSUM alarm must be read against. SoC die, NOT the OV5647. Blank = not reported\">T \\u00b0C</th>'"
-"+'<th align=left title=\"Null broken: closed blocks where the pass null failed and this node was the worst contributor. ATTRIBUTION, not proof \\u2014 which board to check first. Nothing is excluded on it\">NB</th>'"
+"+'<th align=left title=\"P4 DIE temperature. SoC die, NOT the OV5647. Blank = not reported\">T \\u00b0C</th>'"
 "+'</tr>';"
 "for(var i=0;i<d.nodes.length;i++){var N=d.nodes[i],H=nodeHealth[i]||{};"
 // The master reports ip:"self" (it has no idea what address the client used to
@@ -1212,16 +1074,12 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "s3+='<tr style=\"opacity:'+(N.ok?1:.55)+'\"><td>'+nm+st+'</td>'"
 "+'<td title=\"mean raw z over '+zn+' runs\">'+zTxt+'</td>'"
 "+'<td title=\"two-sided p of mean (Stouffer)\">'+pTxt+'</td>'"
-"+'<td id=\"nodeSig'+i+'\">'+(H.sigma>0?H.sigma.toFixed(3):(N.sigma>0?N.sigma.toFixed(3):'\\u2013'))+'</td>'"
+"+'<td id=\"nodeSig'+i+'\">'+(H.sigma>0?H.sigma.toFixed(3):(N.cam_rsig>0?N.cam_rsig.toFixed(3):(N.sigma>0?N.sigma.toFixed(3):'\\u2013')))+'</td>'"
 "+'<td id=\"nodeMbit'+i+'\">'+(H.mbit>0?H.mbit.toFixed(2):(N.cam_mbit>0?N.cam_mbit.toFixed(2):'\\u2013'))+'</td>'"
 "+'<td title=\"exposure chosen by this loop\\u2019s calibration\">'+ex+'</td>'"
 "+'<td>'+(N.cam_stalls>0?'\\u26a0 '+N.cam_stalls:'0')+'</td>'"
 "+'<td>'+(N.lost>0?'\\u26a0 '+N.lost:'0')+'</td>'"
-"+'<td title=\"'+((N.cus_n||0)<=4?'warming up: needs 4 closed blocks to fix its reference':'up arm '+(N.cus_pos||0).toFixed(1)+', down arm '+(N.cus_neg||0).toFixed(1)+', bar 14; '+(N.cus_alarms||0)+' alarm(s) this session')+'\">'"
-"+((N.cus_n||0)<=4?'\\u2013':(function(){var a=Math.max(N.cus_pos||0,N.cus_neg||0);return (a>=14?'\\u26a0 ':(a>=7?'\\u00b7 ':''))+a.toFixed(1)+((N.cus_alarms||0)>0?' ('+N.cus_alarms+')':'');})())+'</td>'"
-"+'<td title=\"P4 DIE temperature, not the OV5647 \\u2014 the covariate a CUSUM alarm must be read against.\">'+(N.die_temp==null?'\\u2013':N.die_temp.toFixed(1))+'</td>'"
-"+'<td title=\"'+((N.nb||0)>0?'worst contributor in '+N.nb+' broken-null block(s)':'never the worst contributor in a broken-null block')+'\">'"
-"+((N.nb||0)>0?'\\u26a0 '+N.nb:'0')+'</td></tr>';}"
+"+'<td title=\"P4 DIE temperature, not the OV5647\">'+(N.die_temp==null?'\\u2013':N.die_temp.toFixed(1))+'</td></tr>';}"
 "s3+='</table>';"
 // The fault string is the primary channel: there is no substitute source, so a
 // camera failure ends that node's participation and the operator must see why.
@@ -1272,31 +1130,30 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "document.getElementById('btnSave').style.display='none';"
 "document.getElementById('saveAll').style.display='none';"
 "document.getElementById('resCardLow').style.display='none';"
-"document.getElementById('resCardZero').style.display='none';"
 "return;}"
 "lastDisplayed=d.top;"
 // Z* studentizes the RANKING KEY, so it takes the key's own moments;
-// rank_mean/rank_sigma equal pass_mean/pass_sigma exactly at went=0.
-"var st={m:d.rank_mean||0,s:d.rank_sigma||0,w:d.ent_w||0,p:d.pre_w||0,sh:d.rank_sig_h||0,sp:d.rank_sig_p||0};"
+// rank_mean/rank_sigma equal pass_mean/pass_sigma exactly at wpre=0.
+"var st={m:d.rank_mean||0,s:d.rank_sigma||0,p:d.pre_w||0,sp:d.rank_sig_p||0};"
 "document.getElementById('resTitle').innerHTML="
 "'\\uD83C\\uDFC6 Top '+d.top.length+' of '+d.comparisons+' valid'"
 "+(isEuro?' \\u2014 Eurojackpot':' \\u2014 6-of-49')"
-"+' (highest Z*'+((d.ent_w>0)?': high Z and low entropy':'')+')';"
+"+' (highest Z*)';"
 "renderRunTable('resHead','resBody',d.top,isEuro,d,st);"
 "document.getElementById('btnSave').style.display='';"
 "document.getElementById('saveAll').style.display='';"
 "showLow(d);"
-"showNear(d);"
 "}"
-// One column of numbers: Z*, the studentized ranking key. Z, H, P and the
-// uncorrected p were columns until 2026-08-27 and now live in the hover text
-// built below.
+// One column of numbers: Z*, the studentized ranking key. Z / P and the
+// uncorrected p live in the hover text built below.
 "function renderRunTable(headId,bodyId,res,isEuro,d,st){"
 "document.getElementById(headId).innerHTML="
-"'<tr><th title=\"rank in this table, 1 = strongest\">#</th><th title=\"item within its round; item/round in unlimited mode, because the index repeats across rounds\">Item</th>'"
-"+(st?'<th title=\"THE ranking number: the weighted key, studentized as (key\\u2212rank_mean)/rank_sigma. Hover a value to see the three channels behind it and what each contributed\">Z*</th>':'')"
-"+'<th title=\"the drawn combination this item measured\">Numbers</th>'"
-"+(isEuro?'<th title=\"the two Euro numbers of this combination\">Bonus</th>':'')+'</tr>';"
+"'<tr><th>#</th><th>Item</th>'"
+"+(st?'<th title=\"studentized ranking key\">Z*</th>'"
+"+'<th title=\"block-centred combined pre-fold z (zp_ctr)\">Z-Pre</th>'"
+"+'<th title=\"leave-one-out half-window concordance (zc_ctr). Ranking key when wpre>0\">Conc</th>':'')"
+"+'<th>Numbers</th>'"
+"+(isEuro?'<th>Bonus</th>':'')+'</tr>';"
 "var tb=document.getElementById(bodyId);tb.innerHTML='';"
 "for(var i=0;i<res.length;i++){"
 "var r=res[i],nums='';"
@@ -1306,28 +1163,18 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "if(isEuro&&r.euro&&r.euro.length)"
 "for(var j=0;j<r.euro.length;j++)"
 "estr+='<span class=\"num euro\">'+r.euro[j]+'</span>';"
-// Z* studentizes the RANKING KEY against rank_mean/rank_sigma, which are that
-// key's own moments \u2014 the same key that ordered these five rows. Fallbacks
-// are for a status page served by an older firmware, not for a missing value:
-// r.zh === 0 legitimately means "no entropy for this item" and the hover text
-// shows an em dash for it.
 "var z=r.z,kk=(r.key===undefined?(r.z_ctr===undefined?z:r.z_ctr):r.key);"
 "var zs=(st&&st.s>0)?(kk-st.m)/st.s:0;"
 "var itm=(d.unlimited&&r.round)?(r.run+'/'+r.round):r.run;"
-// One number in the table, the working out on hover. Z, H and P were columns
-// until 2026-08-27 and it was the wrong trade: five numbers per row, of which
-// only Z* orders anything, plus a "P" one case away from the "p" beside it.
-// The breakdown is still exactly reproducible -- it is the key's own terms --
-// so nothing is lost, it just stops competing with the ranking for attention.
-"var det='Z '+z.toFixed(4)"
-"+' \\u00b7 H '+((!r.zh)?'\\u2014':r.zh.toFixed(2))"
-"+' \\u00b7 P '+((r.zp===undefined||!r.zp)?'\\u2014':r.zp.toFixed(2))"
+"var preTxt=(!r.zp)?'\\u2014':r.zp.toFixed(2);"
+"var concTxt=(r.zc===undefined||r.zc===null)?'\\u2014':r.zc.toFixed(2);"
+"var det='Z '+z.toFixed(4)+' \\u00b7 Z-Pre '+preTxt+' \\u00b7 Conc '+concTxt"
 "+' \\u00b7 p(Z*) '+pfmt(p2(st?zs:z));"
-"if(st)det+='\\nweights: z '+(1-(st.w||0)-(st.p||0)).toFixed(2)"
-"+' \\u00b7 H '+(st.w||0).toFixed(2)+' \\u00b7 pre '+(st.p||0).toFixed(2);"
-"if(st&&st.sh>0)det+='  (\\u03c3H '+st.sh.toFixed(3)+', \\u03c3P '+st.sp.toFixed(3)+')';"
+"if(st)det+='\\nweights: z '+(1-(st.p||0)).toFixed(2)"
+"+' \\u00b7 conc '+(st.p||0).toFixed(2);"
 "tb.innerHTML+='<tr><td>'+(i+1)+'</td><td>'+itm+'</td>"
-"'+(st?'<td title=\"'+det+'\">'+zs.toFixed(3)+'</td>':'')+'"
+"'+(st?'<td title=\"'+det+'\">'+zs.toFixed(3)+'</td>'"
+"+'<td>'+preTxt+'</td><td>'+concTxt+'</td>':'')+'"
 "<td>'+nums+'</td>"
 "'+(isEuro?'<td>'+estr+'</td>':'')+'</tr>';"
 "}"
@@ -1335,31 +1182,11 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "function showLow(d){"
 "var res=d.low,isEuro=d.mode==='euro';"
 "if(!res||res.length===0){document.getElementById('resCardLow').style.display='none';return;}"
-"var st={m:d.rank_mean||0,s:d.rank_sigma||0,w:d.ent_w||0,p:d.pre_w||0,sh:d.rank_sig_h||0,sp:d.rank_sig_p||0};"
+"var st={m:d.rank_mean||0,s:d.rank_sigma||0,p:d.pre_w||0,sp:d.rank_sig_p||0};"
 "document.getElementById('resTitleLow').innerHTML="
-"'\\u2B07 Bottom '+res.length+' (lowest Z*'"
-"+((d.ent_w>0)?': low Z and high entropy':'')+')';"
+"'\\u2B07 Bottom '+res.length+' (lowest Z*)';"
 "renderRunTable('resHeadLow','resBodyLow',res,isEuro,d,st);"
 "document.getElementById('resCardLow').style.display='block';"
-"}"
-// The third group: the items that did the LEAST. Nearest the pass mean, not
-// nearest raw zero -- raw z carries the array's common offset, so |z| ~ 0 would
-// pick items well above the array's own centre. The note states the centre it
-// was measured against, because without it the reader cannot tell the two apart.
-"function showNear(d){"
-"var res=d.near,isEuro=d.mode==='euro';"
-"if(!res||res.length===0){document.getElementById('resCardZero').style.display='none';return;}"
-"var st={m:d.rank_mean||0,s:d.rank_sigma||0,w:d.ent_w||0,p:d.pre_w||0,sh:d.rank_sig_h||0,sp:d.rank_sig_p||0};"
-"document.getElementById('resTitleZero').innerHTML="
-"'\\u25CE Nearest zero '+res.length+' (least remarkable)';"
-"document.getElementById('zeroNote').innerHTML="
-"'Z* = (key \\u2212 mean)/\\u03c3 over the '+d.comparisons+' items measured'"
-"+' \\u00b7 mean '+st.m.toFixed(3)+' \\u00b7 \\u03c3 '+st.s.toFixed(3)"
-"+(st.w>0?' \\u00b7 key = '+(1-st.w).toFixed(2)+'\\u00b7Z \\u2212 '"
-"+st.w.toFixed(2)+'\\u00b7H, rescaled to \\u03c3=1':'')"
-"+' \\u2014 ranked by |Z*|, not by |Z|';"
-"renderRunTable('resHeadZero','resBodyZero',res,isEuro,d,st);"
-"document.getElementById('resCardZero').style.display='block';"
 "}"
 /* Full pass is the record (never re-measured). Summary is a secondary link. */
 "function doSave(){window.location='/results.csv?all=1';}"
@@ -1373,28 +1200,23 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
  * round, so the UI hides it there rather than printing a constant "/1". */
 static int emit_run(char *buf, int cap, const RunResult *r, bool euro)
 {
-    /* `zh`, `zp` and `key` travel per row so the table can show the channel
-     * that put an item where it is, and so the UI never has to recompute the
-     * key — one definition of the ordering, in C, exactly as rank_key() is for
-     * the firmware's own tables.
-     * ⚠ `zp` is here for the same reason `zh` is: at ?wpre=1 the pre-fold z is
-     * the ONLY thing that ordered the table, and a table that cannot show the
-     * number it was ordered by is not readable. */
+    /* `zp` and `key` travel per row so the table can show the channel that put
+     * an item where it is, and so the UI never has to recompute the key. */
     if (euro)
         return snprintf(buf, cap,
-            "{\"run\":%d,\"round\":%d,\"z\":%.4f,\"z_ctr\":%.4f,\"zh\":%.3f,"
-            "\"zp\":%.3f,\"key\":%.4f,\"k\":%d,"
+            "{\"run\":%d,\"round\":%d,\"z\":%.4f,\"z_ctr\":%.4f,"
+            "\"zp\":%.3f,\"zc\":%.3f,\"key\":%.4f,\"k\":%d,"
             "\"nums\":[%d,%d,%d,%d,%d],\"euro\":[%d,%d]}",
             r->index, (int)r->round, r->z_score, (double)r->z_ctr,
-            (double)r->zh_ctr, (double)r->zp_ctr, rank_key(r), (int)r->k,
+            (double)r->zp_ctr, (double)r->zc_ctr, rank_key(r), (int)r->k,
             r->nums[0], r->nums[1], r->nums[2], r->nums[3], r->nums[4],
             r->euro[0], r->euro[1]);
     return snprintf(buf, cap,
-        "{\"run\":%d,\"round\":%d,\"z\":%.4f,\"z_ctr\":%.4f,\"zh\":%.3f,"
-        "\"zp\":%.3f,\"key\":%.4f,\"k\":%d,"
+        "{\"run\":%d,\"round\":%d,\"z\":%.4f,\"z_ctr\":%.4f,"
+        "\"zp\":%.3f,\"zc\":%.3f,\"key\":%.4f,\"k\":%d,"
         "\"nums\":[%d,%d,%d,%d,%d,%d],\"euro\":[]}",
         r->index, (int)r->round, r->z_score, (double)r->z_ctr,
-        (double)r->zh_ctr, (double)r->zp_ctr, rank_key(r), (int)r->k,
+        (double)r->zp_ctr, (double)r->zc_ctr, rank_key(r), (int)r->k,
         r->nums[0], r->nums[1], r->nums[2],
         r->nums[3], r->nums[4], r->nums[5]);
 }
@@ -1467,7 +1289,6 @@ static esp_err_t status_handler(httpd_req_t *req)
 
     const char *phase_str =
         g_status.phase == PHASE_SCORING      ? "scoring"     :
-        g_status.phase == PHASE_BASELINE     ? "baseline"    :
         g_status.phase == PHASE_CALIBRATE    ? "calibrating" :
         g_status.phase == PHASE_POOL_CONFIRM ? "poolconfirm" :
         g_status.phase == PHASE_READY        ? "ready"       :
@@ -1479,26 +1300,20 @@ static esp_err_t status_handler(httpd_req_t *req)
         "{\"state\":\"%s\",\"mode\":\"%s\",\"phase\":\"%s\","
         "\"slave\":%s,"
         "\"src\":\"camera\",\"src_stalled\":%s,\"fault\":\"%s\","
-        "\"best_z\":%.4f,\"p_corr\":%.6g,\"comparisons\":%d,"
+        "\"comparisons\":%d,"
         "\"pass_mean\":%.4f,\"pass_sigma\":%.4f,\"pass_chi2\":%.4f,"
         "\"pass_stouffer\":%.4f,\"pass_n_valid\":%d,\"pass_n_void\":%d,"
         /* pass_n_open: measured, archived, not yet assessable — its block has
          * not closed, so z_ctr is still the raw value. It is NOT part of
          * pass_n_valid and no pass statistic sees it. */
         "\"pass_n_excl\":%d,\"pass_n_open\":%d,"
-        "\"v_eff\":%.4f,\"null_flags\":%d,\"flush_timeouts\":%lu,"
-        /* The entropy channel. ⚠ rank_mean/rank_sigma are the moments of the
-         * RANKING KEY and pass_mean/pass_sigma those of z; the tables are
-         * ordered by the former and the null gates fire on the latter. They
-         * coincide exactly at ent_w = 0. */
-        "\"ent_w\":%.3f,\"pre_w\":%.3f,\"ent_win\":%d,\"ent_h0\":%.8f,\"ent_sd\":%.8f,"
-        "\"ent_n\":%d,\"ent_clamped\":%d,\"ent_h\":%.8f,\"ent_zh\":%.3f,"
-        /* pre_clamped is the pre-fold twin of ent_clamped and exists because
-         * ent_clamped never watched that channel. rank_sig_h/rank_sig_p are
-         * the per-channel σ rank_key() standardises by — publish them, or a
-         * reader cannot reproduce the key from the CSV columns. */
+        "\"v_eff\":%.4f,\"flush_timeouts\":%lu,"
+        /* Pre-fold ranking channel. ⚠ rank_mean/rank_sigma are the moments of
+         * the RANKING KEY and pass_mean/pass_sigma those of z; they coincide
+         * exactly at pre_w = 0. */
+        "\"pre_w\":%.3f,"
         "\"pre_n\":%d,\"pre_clamped\":%d,"
-        "\"rank_sig_h\":%.4f,\"rank_sig_p\":%.4f,"
+        "\"rank_sig_p\":%.4f,"
         "\"rank_mean\":%.4f,\"rank_sigma\":%.4f,"
         "\"score_dir\":\"%s\","
         "\"loop_sigma\":%.4f,"
@@ -1523,7 +1338,6 @@ static esp_err_t status_handler(httpd_req_t *req)
         "\"off_first\":%.4f,\"off_last\":%.4f,"
         "\"sigma_lo\":%.4f,\"sigma_hi\":%.4f,"
         "\"scoring_done\":%d,\"scoring_total\":%d,"
-        "\"baseline_done\":%d,\"baseline_total\":%d,\"baseline_mean\":%.4f,"
         "\"completed\":%d,\"total\":%d,\"elapsed_ms\":%lld,\"compacted\":%d,"
         /* `completed` is session-wide (the results[] prefix); `total` is the
          * CURRENT round's combination space. In an ordinary session there is
@@ -1537,28 +1351,14 @@ static esp_err_t status_handler(httpd_req_t *req)
         state_str, mode_str, phase_str,
         g_status.slave_connected ? "true" : "false",
         g_status.noise_stalled ? "true" : "false", g_status.fault,
-        g_status.best_z, g_status.p_corrected, g_status.comparisons,
+        g_status.comparisons,
         g_status.pass_mean, g_status.pass_sigma, g_status.pass_chi2,
         g_status.pass_stouffer, g_status.pass_n_valid, g_status.pass_n_void,
         g_status.pass_n_excl, g_status.pass_n_open,
-        g_status.v_eff, (int)g_status.null_flags,
-        (unsigned long)g_status.flush_timeouts,
-        g_status.ent_w, g_status.pre_w, g_status.ent_windows,
-        g_status.ent_h0, g_status.ent_sd,
-        g_status.ent_n, g_status.ent_clamped,
-        /* NaN is not valid JSON. "no entropy for the last item" travels as 0
-         * for H (which is impossible, H > 0 always) and 0 for z_h (which is
-         * merely the null's own centre) — the UI reads ent_h == 0 as absent. */
-        isnan(g_status.ent_h_last)  ? 0.0 : g_status.ent_h_last,
-        isnan(g_status.ent_zh_last) ? 0.0 : g_status.ent_zh_last,
-        /* ⚠ AFTER ent_h/ent_zh, because that is where they sit in the format
-         * string above. Put ahead of them once, and every argument from here
-         * down shifted by four: rank_sig_p published −0,1882 (a σ cannot be
-         * negative) and pre_n an eight-digit integer. Nothing computed was
-         * wrong — rank_key() reads g_status directly — but the diagnostics
-         * this pair exists for were unreadable. */
+        g_status.v_eff, (unsigned long)g_status.flush_timeouts,
+        g_status.pre_w,
         g_status.pre_n, g_status.pre_clamped,
-        g_status.rank_sig_h, g_status.rank_sig_p,
+        g_status.rank_sig_p,
         g_status.rank_mean, g_status.rank_sigma,
         score_str,
         g_status.loop_sigma,
@@ -1591,7 +1391,6 @@ static esp_err_t status_handler(httpd_req_t *req)
         g_status.off_first, g_status.off_last,
         g_status.sigma_lo, g_status.sigma_hi,
         g_status.scoring_done, g_status.scoring_total,
-        g_status.baseline_done, g_status.baseline_total, g_status.baseline_mean,
         /* PROGRESS is items_done, never runs_completed: after a compaction the
          * latter is the rows still held and would step backwards. */
         g_status.items_done, g_status.runs_total,
@@ -1665,25 +1464,17 @@ static esp_err_t status_handler(httpd_req_t *req)
             "%s{\"id\":%d,\"ip\":\"%s\",\"ok\":%s,\"soft_down\":%s,"
             "\"z\":%.4f,\"z_n\":%lu,\"sigma\":%.4f,"
             "\"lost\":%lu,\"cam_mbit\":%.3f,\"cam_stalls\":%lu,"
-            "\"cam_fault\":%d,\"reboots\":%lu,\"nb\":%lu,"
-            /* Offset monitor (D44). INSTRUMENT, not effect: cus_pos/neg are
-             * the two CUSUM arms against CUSUM_H, cus_alarms counts crossings
-             * this session, cus_last is the block index of the last one
-             * (-1 = never). die_temp is the covariate an alarm is read with. */
-            "\"cus_pos\":%.2f,\"cus_neg\":%.2f,\"cus_alarms\":%d,"
-            "\"cus_last\":%d,\"cus_n\":%d,\"die_temp\":%s,"
+            "\"cam_fault\":%d,\"reboots\":%lu,\"die_temp\":%s,"
             "\"cam_exp\":%lu,\"cam_gain\":%d,\"cam_fold\":%d,\"cam_cal\":%d,"
-            "\"cam_bias\":%.6f,\"cam_cal_mbit\":%.3f}",
+            "\"cam_bias\":%.6f,\"cam_cal_mbit\":%.3f,\"cam_rsig\":%.4f}",
             i ? "," : "", i, i ? N->ip : "self", N->ok ? "true" : "false",
             N->soft_down ? "true" : "false",
             N->z_mean, (unsigned long)N->z_n, N->sigma,
             (unsigned long)N->lost, N->cam_mbit, (unsigned long)N->cam_stalls,
-            (int)N->cam_fault, (unsigned long)N->reboots,
-            (unsigned long)N->nb_count,
-            N->cus_pos, N->cus_neg, (int)N->cus_alarms,
-            (int)N->cus_last, (int)N->cus_n, dt_txt,
+            (int)N->cam_fault, (unsigned long)N->reboots, dt_txt,
             (unsigned long)N->cam_exp, (int)N->cam_gain, (int)N->cam_fold,
-            (int)N->cam_cal_ok, N->cam_bias, N->cam_cal_mbit);
+            (int)N->cam_cal_ok, N->cam_bias, N->cam_cal_mbit,
+            i ? N->cam_raw_sigma : (float)st_cam.raw_sigma);
     }
     buf_append(buf, sizeof(buf), &pos, "],");
 
@@ -1726,21 +1517,6 @@ static esp_err_t status_handler(httpd_req_t *req)
                           emit_run(buf + pos, buf_room(pos, sizeof(buf)),
                                    &g_status.low[i], euro));
     }
-
-    // The third group: the items closest to the pass mean — the least
-    // remarkable measurements. pass_mean/pass_sigma are already in the head
-    // (session fields); near[] is selected here (see results_near_mean).
-    RunResult near[TOP_N];
-    double pmean = 0.0, psigma = 0.0;
-    int nshow = results_near_mean(near, TOP_N, &pmean, &psigma);
-    (void)pmean; (void)psigma;   /* already published as g_status.pass_* */
-    buf_append(buf, sizeof(buf), &pos, "],\"near\":[");
-    for (int i = 0; i < nshow; i++) {
-        if (i) buf_append(buf, sizeof(buf), &pos, ",");
-        pos = buf_advance(sizeof(buf), &pos,
-                          emit_run(buf + pos, buf_room(pos, sizeof(buf)),
-                                   &near[i], euro));
-    }
     buf_append(buf, sizeof(buf), &pos, "]}");
 
     httpd_resp_set_type(req, "application/json");
@@ -1763,14 +1539,13 @@ static void send_chunk(httpd_req_t *req, const char *buf, int len, size_t cap)
 
 /* ── /loops GET – per-BLOCK health table (endpoint name is historical) ─
  * The long-run drift record: one row per closed block (the span between two
- * sweep+baseline insertions) with the raw per-run offsets and σ per node,
- * plus camera health at that moment. Chunked — the table outgrows any sane
- * single buffer. `raw_m` is the master's own per-run mean of the block — v3
- * subtracts nothing, so that IS the raw offset the drift regression runs on;
- * `base` is the insertion baseline's independent estimate of the same thing. */
+ * camera sweeps) with the raw per-run offsets and σ per node, plus camera
+ * health at that moment. Chunked — the table outgrows any sane single buffer.
+ * `raw_m` is the master's own per-run mean of the block — v3 subtracts
+ * nothing, so that IS the raw offset the drift regression runs on. */
 static esp_err_t loops_handler(httpd_req_t *req)
 {
-    char buf[288];
+    char buf[384];
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
 
@@ -1794,12 +1569,12 @@ static esp_err_t loops_handler(httpd_req_t *req)
          * arm left the combine or what bar it was judged against — the bar moves
          * per block, so it is not reconstructible from constants either. */
         len = snprintf(buf, sizeof(buf),
-            "%s{\"loop\":%d,\"t_s\":%lu,\"base\":%.4f,\"raw_m\":%.4f,"
+            "%s{\"loop\":%d,\"t_s\":%lu,\"raw_m\":%.4f,"
             "\"mean\":%.4f,\"sigma\":%.4f,\"cal_ms\":%d,"
             "\"win_ms\":%.1f,\"gap_ms\":%.1f,\"clear_sig\":%.3f,\"quar\":%d,"
             "\"nodes\":%d,\"n\":[",
             i ? "," : "", i + 1, (unsigned long)L->t_s,
-            L->base, L->mean_n[0], L->mean, L->sigma, (int)L->cal_ms,
+            L->mean_n[0], L->mean, L->sigma, (int)L->cal_ms,
             L->win_ms, L->gap_ms, L->clear_sig, (int)L->quarantined, nn);
         send_chunk(req, buf, len, sizeof(buf));
         for (int k = 0; k < nn; k++) {
@@ -1811,22 +1586,19 @@ static esp_err_t loops_handler(httpd_req_t *req)
             // cam_exp/gain/fold are the operating point this loop was MEASURED
             // AT, not a diagnostic: per-loop re-tuning is only defensible
             // because the setting travels with the loop it produced (§1.5.2).
+            // cam_sig/cam_rsig/cam_px are what the camera DID during the block
+            // (D50) — not the sweep's stale values above.
             len = snprintf(buf, sizeof(buf),
                 "%s{\"mean\":%.4f,\"sigma\":%.4f,\"cam_mbit\":%.3f,\"cam_stalls\":%lu,"
                 "\"cam_exp\":%lu,\"cam_gain\":%d,\"cam_fold\":%d,\"cam_cal\":%d,"
-                "\"cam_bias\":%.6f,\"soft\":%d,\"trip\":%d,\"mflag\":%d,"
-                /* D44: the offset monitor as it stood at this block's close,
-                 * with the covariate it has to be read against. ⚠ INSTRUMENT
-                 * monitor — an arm near CUSUM_H says this node's raw offset
-                 * moved since its warm-up, not that anything was measured. */
-                "\"die_temp\":%s,\"cus_pos\":%.2f,\"cus_neg\":%.2f}",
+                "\"cam_bias\":%.6f,\"cam_sig\":%.4f,\"cam_rsig\":%.4f,\"cam_px\":%.2f,"
+                "\"soft\":%d,\"trip\":%d,\"mflag\":%d,\"die_temp\":%s}",
                 k ? "," : "", L->mean_n[k], L->sig_n[k], L->cam_mbit[k],
                 (unsigned long)L->cam_stalls[k], (unsigned long)L->cam_exp[k],
                 (int)L->cam_gain[k], (int)L->cam_fold[k], (int)L->cam_cal_ok[k],
-                L->cam_bias[k],
+                L->cam_bias[k], L->cam_sig[k], L->cam_rsig[k], L->cam_px[k],
                 (L->soft_mask >> k) & 1, (L->trip_mask >> k) & 1,
-                (L->mean_mask >> k) & 1,
-                lt_txt, L->cus_pos[k], L->cus_neg[k]);
+                (L->mean_mask >> k) & 1, lt_txt);
             send_chunk(req, buf, len, sizeof(buf));
         }
         httpd_resp_send_chunk(req, "]}", 2);
@@ -1853,15 +1625,11 @@ static const char *de_num(char *dst, size_t cap, double v, int prec)
 static int csv_row(char *buf, size_t cap, const char *group, int rank,
                    const RunResult *r, double mean, double sigma)
 {
-    char zb[32], sb[32], ab[32], hb[32], kb[32];
-    /* Studentized against the moments of the KEY THAT ORDERED THIS TABLE, which
-     * the caller passes in: rank_mean/rank_sigma at ?went>0, and pass_mean /
-     * pass_sigma at ?went=0, where the two coincide exactly. Studentizing z_ctr
-     * against the key's moments — or the key against z's — would put a value
-     * over a mean and σ that were not taken from it. */
+    char zb[32], sb[32], ab[32], kb[32];
+    /* Studentized against the moments of the KEY THAT ORDERED THIS TABLE. */
     double zs = (sigma > 0.0) ? (rank_key(r) - mean) / sigma : 0.0;
     return snprintf(buf, cap,
-        "%s;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%s;%s;%s;%d;%d;%s;%s\n",
+        "%s;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%s;%s;%s;%d;%d;%s\n",
         group, rank, r->index,
         r->nums[0], r->nums[1], r->nums[2],
         r->nums[3], r->nums[4], r->nums[5],
@@ -1870,7 +1638,6 @@ static int csv_row(char *buf, size_t cap, const char *group, int rank,
         de_num(sb, sizeof(sb), zs, 4),
         de_num(ab, sizeof(ab), (double)r->z_ctr, 4),
         (int)r->block, (int)r->k,
-        de_num(hb, sizeof(hb), (double)r->zh_ctr, 4),
         de_num(kb, sizeof(kb), rank_key(r), 4));
 }
 
@@ -1897,8 +1664,8 @@ static int csv_row(char *buf, size_t cap, const char *group, int rank,
 static esp_err_t results_csv_handler(httpd_req_t *req)
 {
     /* 768: the header line alone runs past 470 characters with the German
-     * six-decimal pass statistics, the unlimited-mode fields and the eight
-     * entropy fields in it (2026-08-25); it was 512, and before that 224.
+     * six-decimal pass statistics, the unlimited-mode fields and the pre-fold
+     * fields; it was 512, and before that 224.
      * ⚠ snprintf TRUNCATES rather than overflowing, so an undersized buffer
      * here does not crash — it silently shortens the archive's own provenance
      * line, which is the field nobody re-reads until they need it. Recount when
@@ -1915,13 +1682,10 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
     int n = g_status.runs_completed;
     if (n > NUM_RUNS) n = NUM_RUNS;
 
-    RunResult near[TOP_N];
     double mean = 0.0, sigma = 0.0;
-    int nn = results_near_mean(near, TOP_N, &mean, &sigma);
 
     char mb[32], sb[32], cb[32], vb[32], stb[32], rb[32], gb[32];
-    char ew[32], eh[32], es[32], rm[32], rs[32];    char pw[16];
-    char gh[32], gp[32];
+    char rm[32], rs[32], pw[16], gp[32];
     /* The master's own image. The slaves' come from their 'D' replies and are
      * emitted on the fw_nodes line below; a node that never answered one, or
      * runs firmware older than the field, shows "?" rather than nothing, or the
@@ -1944,7 +1708,7 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
     int nlen = snprintf(buf, sizeof(buf),
         "# elotto v3 mode=%s focus=%s score=%s items=%d/%d ranked=%d excl=%d void=%d "
         "blocks=%d paused_ms=%lld pass_mean=%s pass_sigma=%s pass_chi2=%s "
-        "pass_stouffer=%s v_eff=%s open=%d null_flags=%d flush_timeouts=%lu drift_t=%.2f "
+        "pass_stouffer=%s v_eff=%s open=%d flush_timeouts=%lu drift_t=%.2f "
         "unlimited=%s runs_cap=%d rounds=%d "
         /* ⚠ The window in BOTH units. Seconds alone are not enough: the
          * segs<->ms calibration is a MEASUREMENT and was re-measured on
@@ -1964,25 +1728,11 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
          * sample of the session — the pass statistics in this header still
          * describe every item measured, but a distribution computed from the
          * rows will not. Zero for any session that never filled the buffer. */
-        /* ── The entropy channel (2026-08-25) ──────────────────────────────
-         * ⚠ `ent_w` SPLITS THE POOLING TABLE for anything read off the three
-         * tables. Two sessions ranked at different weights put different items
-         * in Top-5, so their extremes are not comparable — z_raw and z_ctr
-         * still are, because the entropy channel does not touch them.
-         * ent_win is the Welch window count the null was taken at (it follows
-         * run_segs, so it is redundant with it and cheap insurance against a
-         * future change to GCP_SPEC_W); ent_h0/ent_sd are the null itself.
-         * ent_n counts the ranked items that actually carried an entropy value,
-         * ent_clamp those whose z_h was pinned at ENT_Z_CLAMP for the key —
-         * a non-zero ent_clamp means camera glitches were competing for the
-         * table and the rows should be looked at before the ranking is.
-         * pre_n/pre_clamp are the same two for the PRE-FOLD channel, which
-         * ent_clamp never watched. ent_sig/pre_sig are the per-channel σ the
-         * key standardises by; without them the published key cannot be
-         * reproduced from the zh_ctr/zp_ctr columns. */
+        /* ── Pre-fold channel ──────────────────────────────────────────────
+         * ⚠ `pre_w` SPLITS THE POOLING TABLE for the three tables.
+         * z_raw/z_ctr still pool across weights. */
         "run_s=%s run_segs=%d gap_s=%s compacted=%d "
-        "ent_w=%s pre_w=%s ent_win=%d ent_h0=%s ent_sd=%s ent_n=%d ent_clamp=%d "
-        "pre_n=%d pre_clamp=%d ent_sig=%s pre_sig=%s "
+        "pre_w=%s pre_n=%d pre_clamp=%d pre_sig=%s "
         "rank_mean=%s rank_sigma=%s fw=%s/%s\n"
         "# nodes=",
         g_status.mode == MODE_EUROJACKPOT ? "euro" : "649",
@@ -1996,21 +1746,15 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
         de_num(stb, sizeof(stb), g_status.pass_stouffer, 4),
         de_num(vb, sizeof(vb), g_status.v_eff, 4),
         g_status.pass_n_open,
-        (int)g_status.null_flags, (unsigned long)g_status.flush_timeouts,
+        (unsigned long)g_status.flush_timeouts,
         g_status.drift_t,
         g_status.unlimited ? "on" : "off", g_status.runs_cap, g_status.round,
         de_num(rb, sizeof(rb), g_status.run_target_ms / 1000.0, 2),
         g_status.run_segments,
         de_num(gb, sizeof(gb), g_status.gap_ms / 1000.0, 2),
         g_status.compacted,
-        de_num(ew, sizeof(ew), g_status.ent_w, 3),
         de_num(pw, sizeof(pw), g_status.pre_w, 3),
-        g_status.ent_windows,
-        de_num(eh, sizeof(eh), g_status.ent_h0, 8),
-        de_num(es, sizeof(es), g_status.ent_sd, 8),
-        g_status.ent_n, g_status.ent_clamped,
         g_status.pre_n, g_status.pre_clamped,
-        de_num(gh, sizeof(gh), g_status.rank_sig_h, 6),
         de_num(gp, sizeof(gp), g_status.rank_sig_p, 6),
         de_num(rm, sizeof(rm), g_status.rank_mean, 6),
         de_num(rs, sizeof(rs), g_status.rank_sigma, 6),
@@ -2045,27 +1789,18 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
          * re-scored every round in unlimited mode, so the same id names a
          * different draw in a different round. Key on (round, item), or simply
          * on n1..n6/e1;e2, which are unambiguous either way. */
-        /* ⚠ The entropy columns are APPENDED AFTER `round`, for the same reason
-         * `round` itself was appended after z3: every column an existing script
-         * knows keeps its position. New: `zh_ctr` (the block-centred combined
-         * entropy z, the value that entered the ranking key), `key` (the key
-         * itself, so a reader can reproduce the published order without knowing
-         * ent_w), and h0..h3 (per-node RAW z_h, uncentred and unclamped — the
-         * archive, exactly as z0..z3 are for z). */
+        /* ⚠ `key` / `zp_ctr` / `p0..p3` are APPENDED after `round` so every
+         * column an existing script knows keeps its position (D45; zh/h*
+         * columns deleted with the spectral channel, D53).
+         * zp_ctr is the block-centred combined PRE-FOLD z; p0..p3 are per-node
+         * RAW pre-fold z in discovery order. Empty = no report, not zero. */
         int len = snprintf(buf, sizeof(buf),
             "order;item;n1;n2;n3;n4;n5;n6;e1;e2;z_raw;z_ctr;block;k;skip_rank;"
-            /* ⚠ zp_ctr and p0..p3 are APPENDED LAST again (2026-08-26, D45)
-             * so every parser that already reads through h3 keeps its columns.
-             * zp_ctr is the block-centred combined PRE-FOLD z — the channel
-             * that keeps what the fold suppresses; p0..p3 are the per-node RAW
-             * pre-fold z, same discovery order as z0..z3.
-             * ⚠ Empty means that node reported no pre-fold value, which is NOT
-             * a pre-fold z of zero. */
-            "z0;z1;z2;z3;round;zh_ctr;key;h0;h1;h2;h3;zp_ctr;p0;p1;p2;p3\n");
+            "z0;z1;z2;z3;round;key;zp_ctr;p0;p1;p2;p3;zc_ctr\n");
         send_chunk(req, buf, len, sizeof(buf));
         for (int j = 0; j < n; j++) {
-            char zb[32], ab[32], hb[32], kb[32], pb[32];
-            char nz[MAX_NODES][32], nh[MAX_NODES][32], np_[MAX_NODES][32];
+            char zb[32], ab[32], kb[32], pb[32], cbz[32];
+            char nz[MAX_NODES][32], np_[MAX_NODES][32];
             /* Row and per-node z in one locked snapshot, PER ROW. The lock is
              * released before send_chunk, so a round-boundary compaction can
              * still run BETWEEN two rows of this stream — the guarantee is that
@@ -2073,24 +1808,17 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
              * z-values, not that the file is a self-consistent sample. The
              * compacted= header field already says the latter. */
             RunResult row;
-            float nodez[MAX_NODES], nodeh[MAX_NODES], nodep[MAX_NODES];
-            if (!results_row_z(j, &row, nodez, nodeh, nodep)) {
+            float nodez[MAX_NODES], nodep[MAX_NODES];
+            if (!results_row_z(j, &row, nodez, nodep)) {
                 for (int i = 0; i < MAX_NODES; i++)
-                    nodez[i] = nodeh[i] = nodep[i] = NAN;
+                    nodez[i] = nodep[i] = NAN;
             }
             for (int i = 0; i < MAX_NODES; i++) {
                 if (isnan((double)nodez[i]))
                     nz[i][0] = '\0';
                 else
                     de_num(nz[i], sizeof(nz[i]), (double)nodez[i], 6);
-                /* Empty, not 0: a node that reported no H is not a node that
-                 * reported an entropy of zero, and the two must not collapse
-                 * into the same cell. Same rule the z columns already follow. */
-                if (isnan((double)nodeh[i]))
-                    nh[i][0] = '\0';
-                else
-                    de_num(nh[i], sizeof(nh[i]), (double)nodeh[i], 4);
-                /* Same rule for the pre-fold column: empty, not 0. */
+/* Same rule for the pre-fold column: empty, not 0. */
                 if (isnan((double)nodep[i]))
                     np_[i][0] = '\0';
                 else
@@ -2098,7 +1826,7 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
             }
             len = snprintf(buf, sizeof(buf),
                 "%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%s;%s;%d;%d;%d;%s;%s;%s;%s;%d;"
-                "%s;%s;%s;%s;%s;%s;%s;%s;%s;%s;%s\n",
+                "%s;%s;%s;%s;%s;%s;%s\n",
                 j + 1, row.index,
                 row.nums[0], row.nums[1], row.nums[2],
                 row.nums[3], row.nums[4], row.nums[5],
@@ -2107,11 +1835,10 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
                 de_num(ab, sizeof(ab), (double)row.z_ctr, 4),
                 (int)row.block, (int)row.k, (int)row.skip_rank,
                 nz[0], nz[1], nz[2], nz[3], (int)row.round,
-                de_num(hb, sizeof(hb), (double)row.zh_ctr, 4),
                 de_num(kb, sizeof(kb), rank_key(&row), 4),
-                nh[0], nh[1], nh[2], nh[3],
                 de_num(pb, sizeof(pb), (double)row.zp_ctr, 4),
-                np_[0], np_[1], np_[2], np_[3]);
+                np_[0], np_[1], np_[2], np_[3],
+                de_num(cbz, sizeof(cbz), (double)row.zc_ctr, 4));
             send_chunk(req, buf, len, sizeof(buf));
         }
         httpd_resp_send_chunk(req, NULL, 0);
@@ -2120,16 +1847,15 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
 
     int len = snprintf(buf, sizeof(buf),
         "group;rank;item;n1;n2;n3;n4;n5;n6;e1;e2;z_raw;z_std;z_ctr;block;k;"
-        "zh_ctr;key\n");
+        "key\n");
     send_chunk(req, buf, len, sizeof(buf));
     /* Prefer the live published moments over the recomputed near-mean.
      * ⚠ These are the moments of the RANKING KEY, because z_std in this file
      * studentizes the key — the three groups below are the key's extremes and
-     * its middle. At ?went=0 rank_* equal pass_*, which is what this line used
-     * to read and why an old file and a ?went=0 file are identical. */
+     * its middle. At ?wpre=0 rank_* equal pass_*. */
     if (g_status.pass_n_valid > 0) {
-        mean  = (g_status.ent_w > 0.0) ? g_status.rank_mean  : g_status.pass_mean;
-        sigma = (g_status.ent_w > 0.0) ? g_status.rank_sigma : g_status.pass_sigma;
+        mean  = (g_status.pre_w > 0.0) ? g_status.rank_mean  : g_status.pass_mean;
+        sigma = (g_status.pre_w > 0.0) ? g_status.rank_sigma : g_status.pass_sigma;
     }
 
     int tn = g_status.result_count; if (tn > TOP_N) tn = TOP_N;
@@ -2142,11 +1868,6 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
     for (int i = 0; i < ln; i++) {
         len = csv_row(buf, sizeof(buf), "low", i + 1,
                       &g_status.low[i], mean, sigma);
-        send_chunk(req, buf, len, sizeof(buf));
-    }
-    for (int i = 0; i < nn; i++) {
-        len = csv_row(buf, sizeof(buf), "zero", i + 1,
-                      &near[i], mean, sigma);
         send_chunk(req, buf, len, sizeof(buf));
     }
 
@@ -2170,7 +1891,7 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
  * Step 0 is always the setting that was in force when the sweep began. Against
  * the same exposure appearing later in the ladder it is the camera_stats_reset()
  * proof the gate asks for — two windows at the same setting must agree within
- * sampling error — and from loop 2 on it measures drift at a fixed operating
+ * sampling error — and from block 2 on it measures drift at a fixed operating
  * point, which is what tells a genuinely moving optimum from a noisy sweep. */
 static esp_err_t calibrate_handler(httpd_req_t *req)
 {
@@ -2277,10 +1998,6 @@ static esp_err_t start_handler(httpd_req_t *req)
          * the cap only means anything when it is on. */
         g_status.unlimited      = false;
         g_status.runs_cap       = UNLIM_RUNS_DEFAULT;
-        // One definition, shared with the form field (sensor.h), so a
-        // curl-started session and a browser-started one are the same
-        // experiment. ?baseline= still overrides either way.
-        g_status.baseline_total = BASELINE_DEFAULT;
         // Window / blank: defaults match the UI field; ?run= / ?gap= override.
         // Segment count is derived from run_target_ms (live cal RUN_SEGS_REF).
         g_status.run_target_ms  = RUN_S_DEFAULT * 1000;
@@ -2293,9 +2010,9 @@ static esp_err_t start_handler(httpd_req_t *req)
          * (no rung certified). ?cal=0 disables; ?cal=<ms> overrides. */
         g_status.cal_budget_ms  = CAL_BUDGET_DEFAULT_MS;
         // v3: the interval IS the block length — every cal_interval_ms the
-        // pass parks for a sweep + baseline insertion and the boundary closes
-        // a /loops block. 15 min default (~6 % overhead); 0 = no mid-pass
-        // insertions (sweep + baseline at session start only).
+        // pass parks for a camera sweep and the boundary closes a /loops
+        // block. 15 min default (~6 % overhead); 0 = no mid-pass insertions
+        // (sweep at session start only). Baseline phase deleted (D48).
         g_status.cal_interval_ms = CAL_INTERVAL_DEFAULT_MS;
         // Absent ?focus= means UNATTENDED. A session started by curl or a
         // script has no observer by definition, so the control condition is
@@ -2306,18 +2023,12 @@ static esp_err_t start_handler(httpd_req_t *req)
         g_status.score_dir      = SCORE_DIR_HIGH;
         g_status.pool_confirm   = 0;
         g_status.pool_auto      = 0;
-        /* Entropy channel. The weight is a SESSION PARAMETER and is recorded in
-         * the CSV header: 50:50 is what is being tried, not what has been
-         * decided, and an archive that cannot say how a session was ranked
-         * cannot be compared with one ranked differently. ?went=0 is the
-         * control arm — pure-z ranking, bit for bit what this rig did before. */
-        g_status.ent_w          = ENT_W_DEFAULT;
+        /* Pre-fold channel. The weight is a SESSION PARAMETER recorded in the
+         * CSV header. ?wpre=0 is the control arm — pure-z ranking. */
         g_status.pre_w          = ENT_W_PRE_DEFAULT;
-        g_status.ent_windows    = 0;   // derived from run_segments in segments_for()
-        g_status.ent_h0 = g_status.ent_sd = 0.0;
-        g_status.ent_n = g_status.ent_clamped = 0;
+        g_status.pre_n = g_status.pre_clamped = 0;
         g_status.rank_mean = g_status.rank_sigma = 0.0;
-        g_status.ent_h_last = g_status.ent_zh_last = NAN;
+        g_status.rank_sig_p = 0.0;
         if (httpd_req_get_url_query_str(req, qry, sizeof(qry)) == ESP_OK) {
             char val[16] = "";
             /* v3 removed ?loops=, ?runs= and ?rank=. Refuse them LOUDLY: an
@@ -2335,6 +2046,30 @@ static esp_err_t start_handler(httpd_req_t *req)
                     "score-sized pool use unlimited=1&maxruns=<n>");
                 return ESP_OK;
             }
+            /* ?went= deleted with the spectral-entropy channel (D53). */
+            if (httpd_query_key_value(qry, "went", val, sizeof(val)) == ESP_OK) {
+                httpd_resp_set_status(req, "400 Bad Request");
+                httpd_resp_sendstr(req,
+                    "went= no longer exists -- the spectral-entropy channel was "
+                    "removed; ranking is z_ctr and optional ?wpre= only");
+                return ESP_OK;
+            }
+            /* ?wruns= deleted with the runs ranking channel (D55). */
+            if (httpd_query_key_value(qry, "wruns", val, sizeof(val)) == ESP_OK) {
+                httpd_resp_set_status(req, "400 Bad Request");
+                httpd_resp_sendstr(req,
+                    "wruns= no longer exists -- the runs ranking channel was "
+                    "removed; ranking is z_ctr and optional ?wpre= only");
+                return ESP_OK;
+            }
+            /* ?baseline= deleted with the baseline phase (D48). */
+            if (httpd_query_key_value(qry, "baseline", val, sizeof(val)) == ESP_OK) {
+                httpd_resp_set_status(req, "400 Bad Request");
+                httpd_resp_sendstr(req,
+                    "baseline= no longer exists -- the baseline phase was deleted; "
+                    "block centring is the drift reference");
+                return ESP_OK;
+            }
             /* ?unlimited=1 -> rounds repeat until Abort (or results[] full):
              * score, keep the best numbers that fit ?maxruns=<n> measurement
              * runs, measure that pool out, score again. The cap is per ROUND;
@@ -2347,10 +2082,6 @@ static esp_err_t start_handler(httpd_req_t *req)
             }
             if (httpd_query_key_value(qry, "mode", val, sizeof(val)) == ESP_OK)
                 g_status.mode = (val[0] == '1') ? MODE_LOTTO_649 : MODE_EUROJACKPOT;
-            if (httpd_query_key_value(qry, "baseline", val, sizeof(val)) == ESP_OK) {
-                int b = atoi(val);
-                if (b > 0 && b <= BASELINE_MAX) g_status.baseline_total = b;
-            }
             // ?run=<seconds> — continuous window per focus element (default 5).
             // Wall time is measured as focus_win_ms; long values may stretch.
             if (httpd_query_key_value(qry, "run", val, sizeof(val)) == ESP_OK) {
@@ -2400,8 +2131,8 @@ static esp_err_t start_handler(httpd_req_t *req)
                 int c = atoi(val);
                 if (c >= 0 && c <= CAL_BUDGET_MAX_MS) g_status.cal_budget_ms = c;
             }
-            // ?calint=<ms> -> the block length (time between sweep+baseline
-            // insertions); 0 = no mid-pass insertions.
+            // ?calint=<ms> -> the block length (time between camera sweeps);
+            // 0 = no mid-pass insertions.
             if (httpd_query_key_value(qry, "calint", val, sizeof(val)) == ESP_OK) {
                 int c = atoi(val);
                 if (c >= 0 && c <= CAL_INTERVAL_MAX_MS) g_status.cal_interval_ms = c;
@@ -2412,30 +2143,7 @@ static esp_err_t start_handler(httpd_req_t *req)
             // run, including the ?cal=0 control. The web UI always sends it.
             if (httpd_query_key_value(qry, "confirm", val, sizeof(val)) == ESP_OK)
                 g_status.pool_confirm = (val[0] == '1');
-            /* ?went=<0..1> -> weight of the spectral-entropy half of the
-             * ranking key. Default ENT_W_DEFAULT (0,5). 0 = pure-z ranking, the
-             * control arm. Out of range is a 400 rather than a clamp, for the
-             * same reason ?run= is: a session that silently ranked on a
-             * different weight than the one asked for is unpoolable with the
-             * one that asked for it, and nothing in the output would say so. */
-            if (httpd_query_key_value(qry, "went", val, sizeof(val)) == ESP_OK) {
-                char *end = NULL;
-                double w = strtod(val, &end);
-                if (end == val || w < 0.0 || w > 1.0) {
-                    httpd_resp_set_status(req, "400 Bad Request");
-                    httpd_resp_sendstr(req,
-                        "went= is the entropy weight in the ranking key and must "
-                        "be 0..1 (0 = rank on z alone, 0.5 = the 50:50 default)");
-                    return ESP_OK;
-                }
-                g_status.ent_w = w;
-            }
-            /* ?wpre= — the PRE-FOLD half of the key (D45). Default 0, so the
-             * channel is measured, centred and archived from the first session
-             * without moving a single ranking until it is asked for.
-             * ⚠ The three weights share one budget: the z half is 1-went-wpre,
-             * so went+wpre > 1 would give it a negative weight and invert the
-             * channel the whole instrument is built on. Refused. */
+            /* ?wpre= — the PRE-FOLD half of the key (D45). Default 0. */
             if (httpd_query_key_value(qry, "wpre", val, sizeof(val)) == ESP_OK) {
                 char *end = NULL;
                 double p = strtod(val, &end);
@@ -2444,13 +2152,6 @@ static esp_err_t start_handler(httpd_req_t *req)
                     httpd_resp_sendstr(req,
                         "wpre= is the PRE-FOLD weight in the ranking key and must "
                         "be 0..1 (0 = the control arm, ranking unchanged)");
-                    return ESP_OK;
-                }
-                if (g_status.ent_w + p > 1.0) {
-                    httpd_resp_set_status(req, "400 Bad Request");
-                    httpd_resp_sendstr(req,
-                        "went + wpre must not exceed 1: the z half of the key is "
-                        "1-went-wpre and would go negative");
                     return ESP_OK;
                 }
                 g_status.pre_w = p;
@@ -2466,6 +2167,10 @@ static esp_err_t start_handler(httpd_req_t *req)
             if (n > EL_SEG_MAX) n = EL_SEG_MAX;
             g_status.run_segments = (int)n;
         }
+        /* UI-only: persist the form. Curl never sends confirm=1, so a scripted
+         * start cannot overwrite the operator's last weights with API defaults. */
+        if (g_status.pool_confirm)
+            prefs_save();
         /* Claim the RUNNING state synchronously, BEFORE the task exists, so a
          * second /start in the window between this handler and elotto_task's own
          * state assignment hits the 409 above instead of spawning a second
@@ -2819,8 +2524,8 @@ static esp_err_t diag_handler(httpd_req_t *req)
  * the measurement is waiting for.
  * ⚠ A node that answers no `,raw=` reports 0/0 — that is ABSENT, not a raw
  * bias of zero, and it means that node is on an image older than 2026-08-26.
- * ⚠ This deliberately does NOT run /camtest or /specdump: both are heavy and
- * both are already master-only single calls. */
+ * ⚠ This deliberately does NOT run /camtest: it is heavy and already a
+ * master-only single call. */
 static esp_err_t diagjson_handler(httpd_req_t *req)
 {
     /* 4 KB: the collector adds ~380 B per node on top of the ~700 B cam
@@ -2930,18 +2635,17 @@ static esp_err_t diagjson_handler(httpd_req_t *req)
                  * and match exactly. */
                 "\"raw_bias\":%.6f,\"raw_sigma\":%.4f,"
                 "\"bias\":%.6f,\"sigma\":%.4f,"
-                /* The covariate the offset monitor is read against (D44).
-                 * ⚠ P4 DIE, not the OV5647. null = this node did not report it. */
-                "\"die_temp\":%s,\"cus_alarms\":%d,"
-                "\"soft_down\":%s,\"lost\":%lu,\"nb\":%lu,\"reboots\":%lu,\"fw_sha\":\"%s\"}",
+                /* ⚠ P4 DIE, not the OV5647. null = this node did not report it. */
+                "\"die_temp\":%s,"
+                "\"soft_down\":%s,\"lost\":%lu,\"reboots\":%lu,\"fw_sha\":\"%s\"}",
                 i ? "," : "", me ? "master" : N->ip,
                 N->ok ? "true" : "false", mb, (unsigned long)stl,
                 (unsigned long)enow, (unsigned long)gnow,
                 (unsigned long)N->cam_exp, (int)N->cam_cal_ok, N->cam_bias,
                 me ? (camera_get_xor_fold() ? 1 : 0) : (int)N->cam_fold,
-                rb, rs, bi, sg, ct_txt, (int)N->cus_alarms,
+                rb, rs, bi, sg, ct_txt,
                 N->soft_down ? "true" : "false", (unsigned long)N->lost,
-                (unsigned long)N->nb_count, (unsigned long)N->reboots,
+                (unsigned long)N->reboots,
                 me ? master_sha : (N->fw_sha[0] ? N->fw_sha : "?"));
         }
         buf_append(buf, sizeof(buf), &pos,
@@ -2982,173 +2686,90 @@ static esp_err_t camtest_handler(httpd_req_t *req)
     return camera_selftest_handle(req, g_status.state == ELOTTO_RUNNING);
 }
 
-/* GET /spectest -- the same argument as /camtest, for the entropy channel.
- * Runs the packed real FFT against a reference DFT on THIS silicon and reports
- * the worst relative bin error, plus the null moments at the session's window
- * count so the two numbers behind every published z_h are checkable.
- *
- * ⛔ Do not change spec_fold() without it: a wrong unpack produces a
- * wrong-but-plausible H, which looks exactly like a result.
- *
- * 409 while measuring, like /camtest: the reference DFT is O(W²) and would
- * compete with the extraction task for the same core. */
-static esp_err_t spectest_handler(httpd_req_t *req)
+/* ── Start-form prefs (D49) ─────────────────────────────────────────
+ * NVS ns "elstart". Written only on POST /start?confirm=1 (the web UI).
+ * Served as a trailing script on GET / so a reload fills the form. API
+ * defaults stay compiled-in: omitting a query key still means the default,
+ * not the last UI value. Mode is not stored. */
+#define PREF_NS "elstart"
+
+static void prefs_save(void)
 {
-    if (!origin_ok(req)) return ESP_OK;
-    if (g_status.state == ELOTTO_RUNNING) {
-        httpd_resp_set_status(req, "409 Conflict");
-        httpd_resp_set_type(req, "text/plain");
-        httpd_resp_sendstr(req, "a session is measuring -- abort it first");
-        return ESP_OK;
-    }
-    double worst = 0.0;
-    bool   ok    = gcp_spec_selftest(&worst);
-
-    int  m = g_status.run_segments > 0 ? g_status.run_segments / GCP_SPEC_W
-                                       : (RUN_S_DEFAULT * 1000 * RUN_SEGS_REF
-                                          / RUN_MS_REF) / GCP_SPEC_W;
-    double h0 = 0.0, sd = 0.0;
-    bool   nul = gcp_spec_null(m, &h0, &sd);
-
-    char body[320];
-    int n = snprintf(body, sizeof(body),
-        "{\"fft_ok\":%s,\"worst_rel\":%.3e,\"w\":%d,\"bins\":%d,"
-        "\"windows\":%d,\"h0\":%.8f,\"sd\":%.8f,\"null_ok\":%s,"
-        /* ⚠ in_psram true = this node's FFT buffers fell back to PSRAM and it
-         * will run ~a third slower than its peers. Measured, not feared. */
-        "\"in_psram\":%s,"
-        /* Non-zero = this node's FFT buffers failed to allocate at least once,
-         * so it ran without an entropy channel for a while. It retries on a
-         * backoff; `spec_ready` is the state right now. */
-        "\"alloc_fails\":%d,\"spec_ready\":%s}",
-        ok ? "true" : "false", worst, GCP_SPEC_W, GCP_SPEC_BINS,
-        m, h0, sd, nul ? "true" : "false",
-        gcp_spec_in_psram() ? "true" : "false",
-        gcp_spec_alloc_fails(), gcp_spec_ready() ? "true" : "false");
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, body, n);
-    return ESP_OK;
+    nvs_handle_t h;
+    if (nvs_open(PREF_NS, NVS_READWRITE, &h) != ESP_OK) return;
+    uint16_t run10 = (uint16_t)((g_status.run_target_ms + 50) / 100);
+    uint16_t mx    = (uint16_t)g_status.runs_cap;
+    uint8_t  w100  = (uint8_t)(g_status.pre_w * 100.0 + 0.5);
+    if (w100 > 100) w100 = 100;
+    nvs_set_u16(h, "run10", run10);
+    nvs_set_u8(h,  "focus", g_status.focus_mode ? 1 : 0);
+    nvs_set_u8(h,  "unlim", g_status.unlimited ? 1 : 0);
+    nvs_set_u16(h, "maxruns", mx);
+    nvs_set_u8(h,  "score", (uint8_t)g_status.score_dir);
+    nvs_set_u8(h,  "wpre", w100);
+    nvs_commit(h);
+    nvs_close(h);
 }
 
-/* GET /specdump?segs=<n> -- the mean Welch periodogram of a REAL measurement
- * window off this node's own camera, 511 normalised bins, as CSV.
- *
- * /spectest proves the FFT arithmetic against a reference DFT; it says nothing
- * about what the sensor puts into it. This says WHERE the power sits, which is
- * the only way to test whether the structure follows the sensor's row geometry:
- * extraction walks the frame in raster order, so a SPATIAL period aliases to a
- * fixed segment period and lands on a fixed bin, while a timing clock cannot —
- * the bits are read from a completed frame in PSRAM, not in step with the
- * MIPI lane. Prediction to hold it against, at RAW8 800x800 (2026-08-26):
- *
- *   fold ON : 2 bit / 4 px -> 2,0 segments per row -> bin 512 = NYQUIST, and
- *             the entropy channel drops that bin, so the line is invisible.
- *   fold OFF: 1 bit / px   -> 4,0 segments per row -> bin 256, mid-band.
- *
- * ⚠ 800x800 is the ONLY common geometry that lands on the discarded bin; 640,
- * 720, 1024 and 1280 all alias into 1..511. That the fold currently hides the
- * row line is luck, not design.
- *
- * Served by EVERY node, unlike /spectest: this one measures data, and the data
- * is what differs between nodes. 409 while a session is measuring. */
-static esp_err_t specdump_handler(httpd_req_t *req)
+static void prefs_send(httpd_req_t *req)
 {
-    if (!origin_ok(req)) return ESP_OK;
-    if (g_status.state == ELOTTO_RUNNING) {
-        httpd_resp_set_status(req, "409 Conflict");
-        httpd_resp_set_type(req, "text/plain");
-        httpd_resp_sendstr(req, "a session is measuring -- abort it first");
-        return ESP_OK;
-    }
+    nvs_handle_t h;
+    if (nvs_open(PREF_NS, NVS_READONLY, &h) != ESP_OK) return;
+    uint16_t run10 = 0, maxruns = 0;
+    uint8_t focus = 0xff, unlim = 0xff, score = 0xff, wpre = 0xff;
+    bool any = false;
+    if (nvs_get_u16(h, "run10", &run10) == ESP_OK) any = true;
+    if (nvs_get_u8(h,  "focus", &focus) == ESP_OK) any = true;
+    if (nvs_get_u8(h,  "unlim", &unlim) == ESP_OK) any = true;
+    if (nvs_get_u16(h, "maxruns", &maxruns) == ESP_OK) any = true;
+    if (nvs_get_u8(h,  "score", &score) == ESP_OK) any = true;
+    if (nvs_get_u8(h,  "wpre", &wpre) == ESP_OK) any = true;
+    nvs_close(h);
+    if (!any) return;
 
-    /* Default to a full window count at the session's run length; the caller
-     * can ask for more to sharpen the periodogram, which is the point. */
-    int segs = g_status.run_segments > 0 ? g_status.run_segments
-             : (RUN_S_DEFAULT * 1000 * RUN_SEGS_REF / RUN_MS_REF);
-    char qry[64], val[24];
-    if (httpd_req_get_url_query_str(req, qry, sizeof(qry)) == ESP_OK &&
-        httpd_query_key_value(qry, "segs", val, sizeof(val)) == ESP_OK) {
-        int v = atoi(val);
-        if (v >= GCP_SPEC_W * GCP_SPEC_MIN_WIN && v <= EL_SEG_MAX) segs = v;
+    char js[700];
+    int p = 0;
+    p += snprintf(js + p, sizeof(js) - p, "<script>(function(){var e;");
+    if (run10 > 0)
+        p += snprintf(js + p, sizeof(js) - p,
+            "e=document.getElementById('numRunS');if(e)e.value='%.1f';",
+            run10 / 10.0);
+    if (focus != 0xff)
+        p += snprintf(js + p, sizeof(js) - p,
+            "e=document.getElementById('chkFocus');if(e)e.checked=%s;",
+            focus ? "true" : "false");
+    if (unlim != 0xff)
+        p += snprintf(js + p, sizeof(js) - p,
+            "e=document.getElementById('chkUnlim');if(e)e.checked=%s;",
+            unlim ? "true" : "false");
+    if (maxruns > 0)
+        p += snprintf(js + p, sizeof(js) - p,
+            "e=document.getElementById('numUnlimRuns');if(e)e.value='%u';",
+            (unsigned)maxruns);
+    if (score != 0xff) {
+        const char *sv = score == SCORE_DIR_LOW ? "low"
+                       : score == SCORE_DIR_ABS ? "abs" : "high";
+        p += snprintf(js + p, sizeof(js) - p,
+            "e=document.getElementById('selScore');if(e)e.value='%s';", sv);
     }
-    segs -= segs % GCP_SPEC_W;                 /* whole windows only */
-    if (segs < GCP_SPEC_W * GCP_SPEC_MIN_WIN) {
-        httpd_resp_set_status(req, "400 Bad Request");
-        httpd_resp_set_type(req, "text/plain");
-        httpd_resp_sendstr(req, "segs too small for GCP_SPEC_MIN_WIN windows");
-        return ESP_OK;
-    }
-
-    gcp_spec_t sp;
-    double z = 0.0;
-    gcp_spec_begin(&sp);
-    gcp_result_t r = gcp_zscore_spec(segs, NULL, &z, &sp);
-    double h = 0.0; int m = 0;
-    if (r != GCP_OK || !gcp_spec_finish(&sp, &h, &m)) {
-        httpd_resp_set_status(req, "503 Service Unavailable");
-        httpd_resp_set_type(req, "text/plain");
-        httpd_resp_sendstr(req, "camera did not deliver a full window set");
-        return ESP_OK;
-    }
-
-    float *p = malloc(sizeof(float) * GCP_SPEC_BINS);
-    if (!p || !gcp_spec_bins(p, GCP_SPEC_BINS, NULL)) {
-        free(p);
-        httpd_resp_set_status(req, "500 Internal Server Error");
-        httpd_resp_sendstr(req, "no periodogram");
-        return ESP_OK;
-    }
-
-    /* CSV, German separators like every other file this rig writes, so the
-     * dump opens in the same tools as the results. */
-    /* The row-geometry prediction, computed here so the file carries it and a
-     * reader never has to re-derive it. Extraction is raster order, so one row
-     * is `w * bits_per_px` bits = that over 200 segments. A period below two
-     * segments is above Nyquist and ALIASES back, which is why this folds the
-     * frequency into [0, 0.5] rather than just inverting the period. */
-    bool     fold = camera_get_xor_fold();
-    uint32_t fw = 0, fh = 0;
-    camera_get_geometry(&fw, &fh);
-    double bpp = fold ? 0.5 : 1.0;
-    double seg_per_row = (double)fw * bpp / 200.0;
-    double pred_bin = -1.0;
-    if (seg_per_row > 0.0) {
-        double f = 1.0 / seg_per_row;
-        f = f - (double)((long)f);           /* into [0,1) */
-        if (f > 0.5) f = 1.0 - f;            /* and fold to [0,0.5] */
-        pred_bin = (double)GCP_SPEC_W * f;
-    }
-
-    char line[256];
-    httpd_resp_set_type(req, "text/csv");
-    camera_stats_t cam; camera_get_stats(&cam);
-    uint32_t expo = 0, gain = 0;
-    camera_get_exposure(&expo, &gain);
-    int n = snprintf(line, sizeof(line),
-        "# specdump w=%d bins=%d windows=%d segs=%d z=%.6f h_norm=%.8f\n"
-        "# fold=%d exposure=%lu frame=%lux%lu seg_per_row=%.4f pred_bin=%.1f\n"
-        "# raw_bias=%.6f raw_sigma=%.4f bias=%.6f sigma=%.4f\n"
-        "bin;p\n",
-        GCP_SPEC_W, GCP_SPEC_BINS, m, segs, z, h,
-        fold ? 1 : 0, (unsigned long)expo,
-        (unsigned long)fw, (unsigned long)fh, seg_per_row, pred_bin,
-        cam.raw_bias, cam.raw_sigma, cam.bias, cam.sigma);
-    httpd_resp_send_chunk(req, line, n);
-    for (int k = 0; k < GCP_SPEC_BINS; k++) {
-        n = snprintf(line, sizeof(line), "%d;%.9f\n", k + 1, (double)p[k]);
-        for (int i = 0; i < n; i++) if (line[i] == '.') line[i] = ',';
-        httpd_resp_send_chunk(req, line, n);
-    }
-    httpd_resp_send_chunk(req, NULL, 0);
-    free(p);
-    return ESP_OK;
+    if (wpre != 0xff)
+        p += snprintf(js + p, sizeof(js) - p,
+            "e=document.getElementById('numPreW');if(e)e.value='%.2f';",
+            wpre / 100.0);
+    p += snprintf(js + p, sizeof(js) - p,
+        "if(document.getElementById('chkUnlim').checked)unlimToggle();"
+        "})();</script>");
+    if (p > 0 && p < (int)sizeof(js))
+        httpd_resp_send_chunk(req, js, p);
 }
 
 /* ── GET / ────────────────────────────────────────────────────────── */
 static esp_err_t root_handler(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "text/html");
-    httpd_resp_sendstr(req, HTML);
+    httpd_resp_sendstr_chunk(req, HTML);
+    prefs_send(req);
+    httpd_resp_send_chunk(req, NULL, 0);
     return ESP_OK;
 }
 
@@ -3178,7 +2799,7 @@ static void start_webserver(void)
      * headroom: registration past this limit fails, and the return value is not
      * checked at either call site, so an endpoint would simply 404 with nothing
      * logged. Adding /ready and /diagjson once took it silently over the old cap
-     * of 16, and /spectest (2026-08-25) brought it to 22 — count them when
+     * of 16, and handlers counted carefully — count them when
      * adding one, and raise the cap before it bites rather than after. */
     cfg.max_uri_handlers  = 24;
     cfg.stack_size        = 8192;
@@ -3204,8 +2825,6 @@ static void start_webserver(void)
         {"/probe", HTTP_POST, probe_handler, NULL},
         {"/expose", HTTP_POST, expose_handler, NULL},
         {"/camtest", HTTP_GET, camtest_handler, NULL},
-        {"/spectest", HTTP_GET, spectest_handler, NULL},
-        {"/specdump", HTTP_GET, specdump_handler, NULL},
     };
     for (int i = 0; i < (int)(sizeof(uris) / sizeof(uris[0])); i++)
         httpd_register_uri_handler(srv, &uris[i]);

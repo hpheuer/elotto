@@ -431,8 +431,8 @@ static bool case_equal(const uint8_t *a, const uint8_t *b, uint32_t n, bool fold
             return false;
         }
     }
-    /* The pixel sum is a gate value (CAL_MAX_MEAN_PX), so it is held to the
-     * same standard as the bits: exactly equal, not close. */
+    /* The pixel sum feeds mean_px (was CAL_MAX_MEAN_PX gate, now publish-only
+     * D52), so it is held to the same standard as the bits: exactly equal. */
     if (p1 != p2) { rep->what = 6; rep->ref_w = p1; rep->fast_w = p2; return false; }
     if ((a1 != 0) != (a2 != 0))      { rep->what = 3; return false; }
     if (s1.bitacc != s2.bitacc || s1.bitacc_n != s2.bitacc_n ||

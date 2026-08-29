@@ -1,62 +1,37 @@
 # PLAN: elotto — the live contract
 
-**Start here:** `CLAUDE.md`'s "Where things stand" section is the one-screen summary of the rig and
-the open threads in priority order. This document is the detail behind it.
+**Start here:** [`STATUS.md`](STATUS.md) for the one-screen snapshot; [`../CLAUDE.md`](../CLAUDE.md)
+for rules. This document is the **v3 contract detail** behind them.
 
-⚠ **§1.1–§1.20 were removed on 2026-08-17.** They documented the v2 loop/ranking era and the
-pre-2026-07-29 optics — an instrument that no longer exists — and every rule from them that still
-applies now lives in `CLAUDE.md`. They are in git history at **`998c7ab`**
-(`git show 998c7ab:docs/PLAN.md` — `144ed5e` before the 2026-08-20 history rewrite), and the closed design findings §1.1–§1.14 are also still in
-[`PLAN_HISTORY.md`](PLAN_HISTORY.md). Citations of the form "§1.x" in source comments resolve to
-those, not to a file on disk.
-
-⚠ `PLAN_4NODE.md` and `PLAN_NETWORK.md` were deleted earlier at the user's request and are in git
-history, last present at **`8e134e5`** (`git show 8e134e5:docs/PLAN_4NODE.md`). The source comments
-that cited them by name were cleaned of those citations on 2026-08-20.
+⚠ **§1.1–§1.20 (v2 era) are gone from this file.** Closed findings §1.1–§1.14: stub
+[`PLAN_HISTORY.md`](PLAN_HISTORY.md) → `git show 1e62bca:docs/PLAN_HISTORY.md`. Source comments
+`§1.x` resolve there. `PLAN_4NODE.md` / `PLAN_NETWORK.md`: `git show 8e134e5:…`.
 
 ---
 
 ## 2 v3 — the single-pass session (specified and implemented 2026-08-02)
 
 **The core rule: no Focus item is ever measured twice.** Phase 0 obeys it (one long window per
-number) and Phase 2 obeys it too, and everything below follows from that one decision. A v3 session
-must never be pooled with any v2.x session.
+number) and Phase 2 obeys it too. A v3 session must never be pooled with any v2.x session.
 
 ### 2.1 Session shape
 
-Calibrate + baseline → observer gate (`/ready`, attended only) → Phase 0 scoring → pool
-confirmation → **ONE pass over every combination in the confirmed pool, each measured exactly
-once**, in a fresh Fisher–Yates random order. Then done. **No loops, no loop counter, no `Runs`
-cap.** The progress bar's 100 % is the full combination count; beside it an **items counter**
-(`items_done / full_combos`) replaces the loop badge.
+Sweep → observer gate (`/ready`, attended only) → Phase 0 scoring → pool confirmation → **ONE
+pass over every combination in the confirmed pool, each measured exactly once**, Fisher–Yates
+order. Then done. **No loops, no `Runs` cap.** ⛔ Phase 1 baseline is **deleted** `[D48]`.
 
-- **Window/gap: the same one every phase uses**, operator-set — `?run=` (default 5 s) and `?gap=`
-  (default 40 % of run). The segment count travels on the wire, so this is a master-only setting;
-  no slave reflash. Duty cycle, not window length, is what starves the extraction task.
-- **Session length**: measured live at `run=5`/`gap=2`, a 6-of-49 pass of 5005 items takes
-  **~12,2 h** of measuring (window 4,48–4,55 s, gap 4,29 s, cycle ~8,8 s) and ~13,4 h wall with
-  insertions. Eurojackpot's 7920 items scale from the same cycle. **Attended by assumption**: the
-  observer peeks, lets the rest run subconscious, and uses **Pause** (clock stops, excluded from
-  `elapsed_ms`) or **Abort** (partial results published from the measured prefix) at their own
-  judgment. No time budget.
-- **Cap**: `NUM_RUNS` stays **8000**. Both pools already fit (7920 / 5005).
+- **Window/gap:** `?run=` **0,5–5 s** (default 5) `[D51]`, `?gap=` default 40 % of run (floor 0,5 s).
+  Segment count on the wire; master-only setting.
+- **Session length (order of magnitude):** at `run=5`/`gap=2`, 6-of-49 ≈ 12 h measuring. Pause /
+  Abort as in CLAUDE. Cap `NUM_RUNS` **8000** (Euro 7920 needs one compaction near the end `[D45]`).
 
 ### 2.2 Blocks replace loops as the statistics unit
 
-**Every ~15 min** (default; `?calint=`) the pass parks and runs **sweep + baseline together**, then
-resumes. That boundary closes a **block**, which inherits everything that was per-loop:
-`record_loop()` → per-block row in `/loops` (endpoint name kept), `drift_add()` on the block's
-master mean, `pairs_fold_loop()` for the per-block-centered pairwise matrix — **and since
-2026-08-13 the block centring of §3.1, which is now the block's most important job.**
+**Every ~15 min** (`?calint=`) the pass parks for the **camera sweep**, then resumes. That boundary
+closes a **block**: `/loops` row, drift point, pairwise fold, **block centring** (§3.1) — the
+block's most important job since 2026-08-13.
 
-At ~100–205 items per block a pass gets comfortably past `DRIFT_MIN_LOOPS` = 6 at ~6 % overhead.
-The cadence is therefore three things at once: drift resolution, insertion overhead, **and the
-sample size each centring mean is estimated from.** Shortening it sharpens drift tracking but makes
-the centring noisier; lengthening it does the reverse.
-
-- Baseline runs at the **measurement length** — same-instrument rule — and is **drift reference
-  ONLY**: the `zm = zraw − baseline_mean` subtraction is removed. With raw z published it would
-  have been a live, master-only asymmetry.
+Cadence ≈ drift resolution + insertion overhead + sample size for each centring mean.
 
 ### 2.3 z, ranking, results
 
@@ -87,31 +62,15 @@ the centring noisier; lengthening it does the reverse.
 
 - **`GET /results.csv?all=1`**: streams every item measured so far — header comment (mode, focus,
   score direction, ranked/excluded/void counts, blocks, `pass_mean`, `pass_sigma`, `pass_chi2`,
-  `pass_stouffer`, `v_eff`, `null_flags`, and the node IP list in column order), then
-  `order;item;n1..n6;e1;e2;z_raw;z_ctr;block;k;skip_rank;z0..z3`. Live mid-session, still there
-  after an abort. ⚠ RAM only: a master reboot loses it, so pull it periodically.
-- **Bare `GET /results.csv` is the 15-row summary**: the three published groups — `high` / `low` /
-  `zero`, five each — as `group;rank;item;n1..n6;e1;e2;z_raw;z_std;z_ctr;block;k`. The Save button
-  fetches this; `?all=1` sits below it as a plain link, deliberately. ⚠ **The summary is not the
-  record.** Fifteen rows cannot be re-derived into a pass and no item is ever re-measured, so the
-  archival pull stays the operator's explicit act rather than a side effect of clicking Save.
-- **The session's parameters stay on screen while it runs.** The form is hidden once a session
-  starts and a curl-started one never had a form, so the progress area carries a read-only
-  parameter line: mode, `run_s`, `gap_s`, `run_segs`, seconds per run, measured `focus_win_ms` /
-  `focus_gap_ms`, `baseline_total`, `cal_budget_ms` + `cal_interval_ms`, `score_dir`, focus, and
-  the unlimited cap. Sourced from `/status` so the device's numbers are what is shown, and kept
-  after `done`/`aborted` so a screenshot can be matched to its CSV. Seconds per run is MEASURED
-  (`elapsed_ms / (baseline_done + scoring_done + completed)`) once ≥ 5 runs exist and the
-  `CYCLE_RUN_PCT` estimate before that, labelled either way. Live check 2026-08-18 against a
-  running 6-of-49 session: `per run 8,6 s measured`, `window/gap 4491 / 4288 ms` — against the
-  model's 8,8 s, which is the second confirmation of `CYCLE_RUN_PCT`.
-- **German CSV throughout**: `;` separator AND `,` decimal. Both halves are the decision — with a
-  decimal point in the cell, German Excel reads the whole column as text.
-- **Removed params answer 400**, not silence: `?loops=`, `?rank=`, `?runs=`. `?mode=`, `?baseline=`,
-  `?cal=`, `?calint=`, `?focus=`, `?run=`, `?gap=`, `?score=`, `?confirm=` stay.
-  ⚠ **`?mode=` is `1` for 6-of-49 and ANYTHING ELSE for Eurojackpot** — it tests `val[0]=='1'`, so
-  `?mode=649` silently starts a Eurojackpot session. Documented rather than fixed, because the UI
-  sends the right value and changing the encoding would break a curl script written against it.
+  `pass_stouffer`, `v_eff`, weights, firmware SHAs, node IP list), then measurement-order rows
+  including `z_raw`/`z_ctr`/`zh`/`zp`/`key` as in CLAUDE. Live mid-session. ⚠ RAM only — pull
+  periodically. Bare `/results.csv` = 15-row summary, **not** the archive (Save → `?all=1`).
+- **Parameter line** from `/status` while running (and after done/abort): mode, `run_s`/`gap_s`/
+  `run_segs`, measured pace, cal, score, focus, unlimited. No `baseline_*` — Phase 1 deleted
+  `[D48]`.
+- **German CSV**: `;` separator, `,` decimal.
+- **400:** `?loops=` / `?rank=` / `?runs=` / `?baseline=`. ⚠ `?mode=` is `1` = 6-of-49, anything
+  else = Eurojackpot (`val[0]=='1'`).
 
 ---
 
@@ -174,15 +133,10 @@ No observer, no observer gate.
 The pool gate takes the proposal **immediately** when `focus=0` and records `pool_auto=1` — the same
 flag the 15-minute timeout sets, so the CSV can never claim a human approved the pool.
 
-### 3.5 Verified on hardware (2026-08-17)
+### 3.5 Hardware check
 
-Short session, `confirm=1&focus=0`, `run=2`/`gap=1`/`calint=2 min`: gates skipped, `pool_auto=1`,
-closed blocks at mean(z_ctr) **exactly 0,0000** while z_raw sat at −0,55 / +0,08 / +0,04, open block
-carrying the provisional raw value, 0 quarantined, 0 void, pass σ 1,025, `null_flags` 0, all four
-nodes in the combine. An earlier run of the same configuration put two nodes soft-down
-simultaneously, which the old floor of 3 could not have done.
-
-**Not yet exercised:** centring across a full-length pass with 15-minute blocks.
+Centring / soft-down / quarantine verified on short unattended runs 2026-08-17; narrative trimmed
+2026-08-28 → `git show 1e62bca:docs/PLAN.md`. Live open points: [`STATUS.md`](STATUS.md).
 
 ---
 
@@ -205,8 +159,8 @@ Compared with §2.1 the shape is otherwise unchanged: the same window/gap for ev
 confirmation gate is **skipped** — choosing the pool by score is what the mode is — and recorded as
 `pool_auto=1`, exactly like every other selection no human approved.
 
-Rounds after the first re-run **sweep + baseline before scoring** (skipped at `?calint=0`): the
-scoring runs are what choose the pool, so they must not sit on a sweep from an hour ago.
+Rounds after the first re-run the **sweep before scoring** (skipped at `?calint=0`): scoring
+chooses the pool and must not sit on a sweep from an hour ago. (Baseline deleted `[D48]`.)
 
 ### 4.2 Pool sizing: maximise the combinations measured
 
@@ -295,76 +249,32 @@ sitting in it, so centring must never span one.
   without `?confirm=` used to measure a pool `/status` never named.
   ⚠ **`sensor.c` withdraws the pool at the ROUND BOUNDARY (`round++`), not when the scoring pass
   begins, and at session start BEFORE `state` goes RUNNING.** Both were wrong on the first build
-  and both showed the same symptom — correct numbers under the wrong round. The sweep + baseline
-  insertion sits between `round++` and scoring and takes a minute or more with `round` already
-  advanced; and at session start the opening sweep, baseline and observer gate all run before any
-  scoring, so the PREVIOUS SESSION's pool was on screen for all of them.
-  The UI renders it as an info line **directly under the Number-scoring bar** — the same number
-  chips as the result tables and the Focus panel, so a bonus number reads as a star there too —
-  labelled `Round N numbers (9):` in unlimited mode and `Selected numbers (12+5):` otherwise.
-- The **Runs per round** field carries a live estimate to its right: the pool each budget buys AND
-  **how long one round takes** at the parameters currently in the form, both modes, two lines —
-  `Euro 7+3 = 63 runs · ≈ 19 min/round` / `6of49 9 = 84 runs · ≈ 21 min/round`. The operator sets a
-  run BUDGET, not a duration, and 100 runs is ~20 min at `run=5` but over an hour at `run=15`; in
-  this mode there is no session end to discover that from afterwards. It re-computes as the run
-  window and the baseline count are typed, not only the budget.
-  The model is `CYCLE_RUN_PCT` in `sensor.h` — `cycle_ms ≈ 1,36 · run_ms + gap_ms`, a FIT to two
-  live 4-node measurements (`run=5`/`gap=2` → 8,8 s; `run=1`/`gap=0,5` → ~1,86 s), because the
-  window comes out ~10 % short and the gap carries the slave collect (~46 % of the window) on top
-  of the requested blank. A round = scoring sweep (49 or 62 runs) + the pool's combinations + one
-  sweep+baseline insertion at the boundary + one more per `calint` of MEASURING time (which is what
-  the device's block timer counts). Checked against the `maxruns=20` smoke test: model 2 min,
-  measured ~2 min. ⚠ An estimate — long windows stretch further as the camera rate falls under
-  duty cycle, which is what `?run=` exists to probe. Once a session is live the ETA comes from the
-  device's measured pace instead.
+  and both showed the same symptom — correct numbers under the wrong round. The sweep insertion
+  sits between `round++` and scoring; at session start the opening sweep and observer gate run
+  before scoring, so a stale pool must not linger on screen through them.
+  UI: info line under the scoring bar (`Round N numbers` / `Selected numbers`).
+- **Runs per round** field: live pool size + round-length estimate from the rate model in
+  `sensor.h` (`cycle_ms ≈ 200·segments/rate + CYCLE_FIXED_MS + gap_ms` `[D39]`). Live ETA uses
+  measured pace once enough runs exist.
 - CSV header gains `unlimited=on|off runs_cap=<n> rounds=<n>`, and `items=` reads
   `<measured>/<end of the current round>` so it stays monotone.
 - `?all=1` gains a **`round` column, APPENDED last** — the existing columns keep their positions so
   an analysis script written against an older file still parses.
 - `?runs=` still answers **400**; the message now names `unlimited=1&maxruns=` as the replacement.
 
-### 4.5 Verified on hardware (2026-08-18)
+### 4.5 Hardware check
 
-`mode=649&run=1&gap=0.5&baseline=10&cal=0&calint=0&unlimited=1&maxruns=20&focus=0`, four nodes.
-Cap 20 → **7 numbers, C(7,6) = 7 combinations** per round, as the rule predicts. Observed:
-
-- round 1 pool `18 21 28 40 45 46 48`, round 2 pool `20 26 27 29 31 32 39` — **re-scored, different**;
-- `completed` 7 → 14 across the boundary, `round_done` resetting to 0/7 each round, `blocks` 1 → 2;
-- the pool blanked in `/status` during each scoring phase and republished at the round start;
-- `?all=1` after round 2: 14 rows, 7 per round, `block` 0/1 matching `round` 1/2, every row `k=4`,
-  header `unlimited=on runs_cap=20 rounds=3`, `round` column last;
-- both closed blocks centred → `pass_mean` **−0,000000**, `null_flags` 0, 0 void, 0 quarantined;
-- Abort during round 3's scoring kept all 14 measured items.
-
-Third run, after the pool rule was corrected — **Eurojackpot** at `maxruns=50`, the sharpest
-discriminator there is (the withdrawn weighted rule answers 5+5 = 10 combinations, the current one
-6+4 = 36). The device sized the round at **`round_total` 36, `pool_main` 6 numbers, `pool_euro` 4**,
-i.e. the corrected rule, and the served page's `unlimPool()` carries the same objective and
-tie-break with no weights left in it.
-
-Second run after the pool info line was added: the line was **blank through every scoring pass**,
-showed `17 32 33 34 36 40 48` while round 1 measured, blanked again at the round boundary, and came
-back as `6 8 17 25 26 35 44` for round 2 — a different pool, as it must be. `pool_main` is absent
-from `/status` once the session ends, so the line hides itself and the confirmation modal still
-cannot be raised over a dead session.
-
-**Not yet exercised:** a long unlimited run with real 15-minute blocks and `cal=1`, and the
-`results[]`-full stop at 8000 items.
+Unlimited pool sizing / round boundaries / Abort-prefix verified 2026-08-18 (`maxruns=20` 6-of-49,
+Euro `maxruns=50` → 6+4). Narrative trimmed 2026-08-28 → `git show 1e62bca:docs/PLAN.md`. Compaction
+at full buffer: `[D42]`.
 
 ---
 
 ## Workflow
 
-Planning/architecture: Fable/Opus — this document is the contract. Implementation: Sonnet, one task
-per session. Escalate back if a gate fails twice or a decision above is missing. Commit at every
-green gate; the master and slave repos must be committed and flashed together whenever the shared
-`components/` or the wire protocol changes.
-
-**Start every session by reading `CLAUDE.md`'s "Where things stand"**, then §3 here. That is the
-whole handoff — `CLAUDE.md` loads automatically, so it is the one file that must never go stale. It
-has drifted into being *wrong* once already (it described two calibration policies as open for a day
-after they were fixed), which is worse than being incomplete: a fresh session reasons from it.
-**Update it at the end of a session, not just this file.**
+**Start every session with [`../CLAUDE.md`](../CLAUDE.md) + [`STATUS.md`](STATUS.md).** This file is
+the contract detail; update CLAUDE when a rule changes, DECISIONS when evidence moves.
+Master and slave repos commit/flash together when `components/` or the wire changes.
 
 **Capture before you restart anything.** `g_status` is RAM: `/loops` and `/status` are lost on reboot
 *and* on starting a new session, which resets `PairAcc` and `loop_hist`. A whole arm's pairwise

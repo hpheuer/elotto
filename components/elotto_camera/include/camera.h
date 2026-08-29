@@ -74,9 +74,9 @@ typedef struct {
      * i.e. the bits clump — which is the dark-end failure, where zero pixel
      * differences give deterministic zeros and those sit together in dark
      * regions. POSITIVE = more runs than implied, i.e. alternation.
-     * ⚠ NOT a gate and NOT in the ranking (2026-08-27). Measured and published
-     * so it can be replayed across all four nodes first; whether it orders the
-     * certified rungs at all is exactly the open question.
+     * ⚠ NOT a gate and NOT in the ranking (D46, D55). Measured and published
+     * per sweep rung. The ranking channel that used it was deleted after one
+     * session showed it underdispersed and orthogonal to the Pre outliers.
      * ⚠ 0,0 means the channel was not armed or the window is empty — it is not
      * a reading of "perfectly random". Check `raw_trans`. */
     uint64_t raw_trans;           // pre-fold adjacent bit pairs that differ
@@ -168,7 +168,7 @@ void camera_get_exposure(uint32_t *exposure, uint32_t *gain);
 
 bool camera_get_xor_fold(void);
 /* Capture geometry. The WIDTH is the row length a spatial period in the bit
- * stream aliases against, which is what /specdump's prediction is built on. */
+ * stream aliases against (was /specdump; endpoint deleted with the spectral channel). */
 void camera_get_geometry(uint32_t *w, uint32_t *h);
 
 /* Time `frames` frames with the extraction STOPPED and every buffer queued, and
@@ -203,11 +203,11 @@ double camera_fps_probe(int frames, int timeout_ms);
 // a sweep that chose nothing says WHY rather than just "no".
 #define CAM_CAL_FAIL_APPLY   0x01   // sensor did not latch the setting (read-back)
 #define CAM_CAL_FAIL_BITS    0x02   // too few bits in its slice to score at all
-#define CAM_CAL_FAIL_BIAS    0x04   // |bias - 0.5| above the run-scaled bar
+#define CAM_CAL_FAIL_BIAS    0x04   // legacy; folded bias no longer gated (D52)
 #define CAM_CAL_FAIL_AUTOC   0x08   // some |autocorr lag 1..4| >= 0.01
 #define CAM_CAL_FAIL_SIGMA   0x10   // per-mini-run sigma outside 1 +- 0.05
 #define CAM_CAL_FAIL_STUCK   0x20   // a frame pair came back byte-identical
-#define CAM_CAL_FAIL_LIGHT   0x40   // mean pixel level above the light-leak floor
+#define CAM_CAL_FAIL_LIGHT   0x40   // legacy; bright mean_px no longer gated (D52)
 #define CAM_CAL_FAIL_DARK    0x80   // mean pixel level below the shot-noise floor
 #define CAM_CAL_FAIL_ZDIFF  0x100   // too many zero pixel differences
 #define CAM_CAL_FAIL_RSIG   0x200   // PRE-FOLD per-mini-run sigma above the bar

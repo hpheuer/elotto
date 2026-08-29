@@ -1,7 +1,6 @@
 idf_component_register(
     SRCS
         "gcp.c"
-        "gcp_spec.c"
     INCLUDE_DIRS
         "include"
     REQUIRES

@@ -87,113 +87,7 @@ typedef enum {
  * `*out` is written only on GCP_OK. */
 gcp_result_t gcp_zscore_raw(int nseg, bool (*on_yield)(void), double *out);
 
-/* ── The SECOND channel: spectral entropy of the same segment series ───────
- *
- * z is the DC bin. Σ(ones-100) is exactly the 0-th Fourier component of the
- * segment series, so every statistic built from bins 1…K is, under H₀,
- * INDEPENDENT of the z this same run produces: a second measurement out of the
- * same bits, at no extra measurement time.
- *
- * What it measures is not bias — diff+LSB+XOR-fold drive bias to ~4b² — but the
- * SHAPE of the spectrum, i.e. correlation structure at every lag the window
- * covers. That makes it the general form of the gate camera.c already applies
- * at bit lags 1…4 (CAL_AUTOC_TOL): here the scale is the segment, 200 bits, and
- * the reach is one window, GCP_SPEC_W · 200 = 204800 bits ≈ two thirds of an
- * OV5647 frame's folded output. Row noise, FPN residue and frame-boundary
- * structure live in exactly that band and the lag-4 gate cannot see them.
- *
- * ⚠ LOW entropy is the interesting direction (user, 2026-08-25): less spectral
- * disorder than white noise. The ranking key therefore takes -z_h.
- *
- * ⚠ IT RANKS, IT DOES NOT TEST. The closed-form null in gcp_spec_null() is the
- * ideal one and the instrument does not exactly meet it — 1600 consecutive
- * segments share a frame pair, so per-frame structure is a real line and the
- * measured H₀ sits slightly low. That offset is constant per node per operating
- * point, which block centring removes; what it must never do is feed the
- * Bonferroni line or null_flags. Those stay on z alone.
- *
- * Welch, not one long periodogram: the estimator has to work at ?run=1 as well
- * as ?run=5, and averaging M windows of a fixed length keeps the bin count (and
- * therefore the entropy's own scale) the same at both, with only M changing.
- *   ?run=1 → ~26000 segments → M ≈ 25,  σ(H_norm) ≈ 2,0e-4
- *   ?run=5 → ~130000 segments → M ≈ 127, σ(H_norm) ≈ 3,9e-5
- * z_h is standardised against the run's OWN M, so the two window lengths give
- * directly comparable numbers — 5 s is simply the sharper instrument. */
-#define GCP_SPEC_W        1024   /* segments per Welch window                  */
-#define GCP_SPEC_BINS      511   /* published bins: k = 1 … W/2-1              */
-#define GCP_SPEC_MIN_WIN     8   /* fewer windows than this → no entropy value */
-
-/* Accumulator state. Lives in the caller; the working buffers are one shared
- * allocation inside gcp_spec.c (internal RAM by preference — see the buffer
- * note there, it is worth a third of the bit rate), so this is NOT reentrant. */
-typedef struct {
-    int  fill;    /* samples in the window being filled */
-    int  m;       /* windows folded so far              */
-    bool ok;      /* buffers present; false = disabled  */
-} gcp_spec_t;
-
-void gcp_spec_begin(gcp_spec_t *sp);
-void gcp_spec_push(gcp_spec_t *sp, int ones);
-/* Normalised spectral entropy H/ln(K) ∈ (0,1] of what was pushed, and the
- * window count it was built from. False when the run was too short, the
- * buffers are missing, or the accumulated power was zero. */
-bool gcp_spec_finish(gcp_spec_t *sp, double *out_h, int *out_m);
-
-/* The null moments of H/ln(K) at `m` Welch windows — see gcp_spec.c for the
- * derivation. Always computed from the run's ACTUAL m, never a constant: m
- * follows the segment count, which follows ?run= and the camera's delivered
- * rate. A hard-coded pair would silently mean something else at another window
- * length, the same defect gcp_z_per_bias() exists to prevent for the bias bar. */
-/* ── The periodogram itself (2026-08-26) ───────────────────────────────────
- * gcp_spec_finish() reduces the accumulator to ONE number, and H is blind to
- * WHERE the power sits — a line at bin 256 and the same power spread over
- * bins 200..300 give different H, but neither says "bin 256". That location is
- * the whole question when asking whether the structure follows the sensor's
- * ROW geometry: extraction runs in raster order, so a spatial period aliases
- * to a fixed segment period and therefore to a fixed bin, while a timing clock
- * (MIPI/CSI) cannot — the bits are read from a completed frame in PSRAM, not
- * synchronously with the lane.
- *
- * Copies out the accumulated Welch periodogram, NORMALISED to sum 1 over the
- * K published bins so nodes are directly comparable regardless of window count.
- * Valid between gcp_spec_finish() and the next gcp_spec_begin(), and that is
- * ENFORCED: called at any other time it returns false rather than handing back
- * a partial accumulation carrying the previous run's window count. `n` is the
- * caller's array length and must be >= GCP_SPEC_BINS. */
-bool gcp_spec_bins(float *out, int n, int *out_m);
-
-bool gcp_spec_null(int m, double *out_h0, double *out_sd);
-/* (H_norm − H₀)/σ at `m` windows. NEGATIVE = less spectral disorder than white
- * noise, which is the direction of interest. */
-bool gcp_spec_z(double h_norm, int m, double *out_z);
-
-/* The packed real FFT against a reference DFT on this node's own silicon.
- * Returns true when the worst relative bin error is under 1e-3 and writes it to
- * *out_worst. Served by GET /spectest, and the same argument as /camtest:
- * a wrong-but-plausible H looks exactly like a result.
- * ⛔ Do not change spec_fold() without it. */
-bool gcp_spec_selftest(double *out_worst);
-
-/* True when the FFT working buffers had to fall back to PSRAM because internal
- * RAM was exhausted. ⚠ Not cosmetic: measured 2026-08-25, a node in that state
- * runs at ~3,8 Mbit/s against ~5,7 for its peers, because the buffers then share
- * the bus the extractor streams frames over. Published by /spectest. */
-bool gcp_spec_in_psram(void);
-/* Failed FFT-buffer allocations. Non-zero = this node lost the entropy channel
- * at least once; it retries on a backoff and recovers on its own, but the
- * count is what distinguishes "reported no H" from "cannot compute H".
- * gcp_spec_ready() is the live state: false = no buffers right now. */
-int  gcp_spec_alloc_fails(void);
-bool gcp_spec_ready(void);
-
-/* gcp_zscore_raw() with the spectral accumulator running alongside. The z
- * arithmetic is the SAME loop and stays bit-identical — `sp` only receives the
- * `ones` the z path already counted. Pass NULL for `sp` and this is exactly
- * gcp_zscore_raw(). */
-gcp_result_t gcp_zscore_spec(int nseg, bool (*on_yield)(void), double *out,
-                             gcp_spec_t *sp);
-
-/* gcp_zscore_spec() with the PRE-FOLD z alongside (2026-08-26).
+/* gcp_zscore_raw() with the PRE-FOLD z alongside (2026-08-26).
  *
  * The XOR fold maps a raw bias e to ~2e², so it suppresses a MEAN-BIAS effect
  * by sqrt(2)*e — a factor ~7000 at e = 1e-4. That is the quantity a GCP-style
@@ -203,13 +97,17 @@ gcp_result_t gcp_zscore_spec(int nseg, bool (*on_yield)(void), double *out,
  * ⚠ RANKING AND ARCHIVE ONLY, never a p-value. Per-node raw sigma measured
  * 1,06..1,28 on certified rungs against 0,997..1,001 folded (2026-08-27), and
  * it leaves that band fast when the light does — 1,69 at mean_px 5, above 10
- * over-lit. Combined and block-centred the channel runs at sigma 2..4. Same
- * compromise the entropy channel makes, for the same reason.
+ * over-lit. Combined and block-centred the channel runs at sigma 2..4.
  * ⚠ It covers MORE bits than the folded z over the same window in TIME.
  * ⚠ The folded z is bit-identical to what gcp_zscore_raw() returns.
- * NULL out_pre, or a node without the parallel ring, disables it. */
+ * NULL out_pre, or a node without the parallel ring, disables it.
+ *
+ * Half-window (D56): the same pre-fold bits split at nseg/2. *out_h1 / *out_h2
+ * are the binomial z of each half (NULL disables). First half gets nseg/2
+ * segments, second the rest. nseg < 2 leaves both at 0. The full *out_pre is
+ * unchanged and is NOT a function of the halves beyond covering the same bits. */
 gcp_result_t gcp_zscore_pre(int nseg, bool (*on_yield)(void), double *out,
-                            gcp_spec_t *sp, double *out_pre);
+                            double *out_pre, double *out_h1, double *out_h2);
 
 #ifdef __cplusplus
 }

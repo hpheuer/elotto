@@ -71,16 +71,15 @@ int  nodes_collect(int timeout_ms, bool critical);
  * answer or replied 'E:' (in which case the camera-fault policy has already
  * run and the node is dropped). The z travels through the out-parameter rather
  * than a struct the caller reaches into, so the per-slave table stays private. */
-/* out_have_pre / out_pre carry the PRE-FOLD z (2026-08-26), third field on the
- * wire. ⚠ Absent is not zero — a node without the parallel ring omits it and
- * must be left out of that combine, exactly as for a missing H. */
-bool node_take_z(int k, double *out_z, bool *out_have_h, double *out_h,
-                 bool *out_have_pre, double *out_pre);
+/* Wire: Z:<z>[,<H_ignored>[,<z_pre>[,<h1>,<h2>]]] (D53, D56).
+ * H ignored; z_pre past 2nd comma; h1/h2 (half-window pre) past 3rd/4th.
+ * A lone 4th field is an old D54 runs z and is ignored. Absent ≠ 0. */
+bool node_take_z(int k, double *out_z,
+                 bool *out_have_pre, double *out_pre,
+                 bool *out_have_h, double *out_h1, double *out_h2);
 
 /* ── Baseline, calibration, diagnostics ────────────────────────────── */
 
-void slave_baseline_start(int n, int nseg);
-void slave_baseline_wait(void);
 
 // Broadcast 'K' and sweep the master's own ladder in parallel, then collect
 // each node's chosen setting. Nodes land on different exposures on purpose.

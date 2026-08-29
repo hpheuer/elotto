@@ -106,7 +106,7 @@ void node_camera_failed(int node, const char *why)
 
 /* Slack added on top of a phase's own expected duration before its ack wait
  * gives up — settle time, flush and scheduling jitter, none of which scales
- * with the phase. Used by BOTH the baseline wait and the calibration wait, so a
+ * with the phase. Used by the calibration wait, so a
  * node that is merely slow is not mistaken for a missing one in either. */
 #define LINK_ACK_SLACK_MS 15000
 
@@ -351,14 +351,11 @@ void nodes_discover(void)
     memset(s_link, 0, sizeof(s_link));
     memset(g_status.nodes, 0, sizeof(g_status.nodes));
     g_status.nodes[0].ok = true;
-    /* memset gives 0, and 0 is a VALID block index — the offset monitor would
-     * read as "alarmed at block 0" on a session that never alarmed. -1 is the
-     * only value that means never. Same for the temperature: 0,0 °C is
-     * plausible and would be regressed on; NAN is not. */
-    for (int i = 0; i < MAX_NODES; i++) {
-        g_status.nodes[i].cus_last   = -1;
+    /* memset gives 0, and 0,0 °C is a plausible temperature that would be
+     * regressed on as if it were real. NAN is the only value that means
+     * "this node reported none". */
+    for (int i = 0; i < MAX_NODES; i++)
         g_status.nodes[i].die_temp_c = NAN;
-    }
 
     if (!link_open()) { g_status.slave_connected = s_slave_ok = false; return; }
     link_drain();
@@ -407,41 +404,14 @@ void nodes_discover(void)
     printf(")\n");
 }
 
-/* The segment count travels ON THE WIRE: it is no
- * longer a constant each side keeps its own copy of. With run length made
- * phase-dependent, a duplicated constant would let master and slave integrate
- * different windows while every published number stayed plausible — the exact
- * silent failure CLAUDE.md warned about. A slave told the length cannot
- * disagree about it. */
-void slave_baseline_start(int n, int nseg)
-{
-    if (!s_slave_ok) return;
-    char cmd[24];
-    snprintf(cmd, sizeof(cmd), "B%d,%d", n, nseg);
-    nodes_send(cmd);
-}
-
-void slave_baseline_wait(void)
-{
-    if (!s_slave_ok) return;
-    nodes_collect(g_status.baseline_total * 800 + LINK_ACK_SLACK_MS, true);
-}
-
 /* ── Per-loop camera calibration (docs/PLAN.md Task 1) ────────────────────
  *
- * Deliberately a separate command from 'B' rather than an extra field on it.
- * Baseline calibration measures the per-run z OFFSET and writes no camera
- * register; this tunes the sensor and reads no z. Sharing a command would make
- * a session that wants one but not the other impossible to express, and the
- * matched no-calibration control needs exactly that.
- *
- * The shape is otherwise identical to the baseline phase, which is the point:
- * one broadcast starts every node's sweep at once, the master runs its own in
- * parallel, then waits for every ack. Not pausable, for the same reason the
- * baseline is not — one 'K' sets every slave running autonomously, so a
- * master-side hold would desynchronise them rather than pause them. */
+ * One broadcast starts every node's sweep at once, the master runs its own in
+ * parallel, then waits for every ack. Not pausable: one 'K' sets every slave
+ * running autonomously, so a master-side hold would desynchronise them rather
+ * than pause them. */
 /* "K<budget_ms>,<segments>". The segment count travels for the same reason it
- * travels on 'M' and 'B': the bias gate is scaled by it (camera_cal_set_z_scale),
+ * travels on 'M': the bias gate is scaled by it (camera_cal_set_z_scale),
  * so a slave that guessed would apply a different gate to the same camera and
  * nothing would look wrong. A slave too old to parse the second field falls back
  * to its legacy fixed bar and says so on its own console -- tolerable ONLY
@@ -637,17 +607,15 @@ void slave_abort(void)
  * now, so a completed run cannot have come from anywhere else, and a run that
  * could not complete says so explicitly instead of reporting a substituted z.
  *
- * ⚠ The trailing ",<H_norm>" (2026-08-25) is OPTIONAL by construction. A slave
- * whose firmware predates it, or whose PSRAM allocation for the FFT buffers
- * failed, sends the bare "Z:<float>" and that arm contributes to z but not to
- * the entropy combine — *out_have_h false, k unchanged. Never infer a missing
- * entropy value from a missing z or the other way round: the two channels drop
- * out independently and the CSV records both counts. */
-bool node_take_z(int k, double *out_z, bool *out_have_h, double *out_h,
-                 bool *out_have_pre, double *out_pre)
+ * ⚠ Trailing fields optional. Z:<z>[,H[,z_pre[,h1,h2]]] — H ignored (D53);
+ * z_pre past 2nd comma; half-window pre past 3rd/4th (D56). A single 4th
+ * field with no 5th is an old D54 runs z and is ignored. Absent ≠ 0. */
+bool node_take_z(int k, double *out_z,
+                 bool *out_have_pre, double *out_pre,
+                 bool *out_have_h, double *out_h1, double *out_h2)
 {
-    if (out_have_h)   *out_have_h   = false;
     if (out_have_pre) *out_have_pre = false;
+    if (out_have_h) *out_have_h = false;
     if (!s_link[k].replied) return false;
     const char *resp = s_link[k].reply;
 
@@ -671,26 +639,21 @@ bool node_take_z(int k, double *out_z, bool *out_have_h, double *out_h,
     if (out_z) *out_z = s_link[k].z;
 
     const char *comma = strchr(resp + 2, ',');
-    if (comma && out_have_h && out_h) {
-        double h = atof(comma + 1);
-        /* H/ln(K) is in (0,1] by construction, and a value outside it means the
-         * field was not what we think it is — a truncated frame, or a future
-         * protocol putting something else after the comma. Drop it rather than
-         * feed a nonsense number into a ranking key. */
-        if (h > 0.0 && h <= 1.0) { *out_h = h; *out_have_h = true; }
-    }
-    /* ",<z_pre>" third (2026-08-26). Positional, so it is found past the SECOND
-     * comma and never past the first — a slave with no H sends a literal "nan"
-     * in that slot to hold it open rather than shifting this field forward.
-     * ⚠ Absent is not zero: a node without the parallel ring omits it entirely
-     * and must not be counted into the pre-fold combine. */
-    if (comma && out_have_pre && out_pre) {
+    if (comma) {
         const char *c2 = strchr(comma + 1, ',');
         if (c2) {
-            double p = atof(c2 + 1);
-            /* A z, so any finite value is legal — but reject the non-finite
-             * that a malformed field would produce. */
-            if (isfinite(p)) { *out_pre = p; *out_have_pre = true; }
+            if (out_have_pre && out_pre) {
+                double p = atof(c2 + 1);
+                if (isfinite(p)) { *out_pre = p; *out_have_pre = true; }
+            }
+            const char *c3 = strchr(c2 + 1, ',');
+            const char *c4 = c3 ? strchr(c3 + 1, ',') : NULL;
+            if (c3 && c4 && out_have_h && out_h1 && out_h2) {
+                double a = atof(c3 + 1), b = atof(c4 + 1);
+                if (isfinite(a) && isfinite(b)) {
+                    *out_h1 = a; *out_h2 = b; *out_have_h = true;
+                }
+            }
         }
     }
     return true;
@@ -754,6 +717,17 @@ void slaves_diag(void)
         if (tp) {
             float t = 0;
             if (sscanf(tp + 3, "%f", &t) == 1) N->die_temp_c = t;
+        }
+        /* ",px=<mean pixel level>" — the light covariate (2026-08-28), stamped
+         * into LoopStat.cam_px at every block close. Cleared first, and 0 is
+         * how "this node does not send it" reads: a slave on older firmware
+         * must be absent, not dark. Unlike die_temp this cannot travel as NAN,
+         * because the archive column is a float that gets plotted. */
+        N->cam_mean_px = 0.0f;
+        const char *px = strstr(resp, ",px=");
+        if (px) {
+            float mp = 0;
+            if (sscanf(px + 4, "%f", &mp) == 1) N->cam_mean_px = mp;
         }
         N->cam_exp_now = 0; N->cam_gain_now = 0;
         const char *ex = strstr(resp, ",exp=");
