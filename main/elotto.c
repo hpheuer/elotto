@@ -78,6 +78,22 @@ static void on_eth_event(void *arg, esp_event_base_t base, int32_t id, void *dat
 }
 
 /* ── HTML ─────────────────────────────────────────────────────────── */
+/* ── The node names, in ONE place ──────────────────────────────────────────
+ * Address -> the name the operator uses when walking to a physical box.
+ *
+ * ⚠ NEVER name a node from its index in /status nodes[]. That array is in
+ * DISCOVERY ORDER (whichever slave answered the boot broadcast first) and it
+ * reorders between sessions: on 2026-08-30 the same board read "slave1" in one
+ * session and "slave2" in the next, and a soft-down was nearly chased on the
+ * wrong box. The addresses are static DHCP leases keyed on MAC, so the address
+ * IS the identity; the position is not.
+ *
+ * ⚠ Both pages take the table from here. Two copies drift, and a page that
+ * disagrees with /diag about which box is slave0 is worse than no name at all.
+ * Add a node here and both pages learn it; an address that is not listed shows
+ * as "unnamed" rather than being guessed at from a position. */
+#define NODE_NAMES_JS "var NODE_NAMES={'192.168.178.100':'master','192.168.178.103':'slave0'," "'192.168.178.145':'slave1','192.168.178.155':'slave2'};"
+
 static const char HTML[] =
 "<!DOCTYPE html><html><head><meta charset='utf-8'>"
 "<title>E-Lotto GCP</title>"
@@ -411,6 +427,7 @@ static const char HTML[] =
 "</div>"
 "</div>"
 "<script>"
+NODE_NAMES_JS
 "var timer=null,curMode=0,calShown=false,nodeHealthAt=0,nodeHealth={};"
 "var ftimer=null,lastSeq=-1,winSeen=0,winMissed=0,paused=false,pausePendUntil=0;"
 // Set by the /status poll; read by pollFocus at 10 Hz. True while the rig is
@@ -1055,7 +1072,15 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 // reach it), so take the address this page was served from -- which IS the
 // master's, by construction. Keeps the list symmetric: every row names a host.
 "var ipTxt=(N.ip&&N.ip!=='self')?N.ip:location.hostname;"
-"var nm=(i===0?'master':'slave'+i)+(ipTxt?' '+ipTxt:'');"
+/* ⚠ NAME FROM THE ADDRESS, NEVER FROM THE ROW INDEX. The array position is
+   DISCOVERY ORDER (reply arrival) and changes between sessions, so 'slave'+i
+   silently relabels the boxes the day two of them race -- which is exactly what
+   happened on 2026-08-30: the same physical node read 'slave1' in one session
+   and 'slave2' in the next, and a soft-down was nearly chased on the wrong box.
+   /diag has always named from the address (see NAMES there); this is the same
+   table, because the operator has to walk to a physical box. */
+"var nm=NODE_NAMES[ipTxt]||(i===0?'master':'unnamed');"
+"nm+=(ipTxt?' '+ipTxt:'');"
 // A camera fault is named, not merely reflected in a shrunken node count: the
 // operator has to know WHICH node died and that it was rebooted.
 "var st=N.cam_fault?' \\u26a0 CAMERA FAULT \\u2013 rebooted'+(N.reboots>1?' x'+N.reboots:'')"
@@ -1089,7 +1114,11 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 // answering. Say which side the master's own link was on at that moment, or
 // the operator is left holding a router log against a guess.
 "if(d.drop_node>=0){"
-"var dn=(d.drop_node===0?'master':'slave'+d.drop_node);"
+/* Same rule: resolve through the address, never the index. */
+"var dnIp=(d.nodes&&d.nodes[d.drop_node])?d.nodes[d.drop_node].ip:'';"
+"if(dnIp==='self')dnIp=location.hostname;"
+"var dn=(NODE_NAMES[dnIp]||(d.drop_node===0?'master':'unnamed'))"
+"+(dnIp?' '+dnIp:'');"
 "var ago=Math.max(0,((d.uptime_ms||0)-d.drop_uptime_ms)/1000);"
 "var side=d.drop_eth_up?'master link was UP \\u2013 peer or LAN side'"
 ":'master link was DOWN \\u2013 this board or its cable';"
@@ -1134,7 +1163,8 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "lastDisplayed=d.top;"
 // Z* studentizes the RANKING KEY, so it takes the key's own moments;
 // rank_mean/rank_sigma equal pass_mean/pass_sigma exactly at wpre=0.
-"var st={m:d.rank_mean||0,s:d.rank_sigma||0,p:d.pre_w||0,sp:d.rank_sig_p||0};"
+"var st={m:d.rank_mean||0,s:d.rank_sigma||0,p:d.pre_w||0,"
+"sp:d.rank_sig_p||0,sc:d.rank_sig_c||0};"
 "document.getElementById('resTitle').innerHTML="
 "'\\uD83C\\uDFC6 Top '+d.top.length+' of '+d.comparisons+' valid'"
 "+(isEuro?' \\u2014 Eurojackpot':' \\u2014 6-of-49')"
@@ -1150,8 +1180,8 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "document.getElementById(headId).innerHTML="
 "'<tr><th>#</th><th>Item</th>'"
 "+(st?'<th title=\"studentized ranking key\">Z*</th>'"
-"+'<th title=\"block-centred combined pre-fold z (zp_ctr)\">Z-Pre</th>'"
-"+'<th title=\"leave-one-out half-window concordance (zc_ctr). Ranking key when wpre>0\">Conc</th>':'')"
+"+'<th title=\"block-centred combined pre-fold z (zp_ctr). First pre-fold channel, half of wpre\">Z-Pre</th>'"
+"+'<th title=\"leave-one-out half-window concordance (zc_ctr). Second pre-fold channel, half of wpre\">Conc</th>':'')"
 "+'<th>Numbers</th>'"
 "+(isEuro?'<th>Bonus</th>':'')+'</tr>';"
 "var tb=document.getElementById(bodyId);tb.innerHTML='';"
@@ -1171,7 +1201,8 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "var det='Z '+z.toFixed(4)+' \\u00b7 Z-Pre '+preTxt+' \\u00b7 Conc '+concTxt"
 "+' \\u00b7 p(Z*) '+pfmt(p2(st?zs:z));"
 "if(st)det+='\\nweights: z '+(1-(st.p||0)).toFixed(2)"
-"+' \\u00b7 conc '+(st.p||0).toFixed(2);"
+"+' \\u00b7 pre '+((st.p||0)/2).toFixed(2)"
+"+' \\u00b7 conc '+((st.p||0)/2).toFixed(2);"
 "tb.innerHTML+='<tr><td>'+(i+1)+'</td><td>'+itm+'</td>"
 "'+(st?'<td title=\"'+det+'\">'+zs.toFixed(3)+'</td>'"
 "+'<td>'+preTxt+'</td><td>'+concTxt+'</td>':'')+'"
@@ -1182,7 +1213,8 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "function showLow(d){"
 "var res=d.low,isEuro=d.mode==='euro';"
 "if(!res||res.length===0){document.getElementById('resCardLow').style.display='none';return;}"
-"var st={m:d.rank_mean||0,s:d.rank_sigma||0,p:d.pre_w||0,sp:d.rank_sig_p||0};"
+"var st={m:d.rank_mean||0,s:d.rank_sigma||0,p:d.pre_w||0,"
+"sp:d.rank_sig_p||0,sc:d.rank_sig_c||0};"
 "document.getElementById('resTitleLow').innerHTML="
 "'\\u2B07 Bottom '+res.length+' (lowest Z*)';"
 "renderRunTable('resHeadLow','resBodyLow',res,isEuro,d,st);"
@@ -1313,7 +1345,7 @@ static esp_err_t status_handler(httpd_req_t *req)
          * exactly at pre_w = 0. */
         "\"pre_w\":%.3f,"
         "\"pre_n\":%d,\"pre_clamped\":%d,"
-        "\"rank_sig_p\":%.4f,"
+        "\"rank_sig_p\":%.4f,\"rank_sig_c\":%.4f,"
         "\"rank_mean\":%.4f,\"rank_sigma\":%.4f,"
         "\"score_dir\":\"%s\","
         "\"loop_sigma\":%.4f,"
@@ -1358,7 +1390,7 @@ static esp_err_t status_handler(httpd_req_t *req)
         g_status.v_eff, (unsigned long)g_status.flush_timeouts,
         g_status.pre_w,
         g_status.pre_n, g_status.pre_clamped,
-        g_status.rank_sig_p,
+        g_status.rank_sig_p, g_status.rank_sig_c,
         g_status.rank_mean, g_status.rank_sigma,
         score_str,
         g_status.loop_sigma,
@@ -1685,7 +1717,7 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
     double mean = 0.0, sigma = 0.0;
 
     char mb[32], sb[32], cb[32], vb[32], stb[32], rb[32], gb[32];
-    char rm[32], rs[32], pw[16], gp[32];
+    char rm[32], rs[32], pw[16], gp[32], gc[32];
     /* The master's own image. The slaves' come from their 'D' replies and are
      * emitted on the fw_nodes line below; a node that never answered one, or
      * runs firmware older than the field, shows "?" rather than nothing, or the
@@ -1732,7 +1764,7 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
          * ⚠ `pre_w` SPLITS THE POOLING TABLE for the three tables.
          * z_raw/z_ctr still pool across weights. */
         "run_s=%s run_segs=%d gap_s=%s compacted=%d "
-        "pre_w=%s pre_n=%d pre_clamp=%d pre_sig=%s "
+        "pre_w=%s pre_n=%d pre_clamp=%d pre_sig=%s conc_sig=%s "
         "rank_mean=%s rank_sigma=%s fw=%s/%s\n"
         "# nodes=",
         g_status.mode == MODE_EUROJACKPOT ? "euro" : "649",
@@ -1756,6 +1788,7 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
         de_num(pw, sizeof(pw), g_status.pre_w, 3),
         g_status.pre_n, g_status.pre_clamped,
         de_num(gp, sizeof(gp), g_status.rank_sig_p, 6),
+        de_num(gc, sizeof(gc), g_status.rank_sig_c, 6),
         de_num(rm, sizeof(rm), g_status.rank_mean, 6),
         de_num(rs, sizeof(rs), g_status.rank_sigma, 6),
         fw_desc->version, master_sha);
@@ -2028,7 +2061,7 @@ static esp_err_t start_handler(httpd_req_t *req)
         g_status.pre_w          = ENT_W_PRE_DEFAULT;
         g_status.pre_n = g_status.pre_clamped = 0;
         g_status.rank_mean = g_status.rank_sigma = 0.0;
-        g_status.rank_sig_p = 0.0;
+        g_status.rank_sig_p = g_status.rank_sig_c = 0.0;
         if (httpd_req_get_url_query_str(req, qry, sizeof(qry)) == ESP_OK) {
             char val[16] = "";
             /* v3 removed ?loops=, ?runs= and ?rank=. Refuse them LOUDLY: an
@@ -2405,9 +2438,8 @@ static const char DIAG_HTML[] =
    An unknown address is shown as-is rather than guessed at: the slave INDEX is
    discovery order (reply arrival), not identity, so naming a row from its
    position in the array would silently mislabel nodes the day two of them race. */
-"var NAMES={'192.168.178.100':'master','192.168.178.103':'slave0',"
-"'192.168.178.145':'slave1','192.168.178.155':'slave2'};"
-"function nameOf(ip){return NAMES[ip]||'unnamed';}"
+NODE_NAMES_JS
+"function nameOf(ip){return NODE_NAMES[ip]||'unnamed';}"
 /* Name over address, both always visible: the name is what the operator thinks
    in, the address is what they need to curl or to find the node in the router. */
 "function cell(nm,ip){return \"<td class='l n'>\"+nm+\"<div class='ip'>\"+ip+\"</div></td>\";}"

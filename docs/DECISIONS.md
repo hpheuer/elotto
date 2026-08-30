@@ -683,3 +683,85 @@ heading. Pass mean/σ/χ² stay — those are instrument health on the folded st
 **Warum:** Bonferroni tests the XOR-folded z. The effect this experiment looks for is a
 mean-bias that the fold suppresses by √2·ε. A p=1.000 on folded data does not say whether
 a node is delivering usable pre-fold noise, and it cannot detect the signal. User.
+
+### D58 — Both pre-fold channels rank, p split evenly (2026-08-29)
+**Entscheidung:** The ranking key carries THREE terms, not two:
+
+```
+key = ((1−p)·z_ctr + (p/2)·zp_ctr/σ_p + (p/2)·zc_ctr/σ_c) / √((1−p)² + 2·(p/2)²)
+```
+
+`p = ?wpre=` still splits folded against pre-fold; the pre-fold half is then split evenly
+between the combined pre-fold z (`zp_ctr`, D45) and the half-window concordance (`zc_ctr`,
+D56). Each is standardised by **its own** measured σ — `rank_sig_p` and the new
+`rank_sig_c`; the concordance takes `min()` of two halves and drops the loudest node, so its
+σ is materially smaller and one shared σ would silently reweight the key. Both σ carry their
+own compaction moments (`s_drop_c*`) and their own count: an item can hold `zp_ctr` and no
+`zc_ctr` when k < 2 survived the leave-one-out drop.
+
+`score_build_keys()` takes the same three channels, each standardised on the scoring pass's
+own candidates (D48). `/status` publishes `rank_sig_c`; the CSV header gains `conc_sig=`
+after `pre_sig=`. `pre_n` counts items carrying `zp_ctr` and is SEEDED with the compaction
+moments, because the UI prints it against `pass_n_valid`, which is seeded too —
+unseeded the ratio collapsed after the first compaction and the "with pre
+n/valid ⚠" hint fired on its own bookkeeping (seen 2026-08-30 as "pre 132/788"
+with every surviving row carrying a value). `pre_clamped` is not seeded and
+cannot be: whether an item sits at the clamp depends on the current σ. `?wpre=0` still reproduces pure-z ranking
+exactly — the control arm is unchanged, and the UI field stays.
+
+**Warum:** User, after noticing `zp_ctr` had no weight in the key at all. D56 replaced the
+combined pre-fold z with the concordance rather than adding to it, so from 2026-08-29 the
+channel the project calls its lead channel — the one carrying the mean-bias the fold
+suppresses by √2·ε — was archive-only. The two answer different questions and neither
+subsumes the other: `zp_ctr` is the sensitive one and a single loud node can own it;
+`zc_ctr` is robust against exactly that and pays sensitivity for it. An even split needs no
+third free parameter and leaves no session ranked on a weight nobody chose.
+
+**⚠ Known and accepted:** the √ normaliser assumes the three terms are independent, and
+`zp_ctr`/`zc_ctr` come from the same bits — so at p → 1 the key's variance runs above 1. It
+sets the printed scale only: one constant divisor reorders nothing, and Z* studentises on the
+measured `rank_sigma`.
+
+### D59 — Gain 256 tried and reverted; slave0's light was the real fix (2026-08-30)
+**Entscheidung:** `CONFIG_ELOTTO_CAM_REG_GAIN` stays at **1023**. The operator's physical
+dimming of slave0 stays and is the change that worked. `raw_words`/`mid_words` in
+`gcp_zscore_pre()` are derived (`7*nseg`) instead of counted per word — bit-identical, no
+pooling split. `pre_n` is seeded with the compaction moments like `pass_n_valid`.
+
+**Warum das Licht:** slave0 sat at ~8x the illumination of master and slave2, so the sweep
+could only reach exp 4/8/16 and certified 3 of 9 rungs at `raw_sigma` 1,36 — the worst node
+in the array, and the one dragging the combined pre-fold σ. After dimming by ~6,7x it
+certifies **6 of 9 rungs at 1,032**, the best node. Nothing in software did that.
+
+**Warum der Gain zurückgenommen wurde — und die Lehre über die Messmethode.** Single
+`POST /expose` readings, 25 s apart, said `raw_sigma` fell from 1,36 to 1,00 on every node at
+gain 256, apparently independent of exposure. It was noise: two readings at **identical**
+settings minutes apart gave 1,211 and 1,025. `raw_sigma` is non-stationary per node on a
+timescale of minutes (D46) and a single rung is not evidence about it.
+
+The sweep — the whole ladder measured back to back, which is the only comparison that holds —
+says the opposite:
+
+| node | gain 256, certified rungs | gain 1023 |
+|---|---|---|
+| master | **0 of 9** (every rung `CAM_CAL_FAIL_ZDIFF`) | 3 (exp 64, rsig 1,032) |
+| slave0 | 1 | **6** (exp 128, rsig 1,032) |
+| slave1 | 1 | 4 (exp 64, rsig 1,203) |
+| slave2 | 1 | 3 (exp 128, rsig 1,145) |
+
+Lower gain means smaller frame-to-frame differences, so `zero_diff` roughly doubled and the
+master — the darkest node — could not certify anything. Bit rate was unaffected either way
+(5,715 Mbit/s), so the trade bought nothing and cost the master its certification.
+
+**Was NICHT gemacht wurde:** the batched ring read (one `camera_read_words_raw()` per segment
+instead of seven single calls, saving six sevenths of 3,65 M memory fences per run). Held back
+deliberately, the same way D26 held back the exact soft-float change: two edits to the
+extraction path at once cannot be measured apart. The cheap half was done and measured first —
+deriving `raw_words` moved `ms_extract` 77,3 → 76,9 ms, **0,5 %**, i.e. nothing. That is the
+prior for the batch read too: it is the memory fences and the cross-TU call that would have to
+pay, not the arithmetic.
+
+**⚠ Offen: slave1 is now the bright node.** Illumination per exposure unit: master 0,20,
+slave0 0,13, slave2 0,22, **slave1 0,48** — and slave1 has the worst `raw_sigma` (1,203) and
+sits on the shortest rung (exp 64, later exp 16). The same dimming that fixed slave0 is
+indicated, by roughly a factor of 2–3.

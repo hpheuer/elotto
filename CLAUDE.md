@@ -131,15 +131,23 @@ as backstop for a compaction that cannot allocate.
 ---
 
 ## The ranking channels
-One ranking key from folded z plus optional concordance of half-window pre `[D45]``[D56]`:
-**key = ((1−p)·z_ctr + p·z_conc*) / √((1−p)²+p²)** —
-p = `?wpre=`. `?score=` only picks the pool.
+One ranking key from folded z plus BOTH pre-fold channels `[D45]``[D56]``[D58]`:
+**key = ((1−p)·z_ctr + (p/2)·zp_ctr/σ_p + (p/2)·zc_ctr/σ_c) / √((1−p)² + 2·(p/2)²)** —
+p = `?wpre=` splits folded against pre-fold, the pre-fold half splits evenly between the two.
+`?score=` only picks the pool.
+⚠ **Each pre-fold channel is standardised by ITS OWN σ** — `rank_sig_p` for `zp_ctr`,
+`rank_sig_c` for `zc_ctr`. They differ by roughly a factor of two; one shared σ reweights the
+key silently `[D58]`.
+⚠ The √ normaliser assumes independence and the two pre-fold terms share their bits, so at
+p → 1 the key's variance runs above 1. Scale only — Z* studentises on measured `rank_sigma`.
 ⚠ **`?went=` answers 400** — spectral entropy deleted `[D53]`.
 ⚠ **`?wruns=` answers 400** — NIST-runs ranking deleted `[D55]`.
-⚠ **z_conc RANKS, it does not TEST**: tables use `rank_key()`. There is no Bonferroni
-on folded z `[D57]`. UI tables show **Z-Pre** (combined zp_ctr) and **Conc** (zc_ctr) beside Z*.
+⚠ **The pre-fold channels RANK, they do not TEST**: tables use `rank_key()`. There is no
+Bonferroni on folded z `[D57]`. UI tables show **Z-Pre** (`zp_ctr`) and **Conc** (`zc_ctr`)
+beside Z* — since D58 both of them also rank, each with half of `pre_w`.
 
-**Concordance (D56).** Per node, split the pre-fold window at nseg/2. If both halves have the
+**Concordance (D56).** The second pre-fold channel, robust where `zp_ctr` is sensitive.
+Per node, split the pre-fold window at nseg/2. If both halves have the
 same sign, that node's contribution is `√2 · min(|h1|,|h2|)` with that sign — equal to the
 full-window z when the bias is stable. Opposite sign or a zero half → 0. Then drop the
 loudest node and Stouffer-combine the rest. A single bright-rung offset cannot own Top-5;
@@ -154,8 +162,8 @@ looks for, so the unfolded stream is scored, combined, centred and archived besi
   is meaningless before the first block closes `[D45]`.
 - ⚠ At `wpre=1` the folded z has weight **zero** in the key: the tables are then ranked with no
   contribution from the channel the p-values come from.
-- `ENT_Z_CLAMP` 12 bounds the concordance term **in the key only** — the archive is never clamped;
-  hits count in `pre_clamped`.
+- `ENT_Z_CLAMP` 12 bounds **both** pre-fold terms **in the key only** — the archive is never
+  clamped; an item pinned in either channel counts once in `pre_clamped` `[D58]`.
 - **The archive carries zp_ctr and zc_ctr even at weight 0** — the weight enters nothing but the ranking.
 - ⚠ **`pre_w` splits the pooling table for the TABLES only** — `z_raw`/`z_ctr` pool across weights.
 - Normalised as the plain binomial over the bits actually consumed (it covers more bits than the
@@ -199,7 +207,7 @@ what remains visible is an effect varying **between items inside a block**.
 ### CSV header
 `# elotto v3 mode= focus= score= items=<measured>/<planned> ranked= excl= void= blocks= paused_ms=
 pass_* v_eff= flush_timeouts= drift_t= unlimited= runs_cap= rounds= run_s= run_segs=
-gap_s= compacted= pre_w= pre_n= pre_clamp= pre_sig= rank_mean= rank_sigma=
+gap_s= compacted= pre_w= pre_n= pre_clamp= pre_sig= conc_sig= rank_mean= rank_sigma=
 fw=<version>/<elf sha>`, then `# nodes=<ip list, discovery order>` and
 `# fw_nodes=<sha per node, same order>` (`?` = never answered).
 `?all=1` appends a **`round` column last**, then `key;zp_ctr;p0..p3;zc_ctr`, so older parsers still line
@@ -226,6 +234,7 @@ separate arm `[D1]`.
 | spectral channel deleted 2026-08-28 | post-D53 only — no `ent_w` / z_h `[D53]` |
 | runs ranking deleted 2026-08-29 | post-D55 only — no `wruns` / zr `[D55]` |
 | concordance / half-window ranking 2026-08-29 | post-D56 only — tables use `zc_ctr` `[D56]` |
+| both pre-fold channels rank 2026-08-29 | post-D58 only — D56 sessions ranked on `zc_ctr` ALONE `[D58]` |
 | v3 vs any v2.x | v3 only |
 
 Unlimited-mode data carries two more: split on `round` before pooling with a single-pass session,
@@ -328,6 +337,18 @@ one-sided**, after the whole ladder `[D46]`), no stuck frames, `mean_px` ≥ 5,0
 - ⚠ `camera_get_stats()` is cumulative since the last sweep; in a `?cal=0` session they are
   lifetime averages.
 - ⚠ Never price monitor cost with `/camtest` — the delivered bit rate is the number `[D46]`.
+- ⚠ **Never judge `raw_sigma` from single `/expose` readings.** It is non-stationary per node
+  on a timescale of minutes: two readings at IDENTICAL settings gave 1,211 and 1,025. Only the
+  SWEEP compares — the whole ladder back to back. A gain change was adopted and reverted within
+  the hour on exactly this mistake `[D59]`.
+- ⚠ **The sweep ladders the EXPOSURE only.** `cal_run()` passes the gain in force at entry
+  (`g0`) to every rung, so `CONFIG_ELOTTO_CAM_REG_GAIN` is the operating point for the life of
+  the board, not a boot value — and a `POST /expose?gain=` override is carried forward by the
+  next sweep instead of being replaced `[D59]`.
+- ⚠ **Too much light on one node is a fault, not a luxury**: it forces the sweep onto the short
+  rungs, which certify worst. slave0 went from 3 of 9 rungs at `raw_sigma` 1,36 to 6 of 9 at
+  1,032 after ~6,7× dimming `[D59]`. Judge it by illumination per exposure unit (`mean_px`/`exp`),
+  not by `mean_px` alone. ⚠ **slave1 is currently the bright one** (0,48 against 0,13..0,22).
 
 ---
 

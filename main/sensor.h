@@ -447,14 +447,17 @@ typedef struct {
     float      zp_ctr;
     /* Concordance z (D56): leave-one-out Stouffer of per-node half-window
      * pre-fold z, block-centred. 0 = fewer than two nodes to corroborate.
-     * This is what rank_key() uses when pre_w > 0, not zp_ctr. */
+     * Since D58 BOTH pre-fold channels rank, each on its own sigma and each
+     * carrying half of pre_w: zp_ctr is the sensitive one, zc_ctr the robust
+     * one, and the key is their sum. */
     float      zc_ctr;
 } RunResult;
 
-/* ENT_Z_CLAMP bounds the concordance term IN THE RANKING KEY only — the archived
- * zc_ctr is never clamped. 12 σ is far outside anything the null produces
- * (null extreme over 8000 items ~4,4).
- * ⚠ Bar in units of the CHANNEL'S OWN σ (rank_sig_p), not raw z. */
+/* ENT_Z_CLAMP bounds BOTH pre-fold terms IN THE RANKING KEY only — the archived
+ * zp_ctr and zc_ctr are never clamped. 12 σ is far outside anything the null
+ * produces (null extreme over 8000 items ~4,4).
+ * ⚠ Bar in units of the CHANNEL'S OWN σ — rank_sig_p for zp_ctr, rank_sig_c
+ * for zc_ctr — not raw z. The two sigmas differ by a factor of ~2. */
 #define ENT_Z_CLAMP     12.0
 
 // Focus display: what is on screen right now, for
@@ -738,11 +741,21 @@ typedef struct {
     double           rank_sigma;          // its sample σ — what the UI's Z* and
                                           // the nearest-mean table are built on
     int              pre_n;               // ranked items that carry a pre-fold value
-    int              pre_clamped;         // of those, items pinned at the clamp
-    /* Measured σ of the pre-fold channel over the ranked items, from the
-     * UNCLAMPED archive. rank_key() divides by it before weighting. 0 = not
-     * enough items yet; rank_key() then falls back to 1.0. */
+                                          // (zp_ctr != 0; zc_ctr may still be 0
+                                          // on the same item — k < 2 after the
+                                          // leave-one-out drop)
+    int              pre_clamped;         // items pinned at the clamp in EITHER
+                                          // pre-fold channel (counted once)
+    /* Measured σ of the two pre-fold channels over the ranked items, from the
+     * UNCLAMPED archive. rank_key() divides each term by its own one before
+     * weighting. 0 = not enough items yet; rank_key() then falls back to 1.0.
+     * ⚠ They are NOT interchangeable. rank_sig_p is the combined pre-fold z
+     * (measured 2,12 and 3,79); rank_sig_c is the concordance z, which the
+     * leave-one-out drop and the min() of the two halves make substantially
+     * smaller. Dividing one channel by the other's σ silently reweights the
+     * key — the whole reason they are two fields (D58). */
     double           rank_sig_p;
+    double           rank_sig_c;
     double           loop_sigma;          // per-run σ of the LAST CLOSED BLOCK (1.0 = ideal)
     int              loops_done;          // BLOCKS closed and folded into the drift stats
     int              loop_hist_n;         // entries valid in loop_hist[] (<= LOOP_HIST)

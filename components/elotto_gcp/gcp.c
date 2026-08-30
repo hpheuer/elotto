@@ -77,8 +77,14 @@ gcp_result_t gcp_zscore_pre(int nseg, bool (*on_yield)(void), double *out,
      * Read once — it cannot change inside a window (camera.c reads s_xor_fold
      * per frame and calibration clears the packer). */
     const double bits_per_word = camera_get_xor_fold() ? 64.0 : 32.0;
+    /* ⚠ raw_words is NOT counted per word. Seven words are consumed per segment
+     * and every failure path returns immediately, so the count is exactly
+     * 7*seg -- deriving it saves 913.000 uint64 increments in the hot loop at
+     * run=5 and is bit-identical, because it is the same integer either way.
+     * The same holds for mid_words at the half-window split. */
     uint64_t raw_ones = 0, raw_words = 0;
     uint64_t mid_ones = 0, mid_words = 0;
+    const uint64_t words_per_seg = 7;
     const int n1 = nseg / 2;
     if (out_pre) *out_pre = 0.0;
     if (out_h1)  *out_h1  = 0.0;
@@ -99,18 +105,21 @@ gcp_result_t gcp_zscore_pre(int nseg, bool (*on_yield)(void), double *out,
         for (int i = 0; i < 6; i++) {
             if (!camera_read_word_raw(&w, &ro)) return GCP_CAM_FAULT;
             ones += (int)cam_popcount32(w);
-            raw_ones += ro; raw_words++;
+            raw_ones += ro;
         }
         if (!camera_read_word_raw(&w, &ro)) return GCP_CAM_FAULT;
         ones += (int)cam_popcount32(w & 0xFFu);
         /* The whole word is consumed and its pixels were measured, even though
          * the folded segment takes only 8 of its bits. The raw channel counts
          * all of them — that is the point of it. */
-        raw_ones += ro; raw_words++;
+        raw_ones += ro;
 
         z_sum += (ones - GCP_SEGMENT_MEAN_I) / GCP_SEGMENT_SD;
 
-        if (seg + 1 == n1) { mid_ones = raw_ones; mid_words = raw_words; }
+        if (seg + 1 == n1) {
+            mid_ones  = raw_ones;
+            mid_words = (uint64_t)n1 * words_per_seg;
+        }
 
         /* The camera path already yields inside camera_read_word() whenever it
          * waits on the producer, which is most of the time. This one is for
@@ -123,6 +132,7 @@ gcp_result_t gcp_zscore_pre(int nseg, bool (*on_yield)(void), double *out,
 
     *out = z_sum / sqrt((double)nseg);
 
+    raw_words = (uint64_t)nseg * words_per_seg;
     if (want_pre && raw_words > 0) {
         if (out_pre)
             *out_pre = pre_z_from_counts(raw_ones, raw_words, bits_per_word);

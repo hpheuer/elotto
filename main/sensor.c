@@ -294,8 +294,9 @@ static void nth_combination(const uint8_t *pool, int n, int r, int k, uint8_t *o
 // numbers enter the pool, never the Phase-2 statistics measured on them.
 // A session whose pool choice must be trusted on its own wants several full
 // random passes; it must NOT go back to repeats in place (onset is the payload).
-static void score_one_run(bool *ok, double *z, double *zp);
+static void score_one_run(bool *ok, double *z, double *zp, double *zcn);
 static void score_build_keys(const double *zc, const double *zpc,
+                             const double *zcc,
                              const bool *scored, int max_val, double *scores);
 static void   center_block(int block_idx);  // forward: publish_valid centres the OPEN block
 
@@ -571,11 +572,12 @@ static void score_and_build_pool(int max_val, int pool_size, uint8_t *pool,
     double scores[51] = {0};
     bool   skip[51]   = {false};
     bool   scored[51] = {false};   // this pass produced a usable z (not void)
-    /* The two raw channels per candidate. Held to the end of the pass
-     * because the key needs the pass's own mean and σ — see
-     * score_build_keys(). NAN = this candidate had no value in that channel. */
-    double zc[51], zpc[51];
-    for (int i = 0; i < 51; i++) { zc[i] = 0.0; zpc[i] = NAN; }
+    /* The three raw channels per candidate — folded z, pre-fold z, concordance
+     * (D58). Held to the end of the pass because the key needs the pass's own
+     * mean and σ per channel — see score_build_keys(). NAN = this candidate had
+     * no value in that channel. */
+    double zc[51], zpc[51], zcc[51];
+    for (int i = 0; i < 51; i++) { zc[i] = 0.0; zpc[i] = NAN; zcc[i] = NAN; }
     if (n_keep > pool_size) n_keep = pool_size;
     for (int i = 0; i < n_keep; i++)
         if (keep[i] >= 1 && keep[i] <= max_val) skip[keep[i]] = true;
@@ -614,7 +616,7 @@ static void score_and_build_pool(int max_val, int pool_size, uint8_t *pool,
         // per number (session run_segments): genuine onset, held once.
         focus_show_number(k, euro_pool);
         bool ok = false;
-        score_one_run(&ok, &zc[k], &zpc[k]);
+        score_one_run(&ok, &zc[k], &zpc[k], &zcc[k]);
         scored[k] = ok;
         g_status.scoring_done++;
         g_status.elapsed_ms = elapsed_ms_now();
@@ -622,7 +624,7 @@ static void score_and_build_pool(int max_val, int pool_size, uint8_t *pool,
     }
     /* Every candidate measured, so the pass's own mean and σ per channel exist:
      * build the keys. Before this point scores[] is empty by construction. */
-    score_build_keys(zc, zpc, scored, max_val, scores);
+    score_build_keys(zc, zpc, zcc, scored, max_val, scores);
 
     /* The kept numbers take the first slots, carrying the score that chose them
      * (they were not re-measured, so there is no new one to carry). */
@@ -1042,29 +1044,41 @@ static int measure_window(WindowMeas *w)
  * positive z, and under HIGH every negative one — so a camera that dropped one
  * run would steer which numbers enter the pool. The caller excludes void
  * candidates from selection instead. */
-static void score_one_run(bool *ok, double *z, double *zp)
+static void score_one_run(bool *ok, double *z, double *zp, double *zcn)
 {
     WindowMeas m;
     int k = measure_window(&m);
     if (ok) *ok = (k > 0);
     *z  = (k > 0) ? m.z  : 0.0;
-    /* Second channel is concordance (D56), the same quantity rank_key() uses. */
-    if (zp) *zp = (k > 0) ? m.zc : NAN;
+    /* Both pre-fold channels, the same two rank_key() uses (D58). measure_window()
+     * leaves zp NAN and zc 0 when no arm reported one; NAN is this pass's
+     * "no value", so the 0 has to be translated — a genuine concordance of
+     * exactly 0.0 is a measure-zero event and reads as average either way. */
+    if (zp)  *zp  = (k > 0) ? m.zp : NAN;
+    if (zcn) *zcn = (k > 0 && m.zc != 0.0) ? m.zc : NAN;
 }
 
-/* Scoring key = pass key: z, optional concordance of half-window pre (D56). */
+/* Scoring key = pass key: folded z plus BOTH pre-fold channels, the pre-fold
+ * half split evenly between them (D58) — the same shape rank_key() uses.
+ *
+ * ⚠ The pass standardises each channel on ITS OWN candidates, because no block
+ * mean exists yet: this is the scoring pass, the first measurements of the
+ * session (D48). That is what makes the pre-fold channels usable here at all —
+ * uncentred they rank NODES, not numbers. */
 static void score_build_keys(const double *zc, const double *zpc,
+                             const double *zcc,
                              const bool *scored, int max_val, double *scores)
 {
     double p = g_status.pre_w;
     double a = 1.0 - p;
     if (a < 0.0) a = 0.0;
-    double norm = sqrt(a * a + p * p);
+    double h = p * 0.5;
+    double norm = sqrt(a * a + 2.0 * h * h);
     if (!(norm > 0.0)) norm = 1.0;
 
-    double m[2] = {0}, s[2] = {1.0, 1.0};
-    const double *srcs[2] = { zc, zpc };
-    for (int ch = 0; ch < 2; ch++) {
+    double m[3] = {0}, s[3] = {1.0, 1.0, 1.0};
+    const double *srcs[3] = { zc, zpc, zcc };
+    for (int ch = 0; ch < 3; ch++) {
         const double *src = srcs[ch];
         if (!src) continue;
         double sum = 0.0, sq = 0.0;
@@ -1081,18 +1095,19 @@ static void score_build_keys(const double *zc, const double *zpc,
 
     for (int k = 1; k <= max_val; k++) {
         if (!scored[k]) { scores[k] = 0.0; continue; }
-        double v[2];
-        const double raw[2] = {
+        double v[3];
+        const double raw[3] = {
             zc[k],
-            zpc ? zpc[k] : NAN
+            zpc ? zpc[k] : NAN,
+            zcc ? zcc[k] : NAN
         };
-        for (int ch = 0; ch < 2; ch++) {
+        for (int ch = 0; ch < 3; ch++) {
             if (isnan(raw[ch])) { v[ch] = 0.0; continue; }
             v[ch] = (raw[ch] - m[ch]) / s[ch];
             if (v[ch] >  ENT_Z_CLAMP) v[ch] =  ENT_Z_CLAMP;
             if (v[ch] < -ENT_Z_CLAMP) v[ch] = -ENT_Z_CLAMP;
         }
-        scores[k] = (a * v[0] + p * v[1]) / norm;
+        scores[k] = (a * v[0] + h * v[1] + h * v[2]) / norm;
     }
 }
 
@@ -1134,15 +1149,33 @@ static double compute_v_eff(void)
  * place — mixing the two silently would be indistinguishable from a result. */
 static double rank_z(const RunResult *r) { return (double)r->z_ctr; }
 
-/* ── The ranking key: z and optional pre-fold, weighted ────────────────────
+/* ── The ranking key: folded z and BOTH pre-fold channels, weighted ────────
  *
- * key = ((1−p)·z_ctr + p·z_conc) / √((1−p)² + p²)
+ * key = ((1−p)·z_ctr + (p/2)·zp_ctr/σ_p + (p/2)·zc_ctr/σ_c)
+ *       / √((1−p)² + 2·(p/2)²)
  *
- * z_conc is leave-one-out Stouffer of per-node half-window pre (D56), not the
- * combined zp_ctr. zp_ctr is archived and shown; it does not rank.
+ * p = ?wpre= splits FOLDED against PRE-FOLD; the pre-fold half is then split
+ * evenly between the two pre-fold channels (D58, user 2026-08-29):
+ *   zp_ctr — combined pre-fold z, the sensitive channel. It is what the fold
+ *            suppresses by √2·ε and therefore the quantity this experiment is
+ *            looking for. One loud node can own it.
+ *   zc_ctr — concordance (D56), the robust channel: half-window agreement,
+ *            loudest node dropped. A single bright-rung offset or a 50 ms
+ *            glitch cannot carry it, and it costs sensitivity to say so.
+ * Neither dominates: the even split is deliberate, so the key needs no third
+ * free parameter and no session carries a weight nobody chose.
  *
- * ⚠ p = 0 reproduces the pure-z ranking EXACTLY — the control arm.
- * ⚠ zc_ctr == 0 means "no concordance" and reads as exactly average.
+ * ⚠ p = 0 reproduces the pure-z ranking EXACTLY — the control arm. The ?wpre=
+ *   field is what makes that arm reachable; it did not become redundant when
+ *   the pre-fold half gained a second channel.
+ * ⚠ Each channel is divided by ITS OWN measured σ. They are not the same
+ *   number — see rank_sig_p / rank_sig_c in sensor.h.
+ * ⚠ The √ normaliser assumes the three terms are independent, and zp and zc
+ *   are built from the SAME bits, so at p → 1 the key's variance runs above 1.
+ *   It sets the printed scale only: dividing every item by one constant
+ *   reorders nothing, and the UI studentises on the MEASURED rank_sigma.
+ * ⚠ 0 in either channel means "no value for this item" and reads as exactly
+ *   average — it is not evidence against.
  * ⚠ Clamped. See ENT_Z_CLAMP in sensor.h — the archive keeps the real value. */
 double rank_key(const RunResult *r)
 {
@@ -1151,15 +1184,21 @@ double rank_key(const RunResult *r)
 
     double sp = g_status.rank_sig_p;
     if (!(sp > 0.0)) sp = 1.0;
+    double sc = g_status.rank_sig_c;
+    if (!(sc > 0.0)) sc = 1.0;
 
-    double zc = (double)r->zc_ctr / sp;
+    double zp = (double)r->zp_ctr / sp;
+    if (zp >  ENT_Z_CLAMP) zp =  ENT_Z_CLAMP;
+    if (zp < -ENT_Z_CLAMP) zp = -ENT_Z_CLAMP;
+
+    double zc = (double)r->zc_ctr / sc;
     if (zc >  ENT_Z_CLAMP) zc =  ENT_Z_CLAMP;
     if (zc < -ENT_Z_CLAMP) zc = -ENT_Z_CLAMP;
 
-    double a = 1.0 - p;
-    double n = sqrt(a * a + p * p);
+    double a = 1.0 - p, h = p * 0.5;
+    double n = sqrt(a * a + 2.0 * h * h);
     if (!(n > 0.0)) return (double)r->z_ctr;
-    return (a * (double)r->z_ctr + p * zc) / n;
+    return (a * (double)r->z_ctr + h * zp + h * zc) / n;
 }
 
 static bool result_ranked(const RunResult *r)
@@ -1201,12 +1240,15 @@ static bool result_centred(const RunResult *r)
  * describe the TABLES (top/bottom/nearest, zmax) must not. */
 static double s_drop_sum, s_drop_sumsq;
 static int    s_drop_n, s_drop_void, s_drop_excl;
-/* The same for the pre-fold channel — needed since rank_key() standardises by
- * its measured σ. Without this, σ after a compaction would be the σ OF THE
- * SURVIVORS, which are the extremes by construction. Its own count, because an
- * item can be ranked and carry no pre-fold value. */
+/* The same for the two pre-fold channels — needed since rank_key() standardises
+ * each by its measured σ. Without this, σ after a compaction would be the σ OF
+ * THE SURVIVORS, which are the extremes by construction. Each keeps its own
+ * count: an item can be ranked and carry neither, or carry zp_ctr and no
+ * zc_ctr (fewer than two nodes survived the leave-one-out drop). */
 static double s_drop_psum, s_drop_psumsq;
 static int    s_drop_pn;
+static double s_drop_csum, s_drop_csumsq;
+static int    s_drop_cn;
 
 /* Recompute pass mean/σ/χ² and studentized Top-N / Bottom-N
  * from the ranked prefix. O(n·TOP_N) after each valid item — exact against
@@ -1265,7 +1307,7 @@ static void recompute_pass_ranks(void)
         g_status.rank_mean = g_status.rank_sigma = 0.0;
         /* Cleared with the rest: a stale σ from the previous session would
          * standardise the first items of this one against the wrong scale. */
-        g_status.rank_sig_p = 0.0;
+        g_status.rank_sig_p = g_status.rank_sig_c = 0.0;
         g_status.pre_n = g_status.pre_clamped = 0;
         return;
     }
@@ -1283,11 +1325,19 @@ static void recompute_pass_ranks(void)
      * Everything BELOW — the three published tables — runs on rank_key().
      * rank_mean/rank_sigma are its own moments. At ?wpre=0 the key IS z_ctr
      * and the two pairs coincide exactly. */
-    /* First: the pre-fold channel's own σ, from the UNCLAMPED archive.
-     * rank_key() divides by it, so it has to be settled before the key is
-     * called below. Seeded with compaction moments for the same reason as z. */
+    /* First: each pre-fold channel's own σ, from the UNCLAMPED archive.
+     * rank_key() divides by them, so both have to be settled before the key is
+     * called below. Seeded with compaction moments for the same reason as z.
+     *
+     * ⚠ Two separate accumulators, not one. zp_ctr and zc_ctr are built from
+     * the same bits but have different scales — the concordance takes the
+     * min() of two halves and drops the loudest node, so its σ runs well below
+     * the combined pre-fold σ. Standardising both by one number would hand the
+     * key a weight nobody chose (D58). */
     double psum = s_drop_psum, psumsq = s_drop_psumsq;
     int    pn = s_drop_pn;
+    double csum = s_drop_csum, csumsq = s_drop_csumsq;
+    int    cn = s_drop_cn;
     for (int j = 0; j < ntot; j++) {
         const RunResult *r = &g_status.results[j];
         if (!result_ranked(r)) continue;
@@ -1298,17 +1348,33 @@ static void recompute_pass_ranks(void)
          * The compaction seeds above are safe: pass_compact() runs after
          * close_block(). */
         if (!result_centred(r)) continue;
-        if (r->zc_ctr != 0.0f) {
-            double pv = (double)r->zc_ctr;
+        if (r->zp_ctr != 0.0f) {
+            double pv = (double)r->zp_ctr;
             psum += pv; psumsq += pv * pv; pn++;
+        }
+        if (r->zc_ctr != 0.0f) {
+            double cv = (double)r->zc_ctr;
+            csum += cv; csumsq += cv * cv; cn++;
         }
     }
     double pss = psumsq - (pn > 0 ? psum * psum / (double)pn : 0.0);
     g_status.rank_sig_p = (pn > 1 && pss > 0.0) ? sqrt(pss / (double)(pn - 1)) : 0.0;
+    double css = csumsq - (cn > 0 ? csum * csum / (double)cn : 0.0);
+    g_status.rank_sig_c = (cn > 1 && css > 0.0) ? sqrt(css / (double)(cn - 1)) : 0.0;
 
     double sp = g_status.rank_sig_p > 0.0 ? g_status.rank_sig_p : 1.0;
+    double sc = g_status.rank_sig_c > 0.0 ? g_status.rank_sig_c : 1.0;
     double ksum = 0.0, ksumsq = 0.0;
-    int    kn = 0, pre_n = 0, pre_clamped = 0;
+    /* ⚠ pre_n is SEEDED with what compaction dropped, because the UI prints it
+     * against pass_n_valid — and that one is seeded (nv = s_drop_n above). Two
+     * counters over two different sets read as an instrument fault: after the
+     * first compaction the ratio collapses and the UI's "with pre n/valid ⚠"
+     * fires on its own bookkeeping, not on the array (seen 2026-08-30 as
+     * "pre 132/788" while every surviving row carried a pre-fold value).
+     * ⚠ pre_clamped is NOT seeded and cannot be: whether an item sits at the
+     * clamp depends on the σ current at the time of asking, and σ moves. It is
+     * a lower bound over the surviving rows after a compaction. */
+    int    kn = 0, pre_n = s_drop_pn, pre_clamped = 0;
     for (int j = 0; j < ntot; j++) {
         const RunResult *r = &g_status.results[j];
         if (!result_ranked(r)) continue;
@@ -1316,10 +1382,13 @@ static void recompute_pass_ranks(void)
             double kk = rank_key(r);
             ksum += kk; ksumsq += kk * kk; kn++;
         }
-        if (r->zc_ctr != 0.0f) {
-            pre_n++;
-            if (fabs((double)r->zc_ctr) / sp >= ENT_Z_CLAMP) pre_clamped++;
-        }
+        /* pre_n counts items carrying the pre-fold channel proper. An item can
+         * have zp_ctr and no zc_ctr — the leave-one-out drop left k < 2 — so
+         * the clamp count is over EITHER channel and counted once per item. */
+        if (r->zp_ctr != 0.0f) pre_n++;
+        if ((r->zp_ctr != 0.0f && fabs((double)r->zp_ctr) / sp >= ENT_Z_CLAMP) ||
+            (r->zc_ctr != 0.0f && fabs((double)r->zc_ctr) / sc >= ENT_Z_CLAMP))
+            pre_clamped++;
     }
     double kmean  = (kn > 0) ? ksum / (double)kn : 0.0;
     double kss    = ksumsq - (double)kn * kmean * kmean;
@@ -1450,9 +1519,13 @@ static void pass_compact(void)
                 s_drop_n++;
                 /* 0 means "no value for this item", the same convention
                  * rank_key() uses — it must not enter a σ. */
-                if (r->zc_ctr != 0.0f) {
-                    double pv = (double)r->zc_ctr;
+                if (r->zp_ctr != 0.0f) {
+                    double pv = (double)r->zp_ctr;
                     s_drop_psum += pv; s_drop_psumsq += pv * pv; s_drop_pn++;
+                }
+                if (r->zc_ctr != 0.0f) {
+                    double cv = (double)r->zc_ctr;
+                    s_drop_csum += cv; s_drop_csumsq += cv * cv; s_drop_cn++;
                 }
             }
             dropped++;
@@ -2194,6 +2267,8 @@ void elotto_task(void *pvParam)
     s_drop_n = s_drop_void = s_drop_excl = 0;
     s_drop_psum = s_drop_psumsq = 0.0;
     s_drop_pn = 0;
+    s_drop_csum = s_drop_csumsq = 0.0;
+    s_drop_cn = 0;
     // unlimited / runs_cap are session parameters from /start and are NOT reset
     // here — they tag the session, exactly like focus_mode.
     g_status.round           = 0;

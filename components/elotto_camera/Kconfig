@@ -131,9 +131,33 @@ menu "Elotto Camera (OV5647 dark-frame entropy)"
             range 0 1023
             help
                 Written directly to the sensor after forcing AGC manual mode
-                (reg 0x3503). Defaults to max: amplifies read noise above the ADC
-                quantization floor. Like the exposure above, the sweep owns this
-                at run time -- it is the boot value, not the operating point.
+                (reg 0x3503). Max: amplifies read noise above the ADC
+                quantization floor.
+
+                ⚠ 256 was TRIED on 2026-08-30 and REVERTED the same hour. Single
+                /expose readings had suggested pre-fold sigma fell from 1.36 to
+                1.00 at the lower gain on every node. It does not: raw_sigma is
+                NON-STATIONARY on a timescale of minutes (D46), and two readings
+                at IDENTICAL settings minutes apart gave 1.211 and 1.025. The
+                apparent gain effect was that noise, sampled twice.
+                The SWEEP -- which measures the whole ladder back to back and is
+                the only comparison that holds -- says the opposite: at gain 256
+                the master certified ZERO of nine rungs (every one failed
+                CAM_CAL_FAIL_ZDIFF; lower gain means smaller frame-to-frame
+                differences, so zero_diff roughly doubled), and the other three
+                certified one rung each. At gain 1023 the four certify 3, 6, 4
+                and 3 rungs. See D59.
+
+                ⚠ Do not re-test this with POST /expose and a single reading.
+                One rung is not evidence about this channel; only the shape
+                across a ladder is (D46).
+
+                ⚠ UNLIKE the exposure above, the sweep does NOT own this at run
+                time. cal_run() reads the gain in force at entry and passes that
+                same g0 to every rung -- only the exposure is laddered. So this
+                value IS the operating point for the life of the board. POST
+                /expose?gain= overrides it until the next sweep, and the sweep
+                then carries the OVERRIDE forward as g0, not this number.
 
     endif
 
