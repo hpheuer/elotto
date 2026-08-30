@@ -1048,9 +1048,13 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "else if(c.sigma>0){nodeHealth[i]=nodeHealth[i]||{};nodeHealth[i].sigma=c.sigma;if(sg)sg.textContent=c.sigma.toFixed(3);}"
 /* Same rule as the table it overwrites: consumption first, production only
    as a parenthesised fallback for a node too old to report it. */
-"var cr=c.consume_mbit_s;"
-"if(cr>0){nodeHealth[i]=nodeHealth[i]||{};nodeHealth[i].mbit=cr;if(mb)mb.textContent=cr.toFixed(2);}"
-"else if(c.mbit_s>0){nodeHealth[i]=nodeHealth[i]||{};nodeHealth[i].mbit=c.mbit_s;if(mb)mb.textContent='('+c.mbit_s.toFixed(2)+')';}"
+/* Cache them SEPARATELY. One merged number cannot be rendered later:
+   a consumption rate prints bare, a production fallback in brackets,
+   and a cache that forgot which one it holds cannot tell them apart. */
+"nodeHealth[i]=nodeHealth[i]||{};"
+"if(c.consume_mbit_s>0)nodeHealth[i].cons=c.consume_mbit_s;"
+"if(c.mbit_s>0)nodeHealth[i].prod=c.mbit_s;"
+"if(mb)mb.textContent=mbitTxt(nodeHealth[i],{});"
 "}).catch(function(){});})(d.nodes[i],i);}"
 "}"
 // Per-node row: session mean Z + p, camera sigma, rate, stalls, lost. The
@@ -1111,8 +1115,8 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
    device performance. cam_cons_mbit is bits a measurement actually READ per
    second of reading. Parenthesised production rate only when a node is too old
    to report the new field. */
-"+'<td id=\"nodeMbit'+i+'\" title=\"'+(N.cam_cons_mbit>0?'bits consumed per second of reading':'no consumption rate — production rate shown')+'\">'"
-"+(N.cam_cons_mbit>0?N.cam_cons_mbit.toFixed(2):(N.cam_mbit>0?'('+N.cam_mbit.toFixed(2)+')':'\\u2013'))+'</td>'"
+"+'<td id=\"nodeMbit'+i+'\" title=\"'+mbitTitle(H,N)+'\">'"
+"+mbitTxt(H,N)+'</td>'"
 "+'<td title=\"exposure chosen by this loop\\u2019s calibration\">'+ex+'</td>'"
 "+'<td>'+(N.cam_stalls>0?'\\u26a0 '+N.cam_stalls:'0')+'</td>'"
 "+'<td>'+(N.lost>0?'\\u26a0 '+N.lost:'0')+'</td>'"
@@ -1188,6 +1192,27 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "}"
 // One column of numbers: Z*, the studentized ranking key. Z / P and the
 // uncorrected p live in the hover text built below.
+/* ⚠ The cell has TWO sources and they refresh at different rates: the
+   /status poll re-renders the whole table every second, while the per-node
+   /diag poll fills nodeHealth far more slowly. Reading only /status made the
+   cell blink between a value and a dash once a second, because
+   cam_cons_mbit is 0 between block boundaries -- the D: reply that carries
+   it is only fetched when a block closes. So the cache wins, /status is the
+   fallback, and neither may be read alone. Same rule the sigma cell follows.
+   Consumption prints bare, production in brackets: a node too old to report
+   consumption still shows something, and it stays visibly a different
+   quantity (D60). */
+"function mbitTxt(H,N){"
+"H=H||{};N=N||{};"
+"var c=(H.cons>0)?H.cons:(N.cam_cons_mbit>0?N.cam_cons_mbit:0);"
+"if(c>0)return c.toFixed(2);"
+"var p=(H.prod>0)?H.prod:(N.cam_mbit>0?N.cam_mbit:0);"
+"return p>0?'('+p.toFixed(2)+')':'\\u2013';}"
+"function mbitTitle(H,N){"
+"H=H||{};N=N||{};"
+"var c=(H.cons>0)?H.cons:(N.cam_cons_mbit>0?N.cam_cons_mbit:0);"
+"return c>0?'bits consumed per second of reading'"
+":'no consumption rate reported — extraction rate shown in brackets';}"
 "function renderRunTable(headId,bodyId,res,isEuro,d,st){"
 "document.getElementById(headId).innerHTML="
 "'<tr><th>#</th><th>Item</th>'"
@@ -2223,7 +2248,12 @@ static esp_err_t start_handler(httpd_req_t *req)
          * session over the same g_status/results[]. elotto_task re-asserts it
          * (harmlessly) after its reset block. */
         g_status.state = ELOTTO_RUNNING;
-        if (xTaskCreate(elotto_task, "elotto", 8192, NULL, 5, NULL) != pdPASS) {
+        /* PINNED to the core the extraction task is NOT on. Created fresh on
+         * every /start, so an unpinned create re-rolled the placement each
+         * session and landed on cam_task's core about one time in three,
+         * halving both. See ELOTTO_CAM_TASK_CORE in camera.h. */
+        if (xTaskCreatePinnedToCore(elotto_task, "elotto", 8192, NULL, 5, NULL,
+                                    ELOTTO_CAM_CONSUMER_CORE) != pdPASS) {
             g_status.state = ELOTTO_IDLE;
             httpd_resp_set_status(req, "500 Internal Server Error");
             httpd_resp_sendstr(req, "no heap for the session task");
@@ -2972,7 +3002,11 @@ void app_main(void)
 
     eth_event_group = xEventGroupCreate();
     ethernet_init();
-    xTaskCreate(webserver_task, "ws_task", 8192, NULL, 5, NULL);
+    /* Off the extraction core too: it is priority 5, so wherever it lands it
+     * outranks cam_task, and a floating web server would put the /status and
+     * /focus polling on top of the measurement at unpredictable moments. */
+    xTaskCreatePinnedToCore(webserver_task, "ws_task", 8192, NULL, 5, NULL,
+                            ELOTTO_CAM_CONSUMER_CORE);
 
     // Camera bring-up. Non-fatal HERE on purpose: Ethernet, the webserver and
     // OTA must come up regardless, or a node with a dead camera could not be

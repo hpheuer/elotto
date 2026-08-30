@@ -786,7 +786,7 @@ Measured after the change, all four nodes: production 5,711..5,715, consumption 
 They read the same words in the same window and are equally fast — which is the answer, and
 was invisible before.
 
-**⚠ Offen, und nicht durch diese Änderung verursacht: the window length is bimodal.** At
+**⚠ Was hier als OFFEN stand, ist seit D61 geklärt: the window length is bimodal.** At
 identical parameters (`run=5`, 130435 segs) `focus_win_ms` came back 5134..5163 ms in some
 sessions and 10201..10210 ms in others, with production 5,71 against 3,34 to match. Verified
 NOT a regression: the committed 25cb867 build measured 10201 ms on all four in one session and
@@ -794,3 +794,62 @@ NOT a regression: the committed 25cb867 build measured 10201 ms on all four in o
 time per item. `focus_win_ms` is the master's OWN read span (`focus_off()` runs before
 `nodes_collect()`), so it is not slave latency. The consumption rate is the instrument for
 chasing this: it separates read speed from surplus, which nothing did before.
+
+**Aufgelöst durch D61:** `elotto_task` was created unpinned on every `/start` and landed on
+`cam_task`'s core about one session in three. The consumption rate did exactly the job claimed
+for it here — the halving from 5,774 to 2,881 is what identified the mechanism.
+
+### D61 — The extraction task and its consumer are PINNED to different cores (2026-08-30)
+**Entscheidung:** `cam_task`, `elotto_task`, the master's `ws_task` and the slave's `link_task`
+are created with `xTaskCreatePinnedToCore()` instead of `xTaskCreate()`. `ELOTTO_CAM_TASK_CORE`
+(1) and `ELOTTO_CAM_CONSUMER_CORE` (0) in `camera.h` are the single definition of the split, so
+neither firmware spells out a core id of its own. Priorities are unchanged.
+
+**Warum:** this closes D60's open bimodal window. `xTaskCreate()` is `tskNO_AFFINITY` and the P4
+has two cores, so the scheduler chose a core for each task. The master creates `elotto_task`
+fresh on **every** `/start`, so the choice was re-rolled per session: on the free core the two
+tasks had one core each, on the camera's core they shared one and both halved. Measured on the
+master, same firmware, same parameters:
+
+| | ms_extract | ms_wait | ms_pair | production | consumption | focus_win_ms |
+|---|---|---|---|---|---|---|
+| one core each | 46,9 | 6,9 | 56,1 | 5,71 | 5,77 | 5134..5192 |
+| sharing a core | 80,0 | 17,4 | 100,1 | 3,20 | 2,88 | 10186..10229 |
+
+Consumption halving **exactly** (5,774 -> 2,881) is the signature: two tasks that each had a core
+now split one. `ms_wait` rises with it because `CAM_BUF_COUNT` is 4 and the loop holds two of
+them — a stretched extraction outlasts the two free buffers and capture stalls, so the next
+`DQBUF` waits longer.
+
+**Wie es eingekreist wurde,** because the wrong answers were all plausible and each was killed by
+a measurement rather than an argument:
+
+- **Not the data.** The bulk loop in `cam_extract_fast()` has no data-dependent branch at all
+  (`zeros` and `psum` are multiply tricks), so its instruction count per frame is constant.
+- **Not the exposure.** The whole ladder, three slaves, 30 s per rung: `ms_extract` 46,15..46,21
+  across all eight rungs at `mean_px` 3,1..110,6 and `zero_diff` 0,036..0,178. This also retires
+  the "45,7 at exp 16 against 59,1 at exp 64" note in `camera.c`, which was almost certainly an
+  idle reading against a loaded one.
+- **Not anything set at boot** — not PSRAM speed, not cache, not buffer placement. 10 of 10
+  idle boots ran fast, and in the mixed test the idle reading taken **before** each session was
+  fast even in the sessions that then came out slow.
+- **Not the array.** Master only; all three slaves measured 46,7..47,0 in the same slow sessions.
+- **Not the boot at all.** Two sessions inside ONE boot came out in different modes. That is what
+  named the session start, and `/start` is where `elotto_task` is created.
+
+**Verifiziert:** 4 of 11 session starts were slow before; 20 of 20 after, `ms_extract`
+46,65..46,72, `focus_win_ms` 5126..5161. Under the old rate a clean run of 20 has p = 1,3e-4.
+`ms_wait` also improved slightly, 6,9 -> 6,0, which is `ws_task` no longer able to land on the
+extraction core.
+
+⚠ The priority rule (consumer above `ELOTTO_CAM_TASK_PRIO`, D24) and this core split are
+SEPARATE requirements and both must hold. Priority decides who wins once two tasks are on one
+core; the pinning is what keeps them off one core at all.
+
+⚠ A single fast session proves nothing about this class of bug — it was intermittent at
+roughly one session in three. Any future change that creates a task in the measuring path must be
+re-tested over ~20 starts.
+
+⚠ Sessions before and after this change are not the same instrument where the slow mode
+actually struck: those items got the same segment count over twice the wall time. `run_s` and
+`run_segs` in the CSV header do not distinguish them — `focus_win_ms` does.

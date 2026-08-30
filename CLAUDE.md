@@ -423,6 +423,15 @@ floor is load-bearing.
 - ⚠ **Task priority is load-bearing**: any task calling `camera_read_word()` must run **above** the
   extraction task, or the consumer starves ~10× (see `camera.h`; signature: ring `drops` huge with
   `waits == 0`).
+- ⚠ **Task CORE is load-bearing too, and it is a separate rule.** Every task in the measuring path
+  is created with `xTaskCreatePinnedToCore()`: extraction on `ELOTTO_CAM_TASK_CORE`, consumer and
+  web server on `ELOTTO_CAM_CONSUMER_CORE` (both in `camera.h`) `[D61]`. Plain `xTaskCreate()` is
+  `tskNO_AFFINITY`, and the master creates `elotto_task` fresh on **every** `/start` — unpinned it
+  shared a core with `cam_task` in about one session in three and **everything halved**:
+  `focus_win_ms` 10,2 s instead of 5,13, consumption 2,88 instead of 5,77.
+  ⚠ The signature is consumption halving EXACTLY while all other nodes stay normal.
+  ⚠ **One fast session proves nothing here** — it was intermittent. Re-test any new task in this
+  path over ~20 session starts.
 
 ---
 
@@ -452,9 +461,12 @@ where the loop is compute-bound `[D25]`.
   counts words the ring then discarded — it read 5,71 on the master against 3,34 on the slaves
   purely because the master's consumer was slower and its ring overflowed. The node table and
   `/diag` show the second; use the first only for the sensor ceiling `[D23]` and `/camtest`.
-- ⚠ **The window length is bimodal and unexplained**: at identical parameters `focus_win_ms`
-  is either ~5,13 s or ~10,2 s per 5 s run, with production 5,71 or 3,34 to match. It survives
-  a reflash and is not a regression `[D60]`. Check it before timing a long pass.
+- ⚠ **The window length WAS bimodal; the cause was unpinned tasks and it is fixed** `[D61]`.
+  `focus_win_ms` was either ~5,13 s or ~10,2 s per 5 s run at identical parameters, because
+  `elotto_task` is created on every `/start` and, unpinned, shared a core with `cam_task` about
+  one session in three. If ~10,2 s ever returns, the first suspect is a task in the measuring
+  path created with plain `xTaskCreate()` — not the camera. Signature: consumption halves
+  exactly (5,77 → 2,88) on the master alone.
 - **`GET /camtest`** runs the byte-wise reference against the word-wise path on the node's own
   silicon; `cam_extract_ref()` stays compiled in as the definition of correct.
   ⛔ **Do not change the live extractor without it.** 409 while measuring; master only.

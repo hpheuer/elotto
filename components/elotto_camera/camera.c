@@ -440,11 +440,15 @@ static void diff_and_extract(const uint8_t *a, const uint8_t *b, uint32_t n)
      * from +28,6 % before the counters moved into locals. Still priced at IDLE
      * only, where the loop waits on the sensor — the loaded cost remains
      * unmeasured. Watch ms_extract and cam_mbit on a SLAVE during a session.
-     * ⚠ And ms_extract is not a constant: it measured 45,7 ms at exp 16 and
-     * 59,1 ms at exp 64 on the same node, same build (2026-08-27). Extraction
-     * walks a fixed 640000-pixel frame, so that should not depend on the
-     * exposure at all, and it is unexplained. Compare ms_extract only between
-     * nodes on the SAME rung. */
+     * ⚠ A note here used to claim ms_extract depends on the exposure -- 45,7 ms
+     * at exp 16 against 59,1 at exp 64, same node, same build (2026-08-27).
+     * It does NOT. The whole ladder was walked on three slaves, 30 s per rung,
+     * on 2026-08-30: 46,15..46,21 ms across all eight rungs, at mean_px 3,1 to
+     * 110,6 and zero_diff 0,036 to 0,178. The bulk loop has no data-dependent
+     * branch at all, so a frame costs the same whatever is in it. The old pair
+     * was an idle reading against a loaded one. What DOES move ms_extract is
+     * which core this task runs on -- see ELOTTO_CAM_TASK_CORE in camera.h and
+     * D61. Compare ms_extract only between nodes in the same LOAD state. */
     cam_extract_fast(a, b, n, s_xor_fold, &s_pack, emit_word_cb, NULL, &zeros, &any, &psum,
                      &s_raw);
 
@@ -940,7 +944,11 @@ esp_err_t camera_init(void)
     }
 
     cam_verify_regs("after-streamon");   // STREAMON rewrites sensor regs; confirm ours survived
-    if (xTaskCreate(camera_task, "cam_task", 8192, NULL, ELOTTO_CAM_TASK_PRIO, NULL) != pdPASS) {
+    /* PINNED, not floating: the consumer is pinned to the other core. See the
+     * factor-of-two note at ELOTTO_CAM_TASK_CORE in camera.h. */
+    if (xTaskCreatePinnedToCore(camera_task, "cam_task", 8192, NULL,
+                                ELOTTO_CAM_TASK_PRIO, NULL,
+                                ELOTTO_CAM_TASK_CORE) != pdPASS) {
         ESP_LOGE(TAG_CAM, "capture task create failed");
         ret = ESP_ERR_NO_MEM;
         goto fail;

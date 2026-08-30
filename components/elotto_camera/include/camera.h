@@ -349,6 +349,32 @@ esp_err_t camera_selftest_handle(void *httpd_req, bool busy);
 // Priority of the extraction task created by camera_init().
 #define ELOTTO_CAM_TASK_PRIO 4
 
+// Core the extraction task is PINNED to. The consumer belongs on the OTHER one,
+// which is what ELOTTO_CAM_CONSUMER_CORE names, so both firmwares derive the
+// split from one number instead of each spelling out a core id.
+//
+// IMPORTANT — this is not tuning, it is a fix for a measured factor of two.
+// Both tasks were created with xTaskCreate(), i.e. tskNO_AFFINITY, and the P4
+// has two cores. The master creates elotto_task fresh on EVERY /start, so the
+// scheduler placed it anew each session: on the free core the two had one core
+// each, on the camera's core they shared one and BOTH halved. Measured
+// 2026-08-30 on the master, same firmware, same parameters:
+//
+//   sharing a core:  ms_extract 80,0  ms_wait 17,4  prod 3,20  cons 2,88
+//   one core each:   ms_extract 46,9  ms_wait  6,9  prod 5,71  cons 5,77
+//
+// i.e. focus_win_ms 10210 against 5134 — twice the measuring time per item,
+// bought nothing. Consumption halving EXACTLY (5,77 -> 2,88) is the signature.
+// It hit 4 of 11 session starts and was invisible at idle (10 of 10 idle boots
+// fast), because with no session there is no second task to collide with. Two
+// sessions inside ONE boot came out in different modes, and that is what ruled
+// out every boot-time explanation — PSRAM speed, cache, buffer placement.
+// ms_wait rises along with it because CAM_BUF_COUNT is 4 and the loop holds
+// two: a stretched extraction outlasts the two free buffers and capture stalls.
+// See D61.
+#define ELOTTO_CAM_TASK_CORE     1
+#define ELOTTO_CAM_CONSUMER_CORE 0
+
 // IMPORTANT — task priority: the extraction task is CPU-hungry (~7.6M pixel
 // ops/s). The task calling camera_read_word() MUST run ABOVE
 // ELOTTO_CAM_TASK_PRIO, or the producer starves the consumer and measurement
@@ -357,6 +383,13 @@ esp_err_t camera_selftest_handle(void *httpd_req, bool busy);
 // The master's elotto_task is created at priority 5; the slave's UDP command
 // loop runs in its own "link" task created at ELOTTO_CAM_TASK_PRIO + 1. Neither
 // may live in app_main, whose priority IDF hardcodes to 1 — below this one.
+//
+// The priority relation above and the core split are SEPARATE requirements and
+// both must hold. Priority decides who wins once they are on one core; the
+// pinning is what keeps them off one core at all. Creating either task with
+// xTaskCreate() instead of xTaskCreatePinnedToCore() re-opens the factor of two
+// documented at ELOTTO_CAM_TASK_CORE, and it returns intermittently — roughly
+// one session in three — so a single fast run proves nothing.
 //
 // Phase 1 consumer API: pop one 32-bit word of extracted entropy.
 // Blocks (vTaskDelay) while the ring is empty -- bits are never reused or
