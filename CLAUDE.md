@@ -448,6 +448,13 @@ where the loop is compute-bound `[D25]`.
   still open — prove any change with `ms_extract` under load, never at idle `[D25]`.
 - `/diagjson` publishes the per-pair split on every node: `ms_pair` = `ms_wait` + `ms_extract` +
   `ms_rest`.
+- ⚠ **`mbit_s` is PRODUCTION, `consume_mbit_s` is what a measurement READ** `[D60]`. The first
+  counts words the ring then discarded — it read 5,71 on the master against 3,34 on the slaves
+  purely because the master's consumer was slower and its ring overflowed. The node table and
+  `/diag` show the second; use the first only for the sensor ceiling `[D23]` and `/camtest`.
+- ⚠ **The window length is bimodal and unexplained**: at identical parameters `focus_win_ms`
+  is either ~5,13 s or ~10,2 s per 5 s run, with production 5,71 or 3,34 to match. It survives
+  a reflash and is not a regression `[D60]`. Check it before timing a long pass.
 - **`GET /camtest`** runs the byte-wise reference against the word-wise path on the node's own
   silicon; `cam_extract_ref()` stays compiled in as the definition of correct.
   ⛔ **Do not change the live extractor without it.** 409 while measuring; master only.

@@ -83,6 +83,11 @@ static volatile uint32_t s_ring_head = 0;
 static volatile uint32_t s_ring_tail = 0;
 static volatile uint32_t s_ring_drops = 0;
 static volatile uint32_t s_consumer_waits = 0;
+/* Consumed bits and the microseconds spent reading them, summed over the runs
+ * since the last stats reset. Written under the mutex by camera_note_consumed(),
+ * which the consumer calls once per run. */
+static uint64_t s_cons_bits = 0;
+static int64_t  s_cons_us   = 0;
 static volatile uint32_t s_stalls = 0;
 
 /* ── Ring-tail reset guard ────────────────────────────────────────────────
@@ -519,6 +524,9 @@ static void publish_stats(void)
     s_stats.die_temp_c        = s_die_temp;
     s_stats.ring_drops        = s_ring_drops;
     s_stats.consumer_waits    = s_consumer_waits;
+    s_stats.consume_mbit_per_sec = (s_cons_us > 0)
+        ? (double)s_cons_bits / (double)s_cons_us   /* bit/us == Mbit/s */
+        : 0.0;
     s_stats.stalls            = s_stalls;
     double np = (double)(s_acct_pairs ? s_acct_pairs : 1);
     s_stats.ms_pair           = s_us_cycle / np / 1000.0;
@@ -566,6 +574,7 @@ static void stats_reset_locked(void)
     s_raw.want_runs = s_raw_runs_on;
     s_us_wait = 0; s_us_ext = 0; s_us_rest = 0; s_us_cycle = 0;
     s_acct_pairs = 0; s_last_pair_us = 0;
+    s_cons_bits = 0; s_cons_us = 0;   // same window as everything else here
     memset(&s_pack, 0, sizeof(s_pack));  // a half-folded pair must not straddle
     ring_reset_tail();                   // drop unread old-setting words
     s_stream_start_us = esp_timer_get_time();
@@ -593,6 +602,7 @@ static void stats_reset_locked(void)
     s_stats.sigma_samples     = 0;
     s_stats.mean_pixel_level  = 0.0;
     s_stats.mbit_per_sec      = 0.0;
+    s_stats.consume_mbit_per_sec = 0.0;
     s_stats.zero_diff_frac    = 0.0;
     s_stats.ms_pair = 0.0; s_stats.ms_wait = 0.0;
     s_stats.ms_extract = 0.0; s_stats.ms_rest = 0.0;
@@ -1027,6 +1037,20 @@ bool camera_read_word_raw(uint32_t *out, uint32_t *out_raw)
         s_consumer_active = false;
         return true;
     }
+}
+
+/* Bits/us is Mbit/s exactly (1e6 cancels), so no scaling is needed at either
+ * end. The mutex is the same one publish_stats() takes; this runs once per run,
+ * so the contention is nil. A run that produced no bits or took no measurable
+ * time is dropped rather than divided. */
+void camera_note_consumed(uint64_t bits, int64_t us)
+{
+    if (bits == 0 || us <= 0) return;
+    if (!s_mutex) return;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    s_cons_bits += bits;
+    s_cons_us   += us;
+    xSemaphoreGive(s_mutex);
 }
 
 /* The folded-only reader is the raw one with the side value thrown away.

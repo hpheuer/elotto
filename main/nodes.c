@@ -671,6 +671,7 @@ void slaves_diag(void)
     for (int k = 0; k < s_nslaves; k++) {
         NodeStatus *N = &g_status.nodes[k + 1];
         N->cam_mbit = 0.0f;
+        N->cam_cons_mbit = 0.0f;
         if (!s_link[k].replied) continue;
         const char *resp = s_link[k].reply;
         if (resp[0] != 'D' || resp[1] != ':') continue;
@@ -682,6 +683,12 @@ void slaves_diag(void)
                    &ready, &bias, &sigma, &mb, &st, &stuck) < 5) continue;
         N->cam_mbit      = mb;
         N->cam_stalls    = (uint32_t)st;
+        /* ",cons=" — bits a measurement actually READ per second of reading,
+         * against cam_mbit which is what extraction produced including what the
+         * ring threw away. Absent from a slave older than 2026-08-30, and then
+         * it stays 0 — which reads as "not reported", not as "reads nothing". */
+        const char *cons = strstr(resp, ",cons=");
+        if (cons) N->cam_cons_mbit = (float)atof(cons + 6);
         N->cam_bias_now  = bias;
         N->cam_sigma_now = sigma;
         /* ",fw=<16 hex>" = the node's image, the same 16 characters its own

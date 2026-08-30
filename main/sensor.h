@@ -508,7 +508,14 @@ typedef struct {
     uint8_t  soft_down;     // 1 = excluded from combine after a block σ excursion
                             // (quality collapse, not a hard camera stall). Cleared
                             // when a later block is clean. Never reboots.
-    float    cam_mbit;      // camera rate at the last per-loop 'D' query
+    float    cam_mbit;      // PRODUCTION rate at the last per-loop 'D' query --
+                            // what extraction wrote into the ring, discarded
+                            // surplus included. Not device performance.
+    float    cam_cons_mbit; // CONSUMPTION rate: bits a measurement actually read,
+                            // per second SPENT READING (gaps excluded). This is
+                            // the number that compares nodes. 0 = the node did
+                            // not report it (slave older than 2026-08-30) or no
+                            // run has completed yet -- never "reads nothing".
     uint32_t cam_stalls;
     // What this node's camera calibration chose at the start of the current loop
     // (PLAN.md Task 1). Nodes land on DIFFERENT settings and that is correct —

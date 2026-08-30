@@ -765,3 +765,32 @@ pay, not the arithmetic.
 slave0 0,13, slave2 0,22, **slave1 0,48** — and slave1 has the worst `raw_sigma` (1,203) and
 sits on the shortest rung (exp 64, later exp 16). The same dimming that fixed slave0 is
 indicated, by roughly a factor of 2–3.
+
+### D60 — The node table shows CONSUMPTION, not production (2026-08-30)
+**Entscheidung:** `cam_stats_t` gains `consume_mbit_per_sec`: bits handed to a caller of
+`camera_read_word()`/`_raw()`, over the microseconds spent reading them. `gcp_zscore_pre()`
+reports one span per run via `camera_note_consumed()` — two `esp_timer_get_time()` calls per
+run, not one per word. Published in `/diag`, `/diagjson`, `/status` (`cam_cons_mbit`) and as
+`,cons=` on the `D:` reply; the UI node table and `/diag` show it, falling back to a
+parenthesised production rate for a node too old to report it. Counted in **32 bits per ring
+word**, the same unit `mbit_per_sec` uses — the 64 pre-fold pixels behind a folded word are
+coverage, not a second throughput, and mixing the two put double-scaled numbers in one column.
+
+**Warum:** `mbit_per_sec` is what extraction wrote into the ring, discarded words included.
+On 2026-08-30 the master read 5,71 against 3,34 on the slaves and it meant nothing about the
+devices: the master's consumer was the slower one, so its ring overflowed (345 M drops, ~0
+waits) while the slaves consumed everything they produced and waited constantly (162 k waits).
+The operator wanted device performance; that number was measuring the size of the surplus.
+
+Measured after the change, all four nodes: production 5,711..5,715, consumption 5,768..5,774.
+They read the same words in the same window and are equally fast — which is the answer, and
+was invisible before.
+
+**⚠ Offen, und nicht durch diese Änderung verursacht: the window length is bimodal.** At
+identical parameters (`run=5`, 130435 segs) `focus_win_ms` came back 5134..5163 ms in some
+sessions and 10201..10210 ms in others, with production 5,71 against 3,34 to match. Verified
+NOT a regression: the committed 25cb867 build measured 10201 ms on all four in one session and
+5139 in another. Whatever selects the mode, it survives a reflash and doubles the measuring
+time per item. `focus_win_ms` is the master's OWN read span (`focus_off()` runs before
+`nodes_collect()`), so it is not slave latency. The consumption rate is the instrument for
+chasing this: it separates read speed from surplus, which nothing did before.

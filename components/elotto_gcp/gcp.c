@@ -1,4 +1,5 @@
 #include "gcp.h"
+#include "esp_timer.h"
 #include "camera.h"
 
 #include <math.h>
@@ -95,6 +96,13 @@ gcp_result_t gcp_zscore_pre(int nseg, bool (*on_yield)(void), double *out,
     const int poll  = nseg / 4 + 1;
     double    z_sum = 0.0;
 
+    /* Two timestamps for the whole run, not one per word: the span this loop
+     * spends reading is what device performance means, and 913.000 timer reads
+     * would cost more than the thing being measured. Reported once at the end
+     * to camera_note_consumed(). A run that faults out reports nothing --
+     * an aborted span has no meaningful rate. */
+    const int64_t t_read0 = esp_timer_get_time();
+
     for (int seg = 0; seg < nseg; seg++) {
         uint32_t w;
         int      ones = 0;
@@ -129,6 +137,16 @@ gcp_result_t gcp_zscore_pre(int nseg, bool (*on_yield)(void), double *out,
             if (on_yield && !on_yield()) return GCP_ABORTED;
         }
     }
+
+    /* ⚠ 32 bits per word, NOT bits_per_word. A ring word is 32 bits wide however
+     * many pixels went into it, and mbit_per_sec counts the same 32 per word
+     * (s_bits_extracted += 32). Counting the 64 pre-fold pixels here instead
+     * would make the consumption rate read double the production rate for the
+     * same words -- two numbers in the same column of the same table, in
+     * different units. The pre-fold coverage is a property of the words, not a
+     * second throughput. */
+    camera_note_consumed((uint64_t)nseg * words_per_seg * 32u,
+                         esp_timer_get_time() - t_read0);
 
     *out = z_sum / sqrt((double)nseg);
 

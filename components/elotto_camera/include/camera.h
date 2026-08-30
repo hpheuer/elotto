@@ -39,7 +39,26 @@ typedef struct {
     int      sigma_samples;       // number of mini-runs folded into sigma (gate wants >=200)
     double   autocorr_lag[4];     // lag-1..4 word-stream bit autocorrelation (ideal 0)
     double   mean_pixel_level;    // running mean raw pixel byte, light-leak check (black floor)
-    double   mbit_per_sec;        // sustained extraction rate
+    double   mbit_per_sec;        // sustained PRODUCTION rate: what extraction wrote
+                                  // into the ring, over wall time. ⚠ NOT what a
+                                  // measurement consumed -- a node that produces
+                                  // faster than it reads throws the surplus away
+                                  // (ring_drops), and this number counts the
+                                  // discarded words too. Measured 2026-08-30: the
+                                  // master reads 5,71 here against 3,34 on the
+                                  // slaves purely because its consumer is slower
+                                  // and its ring overflows. Use it for the SENSOR
+                                  // ceiling (D23) and for /camtest; for device
+                                  // performance read consume_mbit_per_sec below.
+    /* What MEASUREMENT actually consumed, per second SPENT READING (2026-08-30).
+     * Bits handed to a caller of camera_read_word()/_raw(), over the time that
+     * reading took -- gaps between runs excluded, because nothing is read then
+     * and averaging them in describes the duty cycle, not the device.
+     *
+     * This is the number that compares nodes: they read the same words in the
+     * same window, so a node that falls behind shows up here and nowhere else.
+     * 0 until the first run reports one. */
+    double   consume_mbit_per_sec;
     double   zero_diff_frac;      // fraction of pixels with diff==0 (noise below 1 ADU).
                                   // Diagnostic: diff==0 has LSB 0, so a high value here
                                   // directly explains a deficit-of-ones bias.
@@ -348,6 +367,11 @@ esp_err_t camera_selftest_handle(void *httpd_req, bool busy);
 // being an instrument, and the caller must fault it (report + reboot) rather
 // than substitute bits from anywhere else.
 bool camera_read_word(uint32_t *out);
+/* Report one completed read span: how many BITS were handed out and how long the
+ * reading took. Called ONCE per run by the consumer, not per word -- a timestamp
+ * per word would cost more than the read. Feeds consume_mbit_per_sec; cleared by
+ * the same stats reset as the rest of the window. */
+void camera_note_consumed(uint64_t bits, int64_t us);
 /* The same word, plus the PRE-FOLD ones count of the pixels it came from, taken
  * as one unit so a folded and an unfolded z cover the SAME window (2026-08-26).
  * With the fold on a word is 64 pixels (0..64 ones), with it off 32.

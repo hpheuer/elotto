@@ -1046,7 +1046,11 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "var sg=document.getElementById('nodeSig'+i),mb=document.getElementById('nodeMbit'+i);"
 "if(c.raw_sigma>0){nodeHealth[i]=nodeHealth[i]||{};nodeHealth[i].sigma=c.raw_sigma;if(sg)sg.textContent=c.raw_sigma.toFixed(3);}"
 "else if(c.sigma>0){nodeHealth[i]=nodeHealth[i]||{};nodeHealth[i].sigma=c.sigma;if(sg)sg.textContent=c.sigma.toFixed(3);}"
-"if(c.mbit_s>0){nodeHealth[i]=nodeHealth[i]||{};nodeHealth[i].mbit=c.mbit_s;if(mb)mb.textContent=c.mbit_s.toFixed(2);}"
+/* Same rule as the table it overwrites: consumption first, production only
+   as a parenthesised fallback for a node too old to report it. */
+"var cr=c.consume_mbit_s;"
+"if(cr>0){nodeHealth[i]=nodeHealth[i]||{};nodeHealth[i].mbit=cr;if(mb)mb.textContent=cr.toFixed(2);}"
+"else if(c.mbit_s>0){nodeHealth[i]=nodeHealth[i]||{};nodeHealth[i].mbit=c.mbit_s;if(mb)mb.textContent='('+c.mbit_s.toFixed(2)+')';}"
 "}).catch(function(){});})(d.nodes[i],i);}"
 "}"
 // Per-node row: session mean Z + p, camera sigma, rate, stalls, lost. The
@@ -1061,7 +1065,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "+'<th align=left title=\"session mean of this node\\u2019s RAW per-run z. Uncentred \\u2014 a constant offset is normal\">Z</th>'"
 "+'<th align=left title=\"two-sided p of this node\\u2019s mean z (Stouffer). Health check, NOT a result\">p</th>'"
 "+'<th align=left title=\"PRE-FOLD per-mini-run \\u03c3 (cam_rsig). Folded \\u03c3 is ~1,00 on a healthy rung and is what trips soft-down; this column is the channel the ranking rides.\">pre \\u03c3</th>'"
-"+'<th align=left title=\"extraction rate: ~5,7 idle, ~3,7 under load. The SLOWEST node sets the window for all four\">Mbit/s</th>'"
+"+'<th align=left title=\"bits a measurement CONSUMED per second of reading (gaps excluded). Not the extraction rate — that counts words the ring discarded. The SLOWEST node sets the window for all four\">Mbit/s</th>'"
 "+'<th align=left title=\"exposure this block\\u2019s sweep chose. \\u2295 = XOR fold on, ! = nothing certified, previous setting kept. Different rungs per node are normal\">exp</th>'"
 "+'<th align=left title=\"frame pairs the sensor failed to deliver. Non-zero = check the hardware\">stalls</th>'"
 "+'<th align=left title=\"runs this node missed. Each costs that run\\u2019s share of the combine, not the session\">lost</th>'"
@@ -1100,7 +1104,15 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "+'<td title=\"mean raw z over '+zn+' runs\">'+zTxt+'</td>'"
 "+'<td title=\"two-sided p of mean (Stouffer)\">'+pTxt+'</td>'"
 "+'<td id=\"nodeSig'+i+'\">'+(H.sigma>0?H.sigma.toFixed(3):(N.cam_rsig>0?N.cam_rsig.toFixed(3):(N.sigma>0?N.sigma.toFixed(3):'\\u2013')))+'</td>'"
-"+'<td id=\"nodeMbit'+i+'\">'+(H.mbit>0?H.mbit.toFixed(2):(N.cam_mbit>0?N.cam_mbit.toFixed(2):'\\u2013'))+'</td>'"
+/* ⚠ CONSUMPTION, not production. cam_mbit is what extraction wrote into
+   the ring, including everything the ring then threw away -- on 2026-08-30
+   that read 5,71 on the master against 3,34 on the slaves purely because the
+   master's consumer is slower and its ring overflows, which says nothing about
+   device performance. cam_cons_mbit is bits a measurement actually READ per
+   second of reading. Parenthesised production rate only when a node is too old
+   to report the new field. */
+"+'<td id=\"nodeMbit'+i+'\" title=\"'+(N.cam_cons_mbit>0?'bits consumed per second of reading':'no consumption rate — production rate shown')+'\">'"
+"+(N.cam_cons_mbit>0?N.cam_cons_mbit.toFixed(2):(N.cam_mbit>0?'('+N.cam_mbit.toFixed(2)+')':'\\u2013'))+'</td>'"
 "+'<td title=\"exposure chosen by this loop\\u2019s calibration\">'+ex+'</td>'"
 "+'<td>'+(N.cam_stalls>0?'\\u26a0 '+N.cam_stalls:'0')+'</td>'"
 "+'<td>'+(N.lost>0?'\\u26a0 '+N.lost:'0')+'</td>'"
@@ -1495,14 +1507,15 @@ static esp_err_t status_handler(httpd_req_t *req)
         buf_append(buf, sizeof(buf), &pos,
             "%s{\"id\":%d,\"ip\":\"%s\",\"ok\":%s,\"soft_down\":%s,"
             "\"z\":%.4f,\"z_n\":%lu,\"sigma\":%.4f,"
-            "\"lost\":%lu,\"cam_mbit\":%.3f,\"cam_stalls\":%lu,"
+            "\"lost\":%lu,\"cam_mbit\":%.3f,\"cam_cons_mbit\":%.3f,\"cam_stalls\":%lu,"
             "\"cam_fault\":%d,\"reboots\":%lu,\"die_temp\":%s,"
             "\"cam_exp\":%lu,\"cam_gain\":%d,\"cam_fold\":%d,\"cam_cal\":%d,"
             "\"cam_bias\":%.6f,\"cam_cal_mbit\":%.3f,\"cam_rsig\":%.4f}",
             i ? "," : "", i, i ? N->ip : "self", N->ok ? "true" : "false",
             N->soft_down ? "true" : "false",
             N->z_mean, (unsigned long)N->z_n, N->sigma,
-            (unsigned long)N->lost, N->cam_mbit, (unsigned long)N->cam_stalls,
+            (unsigned long)N->lost, N->cam_mbit, N->cam_cons_mbit,
+            (unsigned long)N->cam_stalls,
             (int)N->cam_fault, (unsigned long)N->reboots, dt_txt,
             (unsigned long)N->cam_exp, (int)N->cam_gain, (int)N->cam_fold,
             (int)N->cam_cal_ok, N->cam_bias, N->cam_cal_mbit,
@@ -2419,7 +2432,7 @@ static const char DIAG_HTML[] =
 "<th title=\"&sigma; of the per-mini-run z (3200 bits each). Gate wants |&sigma;&minus;1| &le; 0,05\">&sigma;</th>"
 "<th title=\"fraction of pixels with frame difference exactly 0. Their LSB is 0, so a high value explains a deficit of ones. Gated at 0,125\">zero_diff</th>"
 "<th title=\"largest |autocorrelation| over lags 1..4. Gated at 0,01, so it is never subsampled\">autocorr</th>"
-"<th title=\"extraction rate: ~5,7 idle, ~3,7 under load. The slowest node sets the window for the whole array\">Mbit/s</th>"
+"<th title=\"bits a measurement CONSUMED per second of reading (gaps excluded). Not the extraction rate. The slowest node sets the window for the whole array\">Mbit/s</th>"
 "<th title=\"frame pairs the sensor failed to deliver. A node whose camera stops is dropped and rebooted\">stalls</th>"
 "</tr></thead><tbody id='rows'><tr><td class='l' colspan='11'>loading&hellip;</td></tr>"
 "</tbody></table>"
@@ -2494,7 +2507,7 @@ NODE_NAMES_JS
 "\"<td class='\"+cls(s-1,0.025,0.05)+\"'>\"+f(s,4)+\"</td>\"+"
 "\"<td>\"+f(c.zero_diff,4)+\"</td>\"+"
 "\"<td class='\"+cls(ac,0.005,0.01)+\"'>\"+f(ac,4)+\"</td>\"+"
-"\"<td>\"+f(c.mbit_s,3)+\"</td>\"+"
+"\"<td>\"+f(c.consume_mbit_s>0?c.consume_mbit_s:c.mbit_s,3)+\"</td>\"+"
 "\"<td class='\"+(st>0?'bad':'ok')+\"'>\"+st+\"</td></tr>\";"
 "}"
 "function get(u){return fetch(u).then(function(r){return r.json();}).catch(function(){return null;});}"
@@ -2591,7 +2604,8 @@ static esp_err_t diagjson_handler(httpd_req_t *req)
         "\"ready\":%s,\"frame_pairs\":%llu,\"bits\":%llu,\"stuck_frames\":%lu,"
         "\"bias\":%.6f,\"sigma\":%.4f,\"sigma_n\":%d,"
         "\"autocorr\":[%.4f,%.4f,%.4f,%.4f],"
-        "\"mean_pixel\":%.2f,\"mbit_s\":%.3f,\"zero_diff\":%.4f,"
+        "\"mean_pixel\":%.2f,\"mbit_s\":%.3f,\"consume_mbit_s\":%.3f,"
+        "\"zero_diff\":%.4f,"
         /* PRE-FOLD: the stream the sensor produced, before the XOR fold. The
          * fields above describe the folded one. See cam_raw_t in extract.h. */
         "\"raw_bias\":%.6f,\"raw_sigma\":%.4f,\"raw_sigma_n\":%d,"
@@ -2610,7 +2624,8 @@ static esp_err_t diagjson_handler(httpd_req_t *req)
         (unsigned long)cam.stuck_frame_count,
         cam.bias, cam.sigma, cam.sigma_samples,
         cam.autocorr_lag[0], cam.autocorr_lag[1], cam.autocorr_lag[2], cam.autocorr_lag[3],
-        cam.mean_pixel_level, cam.mbit_per_sec, cam.zero_diff_frac,
+        cam.mean_pixel_level, cam.mbit_per_sec, cam.consume_mbit_per_sec,
+        cam.zero_diff_frac,
         cam.raw_bias, cam.raw_sigma, cam.raw_sigma_samples, cam.raw_runs_z,
         cam.die_temp_c,
         (unsigned long)cam.ring_drops, (unsigned long)cam.consumer_waits,
@@ -2640,6 +2655,7 @@ static esp_err_t diagjson_handler(httpd_req_t *req)
             const NodeStatus *N = &g_status.nodes[i];
             bool     me = (i == 0);
             double   mb   = me ? cam.mbit_per_sec : N->cam_mbit;
+            double   cmb  = me ? cam.consume_mbit_per_sec : (double)N->cam_cons_mbit;
             uint32_t stl  = me ? cam.stalls       : N->cam_stalls;
             double   rb   = me ? cam.raw_bias     : N->cam_raw_bias;
             double   rs   = me ? cam.raw_sigma    : N->cam_raw_sigma;
@@ -2652,7 +2668,8 @@ static esp_err_t diagjson_handler(httpd_req_t *req)
             if (isfinite(ct)) snprintf(ct_txt, sizeof(ct_txt), "%.2f", ct);
             else              snprintf(ct_txt, sizeof(ct_txt), "null");
             buf_append(buf, sizeof(buf), &pos,
-                "%s{\"ip\":\"%s\",\"ok\":%s,\"mbit_s\":%.3f,\"stalls\":%lu,"
+                "%s{\"ip\":\"%s\",\"ok\":%s,\"mbit_s\":%.3f,\"consume_mbit_s\":%.3f,"
+                "\"stalls\":%lu,"
                 /* exposure/gain are LIVE; cal_exp is what the last sweep chose.
                  * They differ after a manual /expose or an uncertified sweep. */
                 "\"exposure\":%lu,\"gain\":%lu,"
@@ -2671,7 +2688,7 @@ static esp_err_t diagjson_handler(httpd_req_t *req)
                 "\"die_temp\":%s,"
                 "\"soft_down\":%s,\"lost\":%lu,\"reboots\":%lu,\"fw_sha\":\"%s\"}",
                 i ? "," : "", me ? "master" : N->ip,
-                N->ok ? "true" : "false", mb, (unsigned long)stl,
+                N->ok ? "true" : "false", mb, cmb, (unsigned long)stl,
                 (unsigned long)enow, (unsigned long)gnow,
                 (unsigned long)N->cam_exp, (int)N->cam_cal_ok, N->cam_bias,
                 me ? (camera_get_xor_fold() ? 1 : 0) : (int)N->cam_fold,
