@@ -200,8 +200,10 @@ what remains visible is an effect varying **between items inside a block**.
   (item/round) plus the drawn numbers. ⛔ **It is a SUSPICION list, not a ranking** — the top row
   is the measurement whose z deserves the LEAST trust. It excludes nothing `[D47]`.
   ⚠ One row per NODE: two nodes on the same item is the light, one node alone is that camera.
-  ⚠ Read the **×σ** column, not the raw jump — `WSIG_MIN_JUMP` 0,05 is only 2,8× the measured
-  jump noise (`wsig_sd`, 0,0177 on this rig) and is a floor, not a verdict.
+  ⚠ Read the **×σ** column, not the raw jump: it scales against `wsig_sd`, the session's own
+  measured jump noise (~0,016 on this rig). There is deliberately **no minimum jump** — on a
+  quiet session the board holds five rows at 2..3 σ and says so, and the card is shown even
+  when empty `[D62]`.
   ⚠ It is filled from the MEASURING pass only; a scoring run has no item to name.
 - CSV is **German**: `;` separator, `,` decimal — a decimal point makes Excel read text.
 - **The start form remembers its last values** (NVS, survives reboot and OTA): measuring time,

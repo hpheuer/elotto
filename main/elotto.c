@@ -1276,9 +1276,13 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "return NODE_NAMES[ip]||(ix===0?'master':'unnamed');}"
 "function showWsig(d){"
 "var ev=d.wsig,isEuro=d.mode==='euro';"
-"if(!ev||ev.length===0){document.getElementById('resCardWsig').style.display='none';return;}"
+/* Shown even with nothing on it. An empty board is a STATEMENT -- the
+   cameras were quiet -- and hiding the card makes that look like a missing
+   feature instead. Top/Bottom hide when empty because an empty ranking says
+   nothing; this one is not a ranking. */
+"ev=ev||[];"
 "document.getElementById('resTitleWsig').innerHTML="
-"'\\u26A0 Camera jumps '+ev.length+' (largest change in window sigma)';"
+"'\\u26A0 Camera jumps'+(ev.length?' '+ev.length:'')+' (largest change in window sigma)';"
 /* The measured scale belongs beside the table, not in anyone's head: a
    jump of 0,05 is noise and one of 0,20 is not, and only this number
    says which is which. */
@@ -1295,6 +1299,9 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "+'<th title=\"was this node still in the combine for that item\">counted</th>'"
 "+'<th>Numbers</th>'+(isEuro?'<th>Bonus</th>':'')+'</tr>';"
 "var tb=document.getElementById('resBodyWsig');tb.innerHTML='';"
+"if(ev.length===0){"
+"tb.innerHTML='<tr><td colspan=\"9\" style=\"opacity:.6\">no measurement pairs yet</td></tr>';"
+"}"
 "for(var i=0;i<ev.length;i++){"
 "var e=ev[i],nums='';"
 "for(var j=0;j<e.nums.length;j++)"

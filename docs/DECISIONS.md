@@ -915,13 +915,27 @@ in the combine, so a reader can tell a disturbance that reached the z from one t
 node alone is that camera. Making that distinction on 2026-08-30 took a manual four-node
 `mean_px` comparison across blocks; collapsing the rows would erase it again.
 
-⚠ `WSIG_MIN_JUMP` 0,05 is a floor against filling the board on a short session, nothing
-more: at the measured 0,0177 it is 2,8 sigma, i.e. ordinary scatter. **The x-sigma column is
-what makes a row readable**, and it comes from `wsig_sd`, accumulated over every jump including
-the quiet ones — taking it only from those clearing the floor would measure the floor.
+**Kein Mindestsprung, und die Karte ist immer sichtbar.** A `WSIG_MIN_JUMP` of 0,05 stood here
+for the first hours and was removed the same day. At the measured jump noise it is only 3,2
+sigma, so it fired about once in 700 node-measurements: through a healthy 316-measurement
+session the board stayed empty and the card, which hid itself when empty like Top/Bottom do,
+never appeared at all. That reads as a broken feature rather than a quiet instrument.
+
+The job a floor was meant to do — stop noise looking like a finding — belongs to `wsig_sd`
+and the **x-sigma column** instead, and they do it better: five rows at 2..3 sigma ARE the
+quiet session, stated in the units that say so, and a real event pushes one of them into
+double digits. `wsig_sd` is accumulated over every jump including the quiet ones — taking
+it only from those clearing a floor would have measured the floor. The card now renders even
+with nothing on it: an empty board is a statement, and Top/Bottom hide when empty only
+because an empty RANKING says nothing. This is not a ranking.
 
 ⚠ Filled from the MEASURING pass only. A scoring run has no item identity to name.
 
-**Verifiziert** on hardware, 21 items x 4 nodes: 80 jumps, noise 0,0177, exactly one above the
-floor (node1, item 3802, -0,0512) — and exactly that one on the board, with matching
-prev/now/jump. `w0..w3` populated on every row from all four nodes.
+**Verifiziert** on hardware in three stages. With the floor still in: 21 items x 4 nodes gave
+80 jumps at noise 0,0177, exactly one above 0,05 (node1, item 3802, -0,0512), and exactly
+that one on the board with matching prev/now/jump. Over a longer run, 521 items and 2080
+node-measurements: `wsig_sd` matched an independent recomputation from the CSV to four
+decimals (0,0155 both), and again exactly one archive jump crossed the floor and exactly it
+was on the board. After the floor was dropped: five entries by item 17, 1,8..2,7 sigma, i.e.
+the board fills from the first measurements and labels itself as quiet. `w0..w3` populated
+on every row from all four nodes throughout.

@@ -1635,7 +1635,8 @@ static void wsig_note(const RunResult *r, const float *wsig, uint8_t mask)
         g_status.wsig_sd_n = s_wsig_jn;
         g_status.wsig_sd   = (s_wsig_jn > 1) ? sqrt(s_wsig_jsq / (double)s_wsig_jn) : 0.0;
 
-        if (mag < WSIG_MIN_JUMP) continue;
+        /* No floor: the board keeps the five largest of whatever happened, and
+         * the x-sigma column says whether they matter. See WSIG_TOP_N. */
 
         /* Insertion sort on |jump|, biggest first. WSIG_TOP_N is 5, so the
          * linear scan is cheaper than anything cleverer and runs once per

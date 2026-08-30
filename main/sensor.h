@@ -699,12 +699,15 @@ typedef struct {
 } WsigEvent;
 
 #define WSIG_TOP_N 5
-/* Below this the jump is sampling noise, not an event: a 2 s window carries
- * ~3300 mini-runs, so a window sigma is good to about +-0,012 and a
- * difference of two of them to ~0,017. 0,05 is roughly 3x that. Without a
- * floor the board fills with noise on a perfectly quiet session and says
- * nothing. */
-#define WSIG_MIN_JUMP 0.05f
+/* ⚠ There is deliberately NO minimum jump. A floor of 0,05 stood here and was
+ * removed on 2026-08-30: at the measured jump noise (wsig_sd, 0,0155) it was
+ * only 3,2 sigma, so it fired about once every 700 node-measurements and the
+ * card stayed hidden through a whole healthy session — which reads as a broken
+ * feature, not as a quiet instrument. The job a floor was meant to do — keep
+ * noise from looking like a finding — is done properly by wsig_sd and the
+ * x-sigma column: five rows at 2..3 sigma ARE the quiet session, stated in the
+ * units that say so, and a real event pushes one of them into double digits.
+ * Publish the number, draw no verdict (D47). */
 
 typedef struct {
     ElottoState      state;
