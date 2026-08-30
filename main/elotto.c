@@ -425,6 +425,16 @@ static const char HTML[] =
 "<table><thead id='resHeadLow'></thead>"
 "<tbody id='resBodyLow'></tbody></table>"
 "</div>"
+/* The camera-sigma jump board (D62). Deliberately the LAST card and in a
+   different colour from Top/Bottom: it is a suspicion list, not a ranking.
+   What stands at the top is the item whose bits were least quiet while they
+   were taken -- the z that deserves the least trust, not the most interest. */
+"<div class='card' id='resCardWsig' style='display:none'>"
+"<h3 id='resTitleWsig' style='color:#e8c07a;margin-bottom:4px'></h3>"
+"<div id='resSubWsig' style='font-size:.78em;opacity:.7;margin-bottom:6px'></div>"
+"<table><thead id='resHeadWsig'></thead>"
+"<tbody id='resBodyWsig'></tbody></table>"
+"</div>"
 "</div>"
 "<script>"
 NODE_NAMES_JS
@@ -691,6 +701,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "document.getElementById('saveAll').style.display='none';"
 "document.getElementById('resCard').style.display='none';"
 "document.getElementById('resCardLow').style.display='none';"
+"document.getElementById('resCardWsig').style.display='none';"
 "document.getElementById('msg').textContent='';"
 "setMode(mode);"
 "if(timer)clearInterval(timer);"
@@ -1175,6 +1186,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "document.getElementById('btnSave').style.display='none';"
 "document.getElementById('saveAll').style.display='none';"
 "document.getElementById('resCardLow').style.display='none';"
+"document.getElementById('resCardWsig').style.display='none';"
 "return;}"
 "lastDisplayed=d.top;"
 // Z* studentizes the RANKING KEY, so it takes the key's own moments;
@@ -1189,6 +1201,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "document.getElementById('btnSave').style.display='';"
 "document.getElementById('saveAll').style.display='';"
 "showLow(d);"
+"showWsig(d);"
 "}"
 // One column of numbers: Z*, the studentized ranking key. Z / P and the
 // uncorrected p live in the hover text built below.
@@ -1246,6 +1259,64 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "<td>'+nums+'</td>"
 "'+(isEuro?'<td>'+estr+'</td>':'')+'</tr>';"
 "}"
+"}"
+/* The camera-sigma jump board (D62). Named by (item/round) plus the drawn
+   numbers -- the same identity the other two tables use, and copied into the
+   event when it happened, because results[] is compacted at every round
+   boundary and the row is long gone by the time anyone looks. That is the
+   whole reason this card exists rather than a third pass over results[].
+   
+   The node is named from the ADDRESS in this session's nodes[], never from
+   the stored index on its own: the board keeps a discovery-order index, and
+   that order changes between sessions (see NODE_NAMES_JS). Within the running
+   session the mapping is fixed, so the lookup is valid exactly here. */
+"function wsigNode(d,ix){"
+"var n=(d.nodes&&d.nodes[ix])?d.nodes[ix]:null;"
+"var ip=n?(n.ip==='self'?'192.168.178.100':n.ip):'';"
+"return NODE_NAMES[ip]||(ix===0?'master':'unnamed');}"
+"function showWsig(d){"
+"var ev=d.wsig,isEuro=d.mode==='euro';"
+"if(!ev||ev.length===0){document.getElementById('resCardWsig').style.display='none';return;}"
+"document.getElementById('resTitleWsig').innerHTML="
+"'\\u26A0 Camera jumps '+ev.length+' (largest change in window sigma)';"
+/* The measured scale belongs beside the table, not in anyone's head: a
+   jump of 0,05 is noise and one of 0,20 is not, and only this number
+   says which is which. */
+"document.getElementById('resSubWsig').innerHTML="
+"'Largest change in a node\\u2019s camera noise from its previous measurement to this one. '"
+"+'These are the least trustworthy measurements, not the most interesting ones.'"
+"+((d.wsig_sd>0)?' Jump-to-jump noise this session: \\u00b1'+d.wsig_sd.toFixed(4)+' over '+d.wsig_sd_n+' node-measurements.':'');"
+"document.getElementById('resHeadWsig').innerHTML="
+"'<tr><th>#</th><th>Item</th><th>Node</th>'"
+"+'<th title=\"that node\\u2019s camera sigma on its previous measurement\">was</th>'"
+"+'<th title=\"and on this one. A quiet window reads 1,0\">now</th>'"
+"+'<th title=\"the change; the board ranks its size, either direction\">jump</th>'"
+"+'<th title=\"the jump measured in this session\\u2019s own jump-to-jump noise. Below about 3 this is ordinary sampling scatter\">\\u00d7\\u03c3</th>'"
+"+'<th title=\"was this node still in the combine for that item\">counted</th>'"
+"+'<th>Numbers</th>'+(isEuro?'<th>Bonus</th>':'')+'</tr>';"
+"var tb=document.getElementById('resBodyWsig');tb.innerHTML='';"
+"for(var i=0;i<ev.length;i++){"
+"var e=ev[i],nums='';"
+"for(var j=0;j<e.nums.length;j++)"
+"nums+='<span class=\"num\">'+e.nums[j]+'</span>';"
+"var estr='';"
+"if(isEuro&&e.euro&&e.euro.length)"
+"for(var j=0;j<e.euro.length;j++)"
+"estr+='<span class=\"num euro\">'+e.euro[j]+'</span>';"
+"var itm=(d.unlimited&&e.round)?(e.index+'/'+e.round):e.index;"
+"var sgn=e.jump>0?'+':'';"
+/* One row per NODE, not per item: one node jumping alone is that camera,
+   two nodes on the SAME item is the light. Collapsing them would erase the
+   one distinction this table exists to make. */
+"tb.innerHTML+='<tr><td>'+(i+1)+'</td><td>'+itm+'</td>'"
+"+'<td>'+wsigNode(d,e.node)+'</td>'"
+"+'<td>'+e.prev.toFixed(3)+'</td><td>'+e.now.toFixed(3)+'</td>'"
+"+'<td><b>'+sgn+e.jump.toFixed(3)+'</b></td>'"
+"+'<td>'+((d.wsig_sd>0)?(Math.abs(e.jump)/d.wsig_sd).toFixed(1):'\\u2014')+'</td>'"
+"+'<td>'+(e.counted?'yes':'no')+'</td>'"
+"+'<td>'+nums+'</td>'+(isEuro?'<td>'+estr+'</td>':'')+'</tr>';"
+"}"
+"document.getElementById('resCardWsig').style.display='block';"
 "}"
 "function showLow(d){"
 "var res=d.low,isEuro=d.mode==='euro';"
@@ -1587,6 +1658,36 @@ static esp_err_t status_handler(httpd_req_t *req)
                           emit_run(buf + pos, buf_room(pos, sizeof(buf)),
                                    &g_status.low[i], euro));
     }
+    buf_append(buf, sizeof(buf), &pos,
+        "],\"wsig_sd\":%.4f,\"wsig_sd_n\":%d,\"wsig\":[",
+        g_status.wsig_sd, g_status.wsig_sd_n);
+    /* The camera-sigma jump board (D62): biggest |jump| first, session-wide.
+     * NOT a ranking -- these are the items whose bits were least quiet while
+     * they were taken, i.e. the z that deserve the least trust. `counted`
+     * says whether that node was still in the combine, so a reader can tell
+     * a disturbance that reached the z from one that was already excluded. */
+    for (int i = 0; i < g_status.wsig_n && i < WSIG_TOP_N; i++) {
+        const WsigEvent *e = &g_status.wsig_top[i];
+        buf_append(buf, sizeof(buf), &pos,
+            "%s{\"round\":%d,\"index\":%d,\"node\":%d,\"counted\":%d,"
+            "\"prev\":%.4f,\"now\":%.4f,\"jump\":%.4f,\"nums\":[",
+            i ? "," : "", (int)e->round, (int)e->index, (int)e->node,
+            (int)e->counted, e->prev, e->now, e->jump);
+        bool f1 = true;
+        for (int m = 0; m < 6; m++) {
+            if (!e->nums[m]) continue;
+            buf_append(buf, sizeof(buf), &pos, "%s%d", f1 ? "" : ",", (int)e->nums[m]);
+            f1 = false;
+        }
+        buf_append(buf, sizeof(buf), &pos, "],\"euro\":[");
+        bool f2 = true;
+        for (int m = 0; m < 2; m++) {
+            if (!e->euro[m]) continue;
+            buf_append(buf, sizeof(buf), &pos, "%s%d", f2 ? "" : ",", (int)e->euro[m]);
+            f2 = false;
+        }
+        buf_append(buf, sizeof(buf), &pos, "]}");
+    }
     buf_append(buf, sizeof(buf), &pos, "]}");
 
     httpd_resp_set_type(req, "application/json");
@@ -1867,11 +1968,11 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
          * RAW pre-fold z in discovery order. Empty = no report, not zero. */
         int len = snprintf(buf, sizeof(buf),
             "order;item;n1;n2;n3;n4;n5;n6;e1;e2;z_raw;z_ctr;block;k;skip_rank;"
-            "z0;z1;z2;z3;round;key;zp_ctr;p0;p1;p2;p3;zc_ctr\n");
+            "z0;z1;z2;z3;round;key;zp_ctr;p0;p1;p2;p3;zc_ctr;w0;w1;w2;w3\n");
         send_chunk(req, buf, len, sizeof(buf));
         for (int j = 0; j < n; j++) {
             char zb[32], ab[32], kb[32], pb[32], cbz[32];
-            char nz[MAX_NODES][32], np_[MAX_NODES][32];
+            char nz[MAX_NODES][32], np_[MAX_NODES][32], nw[MAX_NODES][32];
             /* Row and per-node z in one locked snapshot, PER ROW. The lock is
              * released before send_chunk, so a round-boundary compaction can
              * still run BETWEEN two rows of this stream — the guarantee is that
@@ -1879,10 +1980,10 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
              * z-values, not that the file is a self-consistent sample. The
              * compacted= header field already says the latter. */
             RunResult row;
-            float nodez[MAX_NODES], nodep[MAX_NODES];
-            if (!results_row_z(j, &row, nodez, nodep)) {
+            float nodez[MAX_NODES], nodep[MAX_NODES], nodew[MAX_NODES];
+            if (!results_row_z(j, &row, nodez, nodep, nodew)) {
                 for (int i = 0; i < MAX_NODES; i++)
-                    nodez[i] = nodep[i] = NAN;
+                    nodez[i] = nodep[i] = nodew[i] = NAN;
             }
             for (int i = 0; i < MAX_NODES; i++) {
                 if (isnan((double)nodez[i]))
@@ -1894,10 +1995,18 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
                     np_[i][0] = '\0';
                 else
                     de_num(np_[i], sizeof(np_[i]), (double)nodep[i], 4);
+/* w0..w3: that node's CAMERA sigma over this item's OWN window (D62), the
+   covariate that says whether the z beside it was taken on quiet bits.
+   Empty, not 0, when the node did not report one -- a quiet window reads
+   1,0 and never 0, so a printed zero would be a value nobody measured. */
+                if (isnan((double)nodew[i]))
+                    nw[i][0] = '\0';
+                else
+                    de_num(nw[i], sizeof(nw[i]), (double)nodew[i], 4);
             }
             len = snprintf(buf, sizeof(buf),
                 "%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%s;%s;%d;%d;%d;%s;%s;%s;%s;%d;"
-                "%s;%s;%s;%s;%s;%s;%s\n",
+                "%s;%s;%s;%s;%s;%s;%s;%s;%s;%s;%s\n",
                 j + 1, row.index,
                 row.nums[0], row.nums[1], row.nums[2],
                 row.nums[3], row.nums[4], row.nums[5],
@@ -1909,7 +2018,8 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
                 de_num(kb, sizeof(kb), rank_key(&row), 4),
                 de_num(pb, sizeof(pb), (double)row.zp_ctr, 4),
                 np_[0], np_[1], np_[2], np_[3],
-                de_num(cbz, sizeof(cbz), (double)row.zc_ctr, 4));
+                de_num(cbz, sizeof(cbz), (double)row.zc_ctr, 4),
+                nw[0], nw[1], nw[2], nw[3]);
             send_chunk(req, buf, len, sizeof(buf));
         }
         httpd_resp_send_chunk(req, NULL, 0);

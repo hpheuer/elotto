@@ -543,6 +543,15 @@ typedef struct {
      * bits and must match exactly. */
     float    cam_bias_now;
     float    cam_sigma_now;
+    /* The camera sigma of the LAST MEASUREMENT WINDOW on this node (D62),
+     * from ,wsig= on the 'Z' reply — not from the 'D' query the two fields
+     * above come from.
+     * ⚠ cam_sigma_now spans everything since the last sweep, up to three
+     * blocks on this rig, and therefore cannot localise anything. This one
+     * covers exactly the bits one item was scored from, which is what makes a
+     * per-item jump meaningful.
+     * ⚠ NAN = the node did not report one, NOT a quiet window. */
+    float    cam_wsig_now;
     /* Mean raw pixel level from that same 'D' query (,px=, 2026-08-28). The one
      * covariate that separates a light change from a sensor change, which D46
      * named as missing and nothing recorded until LoopStat.cam_px.
@@ -660,6 +669,43 @@ typedef struct {
     float    clear_sig;
 } LoopStat;
 
+/* One camera-sigma JUMP: a single measurement on a single node, where that
+ * node's window sigma moved furthest from what the same node measured on the
+ * item before it (D62).
+ *
+ * Why the jump and not the level: the level drifts slowly with the operating
+ * point, so an absolute bar would flag one node's rung rather than an event.
+ * A jump is differenced against that node's own previous window and so is
+ * blind to where it sits. A disturbance that lasts produces a jump up when it
+ * starts and one down when it ends — both are real, both belong on the board,
+ * which is why it ranks |jump| and keeps the sign in prev/now.
+ *
+ * ⚠ `prev` is the previous item THIS NODE reported a window sigma for, not
+ * the previous item overall: a node that voided or was unreachable in
+ * between leaves a gap, and the jump then spans it.
+ * ⚠ nums/euro are copied in rather than looked up later, because results[]
+ * is compacted at every round boundary and the row would be gone. This board
+ * has to survive that — it exists precisely because the rows do not. */
+typedef struct {
+    uint16_t round;      // (round, index) is the identity in unlimited mode
+    uint16_t index;      // combination id WITHIN that round
+    uint8_t  node;       // discovery order, 0 = master
+    uint8_t  counted;    // 1 = this node was in that item's combine
+    uint8_t  nums[6];
+    uint8_t  euro[2];
+    float    prev;       // that node's window sigma on its previous item
+    float    now;        // and on this one
+    float    jump;       // now - prev; the board ranks |jump|
+} WsigEvent;
+
+#define WSIG_TOP_N 5
+/* Below this the jump is sampling noise, not an event: a 2 s window carries
+ * ~3300 mini-runs, so a window sigma is good to about +-0,012 and a
+ * difference of two of them to ~0,017. 0,05 is roughly 3x that. Without a
+ * floor the board fills with noise on a perfectly quiet session and says
+ * nothing. */
+#define WSIG_MIN_JUMP 0.05f
+
 typedef struct {
     ElottoState      state;
     ElottoPhase      phase;
@@ -736,6 +782,23 @@ typedef struct {
     int              pass_n_open;
     int              pass_n_void;         // incomplete combines (k=0), archived only
     int              pass_n_excl;         // k>0 but skip_rank (trigger-block quarantine)
+    /* The camera-sigma jump board (D62). Biggest |jump| first, session-wide.
+     * ⚠ This is a SUSPICION list, not a ranking: what stands at the top is
+     * the item whose bits were least quiet while they were taken, i.e. the
+     * one whose z deserves the least trust. It must never be read like
+     * top[]/low[], and it excludes nothing by itself — the software
+     * publishes the number and draws no verdict (D47). */
+    WsigEvent        wsig_top[WSIG_TOP_N];
+    int              wsig_n;              // entries in use, 0..WSIG_TOP_N
+    /* Measured spread of the jump itself, over every node-item of this session
+     * (D62). It is what turns a jump into a judgement: on this rig it came out
+     * 0,0177, so WSIG_MIN_JUMP 0,05 is about 2,8 of these and a board entry at
+     * 0,05 is ordinary sampling noise while one at 0,20 is not.
+     * ⚠ Published so the READER can scale, not so the software can: nothing
+     * gates on it (D47). Without it a board full of 3-sigma noise looks exactly
+     * like a board holding one real event. */
+    double           wsig_sd;
+    int              wsig_sd_n;           // node-items behind wsig_sd
     double           v_eff;               // Var(Σz_i/√k) under measured σ and r
                                           // (1.0 = independent unit nodes)
     /* ── The pre-fold ranking channel ──────────────────────────────────
@@ -966,7 +1029,7 @@ void results_archive_init(void);
  * one. Returns false if the archive is missing or j is out of range.
  * out_z[MAX_NODES] gets NaN for nodes that did not contribute that run. */
 bool results_row_z(int j, RunResult *out_row, float out_z[MAX_NODES],
-                   float out_p[MAX_NODES]);
+                   float out_p[MAX_NODES], float out_w[MAX_NODES]);
 
 /* The combined ranking key of one row: block-centred z and optional pre-fold z,
  * weighted by pre_w and rescaled to unit variance under H₀. The ONE accessor

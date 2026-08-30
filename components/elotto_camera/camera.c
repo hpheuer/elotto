@@ -336,6 +336,20 @@ static void cam_verify_regs(const char *when)
 
 // Pack one LSB-diff word: update ring buffer, bias, per-mini-run sigma and
 // lag-1..4 bit autocorrelation across the word stream (see PLAN Phase 0 gate).
+/* Welford over the mini-run z of ONE measurement window (D62). Separate from
+ * s_z_* above, which is cumulative since the last camera_stats_reset() and so
+ * spans whole sweep intervals. Owned by the capture task exactly like s_z_*:
+ * written here, read only through publish_stats() under s_mutex.
+ * ⚠ Zeroed where the window's first bit is PRODUCED (the flush branch in
+ * camera_task), not where a caller asks for it. */
+static uint32_t s_win_z_n;
+static double   s_win_z_mean, s_win_z_m2;
+
+/* Below this many mini-runs the window sigma is not published: a partial
+ * window would otherwise report a wild value that reads like a disturbance.
+ * A 0,5 s window (the shortest ?run= allows) still yields ~800. */
+#define WIN_SIGMA_MIN_N   200u
+
 static void process_word(uint32_t w, uint32_t ro)
 {
     // Publish to the consumer first. Never overwrite an unread slot: dropping
@@ -371,6 +385,12 @@ static void process_word(uint32_t w, uint32_t ro)
         double delta = z - s_z_mean;
         s_z_mean += delta / s_z_n;
         s_z_m2 += delta * (z - s_z_mean);
+        /* Same z, second accumulator, window-scoped (D62). Once per mini-run,
+         * i.e. once per 100 words -- not in the per-word path. */
+        s_win_z_n++;
+        double wd = z - s_win_z_mean;
+        s_win_z_mean += wd / s_win_z_n;
+        s_win_z_m2   += wd * (z - s_win_z_mean);
         s_run_ones = 0;
         s_run_bits = 0;
     }
@@ -516,6 +536,11 @@ static void publish_stats(void)
     s_stats.bias              = bias;
     s_stats.sigma             = sigma;
     s_stats.sigma_samples     = s_z_n;
+    /* Published as 0/0 until the window has enough mini-runs to mean anything;
+     * the reader treats 0 samples as "no value", not as a quiet window. */
+    s_stats.win_sigma_samples = (s_win_z_n >= WIN_SIGMA_MIN_N) ? (int)s_win_z_n : 0;
+    s_stats.win_sigma         = (s_win_z_n >= WIN_SIGMA_MIN_N)
+        ? sqrt(s_win_z_m2 / (double)(s_win_z_n - 1)) : 0.0;
     s_stats.mean_pixel_level  = mean_px;
     s_stats.mbit_per_sec      = mbps;
     s_stats.zero_diff_frac    = s_diff_n ? (double)s_zero_diffs / (double)s_diff_n : 0.0;
@@ -567,6 +592,10 @@ static void stats_reset_locked(void)
     s_bits_extracted = 0; s_ones_count = 0;
     s_run_ones = 0; s_run_bits = 0;
     s_z_mean = 0.0; s_z_m2 = 0.0; s_z_n = 0;
+    /* A sweep or a /expose opens a new window too, so the window-scoped
+     * accumulator goes with it (D62). Without this a sweep would leave the
+     * previous window's mini-runs standing in front of the next one. */
+    s_win_z_mean = 0.0; s_win_z_m2 = 0.0; s_win_z_n = 0;
     for (int L = 0; L < 4; L++) { s_autocorr_both1[L] = 0; s_autocorr_pairs[L] = 0; }
     s_pixel_sum = 0; s_pixel_n = 0;
     s_zero_diffs = 0; s_diff_n = 0;
@@ -604,6 +633,8 @@ static void stats_reset_locked(void)
     s_stats.bias              = 0.0;
     s_stats.sigma             = 0.0;
     s_stats.sigma_samples     = 0;
+    s_stats.win_sigma         = 0.0;
+    s_stats.win_sigma_samples = 0;
     s_stats.mean_pixel_level  = 0.0;
     s_stats.mbit_per_sec      = 0.0;
     s_stats.consume_mbit_per_sec = 0.0;
@@ -709,6 +740,11 @@ static void camera_task(void *arg)
         if (s_flush_pairs > 0 && !s_flush_dropped) {
             ring_reset_tail();
             memset(&s_pack, 0, sizeof(s_pack));
+            /* The window's first bit starts HERE, so the window sigma does too
+             * (D62). This is the only place that knows it: the consumer asks
+             * for a flush and then waits, and everything produced before this
+             * line belongs to the previous window. */
+            s_win_z_n = 0; s_win_z_mean = 0.0; s_win_z_m2 = 0.0;
             s_flush_dropped = true;
         }
 

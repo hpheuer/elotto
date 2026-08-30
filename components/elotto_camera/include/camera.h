@@ -37,6 +37,17 @@ typedef struct {
     double   bias;                // ones_count / bits_extracted (ideal 0.5)
     double   sigma;                // stddev of per-mini-run z (ideal 1.0)
     int      sigma_samples;       // number of mini-runs folded into sigma (gate wants >=200)
+    /* The SAME statistic over ONE MEASUREMENT WINDOW, and nothing else (D62).
+     * `sigma` above is cumulative since the last camera_stats_reset(), which
+     * only a sweep or POST /expose performs — so on this rig it spans up to
+     * three blocks and cannot say WHEN anything happened. This pair is zeroed
+     * where the window's first bit is produced (the ring flush in the capture
+     * task), so it describes exactly the bits one item was scored from.
+     * ⚠ A 2 s window is ~3300 mini-runs, i.e. a sigma good to +-0,012. Below
+     * WIN_SIGMA_MIN_N samples it is published as 0 and must be read as "no
+     * value", never as a quiet window. */
+    double   win_sigma;           // per-mini-run sigma over THIS window only
+    int      win_sigma_samples;   // mini-runs behind win_sigma; 0 = no value
     double   autocorr_lag[4];     // lag-1..4 word-stream bit autocorrelation (ideal 0)
     double   mean_pixel_level;    // running mean raw pixel byte, light-leak check (black floor)
     double   mbit_per_sec;        // sustained PRODUCTION rate: what extraction wrote

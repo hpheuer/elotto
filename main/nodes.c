@@ -638,6 +638,19 @@ bool node_take_z(int k, double *out_z,
     s_link[k].z = atof(resp + 2);
     if (out_z) *out_z = s_link[k].z;
 
+    /* ,wsig= — the node's camera sigma over THIS window (D62). Stored on the
+     * node rather than returned, so the already-seven-argument signature of
+     * this function does not grow an eighth: measure_window() reads it right
+     * after nodes_collect(), before anything else can trigger another run.
+     * NAN means the node did not report one (an image older than 2026-08-30),
+     * which is not the same as a quiet window. */
+    g_status.nodes[k + 1].cam_wsig_now = NAN;
+    const char *wsg = strstr(resp, ",wsig=");
+    if (wsg) {
+        double v = atof(wsg + 6);
+        if (isfinite(v) && v > 0.0) g_status.nodes[k + 1].cam_wsig_now = (float)v;
+    }
+
     const char *comma = strchr(resp + 2, ',');
     if (comma) {
         const char *c2 = strchr(comma + 1, ',');

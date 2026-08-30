@@ -308,6 +308,21 @@ static float *s_node_z;   // [NUM_RUNS * MAX_NODES], NaN = did not contribute
  * to be recoverable per node offline exactly as z0..z3 are. */
 static float *s_node_p;
 static float *s_node_hw;  /* per-node half-window pre z (D56), NaN = none */
+/* Per-node CAMERA sigma of each item's own window (D62), NaN = not reported.
+ * ⚠ Not a z and not comparable with the three arrays above: it is the
+ * instrument's own noise while that item was measured, the covariate that
+ * says whether the z beside it can be trusted at all. */
+static float *s_node_wsig;
+
+/* The previous window sigma each node reported, for the jump (D62). NaN
+ * until a node has reported once. Reset with the session, not per round:
+ * a round boundary is not a discontinuity in the camera. */
+static float s_prev_wsig[MAX_NODES];
+/* Second moment of every jump this session, for wsig_sd. Not Welford: the mean
+ * is zero by construction and a sum of squares over ~1e4 values of order 0,02
+ * cannot lose precision in a double. */
+static double s_wsig_jsq;
+static int    s_wsig_jn;
 
 /* Serialises pass_compact() (elotto_task) against the archive readers on the
  * HTTP task (results_near_mean, results_row_z).
@@ -374,6 +389,14 @@ static void node_hw_store(int j, const double *zhw, const bool *have_hw)
         row[i] = (have_hw && have_hw[i]) ? (float)zhw[i] : NAN;
 }
 
+static void node_wsig_store(int j, const float *wsig)
+{
+    if (!s_node_wsig || j < 0 || j >= NUM_RUNS) return;
+    float *row = s_node_wsig + (size_t)j * MAX_NODES;
+    for (int i = 0; i < MAX_NODES; i++)
+        row[i] = wsig ? wsig[i] : NAN;   /* already NaN when unreported */
+}
+
 /* Move one archive row, for pass_compact(). The source is left as it was: the
  * caller only ever moves DOWN (w < j) and overwrites what it passes on the way,
  * so a stale tail can never be read -- runs_completed is lowered to the new
@@ -398,6 +421,10 @@ static void node_z_move(int from, int to)
         memcpy(s_node_hw + (size_t)to   * MAX_NODES,
                s_node_hw + (size_t)from * MAX_NODES,
                MAX_NODES * sizeof(float));
+    if (s_node_wsig)
+        memcpy(s_node_wsig + (size_t)to   * MAX_NODES,
+               s_node_wsig + (size_t)from * MAX_NODES,
+               MAX_NODES * sizeof(float));
 }
 
 /* Snapshot one measured item — its RunResult row AND its per-node z — under a
@@ -409,7 +436,7 @@ static void node_z_move(int from, int to)
  * for nodes that did not contribute that run. Lives in PSRAM so results[]
  * itself stays lean. */
 bool results_row_z(int j, RunResult *out_row, float out_z[MAX_NODES],
-                   float out_p[MAX_NODES])
+                   float out_p[MAX_NODES], float out_w[MAX_NODES])
 {
     if (!out_row || !out_z || !s_node_z) return false;
     archive_lock();
@@ -423,6 +450,14 @@ bool results_row_z(int j, RunResult *out_row, float out_z[MAX_NODES],
     if (out_p) {
         const float *prow = s_node_p ? s_node_p + (size_t)j * MAX_NODES : NULL;
         for (int i = 0; i < MAX_NODES; i++) out_p[i] = prow ? prow[i] : NAN;
+    }
+    /* The camera sigma of this item's own window (D62), in the SAME locked
+     * read: a compaction between two separate reads would pair one item's z
+     * with a neighbour's instrument noise, which is exactly the covariate a
+     * reader would then trust. */
+    if (out_w) {
+        const float *wrow = s_node_wsig ? s_node_wsig + (size_t)j * MAX_NODES : NULL;
+        for (int i = 0; i < MAX_NODES; i++) out_w[i] = wrow ? wrow[i] : NAN;
     }
     archive_unlock();
     return true;
@@ -1548,6 +1583,89 @@ static void pass_compact(void)
            dropped, n, w, g_status.items_done, g_status.pass_mean, g_status.pass_sigma);
 }
 
+/* Collect this window's camera sigma from every node (D62). The master reads
+ * its own camera directly; a slave's arrived on its 'Z' reply and nodes.c left
+ * it on the node. NaN throughout means "did not report", which is not zero.
+ *
+ * ⚠ Called right after measure_window() and before anything can trigger the
+ * next run, because cam_wsig_now holds ONE window and the next 'M' overwrites
+ * it. */
+static void wsig_collect(float out[MAX_NODES])
+{
+    for (int i = 0; i < MAX_NODES; i++) out[i] = NAN;
+    camera_stats_t cs;
+    camera_get_stats(&cs);
+    if (cs.win_sigma_samples > 0) out[0] = (float)cs.win_sigma;
+    for (int i = 1; i < g_status.node_count && i < MAX_NODES; i++)
+        out[i] = g_status.nodes[i].cam_wsig_now;
+}
+
+/* Offer one item's per-node camera sigmas to the jump board, keeping the
+ * WSIG_TOP_N largest |jump| of the whole session (D62).
+ *
+ * A fixed insertion-sorted array rather than a pass over results[]: results[]
+ * is compacted at every round boundary, so a table computed from it would show
+ * the current round and nothing else — which is exactly how the rows of a
+ * disturbed block came to be unrecoverable on 2026-08-30. The board is the
+ * only structure here that outlives compaction, so it copies what it needs.
+ *
+ * ⚠ One item can put several nodes on the board. That is deliberate: two
+ * nodes jumping on the SAME item is a change in the light, one node jumping
+ * alone is that camera. Collapsing them to one row per item would erase the
+ * distinction that matters most. */
+static void wsig_note(const RunResult *r, const float *wsig, uint8_t mask)
+{
+    for (int i = 0; i < MAX_NODES; i++) {
+        float now = wsig[i];
+        if (!isfinite(now)) continue;             /* node did not report */
+        float prev = s_prev_wsig[i];
+        s_prev_wsig[i] = now;                     /* advance regardless */
+        if (!isfinite(prev)) continue;            /* first window: no jump yet */
+
+        float jump = now - prev;
+        float mag  = jump < 0.0f ? -jump : jump;
+
+        /* The scale FIRST, from every jump including the quiet ones -- that is
+         * the whole point of it. Taking it only from the ones that clear the
+         * floor would measure the floor instead of the noise. Mean is zero by
+         * construction (a stationary camera returns to where it was), so the
+         * plain second moment is the spread. */
+        s_wsig_jn++;
+        s_wsig_jsq += (double)jump * (double)jump;
+        g_status.wsig_sd_n = s_wsig_jn;
+        g_status.wsig_sd   = (s_wsig_jn > 1) ? sqrt(s_wsig_jsq / (double)s_wsig_jn) : 0.0;
+
+        if (mag < WSIG_MIN_JUMP) continue;
+
+        /* Insertion sort on |jump|, biggest first. WSIG_TOP_N is 5, so the
+         * linear scan is cheaper than anything cleverer and runs once per
+         * node per item. */
+        int at = g_status.wsig_n;
+        for (int j = 0; j < g_status.wsig_n; j++) {
+            float e = g_status.wsig_top[j].jump;
+            if (e < 0.0f) e = -e;
+            if (mag > e) { at = j; break; }
+        }
+        if (at >= WSIG_TOP_N) continue;           /* smaller than all five */
+
+        for (int j = (g_status.wsig_n < WSIG_TOP_N ? g_status.wsig_n
+                                                   : WSIG_TOP_N - 1); j > at; j--)
+            g_status.wsig_top[j] = g_status.wsig_top[j - 1];
+        if (g_status.wsig_n < WSIG_TOP_N) g_status.wsig_n++;
+
+        WsigEvent *e = &g_status.wsig_top[at];
+        e->round   = r->round;
+        e->index   = r->index;
+        e->node    = (uint8_t)i;
+        e->counted = (mask & (1u << i)) ? 1 : 0;
+        memcpy(e->nums, r->nums, sizeof(e->nums));
+        memcpy(e->euro, r->euro, sizeof(e->euro));
+        e->prev = prev;
+        e->now  = now;
+        e->jump = jump;
+    }
+}
+
 /* Quarantine every measured item in `block_idx` from pass ranking. CSV keeps
  * the rows (skip_rank=1). Called when that block *triggered* a soft-down. */
 static void quarantine_block(int block_idx)
@@ -2346,6 +2464,23 @@ void elotto_task(void *pvParam)
         for (size_t i = 0; i < (size_t)NUM_RUNS * MAX_NODES; i++)
             s_node_hw[i] = NAN;
     }
+    /* The camera-sigma archive (D62), same shape and the same NaN convention.
+     * A failed allocation costs the CSV columns and the jump board, never a
+     * measurement. */
+    if (!s_node_wsig)
+        s_node_wsig = heap_caps_malloc((size_t)NUM_RUNS * MAX_NODES * sizeof(float),
+                                       MALLOC_CAP_SPIRAM);
+    if (s_node_wsig) {
+        for (size_t i = 0; i < (size_t)NUM_RUNS * MAX_NODES; i++)
+            s_node_wsig[i] = NAN;
+    }
+    /* The board and the per-node history behind it start empty every session:
+     * a jump across a reboot or a parameter change is not an event. */
+    memset(g_status.wsig_top, 0, sizeof(g_status.wsig_top));
+    g_status.wsig_n = 0;
+    for (int i = 0; i < MAX_NODES; i++) s_prev_wsig[i] = NAN;
+    s_wsig_jsq = 0.0; s_wsig_jn = 0;
+    g_status.wsig_sd = 0.0; g_status.wsig_sd_n = 0;
     // focus_mode is set by /start and NOT reset here — it is the session's tag.
     focus_reset();
     // Block history lives in PSRAM: results[] already fills internal RAM. Kept
@@ -2679,6 +2814,12 @@ void elotto_task(void *pvParam)
             node_z_store(slot, w.znode, w.have);
             node_p_store(slot, w.zpn, w.havep);
             node_hw_store(slot, w.zhw, w.haveh);
+            /* The instrument's own noise while THIS item was measured (D62).
+             * Read before anything can trigger the next window: cam_wsig_now
+             * holds one window and the next 'M' overwrites it. */
+            float wsig[MAX_NODES];
+            wsig_collect(wsig);
+            node_wsig_store(slot, wsig);
             pairs_add_run(w.znode, w.have);
             pacc_add_run(w.zpn, w.havep);
             hwacc_add_run(w.zhw, w.haveh);
@@ -2689,6 +2830,10 @@ void elotto_task(void *pvParam)
             r->k         = (uint8_t)k;
             r->have_mask = mask;
             r->skip_rank = 0;   /* quarantine only at block close on soft-down trip */
+            /* After index/round/have_mask and after nums/euro above, because
+             * the board copies all of them: it has to name the measurement
+             * without results[], which compaction will have taken. */
+            wsig_note(r, wsig, mask);
             if (k > 0) {
                 r->z_score = z;
                 /* Provisional: the block's node means are not known until it

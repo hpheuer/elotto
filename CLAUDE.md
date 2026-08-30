@@ -169,8 +169,8 @@ looks for, so the unfolded stream is scored, combined, centred and archived besi
 - Normalised as the plain binomial over the bits actually consumed (it covers more bits than the
   folded z in the same window).
 
-Wire: `Z:<z>[,nan,<z_pre>[,<h1>,<h2>]]` — pre-fold past the second comma; half-window pre past the
-third/fourth `[D56]`. Middle slot held with `nan` (was H; ignored `[D53]`). A node without the raw
+Wire: `Z:<z>[,nan,<z_pre>[,<h1>,<h2>]][,wsig=<σ>]` — pre-fold past the second comma; half-window pre past the
+third/fourth `[D56]`; `,wsig=` is TAGGED and appended, the node's camera σ over that window `[D62]`. Middle slot held with `nan` (was H; ignored `[D53]`). A node without the raw
 ring omits the trailing fields. M does not travel: every node measures the commanded `nseg`.
 ⚠ `CAM_RAW_EVERY` is gone — a measurement channel is not sampled `[D45]`.
 
@@ -195,6 +195,14 @@ what remains visible is an effect varying **between items inside a block**.
 - **Two tables of five**: Top-5, Bottom-5, item counter +
   block badge, Save CSV. The nearest-zero table is deleted `[D56]`. Bonferroni
   is deleted `[D57]`. Columns: `Z*`, `Z-Pre`, `Conc`.
+- **A third table, the camera-sigma jump board** `[D62]`: the five largest changes in a node's
+  own camera noise from its previous measurement to this one, session-wide, named by
+  (item/round) plus the drawn numbers. ⛔ **It is a SUSPICION list, not a ranking** — the top row
+  is the measurement whose z deserves the LEAST trust. It excludes nothing `[D47]`.
+  ⚠ One row per NODE: two nodes on the same item is the light, one node alone is that camera.
+  ⚠ Read the **×σ** column, not the raw jump — `WSIG_MIN_JUMP` 0,05 is only 2,8× the measured
+  jump noise (`wsig_sd`, 0,0177 on this rig) and is a floor, not a verdict.
+  ⚠ It is filled from the MEASURING pass only; a scoring run has no item to name.
 - CSV is **German**: `;` separator, `,` decimal — a decimal point makes Excel read text.
 - **The start form remembers its last values** (NVS, survives reboot and OTA): measuring time,
   focus, unlimited + runs per round, direction, pre-fold weight. `/` serves them as a script chunk
@@ -210,8 +218,10 @@ pass_* v_eff= flush_timeouts= drift_t= unlimited= runs_cap= rounds= run_s= run_s
 gap_s= compacted= pre_w= pre_n= pre_clamp= pre_sig= conc_sig= rank_mean= rank_sigma=
 fw=<version>/<elf sha>`, then `# nodes=<ip list, discovery order>` and
 `# fw_nodes=<sha per node, same order>` (`?` = never answered).
-`?all=1` appends a **`round` column last**, then `key;zp_ctr;p0..p3;zc_ctr`, so older parsers still line
-up on the columns before `round`. `p0..p3` are per-node RAW pre-fold values in discovery order;
+`?all=1` appends a **`round` column last**, then `key;zp_ctr;p0..p3;zc_ctr;w0..w3`, so older parsers still line
+up on the columns before `round`. `w0..w3` are the per-node CAMERA σ of that item's own window
+`[D62]` — the instrument's noise while the z beside it was taken; empty = not reported, and a
+quiet window reads 1,0, never 0. `p0..p3` are per-node RAW pre-fold values in discovery order;
 empty means no report, **not** zero. `zc_ctr` is the concordance z `[D56]`. (`zh_ctr` / `h0..h3` / `ent_*` are gone `[D53]`. Nearest-zero group is gone `[D56]`.)
 ⚠ The window travels in BOTH units: `run_s` alone cannot separate instrument generations `[D1]`.
 ⚠ "All four run the same code" is a policy, not a fact — check `fw_nodes`.
@@ -328,8 +338,11 @@ one-sided**, after the whole ladder `[D46]`), no stuck frames, `mean_px` ≥ 5,0
 - `GET /calibrate` serves the whole last sweep per rung with the gate each failed plus the raw
   stats, **on every node** — a per-node optical fault is diagnosable. The chosen setting is
   recorded per block in `/loops`.
-- **`/loops` also carries what the camera did DURING each block** — `cam_sig` (folded σ),
-  `cam_rsig` (pre-fold σ), `cam_px` (mean pixel level) `[D50]`.
+- **`/loops` also carries `cam_sig` (folded σ), `cam_rsig` (pre-fold σ) and `cam_px`** `[D50]`.
+  ⚠ **They are cumulative since the last SWEEP, not per block** `[D62]` — `camera_stats_reset()`
+  runs only in the sweep and on `/expose`. Up to three blocks share one accumulation here, and a
+  block right after a sweep has a shorter one and therefore a noisier σ. For anything that has to
+  be located in time use the **per-item** `w0..w3` in the CSV, not these.
   ⚠ Every other `cam_*` field is what the last SWEEP found: two blocks on one setting carry an
   identical `cam_bias` and describe neither. That is why a σ 6,94 block was unattributable.
   ⚠ `cam_px` 0 = the node does not report it (slave older than 2026-08-28), **not** a dark frame.

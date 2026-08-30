@@ -615,6 +615,13 @@ and will not resolve.
 
 ---
 
+⚠ **Korrigiert durch D62 (2026-08-30):** `cam_sig`/`cam_rsig`/`cam_px` are cumulative
+since the last `camera_stats_reset()`, and only the sweep and `POST /expose` perform one —
+never a block close. Up to three blocks share one accumulation, and a block straight after a
+sweep carries a shorter and noisier one. They do still describe the camera rather than the
+last sweep's stored result, which is what this entry was for, but they do NOT isolate a
+block. Per-item `w0..w3` (D62) is what localises.
+
 ### D51 — Measuring-time floor is 0,5 s (2026-08-28)
 
 User: allow `?run=0,5` in the UI and API. Previously fixed at 1..5 s (2026-08-18) so a request
@@ -853,3 +860,68 @@ re-tested over ~20 starts.
 ⚠ Sessions before and after this change are not the same instrument where the slow mode
 actually struck: those items got the same segment count over twice the wall time. `run_s` and
 `run_segs` in the CSV header do not distinguish them — `focus_win_ms` does.
+
+### D62 — Camera sigma per MEASUREMENT, and a jump board that outlives compaction (2026-08-30)
+**Entscheidung:** every node measures the folded per-mini-run sigma of **its own measurement
+window** and reports it: a second Welford accumulator in `camera.c`, zeroed where the window's
+first bit is produced (the ring-flush branch of `camera_task`), published as
+`win_sigma`/`win_sigma_samples`. A slave appends it to its `Z` reply as a tagged `,wsig=`; the
+master stores four floats per item in PSRAM (`s_node_wsig`, ~115 KB) and streams them as
+`w0..w3` at the end of `/results.csv?all=1`. `/status` and the web page gain a third table: the
+**camera-sigma jump board**, the five largest changes from a node's previous measurement to
+this one, session-wide, with the measured jump noise (`wsig_sd`) beside them.
+
+**Warum:** `cam_sig` in `/loops` cannot localise anything, and the reason is that it is not a
+per-block figure at all. `camera_stats_reset()` runs only inside the sweep and on `POST /expose`
+— never at a block close. The value recorded at a block therefore covers everything since
+the last sweep, up to three blocks on this rig:
+
+| block | cal_ms | cam_sig |
+|---|---|---|
+| 40 | 10274 (sweep) | 0,9997 |
+| 41 | 0 | 0,9998 |
+| **42** | 0 | **1,0566** |
+| 43 | 10292 (sweep) | 1,0123 |
+
+The 1,0566 covers blocks 41 **and** 42 together, and a block straight after a sweep has a
+shorter accumulation and so a noisier sigma than one at the end of an interval — the figures
+are not even comparable with each other. D50's claim that `cam_sig`/`cam_rsig`/`cam_px` describe
+what the camera did DURING each block is wrong in that respect; corrected there.
+
+A window carries ~3300 mini-runs at `?run=2`, so a per-item sigma is good to about **+-0,012**
+and the jump between two of them to **+-0,017**. Measured on hardware the same day over 80
+node-item jumps: **0,0177**. That is the case for doing this per item — at block level a
+single disturbed item is averaged with sixty quiet ones and disappears.
+
+**Warum der Sprung und nicht der Pegel:** the level drifts with the operating point, so an
+absolute bar would flag a node's rung rather than an event. A jump is differenced against that
+node's own previous window and is blind to where it sits. A lasting disturbance gives a jump up
+when it starts and one down when it ends; both are real, which is why the board ranks |jump|
+and keeps the sign in prev/now.
+
+**Warum eine Tafel und keine dritte Rangliste ueber `results[]`:** results[] is compacted at
+every round boundary. On 2026-08-30 the individual rows of the one genuinely disturbed block
+were asked for four hours later and were gone — that block had kept none of its 63. A table
+computed from `results[]` would show the current round and nothing else. The board is a fixed
+`WSIG_TOP_N` array that copies round, index, node and the drawn numbers at the moment the jump
+happens, so it survives compaction, round boundaries and a re-scored pool.
+
+⚠ **It is a suspicion list, not a ranking.** The top row is the item whose bits were least
+quiet while they were taken, i.e. the z that deserves the LEAST trust — the opposite of
+Top-5. It excludes nothing and gates nothing (D47); `counted` says whether that node was still
+in the combine, so a reader can tell a disturbance that reached the z from one that did not.
+
+⚠ **One row per NODE, not per item.** Two nodes jumping on the SAME item is the light; one
+node alone is that camera. Making that distinction on 2026-08-30 took a manual four-node
+`mean_px` comparison across blocks; collapsing the rows would erase it again.
+
+⚠ `WSIG_MIN_JUMP` 0,05 is a floor against filling the board on a short session, nothing
+more: at the measured 0,0177 it is 2,8 sigma, i.e. ordinary scatter. **The x-sigma column is
+what makes a row readable**, and it comes from `wsig_sd`, accumulated over every jump including
+the quiet ones — taking it only from those clearing the floor would measure the floor.
+
+⚠ Filled from the MEASURING pass only. A scoring run has no item identity to name.
+
+**Verifiziert** on hardware, 21 items x 4 nodes: 80 jumps, noise 0,0177, exactly one above the
+floor (node1, item 3802, -0,0512) — and exactly that one on the board, with matching
+prev/now/jump. `w0..w3` populated on every row from all four nodes.
