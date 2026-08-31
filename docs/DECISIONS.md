@@ -27,8 +27,9 @@ Sessions from different generations must never be pooled. The boundaries so far:
 | 2026-08-18 | extraction speed-up 3,42 → 5,71 Mbit/s | same nominal `?run=`, 1,85× the bits per item |
 | 2026-08-19 | onset flush on every window | the bit-to-item mapping changed |
 
-Also: attended (`focus=1`) and unattended sessions are separate arms and are never pooled. v3 and
-any v2.x session are separate instruments outright.
+Also: attended (`focus=1`) and unattended sessions are separate arms and are never pooled.
+Post-D66 is always unattended (`focus=off`). v3 and any v2.x session are separate instruments
+outright.
 
 ### D2 — The window you ask for is not the wall time you get
 `?run=` sets a SEGMENT COUNT, and the wall time follows from the slowest node's bit rate.
@@ -97,9 +98,9 @@ very noisy, and that is a real cost. It changes only WHICH numbers enter the poo
 statistics measured on them.
 
 ### D6 — The observer gate is armed on `focus_mode`, not on `confirm`
-2026-08-13. The UI sends `confirm=1` unconditionally and the gate has no timeout, so an unattended
-5005-item run parked behind a Start button nobody was there to press: that pass ran **37,9 h wall
-against 12,2 h of measuring**, ~25,7 h stalled at a gate. No observer, no observer gate.
+**Superseded as a rule by D66** (no observer gate). Evidence stands: 2026-08-13, the UI sent
+`confirm=1` unconditionally and the gate had no timeout, so an unattended 5005-item run parked
+behind a Start button nobody was there to press: **37,9 h wall against 12,2 h of measuring**.
 
 ### D7 — `LINK_MEAS_MS` had to scale with the run
 A flat reply timeout was headroom for a short run and a DEADLINE for a long one: every slave would
@@ -520,7 +521,7 @@ splits the pooling table for TABLES.
   it, in the pre-registered way;
 - keeping prior-instrument session CSVs in-tree — unpoolable with D65; wiped 2026-08-31 (user).
 
-⏸ **Deferred by the user — do not start unasked:** the attended-vs-unattended (focus) comparison.
+⛔ **Attended mode deleted (D66, 2026-08-31).** The deferred attended-vs-unattended comparison is closed.
 
 🗑 **Deleted 2026-08-20 (user), and unrecoverable:** `docs/data/2026-07-30_ladders_dc_light/` and
 `docs/data/2026-07-30_run5_new_hw/`. v2-era, unpoolable under every split in the pooling table, and
@@ -564,9 +565,9 @@ centres/standardises itself per channel (required for LSB — without it every c
 ### D49 — The start form remembers its last values, the API remembers nothing (2026-08-28)
 **Entscheidung:** Form fields persist in NVS, served as script on `/`. API defaults untouched. Only
 `confirm=1` starts write (UI only) — curl must not overwrite operator weights with API defaults.
-Mode not remembered. Fields: measuring time, focus, unlimited + runs per round, score
-direction, concordance weight. Implemented 2026-08-29 (was documented, the write/read was)
-missing, and focus was the one the operator noticed).
+Mode not remembered. Fields: measuring time, unlimited + runs per round, score
+direction, concordance weight. Focus dropped with D66. Implemented 2026-08-29 (was documented,
+the write/read was missing, and focus was the one the operator noticed).
 
 ### D50 — The block table records what the camera DID, not what the sweep found (2026-08-28)
 **Entscheidung:** Sweep fields (`cam_bias` etc.) are identical across blocks on one setting — a
@@ -934,10 +935,10 @@ request with `?exp=` would have moved the operating point under a session that h
 certified a rung, and nothing would have recorded it. The slave's own HTML page claimed "409
 while measuring", which an operator reads as "409 during a session"; it now says what it does.
 
-⚠ The latch has a known hole and it is deliberate: the attended gates (`PHASE_READY`,
-`PHASE_POOL_CONFIRM`) park longer than 60 s with a session genuinely open, so the latch expires
-under them. Those gates are attended by definition. The alternative — no idle release — would
-leave every slave locked after a master crash with no way back but a reboot, which is worse.
+⚠ The latch has a known hole and it is deliberate: `PHASE_POOL_CONFIRM` parks up to 15 min
+with a session genuinely open, so the latch expires under it. The alternative — no idle
+release — would leave every slave locked after a master crash with no way back but a reboot,
+which is worse.
 Runs are 2..5 s and a sweep is ~10 s, so the latch never expires under a pass that is running.
 
 ⚠ `/camlog` is a RING. At ~2,9 s per window, 512 entries is ~25 minutes. Pull it inside the
@@ -972,3 +973,15 @@ the scale. Pass health is the measured σ. Do not pool with prior-instrument ses
 
 **⚠ `RUN_SEGS_REF` is predicted**, not live-calibrated. Read `focus_win_ms` after the first
 dozen runs and correct the pair if the window is not the requested `?run=`.
+
+### D66 — Always unattended; HTML still shows the current item (2026-08-31)
+**Entscheidung:** attended mode is gone. No `PHASE_READY`, no `POST /ready`, no `?focus=`,
+no form checkbox. The session is unattended. Scoring numbers and pass combinations still
+appear on the HTML "Now:" card via `GET /focus` (always published, not gated on `focus_mode`).
+Pool confirmation stays on `confirm=1` (UI only). CSV writes `focus=off`. `?focus=` → 400.
+
+**Warum:** the operator is not part of the measurement. The card is a live readout, not a
+GCP/PEAR observer protocol.
+
+**Pooling:** new sessions pool with old `focus=off` only, never with `focus=on` (D1). D6 stands
+as evidence, not as the rule.

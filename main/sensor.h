@@ -65,7 +65,7 @@
  * zero control that still matters is "no re-tuning mid-pass". */
 #define CAL_INTERVAL_DEFAULT_MS  900000
 #define CAL_INTERVAL_MAX_MS     3600000
-/* Per-run window (one continuous attention window per focus element) and the
+/* Per-run window (one continuous window per item) and the
  * intentional blank after it. Both are session parameters on /start (?run= &
  * ?gap=), defaults match the 2026-08-02 live cal. Gap defaults to 40 % of the
  * window (5 s → 2 s, 7 s → 2.8 s ≈ 3 s) so duty stays ~70 % of the intentional
@@ -337,23 +337,7 @@ typedef enum { ELOTTO_IDLE, ELOTTO_RUNNING, ELOTTO_DONE, ELOTTO_ABORTED } Elotto
 // PHASE_CALIBRATE is appended, not inserted: it runs FIRST in a loop but the
 // other three are wired into the UI and the CSV by value.
 typedef enum { PHASE_SCORING, PHASE_MEASURING,
-               PHASE_CALIBRATE, PHASE_POOL_CONFIRM, PHASE_READY } ElottoPhase;
-
-/* PHASE_READY — the observer gate, loop 0 only.
- *
- * The camera sweep takes ~10 s during which nothing is on screen for the
- * operator and nothing is being attended to. Scoring is where the protocol
- * actually begins: it is the first phase whose bits are collected while a
- * target is displayed. Starting it the instant the sweep ends means
- * the first candidate numbers are measured while the observer is still reading
- * the screen and settling — the opposite of the intent.
- *
- * So the session parks here and waits for the operator to press Start. Opt-in
- * on the same `confirm=1` flag as the pool prompt, for the same reason: a
- * device that blocks on a human would hang every scripted or unattended run.
- * A timeout is deliberately NOT applied — unlike the pool proposal there is no
- * sensible default action, and an unattended session never reaches this gate. */
-void elotto_ready_go(void);      // the operator pressed Start
+               PHASE_CALIBRATE, PHASE_POOL_CONFIRM } ElottoPhase;
 
 /* What the operator did with the proposed pool. Written by the /pool handler,
  * read and cleared by elotto_task — one word, so no lock is needed. */
@@ -625,7 +609,7 @@ typedef struct {
     // because the count→duration conversion is not stable (open item 4) and
     // per-loop calibration moves the camera's rate on purpose (§1.5.3), so the
     // series across loops is the only way to see the window drift rather than
-    // average it away. Measured in every session, attended or not.
+    // average it away. Measured in every session.
     float    win_ms, gap_ms;
     /* ── Who was in the combine, and why (2026-08-19) ──────────────────────
      * The exclusion state was published only as a live flag in /status and
@@ -753,7 +737,7 @@ typedef struct {
     int              runs_total;       // combinations in the CURRENT round
     /* ── Unlimited mode (see the block near the top of this file) ──────
      * `unlimited` and `runs_cap` are session parameters written by /start and
-     * NOT reset by elotto_task — they are the session's tag, like focus_mode.
+     * NOT reset by elotto_task — they are the session's tag.
      * The rest is per-round bookkeeping the UI and the CSV read. */
     bool             unlimited;        // rounds repeat until Abort / results full
     int              runs_cap;         // measurement runs a round may spend
@@ -879,17 +863,11 @@ typedef struct {
     int              low_count;           // valid entries in low[] (published)
     RunResult        low[TOP_N];          // lowest raw z measured so far, asc
     volatile bool    abort_requested;
-    // ── Focus display ──────────────────────────────────────────────────
-    bool             focus_mode;          // this session is ATTENDED: the panel is
-                                          // live and the session is tagged as such.
-                                          // A focus session is not equivalent to an
-                                          // unattended one, so the two must never be
-                                          // pooled later — hence a recorded flag
-                                          // rather than "whether someone was watching"
-    volatile bool    paused;              // hold BETWEEN runs (never inside one):
-                                          // attention is the scarce resource here, and
-                                          // without a pause the only way to stop
-                                          // attending is to abort and lose the loop
+    // ── Current-item display (always on; session is unattended, D66) ──
+    bool             focus_mode;          // always false; CSV `focus=off` so new
+                                          // sessions pool with old unattended, never
+                                          // with `focus=on` `[D1]`
+    volatile bool    paused;              // hold BETWEEN runs (never inside one)
     int64_t          paused_ms;           // total time held, excluded from elapsed_ms
                                           // so a session with a 40-min break is not
                                           // later read as continuous

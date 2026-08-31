@@ -16,7 +16,7 @@ number) and Phase 2 obeys it too. A v3 session must never be pooled with any v2.
 
 ### 2.1 Session shape
 
-Sweep → observer gate (`/ready`, attended only) → Phase 0 scoring → pool confirmation → **ONE
+Sweep → Phase 0 scoring → pool confirmation (`confirm=1`) → **ONE
 pass over every combination in the confirmed pool, each measured exactly once**, Fisher–Yates
 order. Then done. **No loops, no `Runs` cap.**
 
@@ -46,7 +46,7 @@ Cadence ≈ drift resolution + insertion overhead + sample size for each centrin
   measurement-order rows `z_raw`/`z_ctr`/`key`/`zc_ctr`/`w0..w3`. Live mid-session. ⚠ RAM only —
   pull periodically. Bare `/results.csv` = 15-row summary, **not** the archive (Save → `?all=1`).
 - **Parameter line** from `/status` while running (and after done/abort): mode, `run_s`/`gap_s`/
-  `run_segs`, measured pace, cal, score, focus, unlimited, concordance weight.
+  `run_segs`, measured pace, cal, score, unlimited, concordance weight.
 - **German CSV**: `;` separator, `,` decimal.
 - Unknown start parameters answer **400**. ⚠ `?mode=` is `1` = 6-of-49, anything
   else = Eurojackpot (`val[0]=='1'`).
@@ -101,16 +101,13 @@ already makes. Both simpler rules were tried and both are wrong:
 | only the node's FIRST trip | later bad blocks waved through — 08-13 sealed blocks 1, 24, 33 but ranked 4, 14, 16 |
 | every trip, unconditionally | 33 of 33 items excluded per block, three blocks running, pass σ 0,000 — nothing left to rank |
 
-### 3.4 Unattended sessions do not stop for a click
+### 3.4 Always unattended `[D66]`
 
-The observer gate is armed on **`focus_mode`**, not merely on `confirm=1`. It has no timeout by
-design, and the web UI sends `confirm=1` unconditionally — which parked the 08-13 unattended pass
-behind a Start button nobody was there to press: **37,9 h wall against 12,2 h of measuring, i.e.
-~25,7 h stalled at a gate** (`pool_confirm=1`, `pool_auto=0`, `focus=false` in its `status.json`).
-No observer, no observer gate.
+No observer gate. The HTML card shows the current number (scoring) or combination (pass).
+`?focus=` answers 400. CSV `focus=off`.
 
-The pool gate takes the proposal **immediately** when `focus=0` and records `pool_auto=1` — the same
-flag the 15-minute timeout sets, so the CSV can never claim a human approved the pool.
+The pool gate is **`confirm=1` only** (the web UI). Curl never parks there. Unlimited records
+`pool_auto=1`. A 15-minute timeout on the pool prompt accepts unchanged, same flag.
 
 ### 3.5 Hardware check
 
@@ -134,9 +131,8 @@ It stops on **Abort**, or when `results[]` reaches `NUM_RUNS` = 8000, which fini
 DONE with the reason in `fault`. There is no other terminating condition, by design.
 
 Compared with §2.1 the shape is otherwise unchanged: the same window/gap for every phase, the same
-`?run=`/`?gap=`, the same observer gate (once, at session start, attended only). The pool
-confirmation gate is **skipped** — choosing the pool by score is what the mode is — and recorded as
-`pool_auto=1`, exactly like every other selection no human approved.
+`?run=`/`?gap=`. The pool confirmation gate is **skipped** — choosing the pool by score is what
+the mode is — and recorded as `pool_auto=1`, exactly like every other selection no human approved.
 
 Rounds after the first re-run the **sweep before scoring** (skipped at `?calint=0`): scoring
 chooses the pool and must not sit on a sweep from an hour ago. (Baseline deleted `[D48]`.)
@@ -228,8 +224,8 @@ sitting in it, so centring must never span one.
   ⚠ **`sensor.c` withdraws the pool at the ROUND BOUNDARY (`round++`), not when the scoring pass
   begins, and at session start BEFORE `state` goes RUNNING.** Both were wrong on the first build
   and both showed the same symptom — correct numbers under the wrong round. The sweep insertion
-  sits between `round++` and scoring; at session start the opening sweep and observer gate run
-  before scoring, so a stale pool must not linger on screen through them.
+  sits between `round++` and scoring; at session start the opening sweep runs
+  before scoring, so a stale pool must not linger on screen through it.
   UI: info line under the scoring bar (`Round N numbers` / `Selected numbers`).
 - **Runs per round** field: live pool size + round-length estimate from the rate model in
   `sensor.h` (`cycle_ms ≈ 224·segments/rate + CYCLE_FIXED_MS + gap_ms` `[D39]`). Live ETA uses

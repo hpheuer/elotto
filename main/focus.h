@@ -1,24 +1,9 @@
-/* ── The observer-facing session: focus panel, pause, gap, session clock ──
+/* ── Current-item display, pause, gap, session clock ──
  *
- * These four things are one module because they share state, not because they
- * are merely similar. pause_gate() accumulates the time held, elapsed_ms_now()
- * subtracts it, and the pause also has to nudge the gap timer or the break gets
- * charged to focus_gap_ms. Splitting them would mean exporting the accumulators.
- *
- * The invariant the whole panel exists to hold: **panel lit <=> this run's bits
- * are being collected.** focus_publish() runs immediately before the trigger
- * goes out and focus_off() immediately after the local run returns; the reply
- * wait and the per-run bookkeeping are dark time. An observer attending to a
- * target whose measurement already finished is the mislabeling this phase was
- * built to prevent.
- *
- * Statistically none of it changes anything -- z is normalised by sqrt(segments)
- * at any run length -- which is why a session is merely TAGGED (?focus=1) rather
- * than analysed differently. Attended and unattended sessions must never be
- * pooled; run matched controls.
- *
- * Split out of sensor.c 2026-07-27 as a pure move. It had no dependency on the
- * GCP statistics at all: not one function call outward.
+ * These four share state: pause_gate() accumulates held time, elapsed_ms_now()
+ * subtracts it, and a pause must nudge the gap timer or the break is charged to
+ * focus_gap_ms. Panel lit <=> this run's bits are being collected.
+ * The session is always unattended `[D66]`; GET /focus feeds the HTML card.
  */
 #pragma once
 
@@ -58,14 +43,11 @@ void focus_show_number(int value, bool is_euro);
 // Blank it. Sampling is over; what follows is dark time.
 void focus_off(void);
 
-/* Measured window and gap, in ms. Recorded in EVERY session, attended or not:
- * the segment-count-to-window conversion is not stable, so the achievable
- * window has to be read rather than assumed. */
+/* Measured window and gap, in ms. The segment-count-to-window conversion is
+ * not stable, so the achievable window has to be read rather than assumed. */
 void focus_timing_take(float *win_ms, float *gap_ms);
 
 /* ── Pause ─────────────────────────────────────────────────────────── */
 
-/* Blocks while paused. Held BETWEEN runs only -- state stays `running`, and the
- * permutation and Sigma z resume where they left off, so a tired observer can
- * stop attending without throwing the loop away. */
+/* Blocks while paused. Held BETWEEN runs only -- state stays `running`. */
 void pause_gate(void);

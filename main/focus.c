@@ -14,19 +14,12 @@
 #include "sensor.h"
 #include "focus.h"
 
-/* ── Focus display + pause ───────────────────────────────────────────────
+/* ── Current-item display + pause ────────────────────────────────────────
  *
- * The panel shows what is being measured, WHILE it is being measured. That is
- * the whole content of the experiment: it makes the observer part of the
- * measurement window, as in the original GCP/PEAR protocol. Statistically it
- * changes nothing (z is normalised by √segments at any run length), which is
- * why the session is merely *tagged* rather than analysed differently.
- *
- * The invariant that has to hold is: panel lit ⟺ this run's bits are being
- * collected. So focus_publish() runs immediately before the trigger goes out
- * and focus_off() immediately after the local run returns — the reply wait and
- * the per-run bookkeeping are dark time, and the observer should not spend them
- * attending to a target whose measurement has already finished. */
+ * The HTML card shows what is being measured, WHILE it is being measured.
+ * Panel lit ⟺ this run's bits are being collected: focus_publish() immediately
+ * before the trigger, focus_off() immediately after the local run returns.
+ * The session is always unattended `[D66]`; the card is a live readout. */
 /* Dark time between targets. Phase 5 asked for this to be *aligned* with
  * overhead that already existed rather than added on top — the estimate was
  * ~190 ms per run spent on the slave round-trip and bookkeeping. Measured on
@@ -42,10 +35,8 @@
  * measured, with ring `waits` climbing. The blank period is when the producer
  * gets the CPU back, so the gap buys back most of the throughput it costs.
  *
- * Applied to EVERY run — baseline, scoring and measurement — and independently
- * of focus_mode. Two reasons: a matched no-focus control must differ from an
- * attended session in the display and nothing else, and the baseline has to be
- * the same instrument as the runs it is subtracted from, down to duty cycle.
+ * Applied to EVERY run — scoring and measurement. The gap is a duty-cycle
+ * property of the instrument, not of the display.
  *
  * **350 ms, not 200** (user decision, 2026-07-25 — "better safe than sorry").
  * The reason is experimental rather than technical: a wider blank guarantees
@@ -89,8 +80,7 @@ static double  s_win_sum, s_gap_sum;
 static uint32_t s_win_n, s_gap_n;
 // Which kind the TIMING accumulators are currently describing. Separate from
 // g_status.focus.kind, which only exists while the panel is live — the timing
-// runs in every session, so it cannot key off a field an unattended session
-// never writes. 0xFF = nothing measured yet.
+// runs whether or not a browser is polling. 0xFF = nothing measured yet.
 static uint8_t s_timing_kind = 0xFF;
 
 void session_clock_start(void)
@@ -128,11 +118,7 @@ void focus_publish(FocusKind kind, const uint8_t *nums, int n,
      * conversion to milliseconds is not stable (open item 4 — the achievable
      * window moved 1.75x across one afternoon), and per-loop calibration now
      * changes the camera's rate deliberately, which moves it again (§1.5.3).
-     * So it has to be measured in every session, attended or not.
-     *
-     * It used to sit behind the focus_mode guard below, which made
-     * focus_win_ms/focus_gap_ms structurally zero in exactly the unattended
-     * control sessions the drift most needed watching in. */
+     * So it has to be measured in every session. */
     int64_t now = esp_timer_get_time();
     // Scoring and measurement are accumulated separately: they are the same
     // 1000 ms window today, but they are different phases and a pooled mean
@@ -149,7 +135,6 @@ void focus_publish(FocusKind kind, const uint8_t *nums, int n,
     if (s_focus_off_us) { s_gap_sum += (double)(now - s_focus_off_us); s_gap_n++; }
     s_focus_on_us = now;
 
-    if (!g_status.focus_mode) return;      // unattended session: panel stays dark
     FocusState *F = &g_status.focus;
     F->active = 0;
     __sync_synchronize();
@@ -212,9 +197,7 @@ void focus_timing_take(float *win_ms, float *gap_ms)
 }
 
 /* Hold BETWEEN runs. Called where abort_requested is already tested, so the
- * current run always finishes and is kept: stopping mid-run would leave bits
- * sampled while nobody was watching inside a run labelled as attended, which is
- * the one contamination this phase exists to avoid.
+ * current run always finishes and is kept.
  *
  * This is not abort — state stays running, nothing is published, and the
  * permutation index and Σz accumulation resume exactly where they left off.

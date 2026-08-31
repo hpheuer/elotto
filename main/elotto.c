@@ -206,20 +206,12 @@ static const char HTML[] =
 "<input id='numRunS' class='fin' type='number'"
 " value='" EL_STR(RUN_S_DEFAULT) "' min='" EL_STR(RUN_S_MIN) "'"
 " max='" EL_STR(RUN_S_MAX) "' step='0.5' oninput='unlimHint()'>"
-"<span style='color:#8fae8f;font-size:.85em;white-space:nowrap'>per Focus item</span>"
+"<span style='color:#8fae8f;font-size:.85em;white-space:nowrap'>per item</span>"
 "</span>"
 "</div>"
 "<div class='frow'>"
 "<span>Entropy:</span>"
 "<span style='font-size:.92em'>&#128247; OV5647 dark-frame photons</span>"
-"</div>"
-"<div class='frow'>"
-"<span></span>"
-"<span style='display:flex;align-items:center;gap:6px'>"
-"<input id='chkFocus' type='checkbox' checked style='width:16px;height:16px'>"
-"<label for='chkFocus' style='color:#f0c040;font-size:.9em'>"
-"&#127919; Focus display (attended session)</label>"
-"</span>"
 "</div>"
 /* Unlimited mode. The Runs field only appears when the box is ticked: it is
    meaningless otherwise, and an always-visible number that sometimes does
@@ -365,41 +357,15 @@ static const char HTML[] =
 "<div style='color:#f0c040;font-size:.82em;margin-bottom:5px'>Bonus numbers</div>"
 "<div id='poolEuro' style='display:flex;flex-wrap:wrap;gap:7px'></div></div>"
 "<div id='poolCount' style='margin-top:14px;font-size:.9em;color:#fff'></div>"
-/* Placed inside the same overlay block below; see readyOv. */
 "<div class='btns' style='margin-top:16px'>"
 "<button class='btn btn-euro' id='poolOk' onclick='poolSend(\"ok\")'>OK</button>"
 "<button class='btn' id='poolMore' onclick='poolSend(\"more\")' "
 "style='background:#2e7d9e;color:#fff'>Select more</button>"
 "<button class='btn btn-abort' id='poolCancel' onclick='poolSend(\"cancel\")'>Cancel</button>"
 "</div></div></div>"
-/* The observer gate. Deliberately sparse — one line and one big button. This is
-   the moment the operator is meant to settle and concentrate, so the screen
-   should give them nothing else to read. */
-"<div id='readyOv' style='display:none;position:fixed;inset:0;z-index:60;"
-"background:rgba(0,0,0,.82);align-items:center;justify-content:center;padding:16px'>"
-"<div style='background:#0f3d0f;border:1px solid rgba(144,238,144,.35);"
-"border-radius:14px;max-width:460px;width:100%;padding:28px;text-align:center;"
-"box-shadow:0 8px 40px rgba(0,0,0,.6)'>"
-"<div style='color:#90ee90;font-size:1.05em;margin-bottom:6px'>System ready</div>"
-"<div style='color:#cfe8cf;font-size:.9em;margin-bottom:22px;line-height:1.5'>"
-"Cameras calibrated.<br>"
-"Take your time. Press Start when you are settled and ready to attend."
-"</div>"
-/* The reminder rides ON the button rather than beside it: it is the last thing
-   read before the first target appears, and the instruction it carries — attend
-   to the number and nothing else — IS the experimental condition this session is
-   tagged with. The second line is deliberately part of the same click target. */
-"<button class='btn btn-euro' style='font-size:1.35em;padding:14px 34px;"
-"line-height:1.3' onclick='readyGo()'>&#9654; Start"
-"<div style='font-size:.52em;font-weight:400;opacity:.9;margin-top:7px'>"
-"Focus and concentrate on the numbers only</div></button>"
-"<div style='color:#a8c8a8;font-size:.78em;margin-top:14px'>"
-"The first number appears one second after you press Start."
-"</div>"
-"</div></div>"
 "<div class='card' id='focusCard' style='display:none;text-align:center'>"
 "<div style='color:#f0c040;font-size:.88em;margin-bottom:8px;text-align:left'>"
-"&#127919; Focus:</div>"
+"Now:</div>"
 "<div id='focusBox'></div>"
 "<div id='focusInfo' style='color:#a0c0a0;font-size:.78em;margin-top:10px'></div>"
 "</div>"
@@ -443,8 +409,7 @@ static const char HTML[] =
 NODE_NAMES_JS
 "var timer=null,curMode=0,calShown=false,nodeHealthAt=0,nodeHealth={};"
 "var ftimer=null,lastSeq=-1,winSeen=0,winMissed=0,paused=false,pausePendUntil=0;"
-// Set by the /status poll; read by pollFocus at 10 Hz. True while the rig is
-// calibrating, running its baseline, or parked at the observer gate.
+// Set by the /status poll; read by pollFocus at 10 Hz. True while calibrating.
 "var preparing=false;"
 /* Slowest node rate seen in a /status poll, for the round estimate. 0 until
    the first poll carries one, which is what the cold-start constant is for. */
@@ -538,14 +503,11 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "document.getElementById('startBtns').style.display='none';"
 "document.getElementById('runBtns').style.display='flex';"
 "document.getElementById('progArea').style.display='block';"
-"if(d.focus)startFocus();"
+"startFocus();"
 "applyPaused(d.paused);"
 // A page loaded (or reloaded) while the device is already waiting must show the
 // prompt too — the session is blocked until somebody answers it.
 "if(d.phase==='poolconfirm'&&!poolShown&&d.pool_main)poolShow(d);"
-// A page loaded or reloaded while the device is parked at the observer gate
-// must show it too — the session is blocked until somebody presses Start.
-"if(d.phase==='ready')readyShow();"
 "lastSlowMbit=slowMbit(d)||lastSlowMbit;"
 "updatePoolBadge(d);updateParamBadge(d);"
 "setScoreTotal(d);"
@@ -632,7 +594,6 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
    too while the session is live, because that is the one being filled. */
 "if(d.loops_done>0||d.state==='running')"
 "p.push(pItem('Blocks',(d.loops_done||0)+((d.state==='running')?1:0)));"
-"p.push(pItem('Focus',d.focus?'attended':'unattended'));"
 "if(d.paused_ms>0)p.push(pItem('Paused',fmt(d.paused_ms)+' (excluded)'));"
 "b.innerHTML=p.join(\" <span style='opacity:.3'>\u00b7</span> \");"
 "}"
@@ -661,7 +622,6 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "if(runS>" EL_STR(RUN_S_MAX) ")runS=" EL_STR(RUN_S_MAX) ";"
 "var gapS=Math.round(runS*0.4*10)/10;"
 "if(gapS<0.5)gapS=0.5;if(gapS>10)gapS=10;"
-"var foc=document.getElementById('chkFocus').checked?1:0;"
 "var unl=document.getElementById('chkUnlim').checked?1:0;"
 "var mxr=parseInt(document.getElementById('numUnlimRuns').value)"
 "||" EL_STR(UNLIM_RUNS_DEFAULT) ";"
@@ -680,7 +640,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "document.getElementById('stats2').style.display='none';"
 "fetch('/start?mode='+mode"
 "+'&run='+runS+'&gap='+gapS"
-"+'&focus='+foc+'&score='+score"
+"+'&score='+score"
 "+'&wpre='+wPre"
 "+'&unlimited='+unl+'&maxruns='+mxr+'&confirm=1',{method:'POST'})"
 ".then(function(r){if(!r.ok){"
@@ -699,7 +659,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 // paused one would show "Continue" while running. Clear the latch, let the
 // setter see the real transition.
 "pausePendUntil=0;setPauseBtn(false);"
-"if(foc)startFocus();else stopFocus();"
+"startFocus();"
 "document.getElementById('btnSave').style.display='none';"
 "document.getElementById('saveAll').style.display='none';"
 "document.getElementById('resCard').style.display='none';"
@@ -770,24 +730,6 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "}"
 "function poolHide(){"
 "document.getElementById('poolOv').style.display='none';poolShown=false;}"
-/* ── The observer gate ────────────────────────────────────────────────
-   Hidden immediately on click: the device needs a moment to pick the answer up,
-   and a lingering button invites a second press on a session that has moved on. */
-"function readyShow(){document.getElementById('readyOv').style.display='flex';}"
-"function readyHide(){document.getElementById('readyOv').style.display='none';}"
-"function readyGo(){"
-"readyHide();"
-/* Blank the panel at the click, without waiting for the 1 Hz /status poll to
-   notice the phase change. The device holds one second before the first target
-   precisely so the press and the first onset do not overlap; leaving "Preparing
-   the system" on screen for most of that second would spend the settle time on
-   text instead of on the empty field the number is about to appear in. */
-"preparing=false;"
-"document.getElementById('focusBox').innerHTML='';"
-"document.getElementById('msg').textContent='Starting number scoring\\u2026';"
-"fetch('/ready',{method:'POST'}).then(function(r){"
-"if(!r.ok)document.getElementById('msg').textContent='Start rejected by device.';});"
-"}"
 "function poolSend(act){"
 "var m=poolChecked('poolMain'),e=poolChecked('poolEuro');"
 "var q='/pool?act='+act+'&main='+m.join(',')+'&euro='+e.join(',');"
@@ -828,15 +770,8 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "fetch('/pause?on='+want,{method:'POST'});"
 "setPauseBtn(want);"
 "}"
-/* Focus polling at 10 Hz. A 50-100 ms offset is not a problem — at a 500 ms
-   window that is still 80-90% overlap, and conscious noticing is itself smeared
-   over ~100-300 ms, so tighter sync would be precision the experiment cannot
-   use. What DOES matter is a window missed entirely: the observer then attends
-   to combination N while N+1's bits are collected, and per-combination z feeds
-   the Stouffer accumulation, so the effect gets credited to an unrelated
-   combination. `seq` is monotonic, so a jump of more than 1 is exactly that
-   failure — counted here, which is a more honest diagnostic than a jitter
-   histogram because it detects corruption rather than blur. */
+/* Current-item polling at 10 Hz. `seq` is monotonic, so a jump of more than 1
+   is a window the page missed — the card would then name the wrong numbers. */
 "function startFocus(){"
 "lastSeq=-1;winSeen=0;winMissed=0;"
 "document.getElementById('focusCard').style.display='block';"
@@ -862,10 +797,8 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "\\u23f8 PAUSED</span>\";"
 "lastSeq=f.seq;applyPaused(true);return;}"
 "applyPaused(false);"
-/* While the instrument is preparing itself there is no target to attend to, but
-   an empty panel for two minutes reads as a crash. Say what is happening
-   instead. `preparing` is set by the 1 Hz /status poll — /focus alone does not
-   know which phase the session is in. */
+/* Empty panel during a sweep reads as a crash. Say what is happening.
+   `preparing` is set by the 1 Hz /status poll — /focus does not know the phase. */
 "if(!f.on){box.innerHTML=preparing"
 "?\"<span style='color:#90ee90;font-size:1.15em'>Preparing the system"
 "<br><span style='color:#8fae8f;font-size:.85em'>please wait\\u2026</span></span>\""
@@ -888,13 +821,9 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 // the moment it moves on (an answer from another browser tab, or the timeout).
 "if(d.phase==='poolconfirm'){if(!poolShown&&d.pool_main)poolShow(d);}"
 "else if(poolShown)poolHide();"
-// The observer gate: raise it while the device is parked, take it down the
-// moment it moves on (another tab answered, or the session was aborted).
-"if(d.state==='running'&&d.phase==='ready')readyShow();else readyHide();"
-"preparing=(d.state==='running'&&(d.phase==='calibrating'||d.phase==='ready'));"
-// Calibration is the first thing a loop does and nothing is on screen for it —
-// the panel stays hidden, since nothing is being attended to while the sensor is
-// tuned. Say so, or a 30 s pause at the top of every loop looks like a stall.
+"preparing=(d.state==='running'&&d.phase==='calibrating');"
+// Calibration is the first thing a loop does and nothing is on screen for it.
+// Say so, or a 30 s pause at the top of every loop looks like a stall.
 // Only on the transition, so it cannot wipe 'Aborting...'.
 "var calNow=(d.phase==='calibrating');"
 "if(calNow!==calShown){calShown=calNow;"
@@ -988,7 +917,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
    poll, so without the state test it re-showed the card immediately after
    stopFocus() hid it — including on a page load against an already-finished
    session, where the panel would reappear with no run behind it. */
-"if(!d.focus||d.state!=='running'){"
+"if(d.state!=='running'){"
 "document.getElementById('focusCard').style.display='none';return;}"
 "document.getElementById('focusCard').style.display='block';"
 "var s='window '+(d.focus_win_ms||0).toFixed(0)+' ms \\u00b7 gap '"
@@ -1038,7 +967,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 // live — is hidden once the session ends. `missed` is a gate, not a curiosity:
 // a skipped window credits an effect to the wrong combination, so it has to
 // survive the panel it was displayed in.
-"if(d.focus&&winSeen>0)s2+=' \\u00b7 windows '+winSeen+' \\u00b7 missed '+winMissed"
+"if(winSeen>0)s2+=' \\u00b7 windows '+winSeen+' \\u00b7 missed '+winMissed"
 "+(winMissed?' \\u26a0':' \\u2713');"
 "if(d.paused_ms>0)s2+=' \\u00b7 paused '+fmt(d.paused_ms)+' (excluded from elapsed)';"
 // The WORST pair, not an average: the sqrt(n) gain fails if ANY pair
@@ -1483,7 +1412,6 @@ static esp_err_t status_handler(httpd_req_t *req)
         g_status.phase == PHASE_SCORING      ? "scoring"     :
         g_status.phase == PHASE_CALIBRATE    ? "calibrating" :
         g_status.phase == PHASE_POOL_CONFIRM ? "poolconfirm" :
-        g_status.phase == PHASE_READY        ? "ready"       :
                                                "measuring";
     const char *score_str =
         g_status.score_dir == SCORE_DIR_LOW ? "low" :
@@ -2155,17 +2083,9 @@ static esp_err_t calibrate_handler(httpd_req_t *req)
 
 /* ── /focus GET – the current target ─────────────────────────────────
  * Deliberately NOT part of /status. That response is ~2.5 KB and polled at
- * 1 Hz: far too fat and far too slow to track a 500 ms window. This one is
- * ~60 bytes and polled at 10 Hz (~600 B/s, five samples per window), which is
- * finer than the 100–300 ms smear of conscious noticing itself — tight sync
- * would be precision the experiment cannot use.
- *
- * `seq` is what tells the UI a NEW window started, including when two
- * consecutive draws happen to look similar. A gap in it means a window was
- * missed entirely, which is not blur but mislabeling — the observer attends to
- * combination N while N+1's bits are collected — so the UI counts those.
- *
- * `on` is 0 during the inter-run gap, when no bits are being collected. */
+ * 1 Hz: too fat and too slow for the HTML card. This one is ~60 bytes at 10 Hz.
+ * `seq` is monotonic per window so a missed poll is visible; `on` is 0 in the
+ * inter-run gap. */
 static esp_err_t focus_handler(httpd_req_t *req)
 {
     /* Read the state twice around the copy: the measurement task bumps `seq`
@@ -2200,8 +2120,7 @@ static esp_err_t focus_handler(httpd_req_t *req)
  * Not abort: the state stays `running`, nothing is published, and the
  * permutation index and Σz accumulation continue where they left off. The flag
  * is only *read* between runs (pause_gate() in sensor.c), so the run in flight
- * always finishes and is kept — bits sampled while nobody was watching must
- * never end up inside a run labelled as attended.
+ * always finishes and is kept.
  *
  * Device-side, like the loop itself: closing the browser does not resume it. */
 static esp_err_t pause_handler(httpd_req_t *req)
@@ -2210,7 +2129,7 @@ static esp_err_t pause_handler(httpd_req_t *req)
     /* A pause is only meaningful while a session can actually hold between runs.
      * Accepting one in idle would leave `paused` set into the NEXT session,
      * which then blocks at its first pause_gate() — a silent outage on a multi-
-     * hour run. Same 409 contract as /pool, /ready and /update. */
+     * hour run. Same 409 contract as /pool and /update. */
     if (g_status.state != ELOTTO_RUNNING) {
         httpd_resp_set_status(req, "409 Conflict");
         httpd_resp_sendstr(req, "no session running to pause");
@@ -2266,12 +2185,7 @@ static esp_err_t start_handler(httpd_req_t *req)
         // block. 15 min default (~6 % overhead); 0 = no mid-pass insertions
         // (sweep at session start only). Baseline phase deleted (D48).
         g_status.cal_interval_ms = CAL_INTERVAL_DEFAULT_MS;
-        // Absent ?focus= means UNATTENDED. A session started by curl or a
-        // script has no observer by definition, so the control condition is
-        // what a missing flag has to mean; the UI always sends it explicitly.
-        // This flag is the session's record of which condition produced its
-        // numbers — attended and unattended runs must never be pooled later.
-        g_status.focus_mode     = false;
+        g_status.focus_mode     = false;   /* D66: always unattended */
         g_status.score_dir      = SCORE_DIR_HIGH;
         g_status.pool_confirm   = 0;
         g_status.pool_auto      = 0;
@@ -2290,11 +2204,12 @@ static esp_err_t start_handler(httpd_req_t *req)
              * one it asked for. */
             if (httpd_query_key_value(qry, "loops", val, sizeof(val)) == ESP_OK ||
                 httpd_query_key_value(qry, "runs",  val, sizeof(val)) == ESP_OK ||
-                httpd_query_key_value(qry, "rank",  val, sizeof(val)) == ESP_OK) {
+                httpd_query_key_value(qry, "rank",  val, sizeof(val)) == ESP_OK ||
+                httpd_query_key_value(qry, "focus", val, sizeof(val)) == ESP_OK) {
                 httpd_resp_set_status(req, "400 Bad Request");
                 httpd_resp_sendstr(req,
-                    "v3: loops/runs/rank no longer exist -- one pass, every "
-                    "combination once, raw z. For repeated rounds over a "
+                    "v3: loops/runs/rank/focus no longer exist -- one pass, "
+                    "always unattended. For repeated rounds over a "
                     "score-sized pool use unlimited=1&maxruns=<n>");
                 return ESP_OK;
             }
@@ -2363,11 +2278,6 @@ static esp_err_t start_handler(httpd_req_t *req)
                 if (auto_gap > 10000) auto_gap = 10000;
                 g_status.gap_ms = auto_gap;
             }
-            // ?focus=1 -> attended session: the Focus panel is live and the
-            // session is tagged. Run lengths do NOT depend on this — a matched
-            // no-focus control must be identical in every other respect.
-            if (httpd_query_key_value(qry, "focus", val, sizeof(val)) == ESP_OK)
-                g_status.focus_mode = (val[0] == '1');
             // ?score=high|low|abs — pre-registered Phase-0 pool selection.
             // Default high (historical). Does not touch Phase-2 statistics.
             if (httpd_query_key_value(qry, "score", val, sizeof(val)) == ESP_OK) {
@@ -2390,9 +2300,8 @@ static esp_err_t start_handler(httpd_req_t *req)
                 if (c >= 0 && c <= CAL_INTERVAL_MAX_MS) g_status.cal_interval_ms = c;
             }
             // ?confirm=1 -> stop after scoring and let the operator edit the
-            // pool. Opt-in, and deliberately NOT tied to ?focus: the device
-            // would otherwise block forever on any curl-started or scheduled
-            // run, including the ?cal=0 control. The web UI always sends it.
+            // pool. Opt-in: curl never sends it, so a script never parks here.
+            // The web UI always sends it.
             if (httpd_query_key_value(qry, "confirm", val, sizeof(val)) == ESP_OK)
                 g_status.pool_confirm = (val[0] == '1');
             /* ?wpre= — concordance weight in the ranking key (D65). Default 0. */
@@ -2484,12 +2393,6 @@ static int parse_num_list(const char *s, uint8_t *out, int max_n, int max_val)
     return n;
 }
 
-/* POST /ready — the operator is settled and wants scoring to begin.
- *
- * Separate from /pool because it answers a different question at a different
- * point: /pool edits what will be measured, /ready says when to start measuring
- * it. 409 if nothing is waiting, so a stale tab cannot un-pause a session that
- * has already moved on. */
 /* POST /probe — re-run slave discovery.
  *
  * Discovery is otherwise a one-shot broadcast at boot, so a slave that was
@@ -2513,19 +2416,6 @@ static esp_err_t probe_handler(httpd_req_t *req)
     snprintf(msg, sizeof(msg), "ok: %d node(s)", g_status.node_count);
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     httpd_resp_sendstr(req, msg);
-    return ESP_OK;
-}
-
-static esp_err_t ready_handler(httpd_req_t *req)
-{
-    if (!origin_ok(req)) return ESP_OK;
-    if (g_status.state != ELOTTO_RUNNING || g_status.phase != PHASE_READY) {
-        httpd_resp_set_status(req, "409 Conflict");
-        httpd_resp_sendstr(req, "no session waiting to start");
-        return ESP_OK;
-    }
-    elotto_ready_go();
-    httpd_resp_sendstr(req, "ok");
     return ESP_OK;
 }
 
@@ -2967,7 +2857,6 @@ static void prefs_save(void)
     uint8_t  w100  = (uint8_t)(g_status.pre_w * 100.0 + 0.5);
     if (w100 > 100) w100 = 100;
     nvs_set_u16(h, "run10", run10);
-    nvs_set_u8(h,  "focus", g_status.focus_mode ? 1 : 0);
     nvs_set_u8(h,  "unlim", g_status.unlimited ? 1 : 0);
     nvs_set_u16(h, "maxruns", mx);
     nvs_set_u8(h,  "score", (uint8_t)g_status.score_dir);
@@ -2981,10 +2870,9 @@ static void prefs_send(httpd_req_t *req)
     nvs_handle_t h;
     if (nvs_open(PREF_NS, NVS_READONLY, &h) != ESP_OK) return;
     uint16_t run10 = 0, maxruns = 0;
-    uint8_t focus = 0xff, unlim = 0xff, score = 0xff, wpre = 0xff;
+    uint8_t unlim = 0xff, score = 0xff, wpre = 0xff;
     bool any = false;
     if (nvs_get_u16(h, "run10", &run10) == ESP_OK) any = true;
-    if (nvs_get_u8(h,  "focus", &focus) == ESP_OK) any = true;
     if (nvs_get_u8(h,  "unlim", &unlim) == ESP_OK) any = true;
     if (nvs_get_u16(h, "maxruns", &maxruns) == ESP_OK) any = true;
     if (nvs_get_u8(h,  "score", &score) == ESP_OK) any = true;
@@ -2999,10 +2887,6 @@ static void prefs_send(httpd_req_t *req)
         p += snprintf(js + p, sizeof(js) - p,
             "e=document.getElementById('numRunS');if(e)e.value='%.1f';",
             run10 / 10.0);
-    if (focus != 0xff)
-        p += snprintf(js + p, sizeof(js) - p,
-            "e=document.getElementById('chkFocus');if(e)e.checked=%s;",
-            focus ? "true" : "false");
     if (unlim != 0xff)
         p += snprintf(js + p, sizeof(js) - p,
             "e=document.getElementById('chkUnlim');if(e)e.checked=%s;",
@@ -3063,10 +2947,8 @@ static void start_webserver(void)
     /* 17 here + 5 registered by elotto_ota = 22 against a cap of 24. Keep
      * headroom: registration past this limit fails, and the return value is not
      * checked at either call site, so an endpoint would simply 404 with nothing
-     * logged. Adding /ready and /diagjson once took it silently over the old cap
-     * of 16, and handlers counted carefully — count them when
-     * adding one, and raise the cap before it bites rather than after. */
-    cfg.max_uri_handlers  = 24;   /* 18 here + 5 from elotto_ota = 23 */
+     * logged. Count them when adding one, and raise the cap before it bites. */
+    cfg.max_uri_handlers  = 24;   /* 17 here + 5 from elotto_ota = 22 */
     cfg.stack_size        = 8192;
     cfg.recv_wait_timeout = 20;   /* /update streams a ~700 KB body */
     cfg.send_wait_timeout = 20;
@@ -3086,7 +2968,6 @@ static void start_webserver(void)
         {"/pause",  HTTP_POST, pause_handler,  NULL},
         {"/calibrate", HTTP_GET, calibrate_handler, NULL},
         {"/pool", HTTP_POST, pool_handler, NULL},
-        {"/ready", HTTP_POST, ready_handler, NULL},
         {"/probe", HTTP_POST, probe_handler, NULL},
         {"/expose", HTTP_POST, expose_handler, NULL},
         {"/camtest", HTTP_GET, camtest_handler, NULL},

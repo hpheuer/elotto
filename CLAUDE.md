@@ -54,7 +54,7 @@ Modes: Eurojackpot (5 of 50 + 2 of 12, 7920 combinations) and 6 of 49 (5005).
 
 ## v3 — the single-pass session
 **PLAN.md §2 is the contract.** Every combination in the confirmed pool is measured **exactly once**,
-in one Fisher–Yates random order, with **one continuous window per Focus item** — scoring and
+in one Fisher–Yates random order, with **one continuous window per item** — scoring and
 measurement share the same length.
 
 - **No loops, no Runs cap, no ranking modes.** Unknown start parameters answer **400**. 100 % of the progress bar is the full combination space. `NUM_RUNS` 7200 is the hard cap —
@@ -90,14 +90,13 @@ mean exists yet `[D48]`.
 camera health; `drift_add()` regresses the per-block mean on the block index → `drift_slope`,
 `drift_t`; |t| > 3 flags real drift.
 
-### Two attended gates, opt-in on `POST /start?confirm=1`
-The web UI always sends it; curl never does.
-- **`PHASE_READY` — the observer gate.** Parks after the sweep, released by `POST /ready`, then 1 s
-  dark. No timeout, by design. ⚠ Armed on `focus_mode`, not on `confirm` alone `[D6]`.
-- **`PHASE_POOL_CONFIRM`.** `POST /pool?act=ok|more|cancel&main=..&euro=..`. "Select more" re-scores
-  with the still-checked numbers omitted, so they keep the measurement that chose them. Keeping
-  exactly 5+2 = ONE combination is intended and the highest-power use. 15-minute timeout accepts
-  unchanged (`pool_auto=1`); at `focus=0` it accepts immediately, same flag.
+### Pool confirmation, opt-in on `POST /start?confirm=1`
+The web UI always sends it; curl never does. `POST /pool?act=ok|more|cancel&main=..&euro=..`.
+"Select more" re-scores with the still-checked numbers omitted, so they keep the measurement that
+chose them. Keeping exactly 5+2 = ONE combination is intended and the highest-power use.
+15-minute timeout accepts unchanged (`pool_auto=1`).
+⛔ No observer gate. The session is always unattended `[D66]`. The HTML card still shows the
+current number (scoring) or combination (pass).
 
 ### Unlimited Mode — rounds instead of one pass
 UI checkbox + **Runs per round** (default 100); `POST /start?unlimited=1&maxruns=<n>`. A **round** =
@@ -122,7 +121,7 @@ as backstop for a compaction that cannot allocate.
 - **Every round closes its own block**, even at `?calint=0`, so centring never mixes items from
   either side of a re-scoring. Rounds after the first re-run the sweep **before** scoring (skipped
   at `?calint=0`).
-- **No pool-confirmation gate** (`pool_auto=1`); the observer gate still fires once at start.
+- **No pool-confirmation gate** (`pool_auto=1`).
 - ⚠ Inside a round "measured exactly once" holds; **across rounds a combination can recur**. Each
   recurrence is its own row; the identity is **(round, index)**.
 - A truncated round draws a **random subset**; only the last round truncates `[D4]`.
@@ -194,7 +193,7 @@ what remains visible is an effect varying **between items inside a block**.
   ⚠ The block number shown is 1-based like `/loops`; `results[].block` is 0-based.
 - CSV is **German**: `;` separator, `,` decimal — a decimal point makes Excel read text.
 - **The start form remembers its last values** (NVS, survives reboot and OTA): measuring time,
-  focus, unlimited + runs per round, direction, concordance weight. `/` serves them as a script chunk
+  unlimited + runs per round, direction, concordance weight. `/` serves them as a script chunk
   appended to the page `[D49]`. ⚠ **Only a start carrying `confirm=1` writes them** — i.e. only the
   web UI. A curl start sends no `wpre=` and would otherwise replace the operator's weight with the
   API default. ⚠ It changes **no** API default: an omitted parameter still resolves to the
@@ -224,7 +223,7 @@ separate arm `[D1]`.
 | block centring 2026-08-13 | one side, or recompute both the same way |
 | extraction speed-up 2026-08-18 | one side — same `?run=`, 1,85× the bits per item |
 | onset flush 2026-08-19 | one side — the bit-to-item mapping changed |
-| `focus=on` vs `off` | one arm; attended and unattended are never mixed |
+| `focus=on` vs `off` | old attended vs unattended — never mix. Post-D66 is always `off` `[D66]` |
 | `pre_w` (2026-08-26) | one weight — for the TABLES. `z_raw`/`z_ctr` pool across weights `[D45]` |
 | scoring key 2026-08-28 | one side — a pool chosen before it was chosen on a different key `[D48]` |
 | spectral channel deleted 2026-08-28 | post-D53 only — no `ent_w` / z_h `[D53]` |
@@ -270,18 +269,18 @@ A run that dies part-way produces **no z at all** (`gcp_zscore_raw()` returns fa
 
 ---
 
-## Focus display
-A "Focus:" card shows the current target in large type — the observer is present while the noise is
-sampled (GCP/PEAR protocol). Statistically the session is merely **tagged**: `?focus=1`, `"focus"`
-in `/status`, `# focus=on|off` in the CSV.
-- The panel lights ~70 ms **before** the bits start, by design ⛔ `[D33]`.
+## Current-item display
+A "Now:" card shows the number being scored or the combination being measured, in large type.
+The session is always unattended `[D66]`. CSV still writes `# focus=off` so new sessions pool
+with old unattended, never with `focus=on`.
+- The card updates ~70 ms **before** the bits start ⛔ `[D33]`.
 - `GET /focus` (~60 B) polled at 10 Hz, separate from the 2,5 KB `/status`; `seq` is monotonic per
-  window, so the UI counts *missed* windows — a skipped window is mislabeling, not blur.
+  window, so the UI counts *missed* windows — a skipped window names the wrong numbers.
 - `POST /pause?on=1|0` holds **between** runs only; state stays `running`, paused time is excluded
   from `elapsed_ms`.
-- **Every window starts on fresh bits, attended or not** (`onset_settle()`, all four nodes flush in
-  parallel on `M`) `[D34]`. ⚠ A flush that does not finish **voids the run** (`flush_timeouts`)
-  `[D35]`.
+- **Every window starts on fresh bits** (`onset_settle()`, all four nodes flush in parallel on `M`)
+  `[D34]`. ⚠ A flush that does not finish **voids the run** (`flush_timeouts`) `[D35]`.
+- ⚠ `?focus=` answers **400**.
 
 ---
 
@@ -364,9 +363,9 @@ the master. The slave has no session state of its own and derives one from the m
 `M`/`K` latch it, `A` releases it, 60 s of silence releases it.
 - ⚠ **OTA keeps the NARROW predicate** (`g_measuring`, the ~2 s window) — "abort, then flash" is
   unchanged and `/update` is not blocked for a whole session.
-- ⚠ **The idle release is a deliberate hole**: the attended gates park longer than 60 s with a
-  session open, so the latch expires under them. They are attended by definition. Without the
-  release, a master crash would leave every slave locked until someone rebooted it.
+- ⚠ **The idle release is a deliberate hole**: pool confirmation can park 15 min with a
+  session open, so the latch expires under it. Without the release, a master crash would leave
+  every slave locked until someone rebooted it.
 - ⚠ Until 2026-08-31 the slave refused these only during the ~2 s window, so a request landing in
   the 0,8 s gap was **accepted mid-session** — a parameterless `/expose` restarted a running
   block's camera statistics that way. Do not assume an old node behaves like this one; check
@@ -392,7 +391,7 @@ The enclosure is **LIT, not dark** `[D28]`.
 
 ## Project structure
 - **main/elotto.c** – app_main, Ethernet, webserver, HTML/JS UI. Endpoints: `/` `/status` `/start`
-  `/abort` `/loops` `/results.csv` `/focus` `/pause` `/calibrate` `/pool` `/ready` `/probe`
+  `/abort` `/loops` `/results.csv` `/focus` `/pause` `/calibrate` `/pool` `/probe`
   `/expose` `/diag` `/diagjson` `/camtest` `/camlog` `/linearity`, +5 from elotto_ota.
   ⚠ The URI-handler cap fails silently (404, return value unchecked) — the count lives at
   `start_webserver()`; prefer `?all=1` on an existing endpoint over a new handler.
@@ -407,7 +406,7 @@ The enclosure is **LIT, not dark** `[D28]`.
   `sensor.h`.
 - **main/nodes.c/h** – the array: UDP link, discovery, calibration handshake, per-node health,
   drop/reboot policy. sensor.c reaches other boards only through `nodes.h`.
-- **main/focus.c** – focus panel, pause, run gap, session clock — one file because they share state.
+- **main/focus.c** – current-item card, pause, run gap, session clock — one file because they share state.
 - **ota_firmware/** – the network updater, its own IDF project. Ethernet + HTTP + esp_ota only.
 - **components/elotto_camera/** – OV5647 entropy extraction. One stream `[D65]`; the runs half
   is armed only inside a sweep `[D46]`. Also serves `/camlog`, `/linearity`, `/expose`,

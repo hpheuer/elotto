@@ -496,24 +496,12 @@ static bool s_open_centred;
 /* Consecutive clean blocks while a node is soft_down (sticky clear). */
 static uint8_t s_soft_clean[MAX_NODES];
 
-/* Brief ring flush before an attended measurement window so pre-onset bits
- * do not enter the run the observer is about to watch. Master-only: slaves
- * have no settle command on the wire; calibration already settles every node. */
-/* Every measurement window starts on fresh bits — ATTENDED OR NOT.
+/* Every measurement window starts on fresh bits.
  *
- * Two things were wrong here until 2026-08-19.
- *
- * 1. `if (!g_status.focus_mode) return;` made the settle a property of the
- *    attended mode. But ?focus= is supposed to change NOTHING except the panel
- *    and the tag — "a matched no-focus control must be identical in every other
- *    respect" — and this made the two modes differ in what bits reach a run.
- *    The attended-vs-unattended comparison would have measured the settle as
- *    much as the observer.
- *
- * 2. It called camera_stats_reset(1), which also zeroes the camera statistics.
- *    Per item, that left every block's cam_bias / cam_mbit in /loops describing
- *    only that block's LAST item — in attended sessions, all of them. It now
- *    flushes the ring and leaves the accumulators alone.
+ * Until 2026-08-19 this was gated on focus_mode, which made the settle a
+ * property of the display, and it called camera_stats_reset(1), which zeroed
+ * camera statistics per item. It now flushes the ring and leaves the
+ * accumulators alone.
  *
  * Why it is needed at all, in either mode: nothing consumes the ring during the
  * gap, so it is FULL when a window opens — 524288 bits produced before the item
@@ -747,36 +735,6 @@ static void pool_scores_for(const uint8_t *sel, int n_sel,
  * unchecking a bonus number left the caller measuring comb(5,2)=10 draws over a
  * pool_euro[] whose tail was the previous proposal. A value the caller owns
  * cannot go stale that way. */
-/* ── The observer gate (PHASE_READY) ───────────────────────────────────
- * Same one-word handshake as the pool prompt: the webserver task sets the flag,
- * elotto_task spins on it. No timeout, deliberately — there is no sensible
- * default action here (the pool prompt has one: take the proposal). A session
- * parked here waits as long as the operator needs, which is only safe because
- * the caller arms it on `focus_mode`: an unattended run has nobody to press
- * Start, so for it the wait would never end. */
-static volatile bool s_ready_go = false;
-
-/* Dark time between the operator pressing Start and the first target appearing.
- * The press itself is an act of attention — hand on the mouse, eyes on the
- * button — and the first number's ONSET is what the observer is meant to
- * notice. Without a gap the two overlap, and the first number of the pass is
- * measured while attention is still on the click. One second is the same order
- * as the 350 ms inter-run blank but longer on purpose: this transition also
- * carries the switch from operating the machine to attending to it. */
-#define READY_SETTLE_MS  1000
-
-void elotto_ready_go(void) { s_ready_go = true; }
-
-static void ready_wait(void)
-{
-    s_ready_go     = false;
-    g_status.phase = PHASE_READY;
-    while (!s_ready_go && !g_status.abort_requested) {
-        vTaskDelay(pdMS_TO_TICKS(100));
-        g_status.elapsed_ms = elapsed_ms_now();
-    }
-}
-
 static void pool_confirm_wait(bool euro, int mx, int *io_pool_nm, int *io_pool_ne,
                               uint8_t *pool_main, uint8_t *pool_euro, int nm)
 {
@@ -2390,7 +2348,7 @@ static void close_block(int block_idx)
 
 /* ── The session (v3.0, PLAN.md §2): ONE pass, no loops ────────────────
  *
- * calibrate → observer gate → Phase 0 scoring → pool confirm →
+ * calibrate → Phase 0 scoring → pool confirm →
  * every combination in the confirmed pool measured EXACTLY ONCE, ~5 s per
  * item, in one Fisher–Yates random order. Every cal_interval_ms (default
  * 15 min) the pass parks for a camera sweep; that boundary
@@ -2406,9 +2364,9 @@ void elotto_task(void *pvParam)
 {
     /* BEFORE the state goes RUNNING, which is the moment /status starts serving
      * the pool: the previous SESSION's numbers must not survive into this one.
-     * Everything up to the first scoring pass — discovery, the opening sweep,
-     * the observer gate — would otherwise show them, and there is
-     * nothing on screen to say they are stale. */
+     * Everything up to the first scoring pass — discovery, the opening sweep —
+     * would otherwise show them, and there is nothing on screen to say they
+     * are stale. */
     g_status.pool_n_main     = 0;
     g_status.pool_n_euro     = 0;
 
@@ -2423,7 +2381,7 @@ void elotto_task(void *pvParam)
     s_drop_csum = s_drop_csumsq = 0.0;
     s_drop_cn = 0;
     // unlimited / runs_cap are session parameters from /start and are NOT reset
-    // here — they tag the session, exactly like focus_mode.
+    // here — they tag the session.
     g_status.round           = 0;
     g_status.round_base      = 0;
     g_status.round_item_base = 0;
@@ -2518,7 +2476,7 @@ void elotto_task(void *pvParam)
     for (int i = 0; i < MAX_NODES; i++) s_prev_wsig[i] = NAN;
     s_wsig_jsq = 0.0; s_wsig_jn = 0;
     g_status.wsig_sd = 0.0; g_status.wsig_sd_n = 0;
-    // focus_mode is set by /start and NOT reset here — it is the session's tag.
+    g_status.focus_mode = false;   // D66: always unattended
     focus_reset();
     // Block history lives in PSRAM: results[] already fills internal RAM. Kept
     // for the lifetime of the app (allocated once, never freed) so the table
@@ -2561,7 +2519,7 @@ void elotto_task(void *pvParam)
 
     uint8_t pool_main[POOL_MAIN_49] = {0};   // 15 slots, enough for both modes
     uint8_t pool_euro[POOL_EURO_12] = {0};
-    // Pool sizes are variables, not constants: attended confirmation can shrink
+    // Pool sizes are variables, not constants: pool confirmation can shrink
     // either, unlimited mode derives both from the per-round run cap, and every
     // count downstream is derived from them.
     int     pool_nm = euro ? POOL_MAIN_50 : POOL_MAIN_49;
@@ -2586,28 +2544,6 @@ void elotto_task(void *pvParam)
      * before the first bit that counts. */
     g_status.cal_did_sweep = calibrate_all();
     if (g_status.abort_requested) { slave_abort(); goto done; }
-
-    /* ── The observer gate ─────────────────────────────────────────────
-     * Everything up to here is the instrument preparing itself, with nothing
-     * displayed and nothing to attend to. Scoring is the first phase whose
-     * bits are collected while a target is on screen, so it is where the
-     * protocol actually begins. Only when a human asked for it.
-     *
-     * ⚠ Requires focus_mode, not just pool_confirm. This gate has NO timeout
-     * by design — there is no sensible default for "did the observer start
-     * attending?" — so arming it without an observer parks the pass forever.
-     * The web UI sends confirm=1 unconditionally, which is what put a 5005-item
-     * unattended run behind a Start button nobody was there to press. No
-     * observer, no observer gate. */
-    if (g_status.pool_confirm && g_status.focus_mode && !g_status.abort_requested) {
-        ready_wait();
-        if (g_status.abort_requested) goto done;
-        /* Settle. The phase moves off PHASE_READY *first*: the UI re-raises
-         * the Start overlay on any /status poll that still sees "ready". */
-        g_status.phase = PHASE_SCORING;
-        vTaskDelay(pdMS_TO_TICKS(READY_SETTLE_MS));
-        g_status.elapsed_ms = elapsed_ms_now();
-    }
 
     /* ── Rounds ────────────────────────────────────────────────────────
      * An ordinary v3 session is ONE round: score, confirm the pool, measure
@@ -2679,21 +2615,10 @@ void elotto_task(void *pvParam)
              * pool_auto=1, like every other selection no human approved. */
             g_status.pool_auto = 1;
         } else if (g_status.pool_confirm) {
-            /* ── Attended pool confirmation ────────────────────────────────
-             * Stop and show the operator what scoring chose, before ~10 h are
-             * spent measuring it. Only when the session asked for it.
-             *
-             * Unattended: take the proposal at once instead of burning the
-             * 15-minute timeout waiting for an operator who is not there.
-             * Recorded as pool_auto=1, exactly as the timeout path records it —
-             * the CSV must not be able to claim a human approved this pool. */
-            if (!g_status.focus_mode) {
-                g_status.pool_auto = 1;
-                printf("pool: unattended session — proposal taken unchanged\n");
-            } else {
-                pool_confirm_wait(euro, mx, &pool_nm, &pool_ne,
-                                  pool_main, pool_euro, nm);
-            }
+            /* Stop and show the operator what scoring chose. UI sends
+             * confirm=1; curl does not, so a script never parks here. */
+            pool_confirm_wait(euro, mx, &pool_nm, &pool_ne,
+                              pool_main, pool_euro, nm);
             if (g_status.abort_requested) goto done;
         }
 
@@ -2836,14 +2761,14 @@ void elotto_task(void *pvParam)
             else
                 r->euro[0] = r->euro[1] = 0;
 
-            // The draw goes on screen BEFORE the trigger, so the observer is
-            // already attending when the first bit is sampled.
+            // The draw goes on the HTML card BEFORE the trigger, so the
+            // numbers on screen match the window being sampled `[D33]`.
             focus_publish(FOCUS_DRAW, r->nums, nm, r->euro, euro ? 2 : 0);
 
             // One broadcast starts every node, then measure locally — all of
             // them integrate the same window, which is the premise the sqrt(n)
-            // combine rests on. EVERY session flushes the ring first, attended
-            // or not, so the bits credited to this item were captured during it.
+            // combine rests on. Every session flushes the ring first, so the
+            // bits credited to this item were captured during it.
             // Identical to the scoring window by construction now: both go
             // through measure_window(), which is the point of it.
             WindowMeas w;
@@ -2939,7 +2864,7 @@ done:
      * session ranks the open block on RAW z and every closed block on CENTRED
      * z under one pass mean/σ and Top/Bottom, with no marker to tell the two
      * apart. s_blk_n guards the aborts before the measurement pass (opening
-     * sweep, observer gate, scoring), where `block` may not even be
+     * sweep, scoring), where `block` may not even be
      * initialised and there is nothing to centre. */
     if (s_blk_n > 0) {
         center_block(block);

@@ -20,8 +20,8 @@ A home-built GCP/PEAR-style instrument: each node draws bits from its **own** OV
 Frame-pair diff → LSB → segments of 224 bits → Stouffer z. LSB bits as measured `[D65]`.
 Up to four nodes combine as `Σz/√k` for the nodes that answered that run. Ranking is
 **block-centred** z plus concordance (`?wpre=`).
-Attended sessions show the target while bits are sampled (`focus=1`); attended and unattended are
-separate arms and are never pooled.
+The HTML page shows the number or combination being measured. Sessions are unattended `[D66]`;
+do not pool with old `focus=on` archives.
 
 > This **cannot predict lottery draws**. Output is an experiment on physical randomness, not a
 > betting tip. The ×√n array gain is **not established** — read `pass_σ` and the pairwise matrix
