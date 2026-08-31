@@ -4,20 +4,12 @@ Project **HISTORY snapshot**, not a rule. Rules: [`../CLAUDE.md`](../CLAUDE.md).
 
 ## Current (2026-08-31)
 
-**Instrument (code, D65):** four-node photon LSB-diff array; adjacent-pixel XOR **off**; one LSB z plus
-concordance ranking (`?wpre=` = conc weight). Sweep selects on `|bias−0,5|` with incumbent hysteresis
-`[D46]`; σ gate is relative (`CAL_RAW_SIGMA_K`). Soft-down: 1,35 × peer-median σ. Wire
-`Z:<z>,<h1>,<h2>[,wsig=]`.
+**Instrument:** D65 LSB stream + concordance ranking (`?wpre=` = Conc-Gewicht). D66: always unattended; HTML **Now:** card via `GET /focus`. Sweep `|bias−0,5|`; σ-Gate relativ (`CAL_RAW_SIGMA_K` 1,35). Soft-down 1,35 × Peer-Median-σ. Wire `Z:<z>,<h1>,<h2>[,wsig=]`.
 
-**Not yet on the rig.** Master+slave built; a live Unlimited Euro session is still on the previous
-image (`fw_sha` `d61419b5b5759ce8`). Flash all four together after that session ends. Then
-re-measure `focus_win_ms` vs `?run=` — `RUN_SEGS_REF` 141026 is predicted.
+**On the rig.** Master `fw_sha` `203708f4f85eaeea` (`f2415ae`, D66, ota_1). Slaves `2465c2251beb01b6` (D65, no UI change). `?focus=` 400, `/ready` 404.
 
-**Idle/load rates** from the prior instrument (5,71 / ~3,7 Mbit/s) do not apply after D65.
+**Sweep + linearity** (aborted session, all four): light steady (ratios ≈1,8…2,0). Dark rungs fail DARK/ZDIFF. RSIG rejected nothing extra. Autocorr takes the bright end. slave1 still brightest (`px/exp` 0,25 vs slave0 0,13), chose exp 256 at ac 0,026 — under the bar, not a code fault.
 
-×√n array gain still **not established** — judge on per-block combined σ **and** the full pairwise
-matrix.
+Idle production ~7,4 Mbit/s (D65, 2× words). `RUN_SEGS_REF` 141026 still predicted.
 
-### Pooling
-Never mix across the splits in CLAUDE’s pooling table / `[D1]`. D65 sessions do not pool with
-anything from the prior instrument.
+×√n array gain still **not established**.
