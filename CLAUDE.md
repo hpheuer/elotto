@@ -52,10 +52,11 @@ Modes: Eurojackpot (5 of 50 + 2 of 12, 7920 combinations) and 6 of 49 (5005).
 
 ---
 
-## v3 — the single-pass session
-**PLAN.md §2 is the contract.** Every combination in the confirmed pool is measured **exactly once**,
-in one Fisher–Yates random order, with **one continuous window per item** — scoring and
-measurement share the same length.
+## v3 — rounds until Abort
+**PLAN.md §2 is the contract, as rounds `[D67]`.** A round scores every number, keeps as many of
+the best as fit `?maxruns=` (default 100), measures that space once in a Fisher–Yates order,
+then scores again. Ends on **Abort**. Inside a round each combination is measured exactly once;
+across rounds a combination can recur — identity is **(round, index)**.
 
 - **No loops, no Runs cap, no ranking modes.** Unknown start parameters answer **400**. 100 % of the progress bar is the full combination space. `NUM_RUNS` 7200 is the hard cap —
   ⚠ **Eurojackpot's 7920 does not fit uncompacted**; a full Euro pass compacts once near the end
@@ -90,16 +91,12 @@ mean exists yet `[D48]`.
 camera health; `drift_add()` regresses the per-block mean on the block index → `drift_slope`,
 `drift_t`; |t| > 3 flags real drift.
 
-### Pool confirmation, opt-in on `POST /start?confirm=1`
-The web UI always sends it; curl never does. `POST /pool?act=ok|more|cancel&main=..&euro=..`.
-"Select more" re-scores with the still-checked numbers omitted, so they keep the measurement that
-chose them. Keeping exactly 5+2 = ONE combination is intended and the highest-power use.
-15-minute timeout accepts unchanged (`pool_auto=1`).
-⛔ No observer gate. The session is always unattended `[D66]`. The HTML card still shows the
-current number (scoring) or combination (pass).
+⛔ No observer gate `[D66]`. ⛔ No single-pass, no pool-confirmation overlay `[D67]`.
+`?unlimited=0` and `POST /pool` answer **400**. The HTML card shows the current number (scoring)
+or combination (pass). `confirm=1` writes NVS form prefs only.
 
-### Unlimited Mode — rounds instead of one pass
-UI checkbox + **Runs per round** (default 100); `POST /start?unlimited=1&maxruns=<n>`. A **round** =
+### Rounds
+**Runs per round** (default 100); `POST /start?maxruns=<n>` (`unlimited` on by default). A **round** =
 score every number → keep as many of the best as fit `maxruns` runs → measure that space once in a
 fresh Fisher–Yates order → score again. Ends only on **Abort**; the `results[]`-full stop survives
 as backstop for a compaction that cannot allocate.
@@ -111,7 +108,8 @@ as backstop for a compaction that cannot allocate.
 - **Every unlimited round compact at the boundary** `[D56]`: the 100 most extreme items by
   `|rank_key|` stay as rows (both tails, so Top-5/Bottom-5 stay exact). The rest merges into
   moments — pass mean/σ/χ² stay exact. A single pass only compact if the space
-  would not fit uncompacted `[D42]`.
+  would not fit uncompacted `[D42]` — with D67 every session is rounds, so every
+  round boundary compact.
   ⚠ The counter and round-base semantics after a compaction (`completed`/`runs_completed`,
   `round_base`/`round_item_base`) are subtle and documented at their definitions in `sensor.h` —
   read them before touching anything that counts or indexes items; getting them wrong is what broke
@@ -125,10 +123,10 @@ as backstop for a compaction that cannot allocate.
 - ⚠ Inside a round "measured exactly once" holds; **across rounds a combination can recur**. Each
   recurrence is its own row; the identity is **(round, index)**.
 - A truncated round draws a **random subset**; only the last round truncates `[D4]`.
-- `/status`: `unlimited`, `runs_cap`, `round`, `round_base`, `round_done`, `round_total`,
+- `/status`: `unlimited` (always true), `runs_cap`, `round`, `round_base`, `round_done`, `round_total`,
   `round_start_ms`. `completed` is session-wide, `total` the CURRENT round — ⚠ a progress bar must
   use `round_done/round_total`. `round_start_ms` stamps when MEASURING began (sweep and scoring
-  excluded); 0 outside unlimited mode.
+  excluded).
 - `/status` publishes `pool_main`/`pool_euro` for the whole running session. ⚠ They are withdrawn
   at the ROUND BOUNDARY and before RUNNING, not at the scoring pass — deliberate (stale numbers
   would stand through the insertion and the opening sweep).
@@ -193,7 +191,7 @@ what remains visible is an effect varying **between items inside a block**.
   ⚠ The block number shown is 1-based like `/loops`; `results[].block` is 0-based.
 - CSV is **German**: `;` separator, `,` decimal — a decimal point makes Excel read text.
 - **The start form remembers its last values** (NVS, survives reboot and OTA): measuring time,
-  unlimited + runs per round, direction, concordance weight. `/` serves them as a script chunk
+  runs per round, direction, concordance weight. `/` serves them as a script chunk
   appended to the page `[D49]`. ⚠ **Only a start carrying `confirm=1` writes them** — i.e. only the
   web UI. A curl start sends no `wpre=` and would otherwise replace the operator's weight with the
   API default. ⚠ It changes **no** API default: an omitted parameter still resolves to the
@@ -391,7 +389,7 @@ The enclosure is **LIT, not dark** `[D28]`.
 
 ## Project structure
 - **main/elotto.c** – app_main, Ethernet, webserver, HTML/JS UI. Endpoints: `/` `/status` `/start`
-  `/abort` `/loops` `/results.csv` `/focus` `/pause` `/calibrate` `/pool` `/probe`
+  `/abort` `/loops` `/results.csv` `/focus` `/pause` `/calibrate` `/pool` (400) `/probe`
   `/expose` `/diag` `/diagjson` `/camtest` `/camlog` `/linearity`, +5 from elotto_ota.
   ⚠ The URI-handler cap fails silently (404, return value unchecked) — the count lives at
   `start_webserver()`; prefer `?all=1` on an existing endpoint over a new handler.

@@ -339,16 +339,6 @@ typedef enum { ELOTTO_IDLE, ELOTTO_RUNNING, ELOTTO_DONE, ELOTTO_ABORTED } Elotto
 typedef enum { PHASE_SCORING, PHASE_MEASURING,
                PHASE_CALIBRATE, PHASE_POOL_CONFIRM } ElottoPhase;
 
-/* What the operator did with the proposed pool. Written by the /pool handler,
- * read and cleared by elotto_task — one word, so no lock is needed. */
-typedef enum { POOL_WAIT = 0, POOL_ACCEPT, POOL_MORE, POOL_CANCEL } PoolAction;
-
-/* Hand the operator's answer to the waiting session. `n_main`/`n_euro` are the
- * numbers still CHECKED; for POOL_MORE they are the ones to keep and omit from
- * the re-scoring pass. Returns false if no session is waiting. */
-bool elotto_pool_reply(PoolAction act,
-                       const uint8_t *main_sel, int n_main,
-                       const uint8_t *euro_sel, int n_euro);
 /* v3.0: NO ranking modes any more (user decision, 2026-08-02, PLAN.md §2).
  * With every combination measured exactly once there is nothing for the four
  * old rules to differ ABOUT — each item's published Z is its own single raw

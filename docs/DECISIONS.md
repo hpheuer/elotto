@@ -985,3 +985,15 @@ GCP/PEAR observer protocol.
 
 **Pooling:** new sessions pool with old `focus=off` only, never with `focus=on` (D1). D6 stands
 as evidence, not as the rule.
+
+### D67 — Rounds until Abort is the only session (2026-08-31)
+**Entscheidung:** no single-pass. Every session is rounds: score → measure a cap-sized pool →
+score again, until Abort. UI has no Unlimited checkbox; **Runs per round** is always on the
+form. `unlimited` defaults on; `?unlimited=0` → 400. No pool-confirmation overlay; `/pool` 400.
+`confirm=1` still writes NVS form prefs only.
+
+**Warum:** the operator only ever ran rounds. The checkbox was a second experiment that is no
+longer started.
+
+**Pooling:** new sessions are `unlimited=on`. Do not pool with old single-pass (`unlimited=off`)
+without splitting on `round` (D1).

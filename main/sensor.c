@@ -538,40 +538,6 @@ static bool onset_settle(void)
     return false;
 }
 
-/* ── Attended pool confirmation ────────────────────────────────────────
- * The session parks at PHASE_POOL_CONFIRM and spins here until the operator
- * answers through POST /pool. One volatile word carries the verdict, so the
- * webserver task and elotto_task need no lock: the handler writes the selection
- * first and the action word last, and the session reads the action word first. */
-static volatile PoolAction s_pool_act = POOL_WAIT;
-static uint8_t s_pool_sel_main[POOL_MAIN_49];
-static uint8_t s_pool_sel_euro[POOL_EURO_12];
-static int     s_pool_sel_nm, s_pool_sel_ne;
-
-bool elotto_pool_reply(PoolAction act,
-                       const uint8_t *main_sel, int n_main,
-                       const uint8_t *euro_sel, int n_euro)
-{
-    if (g_status.phase != PHASE_POOL_CONFIRM || g_status.state != ELOTTO_RUNNING)
-        return false;
-    /* The operator may only UNCHECK numbers, never add new ones: the selection
-     * must stay a subset of the proposal /status is currently showing. A larger
-     * one would grow the combination space past what the scoring pass measured
-     * -- and, at 15 Eurojackpot main numbers, past NUM_RUNS -- so the pass would
-     * be silently truncated into a mislabelled "complete" session. Reject it;
-     * the /pool handler turns false into a 409. */
-    if (n_main > g_status.pool_n_main || n_euro > g_status.pool_n_euro)
-        return false;
-    if (n_main > POOL_MAIN_49) n_main = POOL_MAIN_49;
-    if (n_euro > POOL_EURO_12) n_euro = POOL_EURO_12;
-    for (int i = 0; i < n_main; i++) s_pool_sel_main[i] = main_sel[i];
-    for (int i = 0; i < n_euro; i++) s_pool_sel_euro[i] = euro_sel[i];
-    s_pool_sel_nm = n_main;
-    s_pool_sel_ne = n_euro;
-    s_pool_act    = act;          // published LAST — see note above
-    return true;
-}
-
 // `euro_pool` selects the bonus-number pool; it only reaches the Focus panel,
 // which styles a euro candidate differently from a main one.
 /* `keep`/`n_keep` implement "Select more": those numbers are already chosen and
@@ -704,142 +670,6 @@ static void score_and_build_pool(int max_val, int pool_size, uint8_t *pool,
             int k = pool[i];
             out_z[i] = (k >= 1 && k <= max_val) ? (float)scores[k] : 0.0f;
         }
-}
-
-/* Look up each selected number's score in the pool currently on display, so a
- * retained number carries the measurement that put it there. A number not found
- * (which should not happen — the UI can only check what it was shown) scores 0,
- * which simply makes it the first to be replaced by a later pass. */
-static void pool_scores_for(const uint8_t *sel, int n_sel,
-                            const uint8_t *cur, const float *cur_z, int n_cur,
-                            float *out)
-{
-    for (int i = 0; i < n_sel; i++) {
-        out[i] = 0.0f;
-        for (int j = 0; j < n_cur; j++)
-            if (cur[j] == sel[i]) { out[i] = cur_z[j]; break; }
-    }
-}
-
-/* How long the session will hold at PHASE_POOL_CONFIRM with nobody answering.
- * Generous, because the operator is meant to think about this. On expiry the
- * proposal is taken UNCHANGED — that is what would have happened without the
- * feature at all — and `pool_auto` records that no human confirmed it, so the
- * session's provenance stays honest. Aborting instead would throw away a
- * completed scoring phase because somebody made coffee. */
-#define POOL_CONFIRM_TIMEOUT_MS  (15 * 60 * 1000)
-
-/* Both pool sizes travel in and out by pointer. The euro count used to be
- * handed back through g_status.pool_n_euro, which is published at the TOP of
- * the wait loop and so still held the pre-confirmation size after a shrink:
- * unchecking a bonus number left the caller measuring comb(5,2)=10 draws over a
- * pool_euro[] whose tail was the previous proposal. A value the caller owns
- * cannot go stale that way. */
-static void pool_confirm_wait(bool euro, int mx, int *io_pool_nm, int *io_pool_ne,
-                              uint8_t *pool_main, uint8_t *pool_euro, int nm)
-{
-    g_status.pool_need_main = (uint8_t)nm;
-    g_status.pool_need_euro = euro ? 2 : 0;
-    g_status.pool_auto      = 0;
-    int pool_nm = *io_pool_nm;
-    int pool_ne = euro ? *io_pool_ne : 0;
-
-    for (;;) {
-        /* Publish the current proposal, then open the gate. Order matters: the
-         * UI must never see PHASE_POOL_CONFIRM alongside a stale pool. */
-        for (int i = 0; i < pool_nm; i++) g_status.pool_main[i] = pool_main[i];
-        for (int i = 0; i < pool_ne; i++) g_status.pool_euro[i] = pool_euro[i];
-        g_status.pool_n_main = (uint8_t)pool_nm;
-        g_status.pool_n_euro = (uint8_t)pool_ne;
-        s_pool_act     = POOL_WAIT;
-        g_status.phase = PHASE_POOL_CONFIRM;
-
-        int64_t deadline = esp_timer_get_time()
-                         + (int64_t)POOL_CONFIRM_TIMEOUT_MS * 1000;
-        PoolAction act;
-        for (;;) {
-            act = s_pool_act;
-            if (act != POOL_WAIT) break;
-            if (g_status.abort_requested) return;
-            if (esp_timer_get_time() > deadline) {
-                g_status.pool_auto = 1;
-                s_pool_sel_nm = s_pool_sel_ne = 0;   // 0 = take it unchanged
-                act = POOL_ACCEPT;
-                printf("pool: no answer in %d min -- taking the scored proposal\n",
-                       POOL_CONFIRM_TIMEOUT_MS / 60000);
-                break;
-            }
-            vTaskDelay(pdMS_TO_TICKS(100));
-            g_status.elapsed_ms = elapsed_ms_now();
-        }
-
-        if (act == POOL_CANCEL) { g_status.abort_requested = true; return; }
-
-        if (act == POOL_ACCEPT) {
-            if (s_pool_sel_nm > 0) {
-                float z[POOL_MAIN_49];
-                pool_scores_for(s_pool_sel_main, s_pool_sel_nm,
-                                pool_main, g_status.pool_main_z, pool_nm, z);
-                pool_nm = s_pool_sel_nm;
-                for (int i = 0; i < pool_nm; i++) {
-                    pool_main[i] = s_pool_sel_main[i];
-                    g_status.pool_main_z[i] = z[i];
-                }
-            }
-            if (euro && s_pool_sel_ne > 0) {
-                float z[POOL_EURO_12];
-                pool_scores_for(s_pool_sel_euro, s_pool_sel_ne,
-                                pool_euro, g_status.pool_euro_z, pool_ne, z);
-                pool_ne = s_pool_sel_ne;
-                for (int i = 0; i < pool_ne; i++) {
-                    pool_euro[i] = s_pool_sel_euro[i];
-                    g_status.pool_euro_z[i] = z[i];
-                }
-            }
-            /* Republish the CONFIRMED pool. The loop above only ever publishes
-             * the proposal, so without this /status would keep describing a
-             * pool that is not the one about to be measured. */
-            for (int i = 0; i < pool_nm; i++) g_status.pool_main[i] = pool_main[i];
-            for (int i = 0; i < pool_ne; i++) g_status.pool_euro[i] = pool_euro[i];
-            g_status.pool_n_main = (uint8_t)pool_nm;
-            g_status.pool_n_euro = (uint8_t)pool_ne;
-            break;
-        }
-
-        /* POOL_MORE — measure again for the free slots only. The retained
-         * numbers are omitted from the pass entirely, so they keep the score
-         * that chose them instead of being re-measured. Each group refills
-         * independently: unchecking a bonus number should not re-run the main
-         * sweep, which is fifty runs of screen time. */
-        g_status.phase = PHASE_SCORING;
-        /* Only the numbers actually being re-measured count toward this bar —
-         * the retained ones are skipped entirely, so counting them would leave
-         * the bar permanently short of its total. */
-        g_status.scoring_total = (s_pool_sel_nm < pool_nm ? mx - s_pool_sel_nm : 0)
-                               + (euro && s_pool_sel_ne < pool_ne ? 12 - s_pool_sel_ne : 0);
-        g_status.scoring_done  = 0;
-        if (s_pool_sel_nm < pool_nm) {
-            float keep_z[POOL_MAIN_49];
-            pool_scores_for(s_pool_sel_main, s_pool_sel_nm,
-                            pool_main, g_status.pool_main_z, pool_nm, keep_z);
-            score_and_build_pool(mx, pool_nm, pool_main, false,
-                                 s_pool_sel_main, keep_z, s_pool_sel_nm,
-                                 g_status.pool_main_z);
-            if (g_status.abort_requested) return;
-        }
-        if (euro && s_pool_sel_ne < pool_ne) {
-            float keep_z[POOL_EURO_12];
-            pool_scores_for(s_pool_sel_euro, s_pool_sel_ne,
-                            pool_euro, g_status.pool_euro_z, pool_ne, keep_z);
-            score_and_build_pool(12, pool_ne, pool_euro, true,
-                                 s_pool_sel_euro, keep_z, s_pool_sel_ne,
-                                 g_status.pool_euro_z);
-            if (g_status.abort_requested) return;
-        }
-        focus_off();
-    }
-    *io_pool_nm = pool_nm;
-    *io_pool_ne = pool_ne;
 }
 
 /* Per-node half-window LSB z (D56).
@@ -2609,18 +2439,9 @@ void elotto_task(void *pvParam)
         if (g_status.abort_requested) goto done;
         focus_off();
 
-        if (g_status.unlimited) {
-            /* No confirmation gate: choosing the pool by score is what the mode
-             * IS, and a round boundary arrives every few minutes. Recorded as
-             * pool_auto=1, like every other selection no human approved. */
-            g_status.pool_auto = 1;
-        } else if (g_status.pool_confirm) {
-            /* Stop and show the operator what scoring chose. UI sends
-             * confirm=1; curl does not, so a script never parks here. */
-            pool_confirm_wait(euro, mx, &pool_nm, &pool_ne,
-                              pool_main, pool_euro, nm);
-            if (g_status.abort_requested) goto done;
-        }
+        /* D67: the pool is always the score's proposal. Recorded as
+         * pool_auto=1 — no human confirmed it. */
+        g_status.pool_auto = 1;
 
         /* Publish the pool that is actually about to be measured — EVERY path,
          * not just the confirmation gate. It used to be written only while the
@@ -2835,12 +2656,9 @@ void elotto_task(void *pvParam)
          * in between, and scoring sat between the two. */
         close_block(block);
         block++;
-        if (g_status.unlimited) {
-            pass_compact();
-            recompute_pass_ranks();
-        }
+        pass_compact();
+        recompute_pass_ranks();
 
-        if (!g_status.unlimited) break;
         if (g_status.abort_requested) break;
         if (space_full || g_status.runs_completed >= NUM_RUNS) {
             snprintf(g_status.fault, sizeof(g_status.fault),

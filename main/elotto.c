@@ -213,22 +213,9 @@ static const char HTML[] =
 "<span>Entropy:</span>"
 "<span style='font-size:.92em'>&#128247; OV5647 dark-frame photons</span>"
 "</div>"
-/* Unlimited mode. The Runs field only appears when the box is ticked: it is
-   meaningless otherwise, and an always-visible number that sometimes does
-   nothing is the same trap as a silently ignored query parameter. */
 "<div class='frow'>"
-"<span></span>"
-"<span style='display:flex;align-items:center;gap:6px'>"
-"<input id='chkUnlim' type='checkbox' onchange='unlimToggle()' "
-"style='width:16px;height:16px'>"
-"<label for='chkUnlim' style='color:#6ab0e8;font-size:.9em' "
-"title='Repeat until Abort: score, keep the best that fit the run budget, "
-"measure that pool out, score again. All rounds rank together.'>&#8734; Unlimited mode (rounds until Abort)</label>"
-"</span>"
-"</div>"
-"<div class='frow' id='rowUnlim' style='display:none'>"
 "<label for='numUnlimRuns' title='Measurement runs ONE round may spend. The pool is sized so its whole "
-"combination space fits inside it.'>"
+"combination space fits inside it. Rounds repeat until Abort.'>"
 "Runs per round:</label>"
 "<span style='display:flex;align-items:center;gap:8px'>"
 "<input id='numUnlimRuns' class='fin' type='number'"
@@ -341,28 +328,6 @@ static const char HTML[] =
 "</div>"
 "<div id='msg'></div>"
 "</div>"
-/* Pool confirmation modal. Fixed overlay rather than a card in the flow: the
-   session is BLOCKED while this is up, so it must read as a stop, not as one
-   more panel to scroll past. */
-"<div id='poolOv' style='display:none;position:fixed;inset:0;z-index:50;"
-"background:rgba(0,0,0,.72);align-items:center;justify-content:center;padding:16px'>"
-"<div style='background:#0f3d0f;border:1px solid rgba(144,238,144,.35);"
-"border-radius:14px;max-width:560px;width:100%;max-height:92vh;overflow-y:auto;"
-"padding:20px;box-shadow:0 8px 40px rgba(0,0,0,.6)'>"
-"<h3 style='color:#f0c040;margin-bottom:4px'>Selected Numbers</h3>"
-"<div id='poolHint' style='color:#90ee90;font-size:.86em;margin-bottom:12px'></div>"
-"<div id='poolMainWrap'><div style='color:#f0c040;font-size:.82em;margin-bottom:5px'>"
-"Main numbers</div><div id='poolMain' style='display:flex;flex-wrap:wrap;gap:7px'></div></div>"
-"<div id='poolEuroWrap' style='margin-top:14px'>"
-"<div style='color:#f0c040;font-size:.82em;margin-bottom:5px'>Bonus numbers</div>"
-"<div id='poolEuro' style='display:flex;flex-wrap:wrap;gap:7px'></div></div>"
-"<div id='poolCount' style='margin-top:14px;font-size:.9em;color:#fff'></div>"
-"<div class='btns' style='margin-top:16px'>"
-"<button class='btn btn-euro' id='poolOk' onclick='poolSend(\"ok\")'>OK</button>"
-"<button class='btn' id='poolMore' onclick='poolSend(\"more\")' "
-"style='background:#2e7d9e;color:#fff'>Select more</button>"
-"<button class='btn btn-abort' id='poolCancel' onclick='poolSend(\"cancel\")'>Cancel</button>"
-"</div></div></div>"
 "<div class='card' id='focusCard' style='display:none;text-align:center'>"
 "<div style='color:#f0c040;font-size:.88em;margin-bottom:8px;text-align:left'>"
 "Now:</div>"
@@ -488,10 +453,6 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "h.innerHTML='Euro '+e.p+'+'+e.q+' = '+e.c+' runs \u00b7 \u2248 '"
 "+fmt(roundMs(true,e.c))+'/round<br>6of49 '+l.p+' = '+l.c"
 "+' runs \u00b7 \u2248 '+fmt(roundMs(false,l.c))+'/round';}"
-"function unlimToggle(){"
-"document.getElementById('rowUnlim').style.display="
-"document.getElementById('chkUnlim').checked?'':'none';"
-"unlimHint();}"
 "function setMode(mode){"
 "document.getElementById('subtitle').textContent="
 "mode===0?'Eurojackpot • 5 of 50 + 2 bonus numbers':'6 of 49 Lotto';}"
@@ -505,9 +466,6 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "document.getElementById('progArea').style.display='block';"
 "startFocus();"
 "applyPaused(d.paused);"
-// A page loaded (or reloaded) while the device is already waiting must show the
-// prompt too — the session is blocked until somebody answers it.
-"if(d.phase==='poolconfirm'&&!poolShown&&d.pool_main)poolShow(d);"
 "lastSlowMbit=slowMbit(d)||lastSlowMbit;"
 "updatePoolBadge(d);updateParamBadge(d);"
 "setScoreTotal(d);"
@@ -528,7 +486,8 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "showResults(d);"
 "}"
 "showSlaveBadge(d);"
-"}).catch(function(){});};"
+"}).catch(function(){});"
+"unlimHint();};"
 // The badge names the array size and the SNR that follows from it. Nodes are
 // discovered by broadcast, so "connected" alone says neither how many answered
 // nor how many are still contributing after a drop.
@@ -622,7 +581,6 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "if(runS>" EL_STR(RUN_S_MAX) ")runS=" EL_STR(RUN_S_MAX) ";"
 "var gapS=Math.round(runS*0.4*10)/10;"
 "if(gapS<0.5)gapS=0.5;if(gapS>10)gapS=10;"
-"var unl=document.getElementById('chkUnlim').checked?1:0;"
 "var mxr=parseInt(document.getElementById('numUnlimRuns').value)"
 "||" EL_STR(UNLIM_RUNS_DEFAULT) ";"
 "if(mxr<" EL_STR(UNLIM_RUNS_MIN) ")mxr=" EL_STR(UNLIM_RUNS_MIN) ";"
@@ -642,7 +600,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "+'&run='+runS+'&gap='+gapS"
 "+'&score='+score"
 "+'&wpre='+wPre"
-"+'&unlimited='+unl+'&maxruns='+mxr+'&confirm=1',{method:'POST'})"
+"+'&maxruns='+mxr+'&confirm=1',{method:'POST'})"
 ".then(function(r){if(!r.ok){"
 "document.getElementById('runsErr').textContent="
 "'\\u26a0 a session is already running \\u2014 abort it first';"
@@ -674,73 +632,6 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "function doAbort(){"
 "fetch('/abort',{method:'POST'});"
 "document.getElementById('msg').textContent='Aborting...';"
-"}"
-/* IDEMPOTENT ON PURPOSE. pollFocus() runs at 10 Hz and used to call this every
-   tick, rewriting innerHTML ten times a second and repainting the button
-   continuously — visible as a flicker even when nothing had changed. Bail out
-   when the state already matches and the DOM is touched only on a real change. */
-/* ── Pool confirmation ──────────────────────────────────────────────
-   The device is parked at PHASE_POOL_CONFIRM until one of these three answers
-   arrives, so the modal is rendered once (poolShown latches) and then left
-   alone: re-rendering on every /status poll would wipe the operator's
-   checkboxes out from under them mid-decision. */
-"var poolShown=false,poolNeedM=0,poolNeedE=0,poolFullM=0,poolFullE=0;"
-"function poolChecked(id){"
-"var out=[],b=document.querySelectorAll('#'+id+' input:checked');"
-"for(var i=0;i<b.length;i++)out.push(parseInt(b[i].value,10));"
-"return out;}"
-/* Button states are the spec: OK needs enough numbers left to form one draw,
-   "Select more" only means anything while a slot is free. */
-"function poolSync(){"
-"var m=poolChecked('poolMain').length,e=poolChecked('poolEuro').length;"
-"var okM=m>=poolNeedM,okE=(poolNeedE===0)||(e>=poolNeedE);"
-"document.getElementById('poolOk').disabled=!(okM&&okE);"
-"document.getElementById('poolMore').disabled=(m>=poolFullM)&&(e>=poolFullE);"
-"var cm=comb(m,poolNeedM),ce=poolNeedE?comb(e,poolNeedE):1;"
-"var t=cm*ce;"
-"document.getElementById('poolCount').innerHTML=(okM&&okE)"
-"?'Keeps <b>'+m+'</b>'+(poolNeedE?' + <b>'+e+'</b> bonus':'')+"
-"' \\u2192 <b>'+t+'</b> combination'+(t===1?'':'s')+' to measure'"
-"+(t===1?' \\u2014 the same draw every run, which is the most sensitive way to use it.':'')"
-":'<span style=\"color:#ff6b6b\">Too few numbers for a single draw \\u2014 need at least '"
-"+poolNeedM+(poolNeedE?' + '+poolNeedE+' bonus':'')+'.</span>';"
-"}"
-"function comb(n,k){if(k>n||k<0)return 0;var r=1;"
-"for(var i=0;i<k;i++)r=r*(n-i)/(i+1);return Math.round(r);}"
-"function poolChip(o,euro){"
-"return \"<label style='display:inline-flex;align-items:center;gap:5px;\"+"
-"\"background:rgba(0,0,0,.3);border-radius:8px;padding:5px 9px;cursor:pointer'>\"+"
-"\"<input type='checkbox' checked value='\"+o.n+\"' onchange='poolSync()' \"+"
-"\"style='width:15px;height:15px'>\"+"
-"\"<b style='color:\"+(euro?'#ffdc6a':'#fff')+\"'>\"+o.n+\"</b>\"+"
-"\"<span style='color:#8fae8f;font-size:.78em'>z \"+o.z.toFixed(2)+\"</span></label>\";}"
-"function poolShow(d){"
-"poolNeedM=d.pool_need_main;poolNeedE=d.pool_need_euro;"
-"poolFullM=d.pool_main.length;poolFullE=d.pool_euro.length;"
-"var h='';for(var i=0;i<d.pool_main.length;i++)h+=poolChip(d.pool_main[i],false);"
-"document.getElementById('poolMain').innerHTML=h;"
-"h='';for(var i=0;i<d.pool_euro.length;i++)h+=poolChip(d.pool_euro[i],true);"
-"document.getElementById('poolEuro').innerHTML=h;"
-"document.getElementById('poolEuroWrap').style.display=d.pool_euro.length?'block':'none';"
-"document.getElementById('poolHint').textContent="
-"'Scoring chose these. Uncheck any you do not want, then OK to measure them '"
-"+'\\u2014 or Select more to re-score the rest and refill the free slots.';"
-"document.getElementById('poolOv').style.display='flex';"
-"poolShown=true;poolSync();"
-"}"
-"function poolHide(){"
-"document.getElementById('poolOv').style.display='none';poolShown=false;}"
-"function poolSend(act){"
-"var m=poolChecked('poolMain'),e=poolChecked('poolEuro');"
-"var q='/pool?act='+act+'&main='+m.join(',')+'&euro='+e.join(',');"
-// Hide immediately: the device needs a moment to pick the answer up, and a
-// modal that lingers invites a second click on a session that has moved on.
-"poolHide();"
-"if(act==='cancel'){document.getElementById('msg').textContent='Cancelled.';}"
-"else{document.getElementById('msg').textContent="
-"act==='more'?'Re-scoring the remaining numbers...':'Pool confirmed \\u2014 measuring...';}"
-"fetch(q,{method:'POST'}).then(function(r){"
-"if(!r.ok)document.getElementById('msg').textContent='Pool rejected by device.';});"
 "}"
 "function setPauseBtn(p){"
 "p=!!p;"
@@ -817,10 +708,6 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "lastSlowMbit=slowMbit(d)||lastSlowMbit;"
 "updatePoolBadge(d);updateParamBadge(d);"
 "updateFocusInfo(d);"
-// Raise the prompt as soon as the device parks on it, and take it down again
-// the moment it moves on (an answer from another browser tab, or the timeout).
-"if(d.phase==='poolconfirm'){if(!poolShown&&d.pool_main)poolShow(d);}"
-"else if(poolShown)poolHide();"
 "preparing=(d.state==='running'&&d.phase==='calibrating');"
 // Calibration is the first thing a loop does and nothing is on screen for it.
 // Say so, or a 30 s pause at the top of every loop looks like a stall.
@@ -896,7 +783,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "}"
 "if(d.state==='running'&&d.top&&d.top.length)showResults(d);"
 "if(d.state==='done'||d.state==='aborted'){"
-"clearInterval(timer);stopFocus();poolHide();"
+"clearInterval(timer);stopFocus();"
 "document.getElementById('runBtns').style.display='none';"
 "document.getElementById('measCheck').innerHTML=\" <span style='color:#90ee90;font-size:1.1em'>&#10004;</span>\";"
 "document.getElementById('runsRow').style.display='grid';"
@@ -2165,9 +2052,8 @@ static esp_err_t start_handler(httpd_req_t *req)
         char qry[256] = "";
         g_status.mode           = MODE_EUROJACKPOT;
         g_status.runs_total     = 0;   // computed in elotto_task from combinatorics
-        /* Unlimited mode: rounds repeat until Abort. Off unless asked for, and
-         * the cap only means anything when it is on. */
-        g_status.unlimited      = false;
+        /* D67: rounds until Abort is the only session. */
+        g_status.unlimited      = true;
         g_status.runs_cap       = UNLIM_RUNS_DEFAULT;
         // Window / blank: defaults match the UI field; ?run= / ?gap= override.
         // Segment count is derived from run_target_ms (live cal RUN_SEGS_REF).
@@ -2208,9 +2094,8 @@ static esp_err_t start_handler(httpd_req_t *req)
                 httpd_query_key_value(qry, "focus", val, sizeof(val)) == ESP_OK) {
                 httpd_resp_set_status(req, "400 Bad Request");
                 httpd_resp_sendstr(req,
-                    "v3: loops/runs/rank/focus no longer exist -- one pass, "
-                    "always unattended. For repeated rounds over a "
-                    "score-sized pool use unlimited=1&maxruns=<n>");
+                    "v3: loops/runs/rank/focus no longer exist -- rounds until "
+                    "Abort, always unattended. Cap a round with maxruns=<n>");
                 return ESP_OK;
             }
             /* ?went= deleted with the spectral-entropy channel (D53). */
@@ -2237,12 +2122,14 @@ static esp_err_t start_handler(httpd_req_t *req)
                     "block centring is the drift reference");
                 return ESP_OK;
             }
-            /* ?unlimited=1 -> rounds repeat until Abort (or results[] full):
-             * score, keep the best numbers that fit ?maxruns=<n> measurement
-             * runs, measure that pool out, score again. The cap is per ROUND;
-             * results accumulate across rounds and rank together. */
-            if (httpd_query_key_value(qry, "unlimited", val, sizeof(val)) == ESP_OK)
-                g_status.unlimited = (val[0] == '1');
+            /* D67: a single pass is gone. Omitted unlimited= is on. */
+            if (httpd_query_key_value(qry, "unlimited", val, sizeof(val)) == ESP_OK
+                && val[0] == '0') {
+                httpd_resp_set_status(req, "400 Bad Request");
+                httpd_resp_sendstr(req,
+                    "unlimited=0 no longer exists -- sessions are rounds until Abort");
+                return ESP_OK;
+            }
             if (httpd_query_key_value(qry, "maxruns", val, sizeof(val)) == ESP_OK) {
                 int m = atoi(val);
                 if (m >= 1 && m <= UNLIM_RUNS_MAX) g_status.runs_cap = m;
@@ -2363,36 +2250,6 @@ static esp_err_t abort_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* ── /pool POST — the operator's answer to the pool proposal ─────────
- *
- * `POST /pool?act=ok|more|cancel&main=3,7,12&euro=2,9`
- *
- * `main`/`euro` are the numbers still CHECKED. For `ok` they become the pool;
- * for `more` they are kept and omitted from a fresh scoring pass that refills
- * the rest. Omitting the lists entirely means "unchanged", which is what the
- * timeout path uses.
- *
- * 409 when no session is waiting, so a stale browser tab cannot inject a pool
- * into a session that has already moved on. */
-static int parse_num_list(const char *s, uint8_t *out, int max_n, int max_val)
-{
-    int n = 0;
-    while (*s && n < max_n) {
-        while (*s == ',' || *s == ' ') s++;
-        if (!*s) break;
-        int v = 0, digits = 0;
-        while (*s >= '0' && *s <= '9') { v = v * 10 + (*s++ - '0'); digits++; }
-        if (!digits) { while (*s && *s != ',') s++; continue; }
-        if (v >= 1 && v <= max_val) {
-            bool dup = false;               // a duplicate would corrupt the
-            for (int i = 0; i < n; i++)     // combination enumeration
-                if (out[i] == (uint8_t)v) { dup = true; break; }
-            if (!dup) out[n++] = (uint8_t)v;
-        }
-    }
-    return n;
-}
-
 /* POST /probe — re-run slave discovery.
  *
  * Discovery is otherwise a one-shot broadcast at boot, so a slave that was
@@ -2422,45 +2279,9 @@ static esp_err_t probe_handler(httpd_req_t *req)
 static esp_err_t pool_handler(httpd_req_t *req)
 {
     if (!origin_ok(req)) return ESP_OK;
-    char qry[512] = "";
-    char val[256] = "";
-    PoolAction act = POOL_ACCEPT;
-    uint8_t m[POOL_MAIN_49], e[POOL_EURO_12];
-    int nm = 0, ne = 0;
-    int max_main = (g_status.mode == MODE_EUROJACKPOT) ? 50 : 49;
-
-    if (httpd_req_get_url_query_str(req, qry, sizeof(qry)) == ESP_OK) {
-        if (httpd_query_key_value(qry, "act", val, sizeof(val)) == ESP_OK) {
-            if      (!strcmp(val, "more"))   act = POOL_MORE;
-            else if (!strcmp(val, "cancel")) act = POOL_CANCEL;
-        }
-        if (httpd_query_key_value(qry, "main", val, sizeof(val)) == ESP_OK)
-            nm = parse_num_list(val, m, POOL_MAIN_49, max_main);
-        if (httpd_query_key_value(qry, "euro", val, sizeof(val)) == ESP_OK)
-            ne = parse_num_list(val, e, POOL_EURO_12, 12);
-    }
-
-    /* Refuse a selection too small to build a draw from. The UI disables OK in
-     * that state, but the endpoint is public and a session that accepted an
-     * empty pool would compute comb(0,5) and measure nothing at all. */
-    if (act == POOL_ACCEPT && nm > 0 && nm < g_status.pool_need_main) {
-        httpd_resp_set_status(req, "400 Bad Request");
-        httpd_resp_sendstr(req, "too few main numbers for one draw");
-        return ESP_OK;
-    }
-    if (act == POOL_ACCEPT && g_status.pool_need_euro &&
-        ne > 0 && ne < g_status.pool_need_euro) {
-        httpd_resp_set_status(req, "400 Bad Request");
-        httpd_resp_sendstr(req, "too few bonus numbers for one draw");
-        return ESP_OK;
-    }
-
-    if (!elotto_pool_reply(act, m, nm, e, ne)) {
-        httpd_resp_set_status(req, "409 Conflict");
-        httpd_resp_sendstr(req, "no session waiting for a pool");
-        return ESP_OK;
-    }
-    httpd_resp_sendstr(req, "ok");
+    httpd_resp_set_status(req, "400 Bad Request");
+    httpd_resp_sendstr(req,
+        "pool confirmation is gone -- sessions are rounds until Abort (D67)");
     return ESP_OK;
 }
 
@@ -2857,7 +2678,6 @@ static void prefs_save(void)
     uint8_t  w100  = (uint8_t)(g_status.pre_w * 100.0 + 0.5);
     if (w100 > 100) w100 = 100;
     nvs_set_u16(h, "run10", run10);
-    nvs_set_u8(h,  "unlim", g_status.unlimited ? 1 : 0);
     nvs_set_u16(h, "maxruns", mx);
     nvs_set_u8(h,  "score", (uint8_t)g_status.score_dir);
     nvs_set_u8(h,  "wpre", w100);
@@ -2870,10 +2690,9 @@ static void prefs_send(httpd_req_t *req)
     nvs_handle_t h;
     if (nvs_open(PREF_NS, NVS_READONLY, &h) != ESP_OK) return;
     uint16_t run10 = 0, maxruns = 0;
-    uint8_t unlim = 0xff, score = 0xff, wpre = 0xff;
+    uint8_t score = 0xff, wpre = 0xff;
     bool any = false;
     if (nvs_get_u16(h, "run10", &run10) == ESP_OK) any = true;
-    if (nvs_get_u8(h,  "unlim", &unlim) == ESP_OK) any = true;
     if (nvs_get_u16(h, "maxruns", &maxruns) == ESP_OK) any = true;
     if (nvs_get_u8(h,  "score", &score) == ESP_OK) any = true;
     if (nvs_get_u8(h,  "wpre", &wpre) == ESP_OK) any = true;
@@ -2887,10 +2706,6 @@ static void prefs_send(httpd_req_t *req)
         p += snprintf(js + p, sizeof(js) - p,
             "e=document.getElementById('numRunS');if(e)e.value='%.1f';",
             run10 / 10.0);
-    if (unlim != 0xff)
-        p += snprintf(js + p, sizeof(js) - p,
-            "e=document.getElementById('chkUnlim');if(e)e.checked=%s;",
-            unlim ? "true" : "false");
     if (maxruns > 0)
         p += snprintf(js + p, sizeof(js) - p,
             "e=document.getElementById('numUnlimRuns');if(e)e.value='%u';",
@@ -2905,9 +2720,7 @@ static void prefs_send(httpd_req_t *req)
         p += snprintf(js + p, sizeof(js) - p,
             "e=document.getElementById('numPreW');if(e)e.value='%.2f';",
             wpre / 100.0);
-    p += snprintf(js + p, sizeof(js) - p,
-        "if(document.getElementById('chkUnlim').checked)unlimToggle();"
-        "})();</script>");
+    p += snprintf(js + p, sizeof(js) - p, "unlimHint();})();</script>");
     if (p > 0 && p < (int)sizeof(js))
         httpd_resp_send_chunk(req, js, p);
 }

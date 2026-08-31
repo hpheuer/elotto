@@ -4,7 +4,7 @@ Project **HISTORY snapshot**, not a rule. Rules: [`../CLAUDE.md`](../CLAUDE.md).
 
 ## Current (2026-08-31)
 
-**Instrument:** D65 LSB stream + concordance ranking (`?wpre=` = Conc-Gewicht). D66: always unattended; HTML **Now:** card via `GET /focus`. Sweep `|bias−0,5|`; σ-Gate relativ (`CAL_RAW_SIGMA_K` 1,35). Soft-down 1,35 × Peer-Median-σ. Wire `Z:<z>,<h1>,<h2>[,wsig=]`.
+**Instrument:** D65 LSB stream + concordance ranking (`?wpre=` = Conc-Gewicht). D66: always unattended; HTML **Now:** card. D67: rounds until Abort is the only session (no Unlimited checkbox, no pool overlay). Sweep `|bias−0,5|`; σ-Gate relativ (`CAL_RAW_SIGMA_K` 1,35). Soft-down 1,35 × Peer-Median-σ. Wire `Z:<z>,<h1>,<h2>[,wsig=]`.
 
 **On the rig.** Master `fw_sha` `203708f4f85eaeea` (`f2415ae`, D66, ota_1). Slaves `2465c2251beb01b6` (D65, no UI change). `?focus=` 400, `/ready` 404.
 

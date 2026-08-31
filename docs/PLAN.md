@@ -106,8 +106,7 @@ already makes. Both simpler rules were tried and both are wrong:
 No observer gate. The HTML card shows the current number (scoring) or combination (pass).
 `?focus=` answers 400. CSV `focus=off`.
 
-The pool gate is **`confirm=1` only** (the web UI). Curl never parks there. Unlimited records
-`pool_auto=1`. A 15-minute timeout on the pool prompt accepts unchanged, same flag.
+No pool gate `[D67]`. The score sizes the pool to `maxruns`; `pool_auto=1`.
 
 ### 3.5 Hardware check
 
@@ -119,7 +118,7 @@ Centring / soft-down / quarantine verified on short unattended runs 2026-08-17; 
 ## 4 Unlimited Mode — rounds instead of one pass (specified and implemented 2026-08-18)
 
 Requested by the user on 2026-08-18. **A session that does not end with a combination space.**
-Opt-in: UI checkbox **"∞ Unlimited mode (rounds until Abort)"** with a **Runs per round** field
+**D67:** this is the only session. **Runs per round** field
 (default **100**), on the wire `POST /start?unlimited=1&maxruns=<n>`.
 
 ### 4.1 The round

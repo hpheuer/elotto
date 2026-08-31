@@ -29,8 +29,7 @@ do not pool with old `focus=on` archives.
 
 ## In a Nutshell (v3)
 
-- **One pass:** every combination in the pool is measured **exactly once** (Fisher–Yates). No loops,
-  no ranking modes. Optional **Unlimited** mode: rounds of score → measure → re-score until Abort.
+- **Rounds until Abort:** score → measure a cap-sized pool → re-score. No loops, no ranking modes.
 - **Window:** `?run=` 0,5–5 s (default 5); actual wall time is `focus_win_ms` (slowest node).
 - **Blocks** (~15 min): sweep, centre, drift, pairwise, soft-down.
 - **UI:** parameter line from `/status`, Top-5 / Bottom-5 (Z*, Z, Conc), jump board, GCP health line
@@ -86,4 +85,4 @@ Slave repo must sit **next to** this one (`EXTRA_COMPONENT_DIRS=../elotto/compon
 
 | | |
 |---|---|
-| **v3 / D65** | Single-pass + Unlimited; block centring; LSB z + concordance ranking; OTA-only. Contract: `docs/PLAN.md` §2+. Never pool with prior-instrument sessions or v2.x. |
+| **v3 / D67** | Rounds until Abort; block centring; LSB z + concordance ranking; OTA-only. Contract: `docs/PLAN.md` §2+. Never pool with prior-instrument sessions or v2.x. |
