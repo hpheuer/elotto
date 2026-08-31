@@ -381,6 +381,12 @@ The enclosure is **LIT, not dark** `[D28]`.
 - ⛔ **Never power illumination from a node's VSYS pin** `[D29]`.
 - ⚠ **After physical work, let the light settle ~30 min** before a long run `[D30]`.
 - ⚠ **Do not judge the light by one `mean_px` reading** — sweep, or take a time series.
+- ⚠ **The linearity test tells STEADY light from bright light, in a minute**: set exp 32, 64,
+  128, 256 and read `mean_px` at each. Steady light doubles it each time. On 2026-08-31 slave1
+  read 0,86 / 0,65 / 0,39 px per exposure unit — falling, not constant — with `raw_sigma` 6,0 and
+  autocorr 0,042. That is FLICKERING light, not too much of it, and no single `mean_px` reading
+  can show the difference. After the fix the same node read ×1,94 / ×2,08 / ×2,09 with
+  `raw_sigma` 1,03.
 - ⛔ **All four nodes on PoE, permanently** (user decision) `[D31]`.
 - ⛔ **Do not switch camera hardware** on the theory that the OV5647 is the problem `[D32]`.
 
