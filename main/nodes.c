@@ -607,14 +607,11 @@ void slave_abort(void)
  * now, so a completed run cannot have come from anywhere else, and a run that
  * could not complete says so explicitly instead of reporting a substituted z.
  *
- * ⚠ Trailing fields optional. Z:<z>[,H[,z_pre[,h1,h2]]] — H ignored (D53);
- * z_pre past 2nd comma; half-window pre past 3rd/4th (D56). A single 4th
- * field with no 5th is an old D54 runs z and is ignored. Absent ≠ 0. */
+ * ⚠ Trailing fields optional. Z:<z>[,h1,h2][,wsig=] (D65). First comma
+ * pair is the half-window split of the SAME bits. Absent ≠ 0. */
 bool node_take_z(int k, double *out_z,
-                 bool *out_have_pre, double *out_pre,
                  bool *out_have_h, double *out_h1, double *out_h2)
 {
-    if (out_have_pre) *out_have_pre = false;
     if (out_have_h) *out_have_h = false;
     if (!s_link[k].replied) return false;
     const char *resp = s_link[k].reply;
@@ -652,20 +649,12 @@ bool node_take_z(int k, double *out_z,
     }
 
     const char *comma = strchr(resp + 2, ',');
-    if (comma) {
+    if (comma && comma[1] != 'w') {
         const char *c2 = strchr(comma + 1, ',');
-        if (c2) {
-            if (out_have_pre && out_pre) {
-                double p = atof(c2 + 1);
-                if (isfinite(p)) { *out_pre = p; *out_have_pre = true; }
-            }
-            const char *c3 = strchr(c2 + 1, ',');
-            const char *c4 = c3 ? strchr(c3 + 1, ',') : NULL;
-            if (c3 && c4 && out_have_h && out_h1 && out_h2) {
-                double a = atof(c3 + 1), b = atof(c4 + 1);
-                if (isfinite(a) && isfinite(b)) {
-                    *out_h1 = a; *out_h2 = b; *out_have_h = true;
-                }
+        if (c2 && out_have_h && out_h1 && out_h2) {
+            double a = atof(comma + 1), b = atof(c2 + 1);
+            if (isfinite(a) && isfinite(b)) {
+                *out_h1 = a; *out_h2 = b; *out_have_h = true;
             }
         }
     }

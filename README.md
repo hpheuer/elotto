@@ -16,10 +16,10 @@ noise** using
 
 ## Abstract
 
-A home-built GCP/PEAR-style instrument: each node draws bits from its **own** OV5647 (never shared;
-on-chip TRNG deleted). Frame-pair diff → LSB → XOR-fold → segments of 200 bits → Stouffer z.
-Up to four nodes combine as `Σz/√k` for the nodes that answered that run. Ranking uses
-**block-centred** z plus optional pre-fold weight; p-values stay on folded z.
+A home-built GCP/PEAR-style instrument: each node draws bits from its **own** OV5647 (never shared).
+Frame-pair diff → LSB → segments of 224 bits → Stouffer z. No XOR fold `[D65]`.
+Up to four nodes combine as `Σz/√k` for the nodes that answered that run. Ranking is
+**block-centred** z plus concordance (`?wpre=`).
 Attended sessions show the target while bits are sampled (`focus=1`); attended and unattended are
 separate arms and are never pooled.
 
@@ -33,8 +33,8 @@ separate arms and are never pooled.
   no ranking modes. Optional **Unlimited** mode: rounds of score → measure → re-score until Abort.
 - **Window:** `?run=` 0,5–5 s (default 5); actual wall time is `focus_win_ms` (slowest node).
 - **Blocks** (~15 min): sweep, centre, drift, pairwise, soft-down.
-- **UI:** parameter line from `/status`, Top/Bottom/Nearest-zero tables, GCP health line
-  (`pass_σ`, `v_eff`, `|r|√n`, soft-downs), German CSV (`?all=1` = archive).
+- **UI:** parameter line from `/status`, Top-5 / Bottom-5 (Z*, Z, Conc), jump board, GCP health line
+  (`pass_σ`, `v_eff`, `|r|√n`), German CSV (`?all=1` = archive).
 
 ## Screenshots
 
@@ -86,8 +86,4 @@ Slave repo must sit **next to** this one (`EXTRA_COMPONENT_DIRS=../elotto/compon
 
 | | |
 |---|---|
-| **v3** | Single-pass session + Unlimited rounds; block centring; soft-down; pre-fold ranking channel; OTA-only workflow. Contract: `docs/PLAN.md` §2+. Never pool with v2.x. |
-| pre-v3 | Loops, coverage mode, TRNG option, UART link, baseline phase — **git history** / `git show 1e62bca:README.md` and `git show 1e62bca:docs/PLAN_HISTORY.md`. |
-
-Older README prose (Coverage mode, baseline phases, `?src=`, Key Code HISTORICAL, …) was removed in
-the 2026-08-28 docs trim; recover from the commit above.
+| **v3 / D65** | Single-pass + Unlimited; block centring; unfolded z + concordance ranking; OTA-only. Contract: `docs/PLAN.md` §2+. Never pool with folded sessions or v2.x. |

@@ -104,13 +104,13 @@
  *
  * ⚠ Sessions before and after 2026-08-18 are not the same instrument: same
  * nominal ?run=, different bit count per item. Do not pool them. */
-#define RUN_SEGS_REF         70513
+#define RUN_SEGS_REF        141026
 #define RUN_MS_REF            2703
 /* The wire caps the segment count at EL_SEG_MAX, and a receiver does NOT clamp
  * an out-of-range value — it falls back to its own default, which would put the
  * nodes on different window lengths without anything looking wrong. The master
  * must therefore never ASK for more than the wire allows. With RUN_S_MAX at 5 s
- * that holds with room to spare (130435 of 200000), and the assertion below
+ * that holds with room to spare (260871 of 400000), and the assertion below
  * makes the compiler re-check it after any future recalibration instead of
  * leaving it to whoever edits RUN_MS_REF next. */
 _Static_assert(((long long)RUN_S_MAX * 1000 * RUN_SEGS_REF) / RUN_MS_REF <= EL_SEG_MAX,
@@ -156,7 +156,7 @@ _Static_assert(((long long)RUN_S_MAX * 1000 * RUN_SEGS_REF) / RUN_MS_REF <= EL_S
  * ⚠ Still an ESTIMATE, and the live UI prefers the measured pace wherever it
  * has one — including the slowest node's own cam_mbit from /status, which makes
  * the constant a cold-start value rather than the answer. */
-#define CYCLE_LOAD_MBIT_X100   366   // per-node extraction rate under load, x100
+#define CYCLE_LOAD_MBIT_X100   732   // per-node rate under load x100; 2x words with fold off (D65)
 #define CYCLE_FIXED_MS         780   // per-run overhead that does not scale
 
 /* ── Unlimited mode (user, 2026-08-18) ────────────────────────────────────
@@ -218,7 +218,8 @@ _Static_assert(((long long)RUN_S_MAX * 1000 * RUN_SEGS_REF) / RUN_MS_REF <= EL_S
  * 13 %. That is real but it is the SAME bargain every closed block already
  * makes (D8), only noisier, and it shrinks as the block fills. */
 #define PASS_OPEN_MIN_N        4    // items in the open block before it is ranked
-#define NODE_SIGMA_SOFT        1.25  // block per-node σ above this → soft-exclude
+#define NODE_SOFT_TRIP_K       1.35  // trip if block σ > K × peer-median σ (D65)
+#define NODE_SIGMA_SOFT        NODE_SOFT_TRIP_K  /* alias: old absolute 1.25 is gone */
 /* ── |block mean| REPORTS, it no longer excludes (2026-08-19) ──────────────
  *
  * This was a trip wire at the same value until the 2026-08-19 session, where it
@@ -310,27 +311,10 @@ _Static_assert(((long long)RUN_S_MAX * 1000 * RUN_SEGS_REF) / RUN_MS_REF <= EL_S
  * offset intact: (−6.33 + 0.27 + 0.22)/√3 = −3.38, exactly the published value.
  * A bad arm in the combine costs more than a small k does (user, 2026-08-13). */
 #define NODE_SOFT_MIN_COMBINE  1     // never soft-exclude below this many live nodes
-/* Weight of the PRE-FOLD half of the ranking key (D45), ?wpre=<0..1>.
- * DEFAULT 0: the pre-fold z is measured, combined, centred and archived from
- * the first session, but it does not move a single ranking until it is asked
- * for. Adding a channel to the key after the fact is a second ticket in the
- * same lottery, so it has to be pre-registered per session. */
+/* Concordance weight of the ranking key (D65), ?wpre=<0..1>.
+ * DEFAULT 0: z alone. The form pre-fills 0,8. Curl must not silently pick a
+ * weight; the page does, and pre_w= in the CSV says which arm ran. */
 #define ENT_W_PRE_DEFAULT    0.0
-/* ⚠ The FORM pre-fills a weight while the API default above stays 0.
- * Deliberate and asymmetric (user, 2026-08-26): a curl-started session must not
- * silently acquire a channel it never asked for, but a session started from the
- * page is an operator choosing deliberately, and the field shows what they are
- * choosing. So the arm a run was on is never implicit — it is in the CSV
- * header as pre_w= either way.
- *
- * 0,3 -> 0,8 on 2026-08-27 (user): the pre-fold z is the channel this project
- * is actually looking at now, because the XOR fold suppresses a mean-bias
- * effect by sqrt(2)*e (D45) and that is the quantity the experiment is after.
- * The fold stays (D17) and the folded z still carries every p-value; what the
- * weight moves is the ranking, and 0,8 says the ranking follows the unfolded
- * channel. ⚠ It is the channel with the WORSE null — raw sigma leaves its band
- * as soon as the light does — so a table ranked at 0,8 is a shortlist, never
- * evidence. That is what pre_w= in the CSV header is for. */
 #define ENT_W_PRE_FORM       0.8
 
 /* Phase-0 scoring direction (pre-registered). Only affects WHICH numbers enter

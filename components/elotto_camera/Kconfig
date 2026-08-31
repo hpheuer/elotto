@@ -82,22 +82,12 @@ menu "Elotto Camera (OV5647 dark-frame entropy)"
                 expected to stay unwired.
 
         config ELOTTO_CAM_XOR_FOLD
-            bool "XOR-fold the extracted bits (halves rate, squares the bias)"
-            default y
+            bool "XOR-fold the extracted bits (unused — forced off in camera.c)"
+            default n
             help
-                Emit one bit per pixel *pair* as LSB(i) XOR LSB(i+1) instead of
-                one bit per pixel. Standard debiasing: a bias e becomes ~2e^2,
-                so the measured 0.0151 lands near 5e-4. It also collapses the
-                per-mini-run sigma overdispersion, since that is driven by the
-                same varying bias.
-
-                It costs half the pre-fold throughput, and that cost is already
-                paid: the 5.71 Mbit/s per node this array runs at IS the folded
-                rate. Do not read the number as raw and halve it again.
-
-                Leave it on. The fold is permanently enabled by decision -- there
-                is no fold trial in the sweep, and turning it off produces a
-                stream this project will not measure.
+                Ignored. D65 turned the XOR fold off in camera.c; this bit no
+                longer drives extraction. Left in Kconfig so old sdkconfig
+                files still parse.
 
                 It masks the bias rather than removing its cause (likely ISP
                 digital processing making the raw LSB non-uniform).

@@ -20,7 +20,7 @@
  * seg_from_cmd() in the slave. Keep the master's ?run= validation inside it.
  */
 #define EL_SEG_MIN      100
-#define EL_SEG_MAX   200000
+#define EL_SEG_MAX   400000
 
 /*
  * FRAME:  "EL1 <seq> <payload>"      (plain ASCII, one command per datagram)

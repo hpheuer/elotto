@@ -1,35 +1,23 @@
 # Where things stand
 
 Project **HISTORY snapshot**, not a rule. Rules: [`../CLAUDE.md`](../CLAUDE.md). Evidence: [`DECISIONS.md`](DECISIONS.md).
-Older dated narratives (2026-08-18…27 flash/session logs) were trimmed 2026-08-28; recover with
-`git show 1e62bca:docs/STATUS.md`.
 
-## Current (2026-08-29)
+## Current (2026-08-31)
 
-**Instrument:** four-node photon LSB-diff array; v3 single-pass + Unlimited; block centring;
-ranking key = weighted `(z_ctr, z_conc)` — half-window leave-one-out `[D56]`.
-Baseline phase **deleted** `[D48]`. Spectral-entropy **deleted** `[D53]`. Runs ranking **deleted** `[D55]`.
-Nearest-zero table **deleted**; unlimited compact keeps 100 extremes `[D56]`.
-`null_flags` / NB / CUSUM **deleted** `[D47]`.
-Sweep selects on **pre-fold** bias with incumbent hysteresis `[D46]`. `/loops` records in-block
-`cam_sig` / `cam_rsig` / `cam_px` `[D50]`. Measuring window **0,5–5 s** `[D51]`.
+**Instrument (code, D65):** four-node photon LSB-diff array; XOR fold **off**; one unfolded z plus
+concordance ranking (`?wpre=` = conc weight). Sweep selects on `|bias−0,5|` with incumbent hysteresis
+`[D46]`; σ gate is relative (`CAL_RAW_SIGMA_K`). Soft-down: 1,35 × peer-median σ. Wire
+`Z:<z>,<h1>,<h2>[,wsig=]`.
 
-**Idle rate** ~5,71 Mbit/s per node; loaded ~3,7 — ceiling is the sensor at idle `[D23]``[D25]`.
+**Not yet on the rig.** Master+slave built; a live Unlimited Euro session is still on the previous
+image (`fw_sha` `d61419b5b5759ce8`). Flash all four together after that session ends. Then
+re-measure `focus_win_ms` vs `?run=` — `RUN_SEGS_REF` 141026 is predicted.
 
-**UI (master):** GCP primary line (`pass_σ`, `v_eff`, `|r|√n`, soft-downs) on the results card.
-Form remembers last start values including focus (NVS, `confirm=1` only) `[D49]`.
-Bonferroni line **deleted** `[D57]`.
+**Idle/load rates** from the folded era (5,71 / ~3,7 Mbit/s) do not apply after D65.
 
-### Open / not fully exercised
-- Relative pre-fold dispersion gate: never observed rejecting a rung the folded-σ gate did not
-  already reject `[D46]`.
-- Pre-fold channel over many real 15-minute blocks (most checks used short `calint`).
-- ×√n array gain still **not established** — judge on per-block combined σ **and** the full
-  pairwise matrix (CLAUDE).
+×√n array gain still **not established** — judge on per-block combined σ **and** the full pairwise
+matrix.
 
 ### Pooling
-Never mix across the splits in CLAUDE’s pooling table / `[D1]`. Different `?run=` ⇒ different bit
-count per item.
-
-**Dropped and deferred:** last section of [`DECISIONS.md`](DECISIONS.md) — check before proposing
-anything that sounds obvious.
+Never mix across the splits in CLAUDE’s pooling table / `[D1]`. D65 sessions do not pool with
+anything folded.

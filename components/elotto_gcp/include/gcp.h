@@ -25,31 +25,22 @@
 extern "C" {
 #endif
 
-/* One segment is 200 bits: six full 32-bit words plus the low 8 of a seventh.
- * For a fair coin that is mean 100 and sd sqrt(200 * 0.25) = sqrt(50).
- *
- * GCP_SEGMENT_SD is written as the literal the two copies both carried, not as
- * sqrt(50.0). It is a deliberate choice: this component was introduced as a
- * pure refactor of validated code, and every z the rig has ever recorded came
- * from this constant. Evaluating it differently could move the last bits of a
- * result, and a change in the numbers must never be an accident of tidying. */
-#define GCP_SEGMENT_BITS   200
-#define GCP_SEGMENT_MEAN   100.0
-#define GCP_SEGMENT_SD     7.07106781
+/* One segment is seven 32-bit words, all bits used (D65). No XOR fold: each
+ * word is 32 raw LSBs. For a fair coin that is mean 112 and sd sqrt(224*0.25)
+ * = sqrt(56). Sessions before D65 used 200 folded bits per segment; do not pool. */
+#define GCP_SEGMENT_BITS   224
+#define GCP_SEGMENT_MEAN   112.0
+#define GCP_SEGMENT_SD     7.4833147735
 
 /* The same mean as an int, for the one place the subtraction can be done in
- * integers. ones is in [0,200], so ones - 100 is in [-100,100] and converts to
- * double exactly -- identical to (double)ones - 100.0, which is exact for the
- * same reason. This is the only arithmetic rearrangement in the z path that is
- * bit-identical rather than merely equivalent; see gcp.c. */
-#define GCP_SEGMENT_MEAN_I 100
+ * integers. ones is in [0,224], so ones - 112 converts to double exactly. */
+#define GCP_SEGMENT_MEAN_I 112
 
 /* What a unit of stream bias is WORTH as a per-run z offset, at this run length.
  *
- * A bias b over `segments` segments moves the ones count by (b - 0,5)*200*nseg
+ * A bias b over `segments` segments moves the ones count by (b - 0,5)*224*nseg
  * and the z by that over GCP_SEGMENT_SD*sqrt(nseg), i.e. the offset grows with
- * sqrt(nseg): the same camera imperfection is 1,5 z at 26087 segments and 3,3 at
- * 130435. Every threshold on a bias therefore has to be converted here rather
+ * sqrt(nseg). Every threshold on a bias therefore has to be converted here rather
  * than written down as a constant, or it silently means something different at
  * a different ?run= -- which is exactly what CAM_CAL_FAIL_BIAS did until
  * 2026-08-19. Shared for the same reason as the rest of this header: master and
@@ -74,7 +65,7 @@ typedef enum {
     GCP_ABORTED,     /* on_yield() asked to stop */
 } gcp_result_t;
 
-/* One run of `nseg` segments, consuming `nseg * 200` bits from the camera.
+/* One run of `nseg` segments, consuming `nseg * 224` bits from the camera.
  *
  * `on_yield` is called after each of the ~4 yields per run and returns false to
  * abandon the run (the slave polls its abort socket there). Pass NULL when
@@ -84,30 +75,13 @@ typedef enum {
  * the max over nodes, so a mismatch would slow every measurement to the
  * slowest device.
  *
- * `*out` is written only on GCP_OK. */
+ * `*out` is the binomial z of the whole window (D65: the stream is unfolded).
+ * Half-window (D56): *out_h1 / *out_h2 are the same bits split at nseg/2
+ * (NULL disables). nseg < 2 leaves both at 0. Written only on GCP_OK. */
 gcp_result_t gcp_zscore_raw(int nseg, bool (*on_yield)(void), double *out);
 
-/* gcp_zscore_raw() with the PRE-FOLD z alongside (2026-08-26).
- *
- * The XOR fold maps a raw bias e to ~2e², so it suppresses a MEAN-BIAS effect
- * by sqrt(2)*e — a factor ~7000 at e = 1e-4. That is the quantity a GCP-style
- * experiment is looking for, so the unfolded stream is scored and archived too.
- * The fold stays: without it there is no stable null (D17).
- *
- * ⚠ RANKING AND ARCHIVE ONLY, never a p-value. Per-node raw sigma measured
- * 1,06..1,28 on certified rungs against 0,997..1,001 folded (2026-08-27), and
- * it leaves that band fast when the light does — 1,69 at mean_px 5, above 10
- * over-lit. Combined and block-centred the channel runs at sigma 2..4.
- * ⚠ It covers MORE bits than the folded z over the same window in TIME.
- * ⚠ The folded z is bit-identical to what gcp_zscore_raw() returns.
- * NULL out_pre, or a node without the parallel ring, disables it.
- *
- * Half-window (D56): the same pre-fold bits split at nseg/2. *out_h1 / *out_h2
- * are the binomial z of each half (NULL disables). First half gets nseg/2
- * segments, second the rest. nseg < 2 leaves both at 0. The full *out_pre is
- * unchanged and is NOT a function of the halves beyond covering the same bits. */
 gcp_result_t gcp_zscore_pre(int nseg, bool (*on_yield)(void), double *out,
-                            double *out_pre, double *out_h1, double *out_h2);
+                            double *out_h1, double *out_h2);
 
 #ifdef __cplusplus
 }

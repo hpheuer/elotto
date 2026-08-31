@@ -257,15 +257,10 @@ static const char HTML[] =
 "</select>"
 "</div>"
 "<div class='frow'>"
-"<label for='numPreW' title='Weight of the PRE-FOLD half of the ranking key. The "
-"XOR fold maps a raw bias e to ~2e^2, so it suppresses a MEAN-BIAS effect by "
-"sqrt(2)*e -- a factor of about 7000 at e = 1e-4. That is the quantity a GCP "
-"experiment looks for, so the unfolded stream is scored too. The key is "
-"((1-p)*Z + p*Zpre)/sqrt((1-p)^2+p^2); 0 is the control arm. "
-"WARNING: it RANKS, it does not test -- raw sigma is 1.06..1.28 against "
-"0.997..1.001 folded, so the null gates stay on z. "
-"And a table at p>0 means nothing before the first block closes: the uncentred "
-"per-node offset is 20..95 sigma.'>Pre-fold weight:</label>"
+"<label for='numPreW' title='Weight of concordance in the ranking key (D65). "
+"The key is ((1-p)*Z + p*Conc)/sqrt((1-p)^2+p^2). 0 is z alone. "
+"Tables mean nothing before the first block closes: uncentred offsets are huge.'>"
+"Concordance weight:</label>"
 "<input id='numPreW' class='fin' type='number' min='0' max='1' step='0.05' "
 "value='" EL_STR(ENT_W_PRE_FORM) "'>"
 "</div>"
@@ -1088,9 +1083,9 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "+'<th align=left title=\"board and discovery address. Column order is DISCOVERY order and changes between sessions\">node</th>'"
 "+'<th align=left title=\"session mean of this node\\u2019s RAW per-run z. Uncentred \\u2014 a constant offset is normal\">Z</th>'"
 "+'<th align=left title=\"two-sided p of this node\\u2019s mean z (Stouffer). Health check, NOT a result\">p</th>'"
-"+'<th align=left title=\"PRE-FOLD per-mini-run \\u03c3 (cam_rsig). Folded \\u03c3 is ~1,00 on a healthy rung and is what trips soft-down; this column is the channel the ranking rides.\">pre \\u03c3</th>'"
+"+'<th align=left title=\"per-mini-run camera \\u03c3 this block. Soft-down trips on this vs the peers\">cam \\u03c3</th>'"
 "+'<th align=left title=\"bits a measurement CONSUMED per second of reading (gaps excluded). Not the extraction rate — that counts words the ring discarded. The SLOWEST node sets the window for all four\">Mbit/s</th>'"
-"+'<th align=left title=\"exposure this block\\u2019s sweep chose. \\u2295 = XOR fold on, ! = nothing certified, previous setting kept. Different rungs per node are normal\">exp</th>'"
+"+'<th align=left title=\"exposure this block\\u2019s sweep chose. ! = nothing certified, previous setting kept. Different rungs per node are normal\">exp</th>'"
 "+'<th align=left title=\"frame pairs the sensor failed to deliver. Non-zero = check the hardware\">stalls</th>'"
 "+'<th align=left title=\"runs this node missed. Each costs that run\\u2019s share of the combine, not the session\">lost</th>'"
 "+'<th align=left title=\"P4 DIE temperature. SoC die, NOT the OV5647. Blank = not reported\">T \\u00b0C</th>'"
@@ -1241,8 +1236,8 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "document.getElementById(headId).innerHTML="
 "'<tr><th>#</th><th>Item</th>'"
 "+(st?'<th title=\"studentized ranking key\">Z*</th>'"
-"+'<th title=\"block-centred combined pre-fold z (zp_ctr). First pre-fold channel, half of wpre\">Z-Pre</th>'"
-"+'<th title=\"leave-one-out half-window concordance (zc_ctr). Second pre-fold channel, half of wpre\">Conc</th>':'')"
+"+'<th title=\"block-centred combined z\">Z</th>'"
+"+'<th title=\"leave-one-out half-window concordance\">Conc</th>':'')"
 "+'<th>Numbers</th>'"
 "+(isEuro?'<th>Bonus</th>':'')+'</tr>';"
 "var tb=document.getElementById(bodyId);tb.innerHTML='';"
@@ -1257,16 +1252,15 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "var z=r.z,kk=(r.key===undefined?(r.z_ctr===undefined?z:r.z_ctr):r.key);"
 "var zs=(st&&st.s>0)?(kk-st.m)/st.s:0;"
 "var itm=(d.unlimited&&r.round)?(r.run+'/'+r.round):r.run;"
-"var preTxt=(!r.zp)?'\\u2014':r.zp.toFixed(2);"
+"var zTxt=(r.z_ctr===undefined||r.z_ctr===null)?z.toFixed(2):r.z_ctr.toFixed(2);"
 "var concTxt=(r.zc===undefined||r.zc===null)?'\\u2014':r.zc.toFixed(2);"
-"var det='Z '+z.toFixed(4)+' \\u00b7 Z-Pre '+preTxt+' \\u00b7 Conc '+concTxt"
+"var det='Z '+zTxt+' \\u00b7 Conc '+concTxt"
 "+' \\u00b7 p(Z*) '+pfmt(p2(st?zs:z));"
 "if(st)det+='\\nweights: z '+(1-(st.p||0)).toFixed(2)"
-"+' \\u00b7 pre '+((st.p||0)/2).toFixed(2)"
-"+' \\u00b7 conc '+((st.p||0)/2).toFixed(2);"
+"+' \\u00b7 conc '+(st.p||0).toFixed(2);"
 "tb.innerHTML+='<tr><td>'+(i+1)+'</td><td>'+itm+'</td>"
 "'+(st?'<td title=\"'+det+'\">'+zs.toFixed(3)+'</td>'"
-"+'<td>'+preTxt+'</td><td>'+concTxt+'</td>':'')+'"
+"+'<td>'+zTxt+'</td><td>'+concTxt+'</td>':'')+'"
 "<td>'+nums+'</td>"
 "'+(isEuro?'<td>'+estr+'</td>':'')+'</tr>';"
 "}"
@@ -2059,11 +2053,11 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
          * RAW pre-fold z in discovery order. Empty = no report, not zero. */
         int len = snprintf(buf, sizeof(buf),
             "order;item;n1;n2;n3;n4;n5;n6;e1;e2;z_raw;z_ctr;block;k;skip_rank;"
-            "z0;z1;z2;z3;round;key;zp_ctr;p0;p1;p2;p3;zc_ctr;w0;w1;w2;w3\n");
+            "z0;z1;z2;z3;round;key;zc_ctr;w0;w1;w2;w3\n");
         send_chunk(req, buf, len, sizeof(buf));
         for (int j = 0; j < n; j++) {
-            char zb[32], ab[32], kb[32], pb[32], cbz[32];
-            char nz[MAX_NODES][32], np_[MAX_NODES][32], nw[MAX_NODES][32];
+            char zb[32], ab[32], kb[32], cbz[32];
+            char nz[MAX_NODES][32], nw[MAX_NODES][32];
             /* Row and per-node z in one locked snapshot, PER ROW. The lock is
              * released before send_chunk, so a round-boundary compaction can
              * still run BETWEEN two rows of this stream — the guarantee is that
@@ -2081,15 +2075,6 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
                     nz[i][0] = '\0';
                 else
                     de_num(nz[i], sizeof(nz[i]), (double)nodez[i], 6);
-/* Same rule for the pre-fold column: empty, not 0. */
-                if (isnan((double)nodep[i]))
-                    np_[i][0] = '\0';
-                else
-                    de_num(np_[i], sizeof(np_[i]), (double)nodep[i], 4);
-/* w0..w3: that node's CAMERA sigma over this item's OWN window (D62), the
-   covariate that says whether the z beside it was taken on quiet bits.
-   Empty, not 0, when the node did not report one -- a quiet window reads
-   1,0 and never 0, so a printed zero would be a value nobody measured. */
                 if (isnan((double)nodew[i]))
                     nw[i][0] = '\0';
                 else
@@ -2097,7 +2082,7 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
             }
             len = snprintf(buf, sizeof(buf),
                 "%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%s;%s;%d;%d;%d;%s;%s;%s;%s;%d;"
-                "%s;%s;%s;%s;%s;%s;%s;%s;%s;%s;%s\n",
+                "%s;%s;%s;%s;%s;%s\n",
                 j + 1, row.index,
                 row.nums[0], row.nums[1], row.nums[2],
                 row.nums[3], row.nums[4], row.nums[5],
@@ -2107,8 +2092,6 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
                 (int)row.block, (int)row.k, (int)row.skip_rank,
                 nz[0], nz[1], nz[2], nz[3], (int)row.round,
                 de_num(kb, sizeof(kb), rank_key(&row), 4),
-                de_num(pb, sizeof(pb), (double)row.zp_ctr, 4),
-                np_[0], np_[1], np_[2], np_[3],
                 de_num(cbz, sizeof(cbz), (double)row.zc_ctr, 4),
                 nw[0], nw[1], nw[2], nw[3]);
             send_chunk(req, buf, len, sizeof(buf));

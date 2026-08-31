@@ -18,7 +18,7 @@ number) and Phase 2 obeys it too. A v3 session must never be pooled with any v2.
 
 Sweep → observer gate (`/ready`, attended only) → Phase 0 scoring → pool confirmation → **ONE
 pass over every combination in the confirmed pool, each measured exactly once**, Fisher–Yates
-order. Then done. **No loops, no `Runs` cap.** ⛔ Phase 1 baseline is **deleted** `[D48]`.
+order. Then done. **No loops, no `Runs` cap.**
 
 - **Window/gap:** `?run=` **0,5–5 s** (default 5) `[D51]`, `?gap=` default 40 % of run (floor 0,5 s).
   Segment count on the wire; master-only setting.
@@ -35,56 +35,35 @@ Cadence ≈ drift resolution + insertion overhead + sample size for each centrin
 
 ### 2.3 z, ranking, results
 
-- **Stored z is always RAW** (the combined Σz/√k, nothing subtracted, nothing rescaled).
-  `RANK_*`, the combobox, `s_zsum`/`s_zmin`, `accum_reset()`, `publish_cumulative()`,
-  `publish_extreme()`, `absorb_loop()` — all deleted. With one measurement per item the four
-  ranking rules collapse to one: the item's own z.
-  ⚠ **What the ranking RUNS on is no longer this value** — see §3.1. `z_score` remains the archive;
-  `z_ctr` is the statistic.
-- ⚠ **The studentize checkbox specified here was NEVER BUILT.** What exists instead: `/status`
-  publishes `pass_mean` and `pass_sigma`, and the nearest-zero table shows a **`Z*` column**. The
-  CSV summary carries the same `z_std`. Both views remain derivable from either file forever; only
-  the global flip-a-checkbox UI is absent. Do not cite the checkbox as a feature.
-- **Results view: Top-5, Bottom-5 and Nearest-zero-5** (`top[]`/`low[]`/`near[]`) plus the
-  Bonferroni line. **Coverage and the most-frequent row are deleted.**
-  ⚠ **Nearest-zero is nearest the PASS MEAN, not nearest raw 0**: z carries the array's common
-  offset, so |z| ≈ 0 would select items well off the array's own centre. `results_near_mean()` picks
-  by |z − mean|, which orders identically to |z − mean|/σ, and recomputes on demand rather than
-  accumulating — the mean moves as the pass proceeds, so an item admitted against an early mean
-  would be judged against a number that no longer exists.
-  Per-block `drift_t` is surfaced on the results screen, not only in `/loops`.
-- **Stated once, on the record**: at 7920 comparisons the null's expected max |z| ≈ 3,8 and
-  Bonferroni p < 0,05 needs ≈ 4,5, so the significance line will read "not significant" essentially
-  always — correctly. This is a selection instrument by design; the corrected-p line stays as the
-  honest label.
+- **Stored z is always RAW** (the combined Σz/√k). `z_score` is the archive; **`z_ctr` is the
+  statistic** after block centring (§3.1). Ranking key is z plus concordance `[D65]`.
+- **Results:** Top-5, Bottom-5 (`Z*`, `Z`, `Conc`), jump board, soft-down origins. `drift_t` on
+  the results screen.
 
 ### 2.4 Export and API
 
-- **`GET /results.csv?all=1`**: streams every item measured so far — header comment (mode, focus,
-  score direction, ranked/excluded/void counts, blocks, `pass_mean`, `pass_sigma`, `pass_chi2`,
-  `pass_stouffer`, `v_eff`, weights, firmware SHAs, node IP list), then measurement-order rows
-  including `z_raw`/`z_ctr`/`zh`/`zp`/`key` as in CLAUDE. Live mid-session. ⚠ RAM only — pull
-  periodically. Bare `/results.csv` = 15-row summary, **not** the archive (Save → `?all=1`).
+- **`GET /results.csv?all=1`**: streams every item measured so far — header as in CLAUDE, then
+  measurement-order rows `z_raw`/`z_ctr`/`key`/`zc_ctr`/`w0..w3`. Live mid-session. ⚠ RAM only —
+  pull periodically. Bare `/results.csv` = 15-row summary, **not** the archive (Save → `?all=1`).
 - **Parameter line** from `/status` while running (and after done/abort): mode, `run_s`/`gap_s`/
-  `run_segs`, measured pace, cal, score, focus, unlimited. No `baseline_*` — Phase 1 deleted
-  `[D48]`.
+  `run_segs`, measured pace, cal, score, focus, unlimited, concordance weight.
 - **German CSV**: `;` separator, `,` decimal.
-- **400:** `?loops=` / `?rank=` / `?runs=` / `?baseline=`. ⚠ `?mode=` is `1` = 6-of-49, anything
+- Unknown start parameters answer **400**. ⚠ `?mode=` is `1` = 6-of-49, anything
   else = Eurojackpot (`val[0]=='1'`).
 
 ---
 
 ## 3 Block-centred ranking and the health machinery (2026-08-13 … 08-17)
 
-Driven by the **2026-08-13 unattended full pass** (`docs/data/2026-08-13_6of49_fullpass_unattended/`,
-5005 items). Its finding, in one line: **per-node σ ≈ 1,0 inside every block while the block offsets
+Driven by the **2026-08-13 unattended full pass** (5005 items). Its finding, in one line:
+**per-node σ ≈ 1,0 inside every block while the block offsets
 jumped by several z.** The noise was fine; the zero point moved.
 
 ### 3.1 The ranking runs on a block-centred combine
 
 At every block close `center_block()` subtracts each node's own mean over that block and recombines
 over the same nodes (`have_mask`, so k and the √k scaling are unchanged), writing `z_ctr`. Pass
-mean/σ/χ², Top-N, Bottom-N, nearest-zero and Bonferroni all read it through one accessor,
+mean/σ/χ², Top-N and Bottom-N all read it through one accessor,
 `rank_z()`. Until a block closes, `z_ctr` carries the provisional raw value.
 
 `z_score` stays **raw and untouched** — the uncentred view survives in the CSV forever. `z_adj`
@@ -220,7 +199,7 @@ number, and the reason to take it is that it is free.
 ### 4.3 Results accumulate; the "once" rule is relaxed across rounds
 
 `results[]` is **never cleared between rounds**. Top-5 / Bottom-5 / Nearest-zero, pass mean/σ/χ²
-and the Bonferroni line all run on the union of every round so far, so a later round's items sort
+all run on the union of every round so far, so a later round's items sort
 straight into the same tables — which is the point of the feature.
 
 ⚠ **This is the one place v3's core rule is relaxed, and it is a pre-registration decision.** Inside
@@ -230,8 +209,7 @@ nothing is averaged, merged or overwritten. Consequences that must not be forgot
 
 - `index` (combination id) is meaningful **only within its round** — the pool it enumerates changes
   every round. The identity is **(round, index)**; `n1..n6;e1;e2` is unambiguous either way.
-- `comparisons` for the Bonferroni line counts rows, so a repeated combination counts twice. It is
-  two measurements, but they are not two independent hypotheses.
+- A repeated combination across rounds is two measurements, not two independent hypotheses.
 - **Never pool unlimited-mode data with a single-pass session** without splitting on `round`, and
   never pool across rounds without deciding what repeated combinations mean for the analysis.
 
@@ -254,7 +232,7 @@ sitting in it, so centring must never span one.
   before scoring, so a stale pool must not linger on screen through them.
   UI: info line under the scoring bar (`Round N numbers` / `Selected numbers`).
 - **Runs per round** field: live pool size + round-length estimate from the rate model in
-  `sensor.h` (`cycle_ms ≈ 200·segments/rate + CYCLE_FIXED_MS + gap_ms` `[D39]`). Live ETA uses
+  `sensor.h` (`cycle_ms ≈ 224·segments/rate + CYCLE_FIXED_MS + gap_ms` `[D39]`). Live ETA uses
   measured pace once enough runs exist.
 - CSV header gains `unlimited=on|off runs_cap=<n> rounds=<n>`, and `items=` reads
   `<measured>/<end of the current round>` so it stays monotone.
@@ -285,7 +263,7 @@ temp directory: three unrepeatable datasets were found outside version control o
 Archive into the repo, with a README naming the firmware SHA, in the same sitting.
 
 **Settled — do not re-litigate:**
-- Entropy is **photons only**. The on-chip TRNG was deleted from both firmwares and must not be
+- Entropy is **photons only**. There is no second source and must not be
   reintroduced in any form.
 - Camera hardware: the OV5647 is **not** the bottleneck — capture already runs at RAW8 800×800
   (~13 % of the sensor) because the pipeline is PSRAM-bound. More megapixels would lower the bit

@@ -417,12 +417,8 @@ static void process_word(uint32_t w, uint32_t ro)
 /* Packer state, owned by the extractor (components/elotto_camera/extract.h).
  * It persists across frame pairs because a pair boundary can land mid-word. */
 static cam_pack_t s_pack;
-static volatile bool s_xor_fold =
-#if CONFIG_ELOTTO_CAM_XOR_FOLD
-    true;
-#else
-    false;
-#endif
+/* D65: fold is off. The Kconfig bit is ignored; do not turn it back on. */
+static volatile bool s_xor_fold = false;
 
 /* Frame pairs the capture task must throw away before a measurement window
  * opens. After an exposure change the driver still holds frames captured under
@@ -1216,8 +1212,8 @@ static const uint32_t s_cal_ladder[] = { 4, 8, 16, 32, 64, 128, 256, 512 };
 /* Hard gates, inherited from the original Phase 0 gate these cameras have met
  * before. Quality first; rate is only the tie-break among candidates that pass. */
 #define CAL_BIAS_TOL        1e-3
-#define CAL_AUTOC_TOL       0.01
-#define CAL_SIGMA_TOL       0.05
+#define CAL_AUTOC_TOL       0.03   /* unfolded; 0,01 was the folded bar (D65) */
+#define CAL_SIGMA_TOL       0.05   /* unused as a gate since D65 */
 /* A window has to be long enough that the gate tests the SETTING and not the
  * sampling error of the window: SE(bias) = 0.5/sqrt(bits), so 2 Mbit gives
  * 3.5e-4 against a 1e-3 gate — about 3 sigma of headroom — and the 8 Mbit target
@@ -1459,7 +1455,8 @@ static uint32_t cal_gate(const camera_cal_step_t *s)
      * Pre-fold |raw_bias−0,5| selects; folded σ / autocorr / dark / stuck reject.
      * cal_bias_bar() / CAL_MAX_MEAN_PX stay for /calibrate readability. */
     if (s->autocorr_max >= CAL_AUTOC_TOL)       f |= CAM_CAL_FAIL_AUTOC;
-    if (fabs(s->sigma - 1.0) > CAL_SIGMA_TOL)   f |= CAM_CAL_FAIL_SIGMA;
+    /* |σ−1|≤0,05 was the FOLDED gate (D65). Unfolded σ is not ~1; RSIG is
+     * the dispersion gate, relative to this ladder's own best. */
     if (s->stuck_frames != 0)                   f |= CAM_CAL_FAIL_STUCK;
     /* The dark end. Both, and only when the window actually measured something:
      * a candidate that never got frames already fails BITS, and adding DARK to
@@ -1724,14 +1721,10 @@ bool camera_calibrate(int budget_ms, bool (*abort_cb)(void), camera_cal_t *out)
      *    program, and /expose already says it is not sticky past the next
      *    sweep. It does mean a hand-set rung gets one sweep of protection. */
     int pick = -1;
-    for (int pass = 0; pass < 2 && pick < 0; pass++) {
-        const double stol = pass ? CAL_SIGMA_TOL : (CAL_SIGMA_TOL / 2.0);
-        for (int i = 0; i < n; i++) {
-            if (out->step[i].fail) continue;
-            if (fabs(out->step[i].sigma - 1.0) > stol) continue;
-            if (pick < 0 || cal_key(&out->step[i]) < cal_key(&out->step[pick]))
-                pick = i;
-        }
+    for (int i = 0; i < n; i++) {
+        if (out->step[i].fail) continue;
+        if (pick < 0 || cal_key(&out->step[i]) < cal_key(&out->step[pick]))
+            pick = i;
     }
 
     /* Hysteresis. Find the incumbent among the candidates that PASSED, then
@@ -2055,6 +2048,7 @@ esp_err_t camera_selftest_handle(void *httpd_req, bool busy)
 typedef struct {
     uint32_t t_ms;        /* node uptime when the window was pushed */
     uint32_t tag;         /* caller's label; 0 = no item (a scoring run) */
+    uint32_t ses;         /* session ordinal at the push; see new_session */
     float    wsig;        /* per-window folded sigma -- the D62 number */
     int32_t  wn;          /* mini-runs behind wsig; 0 = below WIN_SIGMA_MIN_N */
     float    rsig, rbias; /* PRE-FOLD sigma/bias, cumulative since the sweep */
@@ -2068,6 +2062,19 @@ static cam_winlog_t *s_winlog;
 static uint32_t      s_winlog_head;    /* next slot to write */
 static uint32_t      s_winlog_n;       /* entries held, <= CAM_WINLOG_N */
 static uint32_t      s_winlog_dropped; /* entries overwritten since boot */
+/* Starts at 1, not 0: an entry pushed before anyone declared a session (a bare
+ * /camtest, a manual sweep) is still a real window and must not be tagged with
+ * the same value a "no session yet" reader would treat as missing. */
+static uint32_t      s_winlog_ses = 1;
+
+void camera_winlog_new_session(void)
+{
+    /* No lock and no wipe. It is a single 32-bit store that only ever
+     * increases, read by pushes on one task and by the HTTP task; the worst a
+     * race can do is stamp one window with the previous ordinal, which is
+     * exactly as informative at a boundary. */
+    s_winlog_ses++;
+}
 
 void camera_winlog_push(uint32_t tag)
 {
@@ -2091,6 +2098,7 @@ void camera_winlog_push(uint32_t tag)
     cam_winlog_t *e = &s_winlog[s_winlog_head];
     e->t_ms  = (uint32_t)(esp_timer_get_time() / 1000);
     e->tag   = tag;
+    e->ses   = s_winlog_ses;
     e->wsig  = (float)cs.win_sigma;
     e->wn    = cs.win_sigma_samples;
     e->rsig  = (float)cs.raw_sigma;
@@ -2115,8 +2123,9 @@ esp_err_t camera_winlog_send_json(void *httpd_req)
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
 
     if (!s_winlog || !s_mutex || s_winlog_n == 0) {
-        snprintf(buf, sizeof(buf), "{\"n\":0,\"dropped\":0,\"cap\":%d,\"win\":[]}",
-                 CAM_WINLOG_N);
+        snprintf(buf, sizeof(buf),
+                 "{\"n\":0,\"dropped\":0,\"cap\":%d,\"ses\":%lu,\"win\":[]}",
+                 CAM_WINLOG_N, (unsigned long)s_winlog_ses);
         httpd_resp_sendstr(req, buf);
         return ESP_OK;
     }
@@ -2131,8 +2140,9 @@ esp_err_t camera_winlog_send_json(void *httpd_req)
     xSemaphoreGive(s_mutex);
 
     int len = snprintf(buf, sizeof(buf),
-        "{\"n\":%lu,\"dropped\":%lu,\"cap\":%d,\"win\":[",
-        (unsigned long)n, (unsigned long)drop, CAM_WINLOG_N);
+        "{\"n\":%lu,\"dropped\":%lu,\"cap\":%d,\"ses\":%lu,\"win\":[",
+        (unsigned long)n, (unsigned long)drop, CAM_WINLOG_N,
+        (unsigned long)s_winlog_ses);
     httpd_resp_send_chunk(req, buf, len);
 
     /* Oldest first: head is the next slot to write, so the oldest of n entries
@@ -2144,10 +2154,11 @@ esp_err_t camera_winlog_send_json(void *httpd_req)
         e = s_winlog[(start + i) % CAM_WINLOG_N];
         xSemaphoreGive(s_mutex);
         len = snprintf(buf, sizeof(buf),
-            "%s{\"t_ms\":%lu,\"tag\":%lu,\"wsig\":%.4f,\"wn\":%ld,"
+            "%s{\"ses\":%lu,\"t_ms\":%lu,\"tag\":%lu,\"wsig\":%.4f,\"wn\":%ld,"
             "\"rsig\":%.4f,\"rbias\":%.6f,\"sig\":%.4f,\"bias\":%.6f,"
             "\"px\":%.2f,\"ac1\":%.4f,\"zdiff\":%.4f}",
-            i ? "," : "", (unsigned long)e.t_ms, (unsigned long)e.tag,
+            i ? "," : "", (unsigned long)e.ses,
+            (unsigned long)e.t_ms, (unsigned long)e.tag,
             (double)e.wsig, (long)e.wn, (double)e.rsig, (double)e.rbias,
             (double)e.sig, (double)e.bias, (double)e.px, (double)e.ac1,
             (double)e.zdiff);

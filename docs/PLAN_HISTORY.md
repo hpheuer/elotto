@@ -17,4 +17,4 @@ git show 1e62bca:docs/PLAN_HISTORY.md
 | §1.1 – §1.14 | `git show 1e62bca:docs/PLAN_HISTORY.md` |
 | §1.15 onward (historical numbering) | superseded; v3 contract is [`PLAN.md`](PLAN.md) §2+ |
 
-Read findings there as **records of what was true when measured**, not as current state. Several were overturned later (enclosure is lit `[D28]`; selection key is pre-fold `[D46]`; baseline phase deleted `[D48]`).
+Read findings there as **records of what was true when measured**, not as current state. Several were overturned later (enclosure is lit `[D28]`; selection key is `|bias−0,5|` `[D46]`; fold off `[D65]`).

@@ -397,11 +397,31 @@ esp_err_t camera_selftest_handle(void *httpd_req, bool busy);
  * Silently does nothing before camera_init(). */
 void camera_winlog_push(uint32_t tag);
 
+/* Open a new session in the log. Bumps the `ses` stamped on every subsequent
+ * entry; the ring is NOT cleared, so the previous session's windows stay
+ * readable until they age out.
+ *
+ * WHY a counter and not a wipe: the interesting comparison is often across the
+ * boundary — what the camera did in the last windows before a restart, against
+ * the first ones after it. Clearing would destroy exactly that, and `tag`
+ * alone cannot carry it: item ids restart at 1 every session, so without this
+ * a tag=17 from two different sessions are indistinguishable.
+ *
+ * The master calls this at session start; a slave derives it from the master's
+ * traffic, so the two need no extra wire field. ⚠ The numbers are per NODE and
+ * per BOOT — node A's session 3 is not necessarily node B's session 3. Align
+ * on the boundary, not on the value. */
+void camera_winlog_new_session(void);
+
 /* GET /camlog — the whole ring as JSON, OLDEST FIRST, chunked.
  *
- * `{"n":<entries>,"dropped":<overwritten>,"cap":512,"win":[{...},...]}` with
- * per entry: t_ms (node uptime at the push), tag, wsig, wn, rsig, rbias,
- * sig, bias, px, ac1, zdiff.
+ * `{"n":<entries>,"dropped":<overwritten>,"cap":512,"ses":<current>,
+ * "win":[{...},...]}` with per entry: ses, t_ms (node uptime at the push),
+ * tag, wsig, wn, rsig, rbias, sig, bias, px, ac1, zdiff.
+ *
+ * ⚠ `ses` is what makes a boundary visible: entries from before the current
+ * session carry a lower number. Filter on it before comparing windows by
+ * `tag`, or two sessions' item 17 will be averaged together.
  *
  * ⚠ t_ms is THIS NODE's uptime, not a shared clock. Align two nodes by tag or
  * by ordinal, never by subtracting their timestamps. */

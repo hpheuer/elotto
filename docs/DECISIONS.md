@@ -10,6 +10,8 @@ entries after that commit keep enough text that the decision survives. A rule an
 be changed together — a rule whose evidence has moved on is worse than no rule.
 
 ⚠ Everything here is dated. A measurement describes the instrument that made it; see D1.
+**Live instrument is D65** (unfolded z + concordance). Earlier ranking-key formulae are evidence,
+not the current key.
 
 ---
 
@@ -205,14 +207,10 @@ selected it. A rung that scrapes a gate is a rung on a cliff.
 ⚠ This narrows the window in which a cliff-edge rung can be picked; it does not abolish it.
 ⚠ Selection key moved to pre-fold bias in D46; the σ-margin rule above still holds.
 
-### D17 — No fold trial: a 3 s window cannot certify fold-off
-**Entscheidung:** XOR fold permanently on. A 3 s window certified fold-off (bias inside 1e-3) and
-the node's run σ then blew out (1,043 → 2,153). Cause: unfolded LSB bias is non-stationary
-(~2,1e-3 travel). Re-test 2026-08-26 (slave0 fold-off alone): sweep certified nothing, soft-down in
-block 3, entropy z_h −201,7. Failure is SCALE not location — recentring cannot rescue fold-off.
-
-**Zahlen:** Data `docs/data/2026-08-26_foldoff_trial_slave0/`. At rung 128 fold-off: bias 0,493375 /
-σ 1,7233 vs folded 0,499942 / 1,0080.
+### D17 — Fold-off has no σ≈1 null (2026-07-26 / 2026-08-26)
+**Superseded as a rule by D65** (fold is off). Evidence stands: unfolded LSB bias is non-stationary;
+σ blows out (1,04 → 2,15; rung 128: 1,72 vs folded 1,01). Recentring takes the mean, not the scale.
+Pass health after D65 is the **measured** σ.
 
 ### D18 — The dark end of the ladder is gated (2026-08-19)
 `CAL_MIN_MEAN_PX` 5,0 and `CAL_MAX_ZERO_DIFF` 0,125. The premise is that photons do the whitening,
@@ -465,22 +463,12 @@ suppresses drift without removing it. Stride/shuffle folds and spatial shuffling
 monitor (`raw_bias`/`raw_sigma`) published; `GET /diagjson?all=1` is the array collector (409 while
 measuring). Folded selection was noise-limited — resolved in D46.
 
-**Zahlen:** exp128 fold-off bin1 23,81× / fold-on 8,87×; at exp64 both flat. Data:
-`docs/data/2026-08-26_specdump/`.
+**Zahlen:** exp128 fold-off bin1 23,81× / fold-on 8,87×; at exp64 both flat.
 
 ### D45 — The pre-fold z: the channel the fold throws away (2026-08-26)
-**Entscheidung:** Fold maps bias ε → ~2ε² (√2·ε suppression). Fold stays for a stable null (D17);
-raw stream scored/centred/archived as third channel. Ranks only, never p-values (σ 1,03–1,10).
-Key `((1−w−p)·z_ctr − w·z_h + p·z_pre)/√…` with `?wpre=` default 0; z_pre PLUS. Uncentred pre-fold
-ranks nodes (offsets to −47σ). `CAM_RAW_EVERY` gone; `NUM_RUNS` 8000→7200 (Euro 7920 needs one
-compaction). `pre_w` splits the pooling table for TABLES.
-
-**Zahlen:**
-| ε | z_roh (1 s) | z_gefaltet | suppression |
-|---|---|---|---|
-| 1e-4 | 0,457 | 6,46e-5 | 7071× |
-
-Wire `Z:<z>,<H>,<z_pre>`; CSV `zp_ctr;p0..p3`.
+**Superseded as a ranking rule by D65.** Uncentred unfolded z ranks nodes (offsets to −47σ) —
+block centring is load-bearing. `NUM_RUNS` 7200 (Euro 7920 needs one compaction). `pre_w` still
+splits the pooling table for TABLES.
 
 ## Dropped and deferred
 
@@ -530,11 +518,7 @@ Wire `Z:<z>,<H>,<z_pre>`; CSV `zp_ctr;p0..p3`.
   ⚠ With the fold ON the correction is pointless in the other direction: at p̂ = 0,499942 the σ factor
   is 1 − 6,7e-9. The residual LOCATION term is real (−0,32 z/run) but block centring already removes
   it, in the pre-registered way;
-- a `docs/data/README.md` index of session generations (user, 2026-08-19: the past will be consulted
-  when needed);
-- deleting session data from 2026-08-05 on — each of those is either cited evidence or the only
-  dataset of its instrument generation, and `_profile/` was committed for exactly the opposite
-  reason. (The blanket form of this rule was overruled on 2026-08-20; see 🗑 below.)
+- keeping fold-era session CSVs in-tree — unpoolable with D65; wiped 2026-08-31 (user).
 
 ⏸ **Deferred by the user — do not start unasked:** the attended-vs-unattended (focus) comparison.
 
@@ -645,89 +629,26 @@ key already ranks `[D19]``[D46]`. Constants and `cal_bias_bar()` remain for `/ca
 and old CSV comparability; bit values stay defined as legacy.
 
 ### D53 — Spectral-entropy channel deleted (2026-08-28)
-**Entscheidung:** FFT / spectral-entropy ranking channel removed (user). `gcp_spec.c` gone;
-`?went=` → 400; no `ent_w` / `zh_ctr` / `h0..h3` / `/spectest` / `/specdump`. Ranking key is
-`((1−p)·z_ctr + p·z_pre)/√…` with `?wpre=` only. Offline H re-rank not needed; a pre-fold segment
-FFT was considered and not built.
+**Entscheidung:** Gone. Do not re-open.
 
-### D54 — Pre-fold runs ranking channel (2026-08-28)
-**Entscheidung:** NIST-style runs z on the pre-fold stream ranks with weight `?wruns=` (MINUS: fewer runs = clumpy = interesting). Key `((1-p-r)·z + p·zp* - r·zr*)/√…`. Form default 0,2; API 0. Runs counter always armed (bit-rate cost). Wire `Z:z,nan,z_pre,z_runs`. Tables show Pre and Runs beside Z*. Deleted the next day: `[D55]`.
+### D54 — Runs ranking (2026-08-28)
+Tried one day; deleted D55.
 
-### D55 — Runs ranking channel deleted (2026-08-29)
-**Entscheidung:** `?wruns=` → 400. No `runs_w` / `zr_ctr` / `rank_sig_r`. Ranking key is again
-`((1−p)·z_ctr + p·z_pre)/√…` with `?wpre=` only. Wire extra fields after `z_pre` ignored (old
-slaves may still send a 4th). Runs counter armed **only inside a sweep** again (D46) — the
-measurement-path cost is gone. Sweep still publishes `raw_runs_z` per rung, still not a gate.
+### D55 — Runs ranking deleted (2026-08-29)
+**Entscheidung:** Gone. Sweep still publishes `raw_runs_z` per rung, not a gate (D46). Underdispersed and orthogonal to the z outliers.
 
-**Warum:** Unlimited 6-of-49, 77 rounds, 16328 items, `pre_w=1`. Folded pass textbook H₀
-(σ 0,996, v_eff 0,996, |r|≤0,011, drift_t 1,23). Pre overdispersed (`rank_sig_p` 1,94) with
-outliers to −13,4. Runs underdispersed (`rank_sig_r` 0,72) and the −13,4 item had Runs ≈ 0.
-NIST conditions on observed π, so a mean shift — the GCP alternative, and what Pre measures —
-is invisible by construction. What Runs would see (clumping) is a camera property; block
-centring subtracts it and leaves sampling noise. Same failure mode as the spectral channel
-(D53).
+### D56 — Half-window concordance; compact 100 extremes (2026-08-29)
+**Entscheidung:** Concordance = leave-one-out Stouffer of per-node half-window z. Split at nseg/2;
+same sign → `√2·min(|h1|,|h2|)`; else 0; drop the loudest node. Unlimited rounds compact every
+boundary to the 100 most extreme `|rank_key|` (both tails). Live as of D65: z + concordance.
 
-### D56 — Half-window concordance ranking; nearest-zero and fat archive gone (2026-08-29)
-**Entscheidung:** Ranking key at `wpre>0` is leave-one-out Stouffer of per-node half-window
-pre-fold z, not combined zp_ctr. Per node: split at nseg/2; same sign → `√2·min(|h1|,|h2|)`;
-else 0. Then drop the loudest node. Wire `Z:z,nan,z_pre,h1,h2`. zp_ctr still archived and
-shown as Z-Pre; Conc is zc_ctr.
+### D57 — No corrected-p / Bonferroni (2026-08-29)
+**Entscheidung:** Gone. Pass mean/σ/χ² stay as instrument health.
 
-Nearest-zero table deleted. Unlimited rounds compact every boundary to the 100 most extreme
-`|rank_key|` items (both tails). Pass moments stay exact.
-
-**Warum:** Pre=−13 items sat in blocks where one node had a −2σ bright-rung offset (L26–34
-slave0, L17–25/L66–72 slave2). Combined Pre ranks that node. Half-window kills a one-sided
-glitch; leave-one-out kills a standing single-node offset. A stable 4-node bias survives
-(z_hw ≈ z_full when halves agree). Lag-1 autocorr of ±1 is Runs (centred) or Pre (not);
-not a third channel.
-
-### D57 — Bonferroni line deleted (2026-08-29)
-**Entscheidung:** No Bonferroni / corrected p / "consistent with chance" line. `p_corr` /
-`best_z` gone from `/status`. `comparisons` stays as the valid-item count for the table
-heading. Pass mean/σ/χ² stay — those are instrument health on the folded stream.
-
-**Warum:** Bonferroni tests the XOR-folded z. The effect this experiment looks for is a
-mean-bias that the fold suppresses by √2·ε. A p=1.000 on folded data does not say whether
-a node is delivering usable pre-fold noise, and it cannot detect the signal. User.
-
-### D58 — Both pre-fold channels rank, p split evenly (2026-08-29)
-**Entscheidung:** The ranking key carries THREE terms, not two:
-
-```
-key = ((1−p)·z_ctr + (p/2)·zp_ctr/σ_p + (p/2)·zc_ctr/σ_c) / √((1−p)² + 2·(p/2)²)
-```
-
-`p = ?wpre=` still splits folded against pre-fold; the pre-fold half is then split evenly
-between the combined pre-fold z (`zp_ctr`, D45) and the half-window concordance (`zc_ctr`,
-D56). Each is standardised by **its own** measured σ — `rank_sig_p` and the new
-`rank_sig_c`; the concordance takes `min()` of two halves and drops the loudest node, so its
-σ is materially smaller and one shared σ would silently reweight the key. Both σ carry their
-own compaction moments (`s_drop_c*`) and their own count: an item can hold `zp_ctr` and no
-`zc_ctr` when k < 2 survived the leave-one-out drop.
-
-`score_build_keys()` takes the same three channels, each standardised on the scoring pass's
-own candidates (D48). `/status` publishes `rank_sig_c`; the CSV header gains `conc_sig=`
-after `pre_sig=`. `pre_n` counts items carrying `zp_ctr` and is SEEDED with the compaction
-moments, because the UI prints it against `pass_n_valid`, which is seeded too —
-unseeded the ratio collapsed after the first compaction and the "with pre
-n/valid ⚠" hint fired on its own bookkeeping (seen 2026-08-30 as "pre 132/788"
-with every surviving row carrying a value). `pre_clamped` is not seeded and
-cannot be: whether an item sits at the clamp depends on the current σ. `?wpre=0` still reproduces pure-z ranking
-exactly — the control arm is unchanged, and the UI field stays.
-
-**Warum:** User, after noticing `zp_ctr` had no weight in the key at all. D56 replaced the
-combined pre-fold z with the concordance rather than adding to it, so from 2026-08-29 the
-channel the project calls its lead channel — the one carrying the mean-bias the fold
-suppresses by √2·ε — was archive-only. The two answer different questions and neither
-subsumes the other: `zp_ctr` is the sensitive one and a single loud node can own it;
-`zc_ctr` is robust against exactly that and pays sensitivity for it. An even split needs no
-third free parameter and leaves no session ranked on a weight nobody chose.
-
-**⚠ Known and accepted:** the √ normaliser assumes the three terms are independent, and
-`zp_ctr`/`zc_ctr` come from the same bits — so at p → 1 the key's variance runs above 1. It
-sets the printed scale only: one constant divisor reorders nothing, and Z* studentises on the
-measured `rank_sigma`.
+### D58 — Own-σ per ranking channel (2026-08-29)
+**Entscheidung (still live):** each ranking term is standardised by **its own** measured σ
+(`rank_sig_p` for z, `rank_sig_c` for concordance). One shared σ silently reweights the key.
+The three-term key is **superseded by D65**. Z* studentises on measured `rank_sigma`.
 
 ### D59 — Gain 256 tried and reverted; slave0's light was the real fix (2026-08-30)
 **Entscheidung:** `CONFIG_ELOTTO_CAM_REG_GAIN` stays at **1023**. The operator's physical
@@ -1033,3 +954,21 @@ that session ran. `/linearity` run on all three slaves with no session: ratios 1
 (slave2), 1,57/1,92/2,03 (slave0), 1,90/2,00/1,94 (slave1) with `raw_sigma` 1,00..1,26 — steady
 light on all three at that moment, which is consistent with the disturbance being episodic and
 is exactly the reading the test exists to produce.
+
+### D65 — XOR fold off; one stream; ranking is z + concordance (2026-08-31)
+**Entscheidung:** the XOR fold is off. Extraction, z, archive, pairwise, pass health and
+ranking all describe the same unfolded LSB stream. Concordance stays (half-window, leave-one-out).
+`?wpre=` is the concordance weight against z (API default 0 = z alone, form 0,8). Wire
+`Z:<z>,<h1>,<h2>[,wsig=]`. Soft-down trips on σ > 1,35 × this block's peer-median σ, not on
+absolute 1,25. Sweep drops the folded `|σ−1|≤0,05` gate; autocorr bar 0,03; selection remains
+pre-fold `|raw_bias−0,5|` plus relative raw-σ. Segment is 224 bits; `EL_SEG_MAX` 400000;
+`RUN_SEGS_REF` 141026 (predicted 2× word rate, same wall time — re-measure). Slave `'B'` refused.
+
+**Warum:** ranking already rode z_pre and conc (`wpre=0,8`). The fold was leftover scaffolding
+for a σ≈1 null that Bonferroni no longer tested. Dual channels were the overload.
+
+**⚠ D17 stands as evidence, not as the rule.** Fold-off σ is not 1; centring takes the mean, not
+the scale. Pass health is the measured σ. Do not pool with folded sessions (D1).
+
+**⚠ `RUN_SEGS_REF` is predicted**, not live-calibrated. Read `focus_win_ms` after the first
+dozen runs and correct the pair if the window is not the requested `?run=`.
