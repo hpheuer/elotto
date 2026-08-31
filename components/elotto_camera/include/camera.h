@@ -36,7 +36,7 @@ typedef struct {
     uint32_t stuck_frame_count;   // pairs where both frames were byte-identical
     double   bias;                // ones_count / bits_extracted (ideal 0.5)
     double   sigma;                // stddev of per-mini-run z (ideal 1.0)
-    int      sigma_samples;       // number of mini-runs folded into sigma (gate wants >=200)
+    int      sigma_samples;       // number of mini-runs merged into sigma (gate wants >=200)
     /* The SAME statistic over ONE MEASUREMENT WINDOW, and nothing else (D62).
      * `sigma` above is cumulative since the last camera_stats_reset(), which
      * only a sweep or POST /expose performs — so on this rig it spans up to
@@ -78,12 +78,12 @@ typedef struct {
     double   raw_sigma;
     int      raw_sigma_samples;
     uint64_t raw_bits;
-    /* ── The RUNS channel, pre-fold (2026-08-27) ──────────────────────────
+    /* ── The RUNS channel, LSB (2026-08-27) ──────────────────────────
      * The entropy a rung delivers is short by two terms: one from the bits
      * being unbalanced, one from them depending on each other. `raw_bias` is
      * the first term — it IS the monobit test. This is the second.
      *
-     * `raw_runs_z` is the NIST runs statistic over the pre-fold stream, with
+     * `raw_runs_z` is the NIST runs statistic over the LSB stream, with
      * one deliberate departure: E[V] and SD[V] are taken from the OBSERVED
      * proportion of ones, not from 1/2. NIST refuses to run the runs test at
      * all unless |pi - 1/2| <= 2/sqrt(n), and at these bit counts that bar is
@@ -101,7 +101,7 @@ typedef struct {
      * session showed it underdispersed and orthogonal to the Pre outliers.
      * ⚠ 0,0 means the channel was not armed or the window is empty — it is not
      * a reading of "perfectly random". Check `raw_trans`. */
-    uint64_t raw_trans;           // pre-fold adjacent bit pairs that differ
+    uint64_t raw_trans;           // LSB adjacent bit pairs that differ
     double   raw_runs_z;          // NIST runs z, conditioned on the observed bias
 
     /* P4 die temperature, the covariate for the raw-channel offset monitor
@@ -224,14 +224,14 @@ double camera_fps_probe(int frames, int timeout_ms);
 // a sweep that chose nothing says WHY rather than just "no".
 #define CAM_CAL_FAIL_APPLY   0x01   // sensor did not latch the setting (read-back)
 #define CAM_CAL_FAIL_BITS    0x02   // too few bits in its slice to score at all
-#define CAM_CAL_FAIL_BIAS    0x04   // legacy; folded bias no longer gated (D52)
+#define CAM_CAL_FAIL_BIAS    0x04   // legacy; LSB bias no longer gated (D52)
 #define CAM_CAL_FAIL_AUTOC   0x08   // some |autocorr lag 1..4| >= 0.01
 #define CAM_CAL_FAIL_SIGMA   0x10   // per-mini-run sigma outside 1 +- 0.05
 #define CAM_CAL_FAIL_STUCK   0x20   // a frame pair came back byte-identical
 #define CAM_CAL_FAIL_LIGHT   0x40   // legacy; bright mean_px no longer gated (D52)
 #define CAM_CAL_FAIL_DARK    0x80   // mean pixel level below the shot-noise floor
 #define CAM_CAL_FAIL_ZDIFF  0x100   // too many zero pixel differences
-#define CAM_CAL_FAIL_RSIG   0x200   // PRE-FOLD per-mini-run sigma above the bar
+#define CAM_CAL_FAIL_RSIG   0x200   // LSB per-mini-run sigma above the bar
 
 #define CAM_CAL_MAX_STEPS   12
 
@@ -240,20 +240,19 @@ double camera_fps_probe(int frames, int timeout_ms);
 // is the only way to tell a real response from noise around one lucky point.
 typedef struct {
     uint32_t exposure, gain;
-    bool     xor_fold;
     uint64_t bits;              // bits in this window (0 = never measured)
     int      minirun_n;         // mini-runs behind `sigma`
     double   bias, sigma, mbit_per_sec;
     double   autocorr_max;      // max |lag 1..4|
     double   mean_pixel_level, zero_diff_frac;
-    /* PRE-FOLD, for this candidate's window (D43). GATED since 2026-08-27 —
+    /* LSB, for this candidate's window (D43). GATED since 2026-08-27 —
      * both of them, and the comment this replaces was the reason it took so
      * long: a naive |raw_sigma-1| <= 0,05 bar WOULD reject rungs the array uses
      * successfully, so the bar is one-sided and set from the measured gap
      * instead. See CAL_MAX_RAW_BIAS and CAL_RAW_SIGMA_MAX in camera.c. */
     double   raw_bias, raw_sigma;
-    double   raw_runs_z;        // pre-fold runs statistic; measured, NOT gated
-    uint64_t raw_bits;          // pre-fold bits behind raw_bias/raw_runs_z
+    double   raw_runs_z;        // LSB runs statistic; measured, NOT gated
+    uint64_t raw_bits;          // LSB bits behind raw_bias/raw_runs_z
     uint32_t stuck_frames;
     uint32_t fail;              // CAM_CAL_FAIL_* bitmask, 0 = passed
 } camera_cal_step_t;
@@ -262,10 +261,9 @@ typedef struct {
     bool     ok;                // a candidate passed every gate and was applied
     int      chosen;            // index into step[], -1 if none passed
     uint32_t exposure, gain;    // what the camera is running on now
-    bool     xor_fold;
     double   bias, sigma, mbit_per_sec, autocorr_max, mean_pixel_level;
-    double   raw_bias, raw_sigma;   // PRE-FOLD, of the setting actually chosen (D43)
-    double   raw_runs_z;            // PRE-FOLD runs statistic of that setting
+    double   raw_bias, raw_sigma;   // LSB, of the setting actually chosen (D43)
+    double   raw_runs_z;            // LSB runs statistic of that setting
     bool     kept;                  // the incumbent rung was kept (hysteresis)
     int      nsteps;
     uint32_t elapsed_ms;
@@ -358,7 +356,7 @@ esp_err_t camera_selftest_handle(void *httpd_req, bool busy);
  * `wsig` lives in results[] and is eaten by compaction at every unlimited
  * round boundary. So when slave2 started throwing z of −56 in bursts on
  * 2026-08-31, the rows that would have said what its camera was doing at that
- * moment had already been folded into moments.
+ * moment had already been merged into moments.
  *
  * This ring is the answer, and it is deliberately ON THE NODE: it records what
  * never travels on the wire (raw_sigma, mean_px, autocorr, zero_diff) and it
@@ -496,9 +494,9 @@ bool camera_read_word(uint32_t *out);
  * per word would cost more than the read. Feeds consume_mbit_per_sec; cleared by
  * the same stats reset as the rest of the window. */
 void camera_note_consumed(uint64_t bits, int64_t us);
-/* The same word, plus the PRE-FOLD ones count of the pixels it came from, taken
- * as one unit so a folded and an unfolded z cover the SAME window (2026-08-26).
- * With the fold on a word is 64 pixels (0..64 ones), with it off 32.
+/* The same word, plus the LSB ones count of the pixels it came from, taken
+ * as one unit so a and an LSB z cover the SAME window (2026-08-26).
+ * With adjacent-pixel XOR on a word is 64 pixels (0..64 ones), with it off 32.
  * ⚠ *out_raw is 0 when this node has no parallel ring — check
  * camera_raw_stream_ok() rather than reading 0 as a count.
  * ⚠ Never interleave with camera_read_word() inside one window: both advance

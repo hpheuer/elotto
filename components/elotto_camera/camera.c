@@ -25,7 +25,7 @@
 // OV5647 noise source. See include/camera.h on why "dark frame" is a label.
 // Extraction: non-overlapping frame pairs, diff = f[2k+1] - f[2k] per pixel
 // (cancels fixed-pattern noise exactly), LSB of each diff packed into a
-// ring buffer, XOR-folded. camera_read_word_raw() feeds gcp_zscore_pre() in
+// ring buffer, adjacent-pixel XORed. camera_read_word_raw() feeds gcp_zscore_pre() in
 // the shared elotto_gcp component, which is where a z is defined.
 // SHARED between the master and slave repos -- a change here affects both nodes.
 
@@ -64,16 +64,16 @@ static uint32_t *s_ring;
 // Single-producer (camera_task) / single-consumer (GCP task) ring. head is
 // written only by the producer, tail only by the consumer, so no lock is
 // needed -- but both must be volatile so neither side caches the other's index.
-/* Pre-fold ones for the pixels behind each emitted word (2026-08-26).
+/* LSB ones for the pixels behind each emitted word (2026-08-26).
  *
- * The folded word and the raw bits that produced it must be consumed as ONE
+ * The word and the raw bits that produced it must be consumed as ONE
  * unit, or the two z values describe different windows and cannot be paired.
  * The consumer paces the window by pulling words, so the count has to ride
  * WITH the word rather than being read out of a free-running counter — that
  * one advances with the producer and includes bits the consumer never saw
  * (ring drops).
  *
- * One byte per word: with the fold on a 32-bit word comes from 64 pixels, so
+ * One byte per word: with adjacent-pixel XOR on a 32-bit word comes from 64 pixels, so
  * the count is 0..64; with it off, 32 pixels and 0..32. Both fit.
  * ⚠ Same indices as s_ring, written by the same producer under the same
  * head/tail discipline. Never index one without the other. */
@@ -114,7 +114,7 @@ static volatile uint32_t s_stalls = 0;
  *      flush existed to discard, silently — nothing counts it, and it is not
  *      what flush_timeouts reports.
  *   2. camera_read_word_raw() indexed the volatile tail TWICE, once per ring.
- *      A reset in between decoupled the word from its pre-fold count: the two
+ *      A reset in between decoupled the word from its LSB count: the two
  *      came from different slots, which is exactly the pairing the raw ring
  *      exists to guarantee. camera_read_word() could not do this — one read,
  *      nothing to tear — so this one was new with the raw ring, not inherited.
@@ -139,9 +139,8 @@ static void ring_reset_tail(void)
 #define CAM_YIELD_PAIRS       4
 static uint64_t s_bits_extracted = 0, s_ones_count = 0;
 
-/* PRE-FOLD monitor (2026-08-26). Everything else on this page describes the
- * stream AFTER the fold; this describes the one the sensor actually produced.
- * See the note on cam_raw_t in extract.h for why that gap mattered. */
+/* LSB monitor (2026-08-26). Same bits as the emitted stream `[D65]`.
+ * See the note on cam_raw_t in extract.h. */
 /* ── Die temperature (2026-08-26) ──────────────────────────────────────────
  * The CUSUM offset monitor on the raw channel is an INSTRUMENT monitor, and an
  * instrument monitor without a covariate only ever says "something moved". This
@@ -180,7 +179,7 @@ static cam_raw_t s_raw;
  * So it is a GATE candidate and not a ranking key, and a gate only has to run
  * where the gating happens: in the sweep. That also removes its cost from the
  * measurement, where the loop is compute-bound (D25) — /camtest measured the
- * pre-fold monitor at +5,9 % of the extraction loop with it armed, and the
+ * LSB monitor at +5,9 % of the extraction loop with it armed, and the
  * array read 5,38 Mbit/s idle against 5,66 before.
  *
  * ⚠ Armed only inside a sweep (D46, restored D55). Permanently on it cost
@@ -200,9 +199,9 @@ static void raw_runs_arm_initial(void) { s_raw.want_runs = s_raw_runs_on; }
  * MEASUREMENT load the loop is compute-bound (D25) and it comes off the rate.
  *
  * ⛔ Sampling it is not the answer. CAM_RAW_EVERY ran it on one frame pair in
- * eight for exactly that reason, and it was deleted when the pre-fold z became
+ * eight for exactly that reason, and it was deleted when the LSB z became
  * a measurement channel: a channel that is scored, combined and archived has
- * to cover every bit the folded one covers, or the two are not the same
+ * to cover every bit the LSB one covers, or the two are not the same
  * window. It runs on every pair.
  *
  * What was done instead is to make it cheap. The +28,6 % was never the
@@ -218,7 +217,7 @@ static double   s_z_mean = 0.0, s_z_m2 = 0.0;
 static int      s_z_n = 0;
 // Autocorrelation: count positions where bit i AND bit i+L are both 1, so the
 // estimator can be mean-centred in publish_stats(). An agreement-rate estimator
-// would fold the stream's own bias into r (bias b inflates r by ~4b^2/(1-4b^2))
+// would mix the stream's own bias into r (bias b inflates r by ~4b^2/(1-4b^2))
 // and report correlation that isn't there.
 static uint64_t s_autocorr_both1[4] = { 0 };
 static uint64_t s_autocorr_pairs[4] = { 0 };
@@ -355,7 +354,7 @@ static void process_word(uint32_t w, uint32_t ro)
     // Publish to the consumer first. Never overwrite an unread slot: dropping
     // fresh bits when the consumer is behind is fine (excess entropy), reusing
     // or clobbering them is not.
-    /* `ro` is the pre-fold ones for exactly the pixels that produced this
+    /* `ro` is the LSB ones for exactly the pixels that produced this
      * word, handed over by the extractor. It used to be read back out of
      * s_raw.ones as a delta against the previous emit — correct, but it forced
      * the whole monitor to be memory-live inside the bulk loop, which is what
@@ -442,7 +441,7 @@ static void diff_and_extract(const uint8_t *a, const uint8_t *b, uint32_t n)
     /* ⚠ ALWAYS ON since 2026-08-26, and the duty cycle is gone with it. It was
      * 1-in-8 while the raw stream was only a DIAGNOSTIC, to keep its cost off
      * the loaded bit rate. The raw stream is now a MEASUREMENT CHANNEL (the
-     * pre-fold z), and a measurement cannot be sampled: every bit the consumer
+     * LSB z), and a measurement cannot be sampled: every bit the consumer
      * sees must be counted, or the z is over a window nobody can name.
      * ⚠ The cost is +9,5 % of the extraction loop (/camtest 2026-08-27), down
      * from +28,6 % before the counters moved into locals. Still priced at IDLE
@@ -485,7 +484,7 @@ static void publish_stats(void)
         if (temperature_sensor_get_celsius(s_tsens, &t) == ESP_OK) s_die_temp = t;
     }
 
-    /* Reduce the pre-fold sums to the same two numbers the folded stream
+    /* Reduce the LSB sums to the same two numbers the LSB stream
      * publishes. The mini-run z is (ones - BITS/2)/sqrt(BITS/4) — linear in
      * `ones` — so sd(z) = sd(ones)/sqrt(BITS/4) and the integer sums are
      * sufficient. Var over the completed mini-runs, n-1. */
@@ -587,7 +586,7 @@ static void stats_reset_locked(void)
     for (int L = 0; L < 4; L++) { s_autocorr_both1[L] = 0; s_autocorr_pairs[L] = 0; }
     s_pixel_sum = 0; s_pixel_n = 0;
     s_zero_diffs = 0; s_diff_n = 0;
-    memset(&s_raw, 0, sizeof(s_raw));    // pre-fold monitor, same window as the rest
+    memset(&s_raw, 0, sizeof(s_raw));    // LSB monitor, same window as the rest
     /* Re-arm the runs channel: the memset above cleared the flag with the
      * counters. Arming it HERE and nowhere else is the contract — the channel
      * carries one bit of state across calls, and toggling it inside an open
@@ -596,7 +595,7 @@ static void stats_reset_locked(void)
     s_us_wait = 0; s_us_ext = 0; s_us_rest = 0; s_us_cycle = 0;
     s_acct_pairs = 0; s_last_pair_us = 0;
     s_cons_bits = 0; s_cons_us = 0;   // same window as everything else here
-    memset(&s_pack, 0, sizeof(s_pack));  // a half-folded pair must not straddle
+    memset(&s_pack, 0, sizeof(s_pack));  // a half-packed pair must not straddle
     ring_reset_tail();                   // drop unread old-setting words
     s_stream_start_us = esp_timer_get_time();
 
@@ -815,7 +814,7 @@ esp_err_t camera_init(void)
 
     s_ring = heap_caps_malloc(RING_WORDS * sizeof(uint32_t), MALLOC_CAP_SPIRAM);
     /* 16 KB beside the 64 KB word ring. If THIS one fails the node still
-     * measures — camera_read_word() is unaffected and only the pre-fold z goes
+     * measures — camera_read_word() is unaffected and only the LSB z goes
      * away, exactly as entropy does when its buffers fail. Never a
      * precondition for a measurement. */
     s_ring_raw = heap_caps_malloc(RING_WORDS, MALLOC_CAP_SPIRAM);
@@ -1016,18 +1015,18 @@ bool camera_is_ready(void)
     return ready;
 }
 
-/* camera_read_word() plus the pre-fold ones count of the very pixels that word
- * came from, consumed as one unit so the folded and raw z describe the SAME
+/* camera_read_word() plus the LSB ones count of the very pixels that word
+ * came from, consumed as one unit so the and raw z describe the SAME
  * window (2026-08-26).
  *
  * ⚠ *out_raw is 0 and the return still true when the parallel ring is missing
- * — the node measures, it just has no pre-fold channel. Callers must treat a
+ * — the node measures, it just has no LSB channel. Callers must treat a
  * missing channel as absent, never as a raw ones count of zero, so the flag
  * says which: camera_raw_stream_ok().
  * ⚠ Do NOT mix this with camera_read_word() inside one window. Both advance the
  * same tail; interleaving them silently splits the raw count across two
- * accumulators and the pre-fold z ends up over a shorter window than the
- * folded one. */
+ * accumulators and the LSB z ends up over a shorter window than the
+ * LSB one. */
 bool camera_read_word_raw(uint32_t *out, uint32_t *out_raw)
 {
     if (!s_ring || !camera_is_ready()) return false;
@@ -1058,7 +1057,7 @@ bool camera_read_word_raw(uint32_t *out, uint32_t *out_raw)
         }
 
         /* ONE read of the volatile tail, into a local. Both rings are then
-         * indexed with the same value, so the word and its pre-fold count
+         * indexed with the same value, so the word and its LSB count
          * cannot come from different slots. */
         uint32_t t = s_ring_tail;
         *out = s_ring[t];
@@ -1085,7 +1084,7 @@ void camera_note_consumed(uint64_t bits, int64_t us)
     xSemaphoreGive(s_mutex);
 }
 
-/* The folded-only reader is the raw one with the side value thrown away.
+/* The word-only reader is the raw one with the side value thrown away.
  * Written as a forwarder rather than a second copy of the sequence above: the
  * tail protocol is subtle enough that two hand-kept copies is how one of them
  * ends up a fix behind — which is precisely what happened to the flag ordering
@@ -1203,7 +1202,7 @@ static const uint32_t s_cal_ladder[] = { 4, 8, 16, 32, 64, 128, 256, 512 };
 /* Hard gates, inherited from the original Phase 0 gate these cameras have met
  * before. Quality first; rate is only the tie-break among candidates that pass. */
 #define CAL_BIAS_TOL        1e-3
-#define CAL_AUTOC_TOL       0.03   /* unfolded; 0,01 was the folded bar (D65) */
+#define CAL_AUTOC_TOL       0.03   /* LSB; 0,01 was the LSB bar (D65) */
 #define CAL_SIGMA_TOL       0.05   /* unused as a gate since D65 */
 /* A window has to be long enough that the gate tests the SETTING and not the
  * sampling error of the window: SE(bias) = 0.5/sqrt(bits), so 2 Mbit gives
@@ -1275,37 +1274,37 @@ static const uint32_t s_cal_ladder[] = { 4, 8, 16, 32, 64, 128, 256, 512 };
  * Both limits are reported per step, so a sweep says which one bound it. */
 #define CAL_MAX_Z_OFFSET      1.0
 #define CAL_BIAS_SE_K         3.0
-/* ── The bias gate moves BEFORE the fold (2026-08-27) ─────────────────────
+/* ── The bias gate moves BEFORE adjacent-pixel XOR (2026-08-27) ─────────────────────
  * Everything above this block is still true and is the reason the gate had to
  * move: the bar is noise-limited, it cannot resolve the health bar it feeds.
  * What the 2026-08-27 session showed is that it is worse than noise-limited —
- * measured on the FOLDED stream there is nothing left to resolve.
+ * measured on the LSB stream there is nothing left to resolve.
  *
- * The fold maps a raw bias e to ~2e^2 (see gcp_zscore_pre). The master's
+ * Adjacent-pixel XOR maps a raw bias e to ~2e^2 (see gcp_zscore_pre). The master's
  * ladder that day, as distance from 0,5 in units of 1e-3:
  *
  *     exp        4      8     16     32     64    128    256    512
  *     raw     11,7    8,4    5,4    2,4    0,5    5,5   10,3   26,8
- *     folded   ...          0,03   0,21   0,04
+ *       ...          0,03   0,21   0,04
  *
  * Squaring 5,4e-3 gives 5,9e-5, and the window's own SE(bias) is 2,3e-4. The
- * fold pushes every certified rung four times below the noise floor of the
+ * pushes every certified rung four times below the noise floor of the
  * measurement, so |bias-0,5| after it is a coin toss: the sweep picked
  * exposure 16 over 64 by 6e-6, a fortieth of its own standard error, and the
  * two rungs then differed by a factor of TEN in the offset they actually
  * produced (-0,64 against -0,06 z per run over 50 blocks).
  *
- * The raw column is the same physical quantity BEFORE the fold squashes it: a
+ * The raw column is the same physical quantity BEFORE adjacent-pixel XOR squashes it: a
  * clean U with one minimum, ~20x its own noise between neighbouring rungs, and
  * it orders the rungs exactly as their measured offsets do. It is also the
  * monobit test, i.e. the first-order term of the entropy deficit — the
  * quantity this instrument is trying to maximise in the first place.
  *
- * So both the SELECTION and the GATE run on raw_bias, and the folded bias is
+ * So both the SELECTION and the GATE run on raw_bias, and the LSB bias is
  * kept as a published diagnostic only.
  *
  * ⚠ The old bar CANNOT be carried over. CAL_MAX_Z_OFFSET converts through
- * gcp_z_per_bias, which is the FOLDED coupling; applied to a raw bias it would
+ * gcp_z_per_bias, which is the LSB coupling; applied to a raw bias it would
  * reject the entire ladder including the best rung. The bar below is set the
  * way CAL_MIN_MEAN_PX and CAL_MAX_ZERO_DIFF were — cut between the lowest rung
  * that behaves and the highest that does not, on measured evidence:
@@ -1322,9 +1321,9 @@ static const uint32_t s_cal_ladder[] = { 4, 8, 16, 32, 64, 128, 256, 512 };
  * all nine rungs, i.e. CERTIFIED-EMPTY while its camera was fine.
  *
  * The raw bias is NON-STATIONARY on the timescale of a session. This file
- * already records that for the fold-off case further down ("+8,4e-4 at
+ * already records that for the LSB-as-is case further down ("+8,4e-4 at
  * calibration to -1,3e-3 during the baseline minutes later"); it holds with the
- * fold on too, and it is a large part of why the fold exists at all.
+ * on too, and it is a large part of why adjacent-pixel XOR exists at all.
  *
  * What survives is that the raw bias is an excellent RELATIVE key: across two
  * sweeps 25 minutes apart it ordered each node's ladder the same way both
@@ -1333,7 +1332,7 @@ static const uint32_t s_cal_ladder[] = { 4, 8, 16, 32, 64, 128, 256, 512 };
  * certify a node empty, which is precisely the failure an absolute bar walked
  * into.
  *
- * The folded bias bar stays the gate: toothless, as the paragraph above says,
+ * The LSB bias bar stays the gate: toothless, as the paragraph above says,
  * but bounded, and it cannot blank a node. */
 #define CAL_MAX_RAW_BIAS      6.0e-3   /* retained ONLY as cal_key_se()'s fallback */
 /* Standard errors of the CHALLENGER's own bias measurement that it must beat
@@ -1345,16 +1344,16 @@ static const uint32_t s_cal_ladder[] = { 4, 8, 16, 32, 64, 128, 256, 512 };
  * ⚠ Raising this makes the array slower to follow a lamp that is actually
  * drifting, which is the failure mode on the other side. */
 #define CAL_KEEP_MARGIN_K     3.0
-/* ── The dispersion gate moves BEFORE the fold too (2026-08-27) ───────────
+/* ── The dispersion gate moves BEFORE adjacent-pixel XOR too (2026-08-27) ───────────
  * Same disease as the bias gate, found in the same sweep. CAL_SIGMA_TOL reads
- * the FOLDED mini-run sigma, and the fold pulls dispersion in as it pulls bias
- * in. Rungs the folded gate CERTIFIED, with their raw figure beside it:
+ * the mini-run sigma, and adjacent-pixel XOR pulls dispersion in as it pulls bias
+ * in. Rungs the LSB gate CERTIFIED, with their raw figure beside it:
  *
- *     .155 exp 256   raw 1,3405   folded 1,0202
- *     .145 exp  64   raw 1,2964   folded 0,9741
+ *     .155 exp 256   raw 1,3405   1,0202
+ *     .145 exp  64   raw 1,2964   0,9741
  *
- * A front end dispersed by a third reads clean after the fold. That matters
- * more than it used to: the pre-fold z is a scored channel (D45), it is what
+ * A front end dispersed by a third reads clean after adjacent-pixel XOR. That matters
+ * more than it used to: the LSB z is a scored channel (D45), it is what
  * `?wpre=` weights, and its sigma IS this number.
  *
  * ⛔ RELATIVE, not absolute, and for the same reason the raw bias does not
@@ -1369,17 +1368,17 @@ static const uint32_t s_cal_ladder[] = { 4, 8, 16, 32, 64, 128, 256, 512 };
  * It travels with the level and, by construction, can never reject the rung it
  * is computed from: certifying-empty is impossible.
  *
- * ⚠ ONE-SIDED. The folded bar is two-sided because an under-dispersed folded
- * stream is as wrong as an over-dispersed one. The raw stream is not
+ * ⚠ ONE-SIDED. A two-sided |σ−1| bar treated under-dispersed and
+ * over-dispersed streams the same. The raw stream is not
  * symmetric: every physical failure here — clumped zeros at the dark end,
  * correlated structure at the bright one — inflates it.
  *
  * K = 1,35 against both measured sweeps: it rejects .103 exp 64 (2,40 against
  * a 1,24 best), .145 exp 128 (1,45 against 1,02), master exp 128 (1,49 against
  * 1,04) and every rung above them, and it rejects nothing any node chose.
- * ⚠ Honestly stated: on these two sweeps it rejects nothing the FOLDED sigma
+ * ⚠ Honestly stated: on these two sweeps it rejects nothing the sigma
  * gate did not already reject, so its value today is prospective — it is the
- * gate that will see a front end degrading while the fold still hides it. It
+ * gate that will see a front end degrading while adjacent-pixel XOR still hides it. It
  * does NOT catch the two rungs that motivated it (.155/256 at 1,31 against a
  * 1,05 best is a ratio of 1,25, inside K). Tightening K to catch them would
  * put the bar under the drift measured above. That is the trade, and it is
@@ -1404,9 +1403,9 @@ void camera_cal_set_z_scale(double z_per_bias)
     s_cal_z_scale = (z_per_bias > 0.0) ? z_per_bias : 0.0;
 }
 
-/* The FOLDED bias bar for ONE window. Publish/audit only since 2026-08-28
- * (D52) — cal_gate() no longer fails on it. After the fold every certified
- * rung sits near the window's own SE anyway [D19][D46]; selection is pre-fold
+/* The LSB bias bar for ONE window. Publish/audit only since 2026-08-28
+ * (D52) — cal_gate() no longer fails on it. After adjacent-pixel XOR every certified
+ * rung sits near the window's own SE anyway [D19][D46]; selection is LSB
  * |raw_bias−0,5|. Kept so /calibrate and old sweep CSVs stay comparable. */
 static double cal_bias_bar(uint64_t bits)
 {
@@ -1419,8 +1418,8 @@ static double cal_bias_bar(uint64_t bits)
 }
 
 /* ── The selection key and its noise ──────────────────────────────────────
- * The key is the monobit distance BEFORE the fold, so a smaller key is a
- * better rung. Falls back to the folded bias only for a node with no parallel
+ * The key is the monobit distance on the LSB stream, so a smaller key is a
+ * better rung. Falls back to the LSB bias only for a node with no parallel
  * raw stream, which keeps a crippled front end selectable rather than
  * unselectable — the same fallback cal_gate() makes, for the same reason.
  *
@@ -1442,11 +1441,11 @@ static uint32_t cal_gate(const camera_cal_step_t *s)
 {
     uint32_t f = 0;
     if (s->bits < CAL_MIN_BITS || s->minirun_n < CAL_MIN_MINIRUNS) f |= CAM_CAL_FAIL_BITS;
-    /* FOLDED bias and CAL_MAX_MEAN_PX are NOT gates (D52, 2026-08-28).
-     * Pre-fold |raw_bias−0,5| selects; folded σ / autocorr / dark / stuck reject.
+    /* LSB bias and CAL_MAX_MEAN_PX are NOT gates (D52, 2026-08-28).
+     * LSB |raw_bias−0,5| selects; σ / autocorr / dark / stuck reject.
      * cal_bias_bar() / CAL_MAX_MEAN_PX stay for /calibrate readability. */
     if (s->autocorr_max >= CAL_AUTOC_TOL)       f |= CAM_CAL_FAIL_AUTOC;
-    /* |σ−1|≤0,05 was the FOLDED gate (D65). Unfolded σ is not ~1; RSIG is
+    /* |σ−1|≤0,05 was the LSB gate (D65). LSB σ is not ~1; RSIG is
      * the dispersion gate, relative to this ladder's own best. */
     if (s->stuck_frames != 0)                   f |= CAM_CAL_FAIL_STUCK;
     /* The dark end. Both, and only when the window actually measured something:
@@ -1557,7 +1556,7 @@ bool camera_calibrate(int budget_ms, bool (*abort_cb)(void), camera_cal_t *out)
     camera_get_exposure(&e0, &g0);
 
     if (budget_ms < 2000) budget_ms = 2000;
-    // Steps: the entry setting, then the ladder. No fold trial — see below.
+    // Steps: the entry setting, then the ladder. No XOR trial — see below.
     int planned = 1 + (int)CAL_LADDER_N;
     if (planned > CAM_CAL_MAX_STEPS) planned = CAM_CAL_MAX_STEPS;
     int64_t slice_us = (int64_t)budget_ms * 1000 / planned;
@@ -1581,7 +1580,7 @@ bool camera_calibrate(int budget_ms, bool (*abort_cb)(void), camera_cal_t *out)
 
     out->nsteps = n;
 
-    /* ── The RELATIVE pre-fold dispersion gate ────────────────────────────
+    /* ── The RELATIVE LSB dispersion gate ────────────────────────────
      * Runs here and not in cal_gate() because it needs the whole ladder: the
      * bar is CAL_RAW_SIGMA_K times the best raw_sigma among rungs that cleared
      * everything else. See CAL_RAW_SIGMA_K for why it is relative.
@@ -1656,14 +1655,14 @@ bool camera_calibrate(int budget_ms, bool (*abort_cb)(void), camera_cal_t *out)
      * use. Verified not to disturb the healthy nodes — replayed against all
      * four measured ladders, master/.103/.155 keep exactly the rung they had.
      *
-     * ── PRE-FOLD BIAS + HYSTERESIS (2026-08-27) ───────────────────
+     * ── LSB BIAS + HYSTERESIS (2026-08-27) ───────────────────
      * Two changes, one cause. See CAL_MAX_RAW_BIAS above for the measurement.
      *
-     * 1. The key is |raw_bias - 0,5|, the monobit distance BEFORE the fold.
-     *    After the fold every certified rung sits four times below the window's
+     * 1. The key is |raw_bias - 0,5|, the monobit distance on the LSB stream.
+     *    After adjacent-pixel XOR every certified rung sits four times below the window's
      *    own sampling error, so the old key was comparing three numbers that
      *    are all the same — the same defect the RATE tie-break had, one layer
-     *    down. Before the fold the ladder is a clean U with ~20x the noise
+     *    down. Before adjacent-pixel XOR the ladder is a clean U with ~20x the noise
      *    between neighbours, and it orders the rungs the way their measured
      *    per-block offsets do.
      *
@@ -1830,12 +1829,12 @@ esp_err_t camera_cal_send_json(void *httpd_req, const camera_cal_t *c)
 
     int len = snprintf(buf, sizeof(buf),
         "{\"ran\":true,\"ok\":%s,\"chosen\":%d,\"exposure\":%lu,\"gain\":%lu,"
-        "\"fold\":%d,\"bias\":%.6f,\"sigma\":%.4f,\"mbit_s\":%.3f,"
+        "\"bias\":%.6f,\"sigma\":%.4f,\"mbit_s\":%.3f,"
         "\"raw_bias\":%.6f,\"raw_sigma\":%.4f,\"raw_runs_z\":%.2f,"
         "\"kept\":%s,"
         "\"autocorr\":%.4f,\"mean_px\":%.2f,\"ms\":%lu,\"steps\":[",
         c->ok ? "true" : "false", c->chosen,
-        (unsigned long)c->exposure, (unsigned long)c->gain, (int)c->xor_fold,
+        (unsigned long)c->exposure, (unsigned long)c->gain,
         c->bias, c->sigma, c->mbit_per_sec,
         c->raw_bias, c->raw_sigma, c->raw_runs_z,
         c->kept ? "true" : "false",
@@ -1845,14 +1844,14 @@ esp_err_t camera_cal_send_json(void *httpd_req, const camera_cal_t *c)
     for (int i = 0; i < c->nsteps && i < CAM_CAL_MAX_STEPS; i++) {
         const camera_cal_step_t *s = &c->step[i];
         len = snprintf(buf, sizeof(buf),
-            "%s{\"exposure\":%lu,\"gain\":%lu,\"fold\":%d,\"bits\":%llu,"
+            "%s{\"exposure\":%lu,\"gain\":%lu,\"bits\":%llu,"
             "\"raw_bias\":%.6f,\"raw_sigma\":%.4f,\"raw_runs_z\":%.2f,"
             "\"raw_bits\":%llu,\"key\":%.2e,"
             "\"miniruns\":%d,\"bias\":%.6f,\"sigma\":%.4f,\"mbit_s\":%.3f,"
             "\"autocorr\":%.4f,\"mean_px\":%.2f,\"zero_diff\":%.4f,"
             "\"stuck\":%lu,\"fail\":%lu,\"pass\":%s}",
             i ? "," : "", (unsigned long)s->exposure, (unsigned long)s->gain,
-            (int)s->xor_fold, (unsigned long long)s->bits,
+            (unsigned long long)s->bits,
             s->raw_bias, s->raw_sigma, s->raw_runs_z,
             (unsigned long long)s->raw_bits, cal_key(s), s->minirun_n,
             s->bias, s->sigma, s->mbit_per_sec, s->autocorr_max,
@@ -1963,7 +1962,7 @@ esp_err_t camera_selftest_handle(void *httpd_req, bool busy)
     snprintf(buf, sizeof(buf),
         "{\"equal\":%s,\"cases\":%d,\"failed_case\":%d,\"words\":%lu,"
         "\"ns_read\":%.3f,\"ns_ref\":%.3f,\"ns_fast\":%.3f,\"ns_stats\":%.3f,"
-        /* ns_raw is the word-wise path WITH the pre-fold monitor, against
+        /* ns_raw is the word-wise path WITH the LSB monitor, against
          * ns_fast without it -- the price of D43's front-end diagnostics,
          * measured rather than assumed. */
         "\"ns_raw\":%.3f,"
@@ -2009,10 +2008,10 @@ typedef struct {
     uint32_t t_ms;        /* node uptime when the window was pushed */
     uint32_t tag;         /* caller's label; 0 = no item (a scoring run) */
     uint32_t ses;         /* session ordinal at the push; see new_session */
-    float    wsig;        /* per-window folded sigma -- the D62 number */
+    float    wsig;        /* per-window sigma -- the D62 number */
     int32_t  wn;          /* mini-runs behind wsig; 0 = below WIN_SIGMA_MIN_N */
-    float    rsig, rbias; /* PRE-FOLD sigma/bias, cumulative since the sweep */
-    float    sig, bias;   /* folded, likewise cumulative */
+    float    rsig, rbias; /* LSB sigma/bias, cumulative since the sweep */
+    float    sig, bias;   /* likewise cumulative */
     float    px;          /* mean pixel level -- the light */
     float    ac1;         /* lag-1 autocorrelation */
     float    zdiff;       /* zero-diff fraction */

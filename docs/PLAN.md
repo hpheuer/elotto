@@ -28,7 +28,7 @@ order. Then done. **No loops, no `Runs` cap.**
 ### 2.2 Blocks replace loops as the statistics unit
 
 **Every ~15 min** (`?calint=`) the pass parks for the **camera sweep**, then resumes. That boundary
-closes a **block**: `/loops` row, drift point, pairwise fold, **block centring** (§3.1) — the
+closes a **block**: `/loops` row, drift point, pairwise close, **block centring** (§3.1) — the
 block's most important job since 2026-08-13.
 
 Cadence ≈ drift resolution + insertion overhead + sample size for each centring mean.

@@ -182,7 +182,7 @@ static int gap_for(void)
 
 /* The master's own run, via the shared primitive in components/elotto_gcp — the
  * same object code the slaves run, so no node can compute z differently from
- * another — with the pre-fold channel alongside.
+ * another — with the LSB channel alongside.
  *
  * NULL yield callback: the master aborts between runs, never inside one, so
  * there is nothing to poll mid-run. A false return means the run produced no
@@ -296,8 +296,8 @@ static void   center_block(int block_idx);  // forward: publish_valid centres th
 /* Per-item node-z archive (PSRAM). results[j] stays lean; re-analysis needs
  * the per-node series to recombine, drop a soft-failed node, or recompute r. */
 static float *s_node_z;   // [NUM_RUNS * MAX_NODES], NaN = did not contribute
-/* The PRE-FOLD per-node z archive (D45), same shape and the same NaN
- * convention. It is the channel that keeps what the fold suppresses, so it has
+/* The LSB per-node z archive (D45), same shape and the same NaN
+ * convention. It is the channel that keeps what adjacent-pixel XOR suppresses, so it has
  * to be recoverable per node offline exactly as z0..z3 are. */
 static float *s_node_p;
 static float *s_node_hw;  /* per-node half-window pre z (D56), NaN = none */
@@ -402,7 +402,7 @@ static void node_z_move(int from, int to)
         memcpy(s_node_z + (size_t)to   * MAX_NODES,
                s_node_z + (size_t)from * MAX_NODES,
                MAX_NODES * sizeof(float));
-    /* ⚠ The pre-fold archive moves WITH the z archive, in the same call. Two
+    /* ⚠ The LSB archive moves WITH the z archive, in the same call. Two
      * separate move loops would be two chances to compact one and forget the
      * other, and the result — an item's z paired with a neighbour's pre — is a
      * ranking key that looks entirely plausible. */
@@ -468,8 +468,8 @@ static int    s_pass_n;
  * contaminated anything. */
 static uint8_t s_blk_contrib;
 
-/* How many blocks are FINAL: closed, centred, and their per-node sums folded
- * away, so nothing in them can move again. The open block's index is always
+/* How many blocks are FINAL: closed, centred, and their per-node sums
+ * cleared, so nothing in them can move again. The open block's index is always
  * exactly this number, since blocks close in order.
  * ⚠ NOT loops_done. That counts /loops rows, and an aborted block is centred
  * without getting one — see the abort path at the `done:` label. Reading
@@ -482,7 +482,7 @@ static int s_blocks_centred;
  * Why this exists: gating the ranking on closed blocks alone left the operator
  * staring at an empty table for a whole cal_interval — 15 minutes by default,
  * and the entire pass at ?calint=0. Not acceptable (user, 2026-08-28), and the
- * fix is not to show uncentred items: raw per-node pre-fold offsets run 20..95
+ * fix is not to show uncentred items: raw per-node LSB offsets run 20..95
  * sigma, so an uncentred live table ranks WHICH NODES ANSWERED. It is to centre
  * the open block as it fills. The per-node means are then estimated from a
  * handful of items instead of a hundred, i.e. noisier — the tables move as the
@@ -655,7 +655,7 @@ static void score_and_build_pool(int max_val, int pool_size, uint8_t *pool,
     /* The kept numbers take the first slots, carrying the score that chose them
      * (they were not re-measured, so there is no new one to carry). */
     /* A kept number was never measured this pass, so scores[] holds 0 for it.
-     * Fold the score it was originally chosen on back in, so one array carries
+     * Put the score it was originally chosen on back in, so one array carries
      * every pool member's score regardless of which pass produced it. */
     for (int i = 0; i < n_keep; i++)
         if (keep[i] >= 1 && keep[i] <= max_val)
@@ -669,7 +669,7 @@ static void score_and_build_pool(int max_val, int pool_size, uint8_t *pool,
     /* Pick by pre-registered score_dir, on the KEY score_build_keys() just
      * produced — not on z. HIGH = largest key (historical default); LOW =
      * smallest; ABS = largest |key|. So at ?wpre=0,8 the direction applies to a
-     * pre-fold-dominated quantity, which is the point: the pool is chosen by
+     * LSB-dominated quantity, which is the point: the pool is chosen by
      * the same rule the pass is ranked by. Direction is a session parameter
      * (?score=) so the hypothesis is on the record before the pass.
      * Void runs (scored[k] == false) are excluded: a void is not a z of 0 and
@@ -884,7 +884,7 @@ static void pool_confirm_wait(bool euro, int mx, int *io_pool_nm, int *io_pool_n
     *io_pool_ne = pool_ne;
 }
 
-/* Per-node half-window pre-fold z (D56).
+/* Per-node half-window LSB z (D56).
  * Same sign on both halves → √2 · min(|h1|,|h2|) with that sign, which equals
  * the full-window z when the bias is stable across the window. Opposite sign
  * (or a zero half) → 0: a one-sided glitch does not rank. */
@@ -984,7 +984,7 @@ static int gather_and_combine(double z_master, bool master_ok,
 /* ── One measured window, and the only place a window is measured ──────────
  * Trigger every node, settle, measure locally, collect the replies, combine.
  * Scoring and the pass do exactly this and always did; it lived twice, and the
- * copies drifted. ⚠ That drift is not hypothetical — it is how the pre-fold
+ * copies drifted. ⚠ That drift is not hypothetical — it is how the LSB
  * channel came to rank the pass and not the pool: rank_key() gained a third
  * channel on 2026-08-26 and the scoring copy did not, silently, for two days.
  * A comment saying "keep these in step" had already failed the same way once
@@ -1063,12 +1063,12 @@ static void score_one_run(bool *ok, double *z, double *zcn)
     if (zcn) *zcn = (k > 0 && m.zc != 0.0) ? m.zc : NAN;
 }
 
-/* Scoring key = pass key: folded z plus BOTH pre-fold channels, the pre-fold
+/* Scoring key = pass key: z plus BOTH LSB channels, the LSB
  * half split evenly between them (D58) — the same shape rank_key() uses.
  *
  * ⚠ The pass standardises each channel on ITS OWN candidates, because no block
  * mean exists yet: this is the scoring pass, the first measurements of the
- * session (D48). That is what makes the pre-fold channels usable here at all —
+ * session (D48). That is what makes the LSB channels usable here at all —
  * uncentred they rank NODES, not numbers. */
 static void score_build_keys(const double *zc, const double *zcc,
                              const bool *scored, int max_val, double *scores)
@@ -1149,16 +1149,13 @@ static double compute_v_eff(void)
  * place — mixing the two silently would be indistinguishable from a result. */
 static double rank_z(const RunResult *r) { return (double)r->z_ctr; }
 
-/* ── The ranking key: folded z and BOTH pre-fold channels, weighted ────────
+/* ── The ranking key: z and concordance, weighted ────────
  *
- * key = ((1−p)·z_ctr + (p/2)·zp_ctr/σ_p + (p/2)·zc_ctr/σ_c)
- *       / √((1−p)² + 2·(p/2)²)
+ * key = ((1−p)·z_ctr/σ_p + p·zc_ctr/σ_c) / √((1−p)² + p²)
  *
- * p = ?wpre= splits FOLDED against PRE-FOLD; the pre-fold half is then split
- * evenly between the two pre-fold channels (D58, user 2026-08-29):
- *   z_ctr  — combined window z (D65, unfolded).
- *   zc_ctr — concordance (D56): half-window agreement, loudest node dropped.
  * p = ?wpre= is the concordance weight; 1-p is z. p=0 is z alone.
+ *   z_ctr  — combined window z (D65).
+ *   zc_ctr — concordance (D56): half-window agreement, loudest node dropped.
  * ⚠ Each channel is divided by ITS OWN measured σ (rank_sig_p / rank_sig_c).
  * ⚠ Clamped. See ENT_Z_CLAMP — the archive keeps the real value. */
 double rank_key(const RunResult *r)
@@ -1194,13 +1191,13 @@ static bool result_ranked(const RunResult *r)
 /* Is this item's z_ctr a centred value, i.e. may it enter a statistic?
  *
  * Two ways to qualify and they are not the same thing: a FINAL block (closed,
- * centred, sums folded — its values will not move again), or the OPEN block
+ * centred, sums — its values will not move again), or the OPEN block
  * once it holds enough items to estimate its own per-node means. The open
  * block's index is always s_blocks_centred exactly, because blocks close in
  * order and the counter is bumped at the close.
  *
  * ⚠ This is the whole gate. An item that fails it is not "slightly rough" —
- * uncentred it carries its nodes' raw offsets, which on the pre-fold channel
+ * uncentred it carries its nodes' raw offsets, which on the LSB channel
  * run 20..95 sigma, and one of them in a σ or a Z* scale swamps everything the
  * session actually measured. That is not hypothetical: on hardware 2026-08-27,
  * 45 uncentred items out of 360 drove rank_sig_p to 17,16 against a real 2..4
@@ -1225,7 +1222,7 @@ static bool result_centred(const RunResult *r)
  * describe the TABLES (top/bottom/nearest, zmax) must not. */
 static double s_drop_sum, s_drop_sumsq;
 static int    s_drop_n, s_drop_void, s_drop_excl;
-/* The same for the two pre-fold channels — needed since rank_key() standardises
+/* The same for the two LSB channels — needed since rank_key() standardises
  * each by its measured σ. Without this, σ after a compaction would be the σ OF
  * THE SURVIVORS, which are the extremes by construction. Each keeps its own
  * count: an item can be ranked and carry neither, or carry zp_ctr and no
@@ -1261,10 +1258,10 @@ static void recompute_pass_ranks(void)
      * bar) and is measurably unsettled early in every block, tightening as the
      * block fills and shifting once at the close. Accepted for the live tables
      * (user, 2026-08-28); read pass_sigma at a block boundary, not at its
-     * start. Only the folded z is affected -- the pre-fold channel ranks but
+     * start. Only the z is affected -- the LSB channel ranks but
      * never enters the null (D45).
      * The compaction seeds are safe: pass_compact() runs at a round boundary,
-     * i.e. after close_block(), so everything it folded in was centred.
+     * i.e. after close_block(), so everything it in was centred.
      * ⚠ VOID and EXCLUDED are counted over EVERYTHING. They are archive facts,
      * not statistics, and hiding a void run until its block closes would make
      * the CSV and the live counter disagree. */
@@ -1305,19 +1302,19 @@ static void recompute_pass_ranks(void)
 
     /* ── Two channels, two jobs ────────────────────────────────────────────
      * Everything ABOVE runs on rank_z() and stays there: pass mean/σ/χ² are
-     * instrument health on the folded stream.
+     * instrument health on the LSB stream.
      *
      * Everything BELOW — the three published tables — runs on rank_key().
      * rank_mean/rank_sigma are its own moments. At ?wpre=0 the key IS z_ctr
      * and the two pairs coincide exactly. */
-    /* First: each pre-fold channel's own σ, from the UNCLAMPED archive.
+    /* First: each LSB channel's own σ, from the UNCLAMPED archive.
      * rank_key() divides by them, so both have to be settled before the key is
      * called below. Seeded with compaction moments for the same reason as z.
      *
      * ⚠ Two separate accumulators, not one. zp_ctr and zc_ctr are built from
      * the same bits but have different scales — the concordance takes the
      * min() of two halves and drops the loudest node, so its σ runs well below
-     * the combined pre-fold σ. Standardising both by one number would hand the
+     * the combined LSB σ. Standardising both by one number would hand the
      * key a weight nobody chose (D58). */
     double psum = s_drop_psum, psumsq = s_drop_psumsq;
     int    pn = s_drop_pn;
@@ -1327,7 +1324,7 @@ static void recompute_pass_ranks(void)
         const RunResult *r = &g_status.results[j];
         if (!result_ranked(r)) continue;
         /* ⚠ CENTRED BLOCKS ONLY. An UNCENTRED item still holds the raw value
-         * (D8), which carries the per-node offset — on the pre-fold channel
+         * (D8), which carries the per-node offset — on the LSB channel
          * that offset is 20..95σ. Letting those into the σ that rank_key()
          * divides by is a feedback loop (sawtooth in Z* on hardware 2026-08-27).
          * The compaction seeds above are safe: pass_compact() runs after
@@ -1355,7 +1352,7 @@ static void recompute_pass_ranks(void)
      * counters over two different sets read as an instrument fault: after the
      * first compaction the ratio collapses and the UI's "with pre n/valid ⚠"
      * fires on its own bookkeeping, not on the array (seen 2026-08-30 as
-     * "pre 132/788" while every surviving row carried a pre-fold value).
+     * "pre 132/788" while every surviving row carried a LSB value).
      * ⚠ pre_clamped is NOT seeded and cannot be: whether an item sits at the
      * clamp depends on the σ current at the time of asking, and σ moves. It is
      * a lower bound over the surviving rows after a compaction. */
@@ -1367,7 +1364,7 @@ static void recompute_pass_ranks(void)
             double kk = rank_key(r);
             ksum += kk; ksumsq += kk * kk; kn++;
         }
-        /* pre_n counts items carrying the pre-fold channel proper. An item can
+        /* pre_n counts items carrying the LSB channel proper. An item can
          * have zp_ctr and no zc_ctr — the leave-one-out drop left k < 2 — so
          * the clamp count is over EITHER channel and counted once per item. */
         if (r->zp_ctr != 0.0f) pre_n++;
@@ -1429,7 +1426,7 @@ static void recompute_pass_ranks(void)
 }
 
 /* ── Round-boundary compaction ─────────────────────────────────────────────
- * Fold everything except the three published tables into moments, so an
+ * Merge everything except the three published tables into moments, so an
  * unlimited session runs until it is aborted instead of stopping at NUM_RUNS.
  *
  * Called ONLY at a round boundary, and only when the next round would not fit.
@@ -1482,7 +1479,7 @@ static void pass_compact(void)
         keep[best] = 1;
     }
 
-    /* Fold the losers into the moments, then close the gaps in place. Forward
+    /* Merge the losers into the moments, then close the gaps in place. Forward
      * copy with w <= j, so the array is rewritten under itself safely and the
      * surviving rows keep their relative order.
      *
@@ -1699,7 +1696,7 @@ static void quarantine_block(int block_idx)
                block_idx, n);
 }
 
-/* Fold one VALID item into the pass (running sums kept for convenience;
+/* Merge one VALID item into the pass (running sums kept for convenience;
  * ranks always recompute from results[] so mean/σ stay exact). */
 static void publish_valid(const RunResult *r)
 {
@@ -1735,7 +1732,7 @@ static void publish_valid(const RunResult *r)
  * combine. So the worst pair is what gets published; averaging the six would
  * let one bad pair hide behind five good ones.
  *
- * Moments are centered PER LOOP before folding into the session totals: pooling
+ * Moments are centered PER LOOP before merging into the session totals: pooling
  * raw values across loops would let each loop's random offset
  * (SE = 1/√n per node) masquerade as correlation.
  *
@@ -1761,11 +1758,11 @@ static NodeAcc s_nacc[MAX_NODES];
  * counts, not a shared n: a node can answer with a z and no H (older slave
  * firmware, or its FFT buffers did not allocate), so the two channels have
  * different denominators and sharing one would centre the entropy on a mean
- * divided by the wrong count. Cleared with s_nacc by pairs_fold_loop(). */
-/* The PRE-FOLD channel's own block accumulator (D45). Its own denominator: a
- * node can answer with a z and no pre-fold value, so k_p is not k and sharing
+ * divided by the wrong count. Cleared with s_nacc by pairs_commit_block(). */
+/* The LSB channel's own block accumulator (D45). Its own denominator: a
+ * node can answer with a z and no LSB value, so k_p is not k and sharing
  * an accumulator would centre on a mean divided by the wrong count. Cleared
- * with the others by pairs_fold_loop(). */
+ * with the others by pairs_commit_block(). */
 static NodeAcc s_pacc[MAX_NODES];
 static NodeAcc s_hwacc[MAX_NODES];
 
@@ -1777,11 +1774,11 @@ static void pairs_reset(void)
     memset(s_hwacc, 0, sizeof(s_hwacc));
 }
 
-/* Fold one run's per-node pre-fold z into the open block. Kept out of
+/* Merge one run's per-node LSB z into the open block. Kept out of
  * pairs_add_run() on purpose: the pairwise independence matrix is a statement
  * about the z channel and the √k combine that rests on it. It needs centring
  * at least as much as z: the raw per-node offset is the exposure rung showing
- * through undamped, which is exactly what the fold used to hide. */
+ * through undamped, which is exactly what adjacent-pixel XOR used to hide. */
 static void pacc_add_run(const double *zp, const bool *have_p)
 {
     for (int i = 0; i < g_status.node_count && i < MAX_NODES; i++) {
@@ -1802,7 +1799,7 @@ static void hwacc_add_run(const double *zhw, const bool *have_hw)
     }
 }
 
-/* Fold one run's per-node values in. `z[]` holds each node's own z and `have[]`
+/* Merge one run's per-node values in. `z[]` holds each node's own z and `have[]`
  * says which of them are real this run. */
 static void pairs_add_run(const double *z, const bool *have)
 {
@@ -1813,7 +1810,7 @@ static void pairs_add_run(const double *z, const bool *have)
         s_nacc[i].n++;
         /* Live session mean for the node table (Z / p columns). Online update
          * so /status always has a number during a long block, not only after
-         * pairs_fold_loop closes it. */
+         * pairs_commit_block closes it. */
         {
             NodeStatus *N = &g_status.nodes[i];
             N->z_n++;
@@ -1830,7 +1827,7 @@ static void pairs_add_run(const double *z, const bool *have)
     }
 }
 
-static void pairs_fold_loop(void)
+static void pairs_commit_block(void)
 {
     for (int i = 0; i < MAX_NODES; i++) {
         NodeAcc *a = &s_nacc[i];
@@ -1843,7 +1840,7 @@ static void pairs_fold_loop(void)
         a->s = a->ss = 0.0; a->n = 0;
         /* ⚠ s_pacc is cleared HERE and nowhere else, in the same loop as
          * s_nacc, because center_block() reads both and this call is what ends
-         * their block. It was missing until 2026-08-26 and cost the pre-fold
+         * their block. It was missing until 2026-08-26 and cost the LSB
          * channel outright: mp[] became a cumulative mean over every block, so
          * from the second block on every item was centred on the wrong number. */
         s_pacc[i].s = s_pacc[i].ss = 0.0; s_pacc[i].n = 0;
@@ -1935,10 +1932,10 @@ static void drift_add(double x, double y)
 }
 
 /* Append one closed block to the health table. Must run BEFORE
- * pairs_fold_loop(), which clears the per-block sums this reads. */
+ * pairs_commit_block(), which clears the per-block sums this reads. */
 static void record_loop(double loop_mean, int loop_idx)
 {
-    // Per-node mean and σ for this block, straight from the un-folded sums.
+    // Per-node mean and σ for this block, straight from the raw sums.
     double mean_n[MAX_NODES] = {0}, sig_n[MAX_NODES] = {0};
     for (int i = 0; i < g_status.node_count; i++) {
         const NodeAcc *a = &s_nacc[i];
@@ -1992,7 +1989,6 @@ static void record_loop(double loop_mean, int loop_idx)
             L->die_temp[i] = i ? g_status.nodes[i].die_temp_c : cs.die_temp_c;
             L->cam_exp[i]    = g_status.nodes[i].cam_exp;
             L->cam_gain[i]   = g_status.nodes[i].cam_gain;
-            L->cam_fold[i]   = g_status.nodes[i].cam_fold;
             L->cam_cal_ok[i] = g_status.nodes[i].cam_cal_ok;
             L->cam_bias[i]   = g_status.nodes[i].cam_bias;
             /* What the camera did DURING this block, as opposed to what the
@@ -2064,7 +2060,7 @@ static void record_loop(double loop_mean, int loop_idx)
         }
     }
 
-    /* Trip against THIS block's own median σ (D65). Unfolded σ is not ~1, so
+    /* Trip against THIS block's own median σ (D65). LSB σ is not ~1, so
      * an absolute 1,25 bar would fire every block. Two or more arms needed
      * or there is no peer to be loud against. */
     {
@@ -2226,7 +2222,7 @@ static void record_loop(double loop_mean, int loop_idx)
 
     /* Stamp the verdict onto the row this block already wrote. The LoopStat is
      * filled at the top of record_loop() because it needs the accumulators
-     * before they are folded, but the exclusion decision is only reached here —
+     * before they are merged, but the exclusion decision is only reached here —
      * so the row is completed rather than written twice. */
     if (row) {
         row->soft_mask   = soft_mask;
@@ -2241,7 +2237,7 @@ static void record_loop(double loop_mean, int loop_idx)
 /* Re-derive z_ctr for every item of a block by subtracting each node's own mean
  * over that block, then recombining over the SAME nodes that produced z_score
  * (have_mask, so k is unchanged and the √k scaling still holds). Reads s_nacc,
- * which holds this block's per-node sums until pairs_fold_loop() clears them at
+ * which holds this block's per-node sums until pairs_commit_block() clears them at
  * the close.
  *
  * ⚠ Called at every block close AND, since 2026-08-28, live during the open
@@ -2285,11 +2281,11 @@ static void center_block(int block_idx)
         }
     }
 
-    /* ⚠ The PRE-FOLD channel needs this MOST. The raw per-node bias runs at
-     * 1e-3..7e-3 where the folded one is at 1e-5 — the fold was squaring it
-     * away, and without the fold it lands in the z at full size. Uncentred,
+    /* ⚠ The LSB channel needs this MOST. The raw per-node bias runs at
+     * 1e-3..7e-3 where the LSB one is at 1e-5 — adjacent-pixel XOR was squaring it
+     * away, and without adjacent-pixel XOR it lands in the z at full size. Uncentred,
      * z_pre would rank nodes rather than items.
-     * ⚠ And it costs the most: a pre-fold effect CONSTANT across a block is
+     * ⚠ And it costs the most: a LSB effect CONSTANT across a block is
      * removed with that offset. What survives is variation between items
      * inside one block — which is the pre-registered bargain (D8). */
     double mp[MAX_NODES] = {0};
@@ -2328,7 +2324,7 @@ static void center_block(int block_idx)
             n++;
         }
 
-        /* The pre-fold channel, its own arms and its own k. */
+        /* The LSB channel, its own arms and its own k. */
         const float *prow = s_node_p ? s_node_p + (size_t)j * MAX_NODES : NULL;
         double psum = 0.0;
         int    kp   = 0;
@@ -2364,7 +2360,7 @@ static void center_block(int block_idx)
 /* ── Block close (v3) ──────────────────────────────────────────────────
  * A block is the span between two camera sweeps. Closing one
  * turns its running sums into the per-block σ, appends the /loops row, feeds
- * the drift regression and folds the pairwise moments — everything that used
+ * the drift regression and merges the pairwise moments — everything that used
  * to happen at a loop boundary, now on a wall-clock cadence. Nothing here
  * touches results[]: the measured z's are final the moment they are stored. */
 static void close_block(int block_idx)
@@ -2378,15 +2374,15 @@ static void close_block(int block_idx)
     g_status.loop_sigma = s;             // "last closed block" in /status
     /* Centre first: record_loop may quarantine this block and re-rank, and the
      * ranking must already see the centred values. Both read s_nacc, which
-     * pairs_fold_loop() clears, so both must run before it. */
+     * pairs_commit_block() clears, so both must run before it. */
     center_block(block_idx);
     /* Final from here on: the sums this block was centred from are about to be
-     * folded away, so its z_ctr will not change again. */
+     * cleared, so its z_ctr will not change again. */
     if (block_idx + 1 > s_blocks_centred) s_blocks_centred = block_idx + 1;
     s_open_centred = false;              // the next block starts with nothing in it
-    record_loop(m, block_idx);           // before the fold clears the sums
+    record_loop(m, block_idx);           // before the clear of the sums
     recompute_pass_ranks();              // centring moved every item in the block
-    pairs_fold_loop();
+    pairs_commit_block();
     publish_pair_stats();
     s_blk_sum = s_blk_sumsq = 0.0;
     s_blk_n   = 0;
@@ -2487,7 +2483,7 @@ void elotto_task(void *pvParam)
         for (size_t i = 0; i < (size_t)NUM_RUNS * MAX_NODES; i++)
             s_node_z[i] = NAN;
     }
-    /* ~128 KB of PSRAM. If it fails the session runs with folded z alone: a
+    /* ~128 KB of PSRAM. If it fails the session runs with z alone: a
      * second channel is never a precondition for a measurement. */
     if (!s_node_p)
         s_node_p = heap_caps_malloc((size_t)NUM_RUNS * MAX_NODES * sizeof(float),
@@ -2751,7 +2747,7 @@ void elotto_task(void *pvParam)
          * lowering the one while deliberately leaving the other alone -- after
          * which this round would write past the compacted array, leave the
          * dropped rows sitting in front of it, and count them a second time on
-         * top of the moments they were already folded into. That shipped: the
+         * top of the moments they were already merged into. That shipped: the
          * 2026-08-20 session reported pass_n_valid 15806 for 8019 items, with
          * every survivor duplicated in top/low/near.
          * The tell is n, not sigma -- doubling identical values barely moves
@@ -2934,12 +2930,12 @@ void elotto_task(void *pvParam)
 
 done:
     /* Aborted. results[0..runs_completed) is already compact and already
-     * published item by item — nothing to recompute except folding the
+     * published item by item — nothing to recompute except merging the
      * partial block's pairwise moments so the matrix stays complete. The
      * partial block is deliberately NOT given a /loops row: every stored row
      * describes a full between-insertions span. */
     /* ⚠ Centre the open block FIRST, while s_nacc still holds its per-node
-     * sums — pairs_fold_loop() below clears them. Without this, an aborted
+     * sums — pairs_commit_block() below clears them. Without this, an aborted
      * session ranks the open block on RAW z and every closed block on CENTRED
      * z under one pass mean/σ and Top/Bottom, with no marker to tell the two
      * apart. s_blk_n guards the aborts before the measurement pass (opening
@@ -2954,7 +2950,7 @@ done:
         if (block + 1 > s_blocks_centred) s_blocks_centred = block + 1;
         s_open_centred = false;
     }
-    pairs_fold_loop();
+    pairs_commit_block();
     publish_pair_stats();
     recompute_pass_ranks();   /* studentized ranks from the valid prefix */
 

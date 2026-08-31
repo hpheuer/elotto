@@ -34,7 +34,7 @@ static double z_from_counts(uint64_t ones, uint64_t words)
     return ((double)ones - n / 2.0) / (sqrt(n) / 2.0);
 }
 
-/* One stream, no XOR fold (D65). Seven words per segment, all 32 bits.
+/* One stream, LSB bits as measured (D65). Seven words per segment, all 32 bits.
  * z is the binomial over the window; h1/h2 are the same bits split at nseg/2. */
 gcp_result_t gcp_zscore_pre(int nseg, bool (*on_yield)(void), double *out,
                             double *out_h1, double *out_h2)

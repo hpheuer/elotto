@@ -426,13 +426,10 @@ static void slave_calibrate_start(int budget_ms, int segments)
     nodes_send(cmd);
 }
 
-/* Record what one node reported: "OK:<exp>,<gain>,<fold>,<bias>,<mbit_s>,<G|U>".
+/* Record what one node reported: "OK:<exp>,<gain>,<bias>,<mbit_s>,<G|U>".
  * The tag is appended AFTER the numbers so it cannot disturb a field-order
- * parse, and an older master that stops reading early still gets valid
- * numbers. It says whether
- * the node actually adopted a GATED setting or fell back to its previous one.
- * Without it a node that certified nothing would be indistinguishable in
- * /status from one that certified the setting it happens to be running. */
+ * parse. It says whether the node actually adopted a GATED setting or fell
+ * back to its previous one. */
 static void node_take_cal(int k)
 {
     NodeStatus *N = &g_status.nodes[k + 1];
@@ -443,18 +440,16 @@ static void node_take_cal(int k)
     if (resp[0] != 'O' || resp[1] != 'K' || resp[2] != ':') return;
 
     unsigned long e = 0, g = 0;
-    int   fold = 0;
     float bias = 0.0f, mb = 0.0f;
-    if (sscanf(resp + 3, "%lu,%lu,%d,%f,%f", &e, &g, &fold, &bias, &mb) < 5) return;
+    if (sscanf(resp + 3, "%lu,%lu,%f,%f", &e, &g, &bias, &mb) < 4) return;
     const char *tag = strrchr(resp, ',');
     N->cam_exp      = (uint32_t)e;
     N->cam_gain     = (uint16_t)g;
-    N->cam_fold     = fold ? 1 : 0;
     N->cam_bias     = bias;
     N->cam_cal_mbit = mb;
     N->cam_cal_ok   = (tag && tag[1] == 'G') ? 1 : 0;
-    printf("node %d (%s): cal exposure=%lu gain=%lu fold=%d bias=%.6f %.2f Mbit/s %s\n",
-           k + 1, N->ip, e, g, fold, bias, mb,
+    printf("node %d (%s): cal exposure=%lu gain=%lu bias=%.6f %.2f Mbit/s %s\n",
+           k + 1, N->ip, e, g, bias, mb,
            N->cam_cal_ok ? "" : "(no gated setting -- kept previous)");
 }
 
@@ -496,7 +491,6 @@ static void calibrate_master(int budget_ms)
     bool ok = camera_calibrate(budget_ms, cal_abort_cb, s_cal);
     N->cam_exp      = s_cal->exposure;
     N->cam_gain     = (uint16_t)s_cal->gain;
-    N->cam_fold     = 0;
     N->cam_bias     = (float)s_cal->bias;
     N->cam_cal_mbit = (float)s_cal->mbit_per_sec;
     N->cam_cal_ok   = ok ? 1 : 0;
@@ -703,7 +697,7 @@ void slaves_diag(void)
             memcpy(N->fw_sha, fw + 4, 16);
             N->fw_sha[16] = '\0';
         }
-        /* ",raw=<bias>,<sigma>" — the PRE-FOLD pair (D43), tagged for the
+        /* ",raw=<bias>,<sigma>" — the LSB pair (D43), tagged for the
          * same reason ,fw= is. Cleared first: a node that stops reporting it
          * must read as absent, not as whatever it said last time. */
         N->cam_raw_bias = 0.0f; N->cam_raw_sigma = 0.0f;

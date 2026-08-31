@@ -1027,9 +1027,9 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "}"
 "sl.innerHTML=ph||'';"
 "var s2='';"
-/* Pre-fold channel health when weight is on. */
+/* LSB channel health when weight is on. */
 "if((d.pre_w||0)>0){"
-"var e='\u2211 pre-fold';"
+"var e='\u2211 conc';"
 "if(d.pass_n_valid>0)e+=' \u00b7 with pre '+(d.pre_n||0)+'/'+d.pass_n_valid"
 "+((d.pre_n<d.pass_n_valid)?' \u26a0':'');"
 "if(d.pre_clamped>0)e+=' \u00b7 \u26a0 '+d.pre_clamped+' pre clamped';"
@@ -1110,10 +1110,10 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 ":(N.soft_down?' \\u26a0 soft-down (\\u03c3 excursion)':(N.ok?'':' \\u26a0 dropped'));"
 // Each node calibrates its own camera and they WILL differ — different physical
 // sensors, which is why one measured cleaner than the other at identical
-// settings. So the setting is shown per node, with the fold state that goes with
-// it; '!' marks a node that certified nothing and kept its previous setting.
+// settings. So the setting is shown per node; '!' marks a node that
+// certified nothing and kept its previous setting.
 "var ex='\\u2013';"
-"if(N.cam_exp>0)ex=N.cam_exp+(N.cam_fold?'\\u2295':'')+(N.cam_cal?'':'!');"
+"if(N.cam_exp>0)ex=N.cam_exp+(N.cam_cal?'':'!');"
 /* Z = session mean of this node's raw per-run z. p tests mean≠0 via
    Stouffer: |mean|·√n against N(0,1) (each run z is already unit-normal). */
 "var zn=N.z_n||0,zm=(zn>0)?N.z:0;"
@@ -1161,7 +1161,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 // Transport health. UDP can drop where the UART could
 // not, so the gate is a counted "zero lost triggers", not an impression that it
 // felt reliable. Stale replies are answers that arrived after we stopped
-// waiting — dropped by sequence number, never folded into a z.
+// waiting — dropped by sequence number, never mixed into a z.
 "if(d.nodes_total>1){"
 "var nl=d.net_lost||0;"
 "var s5='link: UDP \\u00b7 lost triggers '+nl+(nl?' \\u26a0':' \\u2713')"
@@ -1428,7 +1428,7 @@ static int buf_room(int pos, size_t cap)
     return (int)(cap - (size_t)pos);
 }
 
-/* Fold a snprintf-style returned length into *pos, clamped so *pos never
+/* Add a snprintf-style returned length into *pos, clamped so *pos never
  * exceeds cap-1. A call that reports "would have written" more than the room
  * saturates instead of overrunning. */
 static int buf_advance(size_t cap, int *pos, int n)
@@ -1500,9 +1500,8 @@ static esp_err_t status_handler(httpd_req_t *req)
          * pass_n_valid and no pass statistic sees it. */
         "\"pass_n_excl\":%d,\"pass_n_open\":%d,"
         "\"v_eff\":%.4f,\"flush_timeouts\":%lu,"
-        /* Pre-fold ranking channel. ⚠ rank_mean/rank_sigma are the moments of
-         * the RANKING KEY and pass_mean/pass_sigma those of z; they coincide
-         * exactly at pre_w = 0. */
+        /* Ranking-key moments. ⚠ rank_mean/rank_sigma are of rank_key()
+         * and pass_mean/pass_sigma those of z; they coincide at pre_w = 0. */
         "\"pre_w\":%.3f,"
         "\"pre_n\":%d,\"pre_clamped\":%d,"
         "\"rank_sig_p\":%.4f,\"rank_sig_c\":%.4f,"
@@ -1657,7 +1656,7 @@ static esp_err_t status_handler(httpd_req_t *req)
             "\"z\":%.4f,\"z_n\":%lu,\"sigma\":%.4f,"
             "\"lost\":%lu,\"cam_mbit\":%.3f,\"cam_cons_mbit\":%.3f,\"cam_stalls\":%lu,"
             "\"cam_fault\":%d,\"reboots\":%lu,\"die_temp\":%s,"
-            "\"cam_exp\":%lu,\"cam_gain\":%d,\"cam_fold\":%d,\"cam_cal\":%d,"
+            "\"cam_exp\":%lu,\"cam_gain\":%d,\"cam_cal\":%d,"
             "\"cam_bias\":%.6f,\"cam_cal_mbit\":%.3f,\"cam_rsig\":%.4f}",
             i ? "," : "", i, i ? N->ip : "self", N->ok ? "true" : "false",
             N->soft_down ? "true" : "false",
@@ -1665,7 +1664,7 @@ static esp_err_t status_handler(httpd_req_t *req)
             (unsigned long)N->lost, N->cam_mbit, N->cam_cons_mbit,
             (unsigned long)N->cam_stalls,
             (int)N->cam_fault, (unsigned long)N->reboots, dt_txt,
-            (unsigned long)N->cam_exp, (int)N->cam_gain, (int)N->cam_fold,
+            (unsigned long)N->cam_exp, (int)N->cam_gain,
             (int)N->cam_cal_ok, N->cam_bias, N->cam_cal_mbit,
             i ? N->cam_raw_sigma : (float)st_cam.raw_sigma);
     }
@@ -1839,19 +1838,17 @@ static esp_err_t loops_handler(httpd_req_t *req)
                 snprintf(lt_txt, sizeof(lt_txt), "%.2f", (double)L->die_temp[k]);
             else
                 snprintf(lt_txt, sizeof(lt_txt), "null");
-            // cam_exp/gain/fold are the operating point this loop was MEASURED
-            // AT, not a diagnostic: per-loop re-tuning is only defensible
-            // because the setting travels with the loop it produced (§1.5.2).
+            // cam_exp/gain are the operating point this loop was MEASURED AT.
             // cam_sig/cam_rsig/cam_px are what the camera DID during the block
             // (D50) — not the sweep's stale values above.
             len = snprintf(buf, sizeof(buf),
                 "%s{\"mean\":%.4f,\"sigma\":%.4f,\"cam_mbit\":%.3f,\"cam_stalls\":%lu,"
-                "\"cam_exp\":%lu,\"cam_gain\":%d,\"cam_fold\":%d,\"cam_cal\":%d,"
+                "\"cam_exp\":%lu,\"cam_gain\":%d,\"cam_cal\":%d,"
                 "\"cam_bias\":%.6f,\"cam_sig\":%.4f,\"cam_rsig\":%.4f,\"cam_px\":%.2f,"
                 "\"soft\":%d,\"trip\":%d,\"mflag\":%d,\"die_temp\":%s}",
                 k ? "," : "", L->mean_n[k], L->sig_n[k], L->cam_mbit[k],
                 (unsigned long)L->cam_stalls[k], (unsigned long)L->cam_exp[k],
-                (int)L->cam_gain[k], (int)L->cam_fold[k], (int)L->cam_cal_ok[k],
+                (int)L->cam_gain[k], (int)L->cam_cal_ok[k],
                 L->cam_bias[k], L->cam_sig[k], L->cam_rsig[k], L->cam_px[k],
                 (L->soft_mask >> k) & 1, (L->trip_mask >> k) & 1,
                 (L->mean_mask >> k) & 1, lt_txt);
@@ -1920,7 +1917,7 @@ static int csv_row(char *buf, size_t cap, const char *group, int rank,
 static esp_err_t results_csv_handler(httpd_req_t *req)
 {
     /* 768: the header line alone runs past 470 characters with the German
-     * six-decimal pass statistics, the unlimited-mode fields and the pre-fold
+     * six-decimal pass statistics, the unlimited-mode fields and the LSB
      * fields; it was 512, and before that 224.
      * ⚠ snprintf TRUNCATES rather than overflowing, so an undersized buffer
      * here does not crash — it silently shortens the archive's own provenance
@@ -1984,7 +1981,7 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
          * sample of the session — the pass statistics in this header still
          * describe every item measured, but a distribution computed from the
          * rows will not. Zero for any session that never filled the buffer. */
-        /* ── Pre-fold channel ──────────────────────────────────────────────
+        /* ── Concordance weight ───────────────────────────────────────
          * ⚠ `pre_w` SPLITS THE POOLING TABLE for the three tables.
          * z_raw/z_ctr still pool across weights. */
         "run_s=%s run_segs=%d gap_s=%s compacted=%d "
@@ -2049,8 +2046,8 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
         /* ⚠ `key` / `zp_ctr` / `p0..p3` are APPENDED after `round` so every
          * column an existing script knows keeps its position (D45; zh/h*
          * columns deleted with the spectral channel, D53).
-         * zp_ctr is the block-centred combined PRE-FOLD z; p0..p3 are per-node
-         * RAW pre-fold z in discovery order. Empty = no report, not zero. */
+         * zp_ctr is the block-centred combined LSB z; p0..p3 are per-node
+         * RAW LSB z in discovery order. Empty = no report, not zero. */
         int len = snprintf(buf, sizeof(buf),
             "order;item;n1;n2;n3;n4;n5;n6;e1;e2;z_raw;z_ctr;block;k;skip_rank;"
             "z0;z1;z2;z3;round;key;zc_ctr;w0;w1;w2;w3\n");
@@ -2278,8 +2275,8 @@ static esp_err_t start_handler(httpd_req_t *req)
         g_status.score_dir      = SCORE_DIR_HIGH;
         g_status.pool_confirm   = 0;
         g_status.pool_auto      = 0;
-        /* Pre-fold channel. The weight is a SESSION PARAMETER recorded in the
-         * CSV header. ?wpre=0 is the control arm — pure-z ranking. */
+        /* Concordance weight. SESSION PARAMETER recorded in the CSV header.
+         * ?wpre=0 is the control arm — pure-z ranking. */
         g_status.pre_w          = ENT_W_PRE_DEFAULT;
         g_status.pre_n = g_status.pre_clamped = 0;
         g_status.rank_mean = g_status.rank_sigma = 0.0;
@@ -2398,14 +2395,14 @@ static esp_err_t start_handler(httpd_req_t *req)
             // run, including the ?cal=0 control. The web UI always sends it.
             if (httpd_query_key_value(qry, "confirm", val, sizeof(val)) == ESP_OK)
                 g_status.pool_confirm = (val[0] == '1');
-            /* ?wpre= — the PRE-FOLD half of the key (D45). Default 0. */
+            /* ?wpre= — concordance weight in the ranking key (D65). Default 0. */
             if (httpd_query_key_value(qry, "wpre", val, sizeof(val)) == ESP_OK) {
                 char *end = NULL;
                 double p = strtod(val, &end);
                 if (end == val || p < 0.0 || p > 1.0) {
                     httpd_resp_set_status(req, "400 Bad Request");
                     httpd_resp_sendstr(req,
-                        "wpre= is the PRE-FOLD weight in the ranking key and must "
+                        "wpre= is the concordance weight in the ranking key and must "
                         "be 0..1 (0 = the control arm, ranking unchanged)");
                     return ESP_OK;
                 }
@@ -2642,7 +2639,7 @@ static const char DIAG_HTML[] =
 "<th class='l' title=\"halve or double this exposure by hand and reset the statistics, so mean_px answers in ~2 s. Refused while measuring; the next sweep overwrites it\">set exp</th>"
 "<th title=\"analog gain. Left at 1023 &mdash; the light is tuned with exposure and the lamp\">Gain</th>"
 "<th title=\"mean raw pixel byte. Must stay in [5,0 , 100,0]: below = partly frozen frames, above = heading for saturation\">mean_px</th>"
-"<th title=\"ones fraction of the POST-FOLD stream minus 0,5. Small by construction &mdash; raw_bias in /diagjson is the front end itself\">bias&minus;0.5</th>"
+"<th title=\"ones fraction of the LSB stream minus 0,5. Small by construction &mdash; raw_bias in /diagjson is the front end itself\">bias&minus;0.5</th>"
 "<th title=\"&sigma; of the per-mini-run z (3200 bits each). Gate wants |&sigma;&minus;1| &le; 0,05\">&sigma;</th>"
 "<th title=\"fraction of pixels with frame difference exactly 0. Their LSB is 0, so a high value explains a deficit of ones. Gated at 0,125\">zero_diff</th>"
 "<th title=\"largest |autocorrelation| over lags 1..4. Gated at 0,01, so it is never subsampled\">autocorr</th>"
@@ -2774,9 +2771,8 @@ static esp_err_t diag_handler(httpd_req_t *req)
  * `?all=1` is the COLLECTOR: it fires the 'D' query at every discovered node
  * and returns one object with the whole array's front-end health, so a session
  * post-mortem is one request instead of one per node plus a note of which IP
- * was which. The per-node block carries `raw_bias`/`raw_sigma` alongside the
- * folded pair (D43) — the pre-fold numbers are what show a degrading sensor
- * first, and the fold masks part of them.
+ * was which. The per-node block carries `raw_bias`/`raw_sigma` alongside
+ * bias/sigma (D43) — same bits `[D65]`.
  *
  * ⚠ 409 while a session is measuring. slaves_diag() is only safe between
  * loops: firing 'D' between an 'M' and its 'Z:' would collide with the reply
@@ -2820,8 +2816,7 @@ static esp_err_t diagjson_handler(httpd_req_t *req)
         "\"autocorr\":[%.4f,%.4f,%.4f,%.4f],"
         "\"mean_pixel\":%.2f,\"mbit_s\":%.3f,\"consume_mbit_s\":%.3f,"
         "\"zero_diff\":%.4f,"
-        /* PRE-FOLD: the stream the sensor produced, before the XOR fold. The
-         * fields above describe the folded one. See cam_raw_t in extract.h. */
+        /* Same bits as bias/sigma above `[D65]`. See cam_raw_t in extract.h. */
         "\"raw_bias\":%.6f,\"raw_sigma\":%.4f,\"raw_sigma_n\":%d,"
         "\"raw_runs_z\":%.2f,"
         /* P4 DIE temperature, not the sensor's. null = no driver. */
@@ -2831,7 +2826,7 @@ static esp_err_t diagjson_handler(httpd_req_t *req)
          * loop waiting for the sensor; if that dominates, the extraction code
          * is not what limits the bit rate. */
         "\"ms_pair\":%.2f,\"ms_wait\":%.2f,\"ms_extract\":%.2f,\"ms_rest\":%.2f,"
-        "\"exposure\":%lu,\"gain\":%lu,\"fold\":%s"
+        "\"exposure\":%lu,\"gain\":%lu"
         "}",
         cam.ready ? "true" : "false",
         (unsigned long long)cam.frame_pairs, (unsigned long long)cam.bits_extracted,
@@ -2845,8 +2840,7 @@ static esp_err_t diagjson_handler(httpd_req_t *req)
         (unsigned long)cam.ring_drops, (unsigned long)cam.consumer_waits,
         (unsigned long)cam.stalls,
         cam.ms_pair, cam.ms_wait, cam.ms_extract, cam.ms_rest,
-        (unsigned long)exp_now, (unsigned long)gain_now,
-        "false");
+        (unsigned long)exp_now, (unsigned long)gain_now);
 
     if (all) {
         /* The master's own image id, the same 16 characters its /status calls
@@ -2887,15 +2881,7 @@ static esp_err_t diagjson_handler(httpd_req_t *req)
                 /* exposure/gain are LIVE; cal_exp is what the last sweep chose.
                  * They differ after a manual /expose or an uncertified sweep. */
                 "\"exposure\":%lu,\"gain\":%lu,"
-                "\"cal_exp\":%lu,\"cal_ok\":%d,\"cal_bias\":%.6f,\"cal_fold\":%d,"
-                /* raw_* is PRE-FOLD (D43) and is what shows a degrading front
-                 * end first. ⚠ 0/0 means the node sent no ",raw=" at all, i.e.
-                 * it runs an image older than 2026-08-26 — NOT a raw bias of 0.
-                 * ⚠ cal_fold is what the last SWEEP chose, not the live fold —
-                 * 0 before any sweep has run, on a node that is in fact folded.
-                 * The live state is readable from the pairs instead: with the
-                 * fold OFF raw_bias/raw_sigma and bias/sigma are the SAME bits
-                 * and match exactly. */
+                "\"cal_exp\":%lu,\"cal_ok\":%d,\"cal_bias\":%.6f,"
                 "\"raw_bias\":%.6f,\"raw_sigma\":%.4f,"
                 "\"bias\":%.6f,\"sigma\":%.4f,"
                 /* ⚠ P4 DIE, not the OV5647. null = this node did not report it. */
@@ -2905,7 +2891,6 @@ static esp_err_t diagjson_handler(httpd_req_t *req)
                 N->ok ? "true" : "false", mb, cmb, (unsigned long)stl,
                 (unsigned long)enow, (unsigned long)gnow,
                 (unsigned long)N->cam_exp, (int)N->cam_cal_ok, N->cam_bias,
-                me ? 0 : (int)N->cam_fold,
                 rb, rs, bi, sg, ct_txt,
                 N->soft_down ? "true" : "false", (unsigned long)N->lost,
                 (unsigned long)N->reboots,

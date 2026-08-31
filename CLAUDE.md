@@ -17,13 +17,13 @@ Two markers, and only two:
 Rank lottery **numbers** (scoring → pool) and **combinations** (the pass) from camera photon noise.
 Two channels, one key `[D65]`:
 
-- **z** — binomial of the camera LSBs in that window (the old z_pre; there is no second folded z)
+- **z** — binomial of the camera LSBs in that window (the old z_pre; there is no second z)
 - **conc** — half-window concordance of the same bits (same sign both halves, loudest node dropped)
 
 `?wpre=` is the concordance weight (form 0,8; API 0 = z alone). Scoring **selects** the pool on
 that key; the pass **ranks** items on the same key; the UI shows Z*, Z, Conc.
 
-**How the cameras stay usable.** Frame-pair LSB, no XOR fold — z is the camera bits. The **sweep**
+**How the cameras stay usable.** Frame-pair LSB — z is the camera bits. The **sweep**
 picks the exposure with the lowest |bias−0,5| among rungs that still look like noise (autocorr,
 relative σ, dark / zero_diff). If a node's block σ is too loud against its peers, **soft-down**
 takes it out of the combine. The next sweep — same insertion after `close_block` when `?calint>`0,
@@ -39,7 +39,7 @@ run's gain, not the session.
 
 **Entropy is photons, and only photons** (user decision). One OV5647 per node, never shared.
 Non-overlapping frame pairs, diff = f[2k+1]−f[2k] per pixel (cancels FPN exactly), LSB packed.
-⛔ No XOR fold `[D65]`. ⛔ No on-chip TRNG (covers an LFSR fed from the camera). The Fisher–Yates
+⛔ LSB bits as measured `[D65]`. ⛔ No on-chip TRNG (covers an LFSR fed from the camera). The Fisher–Yates
 order uses an xorshift32 seeded from the camera; it never enters a z.
 
 **The ×√n gain is NOT established** — it assumes node independence. Judge a session on per-block
@@ -71,7 +71,7 @@ measurement share the same length.
   unrepeatable measurements. ⚠ Bare `/results.csv` is the 15-row summary, **not** the record.
 - **Blocks are the statistics unit.** Every `cal_interval_ms` (default 15 min, `?calint=`, 0 = none)
   the pass parks for the camera sweep; the boundary closes a block → `/loops` row, drift point,
-  pairwise fold, block centring.
+  pairwise close, block centring.
 - Pause stops the clock; Abort publishes the measured prefix.
 
 ### Phases
@@ -110,7 +110,7 @@ as backstop for a compaction that cannot allocate.
 - **Results ACCUMULATE** — `results[]` is never cleared between rounds; every statistic runs on the
   union of all rounds.
 - **Every unlimited round compact at the boundary** `[D56]`: the 100 most extreme items by
-  `|rank_key|` stay as rows (both tails, so Top-5/Bottom-5 stay exact). The rest folds into
+  `|rank_key|` stay as rows (both tails, so Top-5/Bottom-5 stay exact). The rest merges into
   moments — pass mean/σ/χ² stay exact. A single pass only compact if the space
   would not fit uncompacted `[D42]`.
   ⚠ The counter and round-base semantics after a compaction (`completed`/`runs_completed`,
@@ -230,8 +230,8 @@ separate arm `[D1]`.
 | spectral channel deleted 2026-08-28 | post-D53 only — no `ent_w` / z_h `[D53]` |
 | runs ranking deleted 2026-08-29 | post-D55 only — no `wruns` / zr `[D55]` |
 | concordance / half-window ranking 2026-08-29 | post-D56 only — tables use `zc_ctr` `[D56]` |
-| both pre-fold channels rank 2026-08-29 | post-D58 only — D56 sessions ranked on `zc_ctr` ALONE `[D58]` |
-| XOR fold off 2026-08-31 | post-D65 only — unfolded z, no folded archive `[D65]` |
+| both LSB channels rank 2026-08-29 | post-D58 only — D56 sessions ranked on `zc_ctr` ALONE `[D58]` |
+| LSB-as-is 2026-08-31 | post-D65 only — LSB z, no prior archive `[D65]` |
 | v3 vs any v2.x | v3 only |
 
 Unlimited-mode data carries two more: split on `round` before pooling with a single-pass session,
@@ -241,7 +241,7 @@ and decide what to do about combinations that recur across rounds before pooling
 
 ## Pass-level health and node health
 Read `pass_mean`/`pass_sigma`/`pass_chi2`, `drift_t` and the pairwise matrix before any table.
-Unfolded σ is **not** 1 `[D17]``[D65]` — judge the measured number, do not expect the folded null.
+LSB σ is **not** 1 `[D17]``[D65]` — judge the measured number, do not expect the unit-sigma null.
 **The software publishes the numbers and draws no verdict from them**; `PAIR_FLAG_T`/`DRIFT_FLAG_T`
 are display hints on `/diag` and gate nothing.
 
@@ -475,8 +475,8 @@ working node.
 Addresses are informational: the master finds slaves by UDP broadcast.
 
 ### Extraction — where the rate stands
-Folded-era idle was **5,71 Mbit/s** (98,5 % of the sensor `[D23]`), **~3,7 under load** `[D25]`.
-D65 turns the fold off: word rate ~2×, so those numbers do not apply — re-measure after flash.
+Prior-instrument idle was **5,71 Mbit/s** (98,5 % of the sensor `[D23]`), **~3,7 under load** `[D25]`.
+D65 turns adjacent-pixel XOR off: word rate ~2×, so those numbers do not apply — re-measure after flash.
 - ⛔ Idle rate is still the sensor ceiling; prove extraction changes with `ms_extract` under load,
   never at idle `[D25]`.
 - ⛔ Nothing done to the extraction path can raise the **idle** rate `[D23]`; the loaded rate is

@@ -10,7 +10,7 @@ entries after that commit keep enough text that the decision survives. A rule an
 be changed together — a rule whose evidence has moved on is worse than no rule.
 
 ⚠ Everything here is dated. A measurement describes the instrument that made it; see D1.
-**Live instrument is D65** (unfolded z + concordance). Earlier ranking-key formulae are evidence,
+**Live instrument is D65** (LSB z + concordance). Earlier ranking-key formulae are evidence,
 not the current key.
 
 ---
@@ -205,11 +205,11 @@ sweeps and fails others, and when it passed its bias often measured best — so 
 selected it. A rung that scrapes a gate is a rung on a cliff.
 
 ⚠ This narrows the window in which a cliff-edge rung can be picked; it does not abolish it.
-⚠ Selection key moved to pre-fold bias in D46; the σ-margin rule above still holds.
+⚠ Selection key moved to LSB bias in D46; the σ-margin rule above still holds.
 
-### D17 — Fold-off has no σ≈1 null (2026-07-26 / 2026-08-26)
-**Superseded as a rule by D65** (fold is off). Evidence stands: unfolded LSB bias is non-stationary;
-σ blows out (1,04 → 2,15; rung 128: 1,72 vs folded 1,01). Recentring takes the mean, not the scale.
+### D17 — LSB-as-is has no σ≈1 null (2026-07-26 / 2026-08-26)
+**Superseded as a rule by D65** (LSB bits are measured as-is). Evidence stands: LSB bias is non-stationary;
+σ blows out (1,04 → 2,15; rung 128: 1,72 vs 1,01). Recentring takes the mean, not the scale.
 Pass health after D65 is the **measured** σ.
 
 ### D18 — The dark end of the ladder is gated (2026-08-19)
@@ -447,7 +447,7 @@ different rule. This is what made D11 provable after the fact.
 
 ### D42 — A full results[] compacts at the round boundary, it does not end the session
 **Entscheidung:** At a closed round boundary, compact instead of ending: keep
-`PASS_KEEP_PER_TABLE` (16) extremes per table, fold the rest into moments. Top/Bottom exact;
+`PASS_KEEP_PER_TABLE` (16) extremes per table, the rest into moments. Top/Bottom exact;
 Nearest-zero effectively exact (centring pins block means at 0). Only when the next round would not
 fit. `round_base` = results[] index; `round_item_base` = items_done — they diverge after compaction;
 using the wrong one double-counted survivors on first hardware run (fixed 2026-08-20).
@@ -456,17 +456,17 @@ using the wrong one double-counted survivors on first hardware run (fixed 2026-0
 **Zahlen:** Replay 8000 → 48 rows, σ/χ² bit-identical. Verified: `compacted` 15828,
 `pass_n_valid` == `completed` == 17766.
 
-### D43 — The spectral structure is DRIFT, not a row line; the pre-fold monitor (2026-08-26)
+### D43 — The spectral structure is DRIFT, not a row line; the LSB monitor (2026-08-26)
 **Entscheidung:** `/specdump` shows excess at the lowest bins (drift inside the window), not at the
-predicted row-rate bin 256 — no spatial period in the LSB stream. Exposure is the variable; the fold
-suppresses drift without removing it. Stride/shuffle folds and spatial shuffling are dead. Pre-fold
+predicted row-rate bin 256 — no spatial period in the LSB stream. Exposure is the variable; adjacent-pixel XOR
+suppresses drift without removing it. Stride/shuffle merges and spatial shuffling are dead. LSB
 monitor (`raw_bias`/`raw_sigma`) published; `GET /diagjson?all=1` is the array collector (409 while
-measuring). Folded selection was noise-limited — resolved in D46.
+measuring). selection was noise-limited — resolved in D46.
 
-**Zahlen:** exp128 fold-off bin1 23,81× / fold-on 8,87×; at exp64 both flat.
+**Zahlen:** exp128 LSB-as-is bin1 23,81× / XOR-on 8,87×; at exp64 both flat.
 
-### D45 — The pre-fold z: the channel the fold throws away (2026-08-26)
-**Superseded as a ranking rule by D65.** Uncentred unfolded z ranks nodes (offsets to −47σ) —
+### D45 — The LSB z: the channel adjacent-pixel XOR throws away (2026-08-26)
+**Superseded as a ranking rule by D65.** Uncentred LSB z ranks nodes (offsets to −47σ) —
 block centring is load-bearing. `NUM_RUNS` 7200 (Euro 7920 needs one compaction). `pre_w` still
 splits the pooling table for TABLES.
 
@@ -481,28 +481,28 @@ splits the pooling table for TABLES.
   (proposed 2026-08-26). An LFSR whose feedback is XORed with the raw stream IS the canonical
   whitened-hardware-RNG construction, so it falls under this line; it is named separately because the
   line did not read as covering it. Simulated over 8,2 Mbit per arm (32-bit polynomial 32/22/2/1):
-  on a source carrying the measured fold-off bias plus a period-4-segment line it reaches
-  bias 0,499929 / σ 0,9971 / autocorr 0,0004 — and the XOR fold reaches 0,496249 / 1,0015 / 0,0009,
-  i.e. **the LFSR buys nothing the fold does not already deliver**.
+  on a source carrying the measured LSB-as-is bias plus a period-4-segment line it reaches
+  bias 0,499929 / σ 0,9971 / autocorr 0,0004 — and the adjacent-pixel XOR reaches 0,496249 / 1,0015 / 0,0009,
+  i.e. **the LFSR buys nothing adjacent-pixel XOR does not already deliver**.
   ⛔ What it costs is the instrument: fed a **frozen camera** (every diff zero, every LSB
   deterministically 0) the LFSR emits bias 0,499993, σ 1,0001, autocorr 0,0004 — **it passes every
-  gate this project has**, where the raw and folded paths both read bias 0,000000 / σ 0,0000 and are
-  caught instantly. The 2026-08-26 fold-off trial detected a merely *degraded* source in three
+  gate this project has**, where the raw and LSB paths both read bias 0,000000 / σ 0,0000 and are
+  caught instantly. The 2026-08-26 LSB-as-is trial detected a merely *degraded* source in three
   independent channels; behind an LFSR all three would have read clean.
   Three further reasons: it has STATE, so it smears a time-localised deviation over the register
-  length and beyond, where the fold is memoryless and local (`bit(i) = LSB(2i) ⊕ LSB(2i+1)`); the
+  length and beyond, where adjacent-pixel XOR is memoryless and local (`bit(i) = LSB(2i) ⊕ LSB(2i+1)`); the
   entropy channel's closed-form null assumes an i.i.d. source and does not hold for an LFSR sequence,
   so `z_h` would become meaningless; and it puts a PRNG in the z path, which `fast_rng()` is
-  explicitly kept out of. The "cheap in hardware" argument does not transfer — the fold costs no
-  compute at all, it is fused into the extractor (`k = fold ? 2 : 4`), and its 2:1 rate is
-  net **1,22× better** than fold-off once σ is accounted for;
+  explicitly kept out of. The "cheap in hardware" argument does not transfer — adjacent-pixel XOR costs no
+  compute at all, it is fused into the extractor (`k = ? 2 : 4`), and its 2:1 rate is
+  net **1,22× better** than LSB-as-is once σ is accounted for;
 - NIST runs as a ranking channel (D54 tried, D55 deleted — underdispersed, orthogonal to Pre);
 - chasing down the window/gap split (D2);
-- **adaptive bias correction as a replacement for the XOR fold** (proposed 2026-08-26): estimate p̂ by
+- **adaptive bias correction as a replacement for the adjacent-pixel XOR** (proposed 2026-08-26): estimate p̂ by
   EWMA over the raw LSB stream and standardise each run on `μ = 200·nseg·p̂`,
   `σ = √(200·nseg·p̂(1−p̂))` instead of the fixed 0,5 / `GCP_SEGMENT_SD`. It is a LOCATION fix for a
   SCALE failure and cannot work, quantified against D17's own re-test data:
-  at the measured fold-off p̂ = 0,493375 the σ factor `√(p̂(1−p̂)/0,25)` is 0,999912 — a correction of
+  at the measured LSB-as-is p̂ = 0,493375 the σ factor `√(p̂(1−p̂)/0,25)` is 0,999912 — a correction of
   **8,8e-5 where 1/1,7233 = 0,58, i.e. −42 %, is needed. Short by 4800×.** The overdispersion is not
   binomial, so no binomial σ built from p̂ reaches it; the entropy channel (z_h −201,7) says it is
   spectral structure, which no rescaling of location or scale touches at all.
@@ -513,12 +513,12 @@ splits the pooling table for TABLES.
   `z0..z3` four different statistics, which breaks the Stouffer combine and would feed the p̂ dynamics
   into `PairAcc` as correlation — exactly what the shared primitive in `elotto_gcp` exists to prevent
   (D37) — and it moves every stored z, splitting the pooling table (D1).
-  **(c)** The bit-rate premise is wrong even on its own terms: fold-off buys 2× nseg per unit time,
+  **(c)** The bit-rate premise is wrong even on its own terms: LSB-as-is buys 2× nseg per unit time,
   worth √2 = 1,414 in z resolution, against a z that is 1,7233× too wide — **net 1,22× worse.**
-  ⚠ With the fold ON the correction is pointless in the other direction: at p̂ = 0,499942 the σ factor
+  ⚠ With adjacent-pixel XOR ON the correction is pointless in the other direction: at p̂ = 0,499942 the σ factor
   is 1 − 6,7e-9. The residual LOCATION term is real (−0,32 z/run) but block centring already removes
   it, in the pre-registered way;
-- keeping fold-era session CSVs in-tree — unpoolable with D65; wiped 2026-08-31 (user).
+- keeping prior-instrument session CSVs in-tree — unpoolable with D65; wiped 2026-08-31 (user).
 
 ⏸ **Deferred by the user — do not start unasked:** the attended-vs-unattended (focus) comparison.
 
@@ -535,10 +535,10 @@ log or firmware build older than 2026-08-20 does not resolve** — match those b
 🗑 **Deleted:** `docs/data/_live_now_*`, a superseded partial pull of the 08-19 session. Its
 `.gitignore` entry stays, because that is the name the next live pull will take.
 
-### D46 — The sweep chooses BEFORE the fold, and keeps what works (2026-08-27)
-**Entscheidung:** Selection key is `|raw_bias−0,5|` (pre-fold); folded key was noise (exp16 beat 64
+### D46 — The sweep chooses on the LSB stream, and keeps what works (2026-08-27)
+**Entscheidung:** Selection key is `|raw_bias−0,5|` (LSB); LSB key was noise (exp16 beat 64
 by 6e-6 ≈ 1/40 SE). Incumbent kept unless challenger beats by `CAL_KEEP_MARGIN_K` 3 SE. Absolute
-pre-fold bars are dead ends (non-stationary per node; certified-empty a healthy node) — raw bias
+LSB bars are dead ends (non-stationary per node; certified-empty a healthy node) — raw bias
 selects never gates; raw σ is relative (`CAL_RAW_SIGMA_K` 1,35 × ladder best, one-sided). Runs
 statistic armed only inside a sweep (permanently on: 5,38 vs 5,71 Mbit/s).
 
@@ -547,7 +547,7 @@ statistic armed only inside a sweep (permanently on: 5,38 vs 5,71 Mbit/s).
 ### D47 — Four health mechanisms, one of them load-bearing; the other three are gone (2026-08-28)
 **Entscheidung:** Deleted `null_flags`, `NB` attribution, per-node CUSUM. Soft-down + quarantine
 alone affect data. Software publishes numbers, draws no verdict; `PAIR_FLAG_T`/`DRIFT_FLAG_T` are
-display hints only. Soft-down still watches FOLDED σ — at `?wpre=` 0,8 ranking rides pre-fold;
+display hints only. Soft-down still watches σ — at `?wpre=` 0,8 ranking rides LSB;
 deliberately not closed in software (answer: light). CSV lost `null_flags=`.
 
 | mechanism | effect on the data |
@@ -558,20 +558,20 @@ deliberately not closed in software (answer: light). CSV lost `null_flags=`.
 ### D48 — The baseline phase is gone; the scoring key is the pass key (2026-08-28)
 **Entscheidung:** Baseline phase DELETED — block centring already gives the drift reference from
 ~200 runs. Scoring key now uses all three channels via `score_build_keys()`; scoring pass
-centres/standardises itself per channel (required for pre-fold — without it every candidate hits
+centres/standardises itself per channel (required for LSB — without it every candidate hits
 `ENT_Z_CLAMP`). `?baseline=` → 400. Slave still answers `B`. Pooling: split on 2026-08-28.
 
 ### D49 — The start form remembers its last values, the API remembers nothing (2026-08-28)
 **Entscheidung:** Form fields persist in NVS, served as script on `/`. API defaults untouched. Only
 `confirm=1` starts write (UI only) — curl must not overwrite operator weights with API defaults.
 Mode not remembered. Fields: measuring time, focus, unlimited + runs per round, score
-direction, pre-fold weight. Implemented 2026-08-29 (was documented, the write/read was
+direction, concordance weight. Implemented 2026-08-29 (was documented, the write/read was)
 missing, and focus was the one the operator noticed).
 
 ### D50 — The block table records what the camera DID, not what the sweep found (2026-08-28)
 **Entscheidung:** Sweep fields (`cam_bias` etc.) are identical across blocks on one setting — a
-σ 6,94 block was unattributable. Added during-block `cam_sig` (folded σ) / `cam_rsig` (pre-fold σ) /
-`cam_px` (mean pixel). `cam_rsig` recorded never gated. UI: separate `cam σ` (pre-fold) and `z σ`
+σ 6,94 block was unattributable. Added during-block `cam_sig` (σ) / `cam_rsig` (LSB σ) /
+`cam_px` (mean pixel). `cam_rsig` recorded never gated. UI: separate `cam σ` (LSB) and `z σ`
 columns, no fallback. `cam_px` 0 = not reported.
 
 **Zahlen:** 48 B/row × `LOOP_HIST` 1024 = 48 KB PSRAM.
@@ -617,14 +617,14 @@ At the live cal (`RUN_SEGS_REF` 70513 / `RUN_MS_REF` 2703) half a second is ~130
 
 ---
 
-### D52 — Bright-end and folded-bias gates are publish-only (2026-08-28)
+### D52 — Bright-end and LSB-bias gates are publish-only (2026-08-28)
 
 **Entscheidung:** `CAM_CAL_FAIL_LIGHT` (`CAL_MAX_MEAN_PX` 100) and `CAM_CAL_FAIL_BIAS`
-(folded `|bias−0,5|` vs `cal_bias_bar`) no longer reject a rung. Selection stays pre-fold
-`|raw_bias−0,5|`; rejection stays folded σ / autocorr / dark / zero_diff / stuck / bits / RSIG.
+(`|bias−0,5|` vs `cal_bias_bar`) no longer reject a rung. Selection stays LSB
+`|raw_bias−0,5|`; rejection stays σ / autocorr / dark / zero_diff / stuck / bits / RSIG.
 
 **Warum:** LIGHT rejected the best measured rung (exp 64, mean_px 68,7) while saturation already
-fails SIGMA `[D20]`. Folded bias is noise-limited after the fold and duplicates what the pre-fold
+fails SIGMA `[D20]`. LSB bias is noise-limited after adjacent-pixel XOR and duplicates what the LSB
 key already ranks `[D19]``[D46]`. Constants and `cal_bias_bar()` remain for `/calibrate` readability
 and old CSV comparability; bit values stay defined as legacy.
 
@@ -658,7 +658,7 @@ pooling split. `pre_n` is seeded with the compaction moments like `pass_n_valid`
 
 **Warum das Licht:** slave0 sat at ~8x the illumination of master and slave2, so the sweep
 could only reach exp 4/8/16 and certified 3 of 9 rungs at `raw_sigma` 1,36 — the worst node
-in the array, and the one dragging the combined pre-fold σ. After dimming by ~6,7x it
+in the array, and the one dragging the combined LSB σ. After dimming by ~6,7x it
 certifies **6 of 9 rungs at 1,032**, the best node. Nothing in software did that.
 
 **Warum der Gain zurückgenommen wurde — und die Lehre über die Messmethode.** Single
@@ -701,7 +701,7 @@ reports one span per run via `camera_note_consumed()` — two `esp_timer_get_tim
 run, not one per word. Published in `/diag`, `/diagjson`, `/status` (`cam_cons_mbit`) and as
 `,cons=` on the `D:` reply; the UI node table and `/diag` show it, falling back to a
 parenthesised production rate for a node too old to report it. Counted in **32 bits per ring
-word**, the same unit `mbit_per_sec` uses — the 64 pre-fold pixels behind a folded word are
+word**, the same unit `mbit_per_sec` uses — the 64 LSB pixels behind a word are
 coverage, not a second throughput, and mixing the two put double-scaled numbers in one column.
 
 **Warum:** `mbit_per_sec` is what extraction wrote into the ring, discarded words included.
@@ -783,7 +783,7 @@ actually struck: those items got the same segment count over twice the wall time
 `run_segs` in the CSV header do not distinguish them — `focus_win_ms` does.
 
 ### D62 — Camera sigma per MEASUREMENT, and a jump board that outlives compaction (2026-08-30)
-**Entscheidung:** every node measures the folded per-mini-run sigma of **its own measurement
+**Entscheidung:** every node measures the per-mini-run sigma of **its own measurement
 window** and reports it: a second Welford accumulator in `camera.c`, zeroed where the window's
 first bit is produced (the ring-flush branch of `camera_task`), published as
 `win_sigma`/`win_sigma_samples`. A slave appends it to its `Z` reply as a tagged `,wsig=`; the
@@ -919,7 +919,7 @@ the same paths.
 blocks 6, 8, 13, 14 and 17, quiet in between. Nothing on the node could say what its camera was
 doing in those windows. `/loops` carries `cam_sig`/`cam_rsig`/`cam_px` cumulative **since the
 last sweep** (D62), i.e. up to three blocks — it cannot locate anything in time. The per-item
-`w0..w3` in the CSV can, but compaction had folded 971 of 1085 rows into moments by the time the
+`w0..w3` in the CSV can, but compaction had 971 of 1085 rows into moments by the time the
 question was asked. The jump board (D62) survives compaction but is a top-5, not a series.
 
 So the series is kept where it is produced. The node also records what never travels on the
@@ -955,20 +955,20 @@ that session ran. `/linearity` run on all three slaves with no session: ratios 1
 light on all three at that moment, which is consistent with the disturbance being episodic and
 is exactly the reading the test exists to produce.
 
-### D65 — XOR fold off; one stream; ranking is z + concordance (2026-08-31)
-**Entscheidung:** the XOR fold is off. Extraction, z, archive, pairwise, pass health and
-ranking all describe the same unfolded LSB stream. Concordance stays (half-window, leave-one-out).
+### D65 — LSB-as-is; one stream; ranking is z + concordance (2026-08-31)
+**Entscheidung:** LSB bits are measured as-is. Extraction, z, archive, pairwise, pass health and
+ranking all describe the same LSB stream. Concordance stays (half-window, leave-one-out).
 `?wpre=` is the concordance weight against z (API default 0 = z alone, form 0,8). Wire
 `Z:<z>,<h1>,<h2>[,wsig=]`. Soft-down trips on σ > 1,35 × this block's peer-median σ, not on
-absolute 1,25. Sweep drops the folded `|σ−1|≤0,05` gate; autocorr bar 0,03; selection remains
-pre-fold `|raw_bias−0,5|` plus relative raw-σ. Segment is 224 bits; `EL_SEG_MAX` 400000;
+absolute 1,25. Sweep drops the `|σ−1|≤0,05` gate; autocorr bar 0,03; selection remains
+LSB `|raw_bias−0,5|` plus relative raw-σ. Segment is 224 bits; `EL_SEG_MAX` 400000;
 `RUN_SEGS_REF` 141026 (predicted 2× word rate, same wall time — re-measure). Slave `'B'` refused.
 
-**Warum:** ranking already rode z_pre and conc (`wpre=0,8`). The fold was leftover scaffolding
+**Warum:** ranking already rode z_pre and conc (`wpre=0,8`). Adjacent-pixel XOR was leftover scaffolding
 for a σ≈1 null that Bonferroni no longer tested. Dual channels were the overload.
 
-**⚠ D17 stands as evidence, not as the rule.** Fold-off σ is not 1; centring takes the mean, not
-the scale. Pass health is the measured σ. Do not pool with folded sessions (D1).
+**⚠ D17 stands as evidence, not as the rule.** LSB-as-is σ is not 1; centring takes the mean, not
+the scale. Pass health is the measured σ. Do not pool with prior-instrument sessions (D1).
 
 **⚠ `RUN_SEGS_REF` is predicted**, not live-calibrated. Read `focus_win_ms` after the first
 dozen runs and correct the pair if the window is not the requested `?run=`.

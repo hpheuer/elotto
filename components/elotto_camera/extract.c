@@ -8,7 +8,7 @@
  * Moved verbatim out of camera.c's diff_and_extract(). It is not dead code —
  * it is the definition of what the fast path has to reproduce, and the
  * self-test runs it on the target every time it is asked. */
-/* Close a pre-fold mini-run and start the next. Integer only: the extractor
+/* Close a LSB mini-run and start the next. Integer only: the extractor
  * never calls into soft-float, so the sums go out as sums and camera.c reduces
  * them to a σ at publish time. Called once per 3200 pixels, i.e. 200 times per
  * frame against 160000 bulk iterations — it is not on the hot path in any
@@ -97,7 +97,7 @@ void cam_extract_fast(const uint8_t *a, const uint8_t *b, uint32_t n,
     const int k = 4;                     /* one bit per pixel */
     uint32_t i = 0;
 
-    /* ── The pre-fold monitor, entirely in LOCALS for the duration ───────
+    /* ── The LSB monitor, entirely in LOCALS for the duration ───────
      * It used to run out of *raw directly, and that cost far more than the
      * arithmetic in it: emit() is an INDIRECT call, so the compiler had to
      * assume every word emitted might write through `raw` and reloaded all
@@ -124,7 +124,7 @@ void cam_extract_fast(const uint8_t *a, const uint8_t *b, uint32_t n,
     uint32_t r_mr_n     = 0;
     uint64_t r_mr_sum   = 0, r_mr_sumsq = 0;
     /* Runs channel, same locals-only treatment as the rest of the monitor.
-     * `r_tmask` folds have_prev into the transition mask so the "no previous
+     * `r_tmask` mixes have_prev into the transition mask so the "no previous
      * bit yet" case costs a move rather than a test: 0x7 drops the leading
      * transition of the very first nibble, and every path sets it to 0xF the
      * moment it has consumed a bit. */
@@ -177,7 +177,7 @@ void cam_extract_fast(const uint8_t *a, const uint8_t *b, uint32_t n,
         uint32_t x = aw ^ bw;
         orx |= x;
 
-        /* Byte sum of `aw` without unpacking: two 16-bit lanes, then fold.
+        /* Byte sum of `aw` without unpacking: two 16-bit lanes, then add the lanes.
          * Six ops for four pixels, against ~7 ms per pair for the separate
          * strided pass this replaces — CPU that is really saved, though it buys
          * no idle bit rate; see extract.h. Max 640000*255 = 1,6e8, so a uint32
@@ -191,7 +191,7 @@ void cam_extract_fast(const uint8_t *a, const uint8_t *b, uint32_t n,
         uint32_t zt = ~(((x & LOW7) + LOW7) | x | LOW7);
         zeros += ((zt >> 7) * 0x01010101u) >> 24;
 
-        /* Pre-fold ones for these 4 pixels. `x & LSB_MASK` is already needed
+        /* LSB ones for these 4 pixels. `x & LSB_MASK` is already needed
          * for the gather below, and multiplying a 0/1-per-byte value by
          * 0x01010101 sums the four bytes into the top byte — the same trick
          * `zeros` uses, max 4 so it cannot carry out. Three ops, and it reads
@@ -357,7 +357,7 @@ static bool case_equal(const uint8_t *a, const uint8_t *b, uint32_t n,
         return false;
     }
     if (z1 != z2)                    { rep->what = 2; return false; }
-    /* The pre-fold monitor is held to the same standard as the emitted bits.
+    /* The LSB monitor is held to the same standard as the emitted bits.
      * The bulk path derives its raw count with the byte-sum trick while the
      * reference adds one bit at a time, so this is a real comparison of two
      * different computations, not a tautology — and it is the only thing that
@@ -522,7 +522,7 @@ bool cam_extract_selftest(cam_selftest_t *out, uint32_t bytes)
     cam_extract_fast(a, b, N, &st, count_emit, (void *)&sink, &z, &an, &ps, NULL);
     out->ns_fast = (float)((esp_timer_get_time() - t0) * 1000.0 / N);
 
-    /* The pre-fold monitor priced on its own, against ns_fast directly above.
+    /* The LSB monitor priced on its own, against ns_fast directly above.
      * It is the only number that says whether the monitor may stay always-on
      * or has to be gated to calibration and idle: the extraction loop is
      * compute-bound under measurement load (D25), so a cost here is a cost in

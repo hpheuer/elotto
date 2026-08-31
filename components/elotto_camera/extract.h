@@ -21,7 +21,7 @@
  * XOR of two 32-bit loads.
  *
  * Packing order is preserved exactly: bits go in MSB-first in pixel order,
- * one bit per pixel. No XOR fold `[D65]`.
+ * one bit per pixel. LSB bits as measured `[D65]`.
  *
  * State persists ACROSS calls (a frame boundary may land mid-word), so the
  * caller owns it. */
@@ -59,7 +59,7 @@ typedef struct {
     uint64_t mr_sum;     /* Σ ones over completed mini-runs                    */
     uint64_t mr_sumsq;   /* Σ ones² — max 3200² per term, uint64 cannot wrap   */
     /* ── The RUNS channel (2026-08-27) ────────────────────────────────────
-     * `trans` counts adjacent pre-fold bit pairs that DIFFER, over the whole
+     * `trans` counts adjacent LSB bit pairs that DIFFER, over the whole
      * stream and across call boundaries. The NIST runs statistic wants the
      * number of runs V = trans + 1, and camera.c reduces it to a z at publish
      * time — integer-only in here, like everything else in this struct.
@@ -72,8 +72,8 @@ typedef struct {
      * ⚠ `want_runs` gates it because it is NOT free: the bulk loop pays about
      * nine more ops per four pixels, and this loop is compute-bound under
      * measurement load (D25). Armed at a stats reset, never mid-window. */
-    uint64_t trans;      /* adjacent pre-fold bit pairs that differ            */
-    uint32_t prev;       /* last pre-fold bit seen (0/1)                       */
+    uint64_t trans;      /* adjacent LSB bit pairs that differ            */
+    uint32_t prev;       /* last LSB bit seen (0/1)                       */
     bool     have_prev;  /* false only before the very first bit of a window   */
     bool     want_runs;  /* arm the transition count; see above                */
 } cam_raw_t;
@@ -119,7 +119,7 @@ typedef struct {
     /* What exactly diverged, so a failure is diagnosable from the endpoint
      * instead of by guessing and reflashing. `what`: 1 word count, 2 zero
      * count, 3 stuck verdict, 4 leftover packer state, 5 a word, 6 pixel sum,
-     * 7 the pre-fold monitor, 8 fold-off raw-vs-emitted cross-check,
+     * 7 the LSB monitor, 8 LSB-as-is raw-vs-emitted cross-check,
      * 9 the runs channel (transitions or the carried bit). */
     int      what;
     uint32_t bad_at;         // index of the first differing word
@@ -131,7 +131,7 @@ typedef struct {
     float    ns_fast;        // word-wise extraction
     float    ns_stats;       // word-wise + the per-word statistics of process_word
     uint32_t bench_bytes;    // frame size the benchmark actually ran on
-    float    ns_raw;         // word-wise extraction WITH the pre-fold monitor
+    float    ns_raw;         // word-wise extraction WITH the LSB monitor
     /* cam_popcount32 vs __builtin_popcount over a value sweep on this silicon.
      * It now feeds a z (gcp_zscore_raw), and the word comparison above would
      * not catch a wrong popcount: the extractor's emitted words do not depend

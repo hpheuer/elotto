@@ -10,14 +10,14 @@
  * internal RAM, which is full — a few KB more of .bss fails the LINK, not the
  * run. Both pools below fit under it by construction. */
 /* ⚠ 8000 -> 7200 on 2026-08-26, and the reason is the LINKER, not statistics.
- * results[] lives in INTERNAL RAM (see the resources note) and the pre-fold
+ * results[] lives in INTERNAL RAM (see the resources note) and the LSB
  * channel added a float to RunResult. The double in the record forces 8-byte
  * alignment, so 4 more bytes cost 8 per item — 64 KB at 8000 — and the image
  * stopped linking with 4913 bytes of discarded sections. 7200 gives it back
  * with margin.
  *
  * The cost is close to nothing: since round-boundary compaction (D42) the
- * buffer folds instead of filling, so this cap is the BACKSTOP for a
+ * buffer merges instead of filling, so this cap is the BACKSTOP for a
  * compaction that cannot allocate, not the normal end of a session. In
  * practice only Abort ends an unlimited run.
  * ⚠ It IS still the hard cap for a single pass, and the largest space this
@@ -28,7 +28,7 @@
 #define TOP_N            5
 /* ── Round-boundary compaction (D56) ──────────────────────────────────────
  * Unlimited rounds keep the 100 most extreme items by |rank_key| (both tails,
- * so Top-5 and Bottom-5 stay exact). Everything else folds into pass moments.
+ * so Top-5 and Bottom-5 stay exact). Everything else merges into pass moments.
  * Offline re-analysis of the dropped rows is not a goal. A single pass still
  * only compacts if the combination space would not fit uncompacted. */
 #define PASS_KEEP_EXTREME 100
@@ -58,7 +58,7 @@
 /* v3: the interval is the BLOCK length. Every cal_interval_ms the pass parks,
  * runs the camera sweep, and the boundary closes a block — the unit
  * that inherited everything that used to be per-loop (drift point, pairwise
- * fold, /loops row). 15 min ≈ 205 items/block on the 4.4 s cycle, ~6 %
+ * close, /loops row). 15 min ≈ 205 items/block on the 4.4 s cycle, ~6 %
  * overhead, ~38 blocks over a full Eurojackpot pass — comfortably past
  * DRIFT_MIN_LOOPS. 0 = NO mid-pass insertions (one sweep at session
  * start only): with no loops left, "every loop" has nothing to mean, and the
@@ -156,7 +156,7 @@ _Static_assert(((long long)RUN_S_MAX * 1000 * RUN_SEGS_REF) / RUN_MS_REF <= EL_S
  * ⚠ Still an ESTIMATE, and the live UI prefers the measured pace wherever it
  * has one — including the slowest node's own cam_mbit from /status, which makes
  * the constant a cold-start value rather than the answer. */
-#define CYCLE_LOAD_MBIT_X100   732   // per-node rate under load x100; 2x words with fold off (D65)
+#define CYCLE_LOAD_MBIT_X100   732   // per-node rate under load x100; 2x words, LSB-as-is (D65)
 #define CYCLE_FIXED_MS         780   // per-run overhead that does not scale
 
 /* ── Unlimited mode (user, 2026-08-18) ────────────────────────────────────
@@ -211,7 +211,7 @@ _Static_assert(((long long)RUN_S_MAX * 1000 * RUN_SEGS_REF) / RUN_MS_REF <= EL_S
  *
  * 4 because that is where a per-node mean stops being dominated by the single
  * value it is meant to be removed from (the variance of the correction falls as
- * 1/n, so 1 → 4 items already cuts it fourfold) and because at ~5 s per item it
+ * 1/n, so 1 → 4 items already cuts it by a factor of four) and because at ~5 s per item it
  * is under half a minute of waiting. The alternative — 15 minutes of an empty
  * table, or the whole pass at ?calint=0 — was rejected by the user.
  * ⚠ A block-centred value is deflated by √(1−1/n) per node, which at n = 4 is
@@ -415,29 +415,29 @@ typedef struct {
     uint8_t    skip_rank;  // 1 = exclude from pass mean/σ/Top-Bottom (trigger block)
     uint8_t    nums[6];
     uint8_t    euro[2];
-    /* The PRE-FOLD combined z, block-centred on its own accumulator (D45).
-     * ⚠ The fold suppresses a mean-bias effect by sqrt(2)*e — ~7000x at
-     * e = 1e-4 — so this channel carries the very quantity the folded z throws
+    /* The LSB combined z, block-centred on its own accumulator (D45).
+     * ⚠ Adjacent-pixel XOR suppresses a mean-bias effect by sqrt(2)*e — ~7000x at
+     * e = 1e-4 — so this channel carries the very quantity the z throws
      * away. It is RANKED AND ARCHIVED, never tested.
      * ⚠ Two different sigmas live near this field and they are NOT the same
      * number. `raw_sigma` in /diag is the per-mini-run sigma of one node's raw
      * bit stream: measured 1,06..1,28 across the four nodes on certified rungs
-     * (2026-08-27), against 0,997..1,001 folded, and it degrades hard outside
+     * (2026-08-27), against 0,997..1,001 after adjacent-pixel XOR, and it degrades hard outside
      * them — 1,69 at mean_px 5, above 10 when over-lit. THIS field is the
      * block-centred COMBINED z, whose sigma is rank_sig_p: measured 2,12 and
      * 3,79 on the two sessions that carried it. rank_key() divides by that one,
      * not by raw_sigma.
-     * ⚠ 0 means "no pre-fold value for this item" and reads as exactly average. */
+     * ⚠ 0 means "no LSB value for this item" and reads as exactly average. */
     float      zp_ctr;
     /* Concordance z (D56): leave-one-out Stouffer of per-node half-window
-     * pre-fold z, block-centred. 0 = fewer than two nodes to corroborate.
-     * Since D58 BOTH pre-fold channels rank, each on its own sigma and each
+     * LSB z, block-centred. 0 = fewer than two nodes to corroborate.
+     * Since D58 BOTH LSB channels rank, each on its own sigma and each
      * carrying half of pre_w: zp_ctr is the sensitive one, zc_ctr the robust
      * one, and the key is their sum. */
     float      zc_ctr;
 } RunResult;
 
-/* ENT_Z_CLAMP bounds BOTH pre-fold terms IN THE RANKING KEY only — the archived
+/* ENT_Z_CLAMP bounds BOTH LSB terms IN THE RANKING KEY only — the archived
  * zp_ctr and zc_ctr are never clamped. 12 σ is far outside anything the null
  * produces (null extreme over 8000 items ~4,4).
  * ⚠ Bar in units of the CHANNEL'S OWN σ — rank_sig_p for zp_ctr, rank_sig_c
@@ -507,11 +507,10 @@ typedef struct {
     // setting has to be published per node rather than as one session number.
     uint32_t cam_exp;       // 0 = this node has not calibrated (yet, or at all)
     uint16_t cam_gain;
-    uint8_t  cam_fold;      // XOR fold state chosen
     uint8_t  cam_cal_ok;    // 1 = a candidate passed every gate; 0 = the node
                             // kept its previous setting because none did
     float    cam_bias;      // bias of the window that chose it
-    /* PRE-FOLD health from the last 'D' query (D43). 0 = this node did not
+    /* LSB health from the last 'D' query (D43). 0 = this node did not
      * report it, which is NOT the same as a raw bias of zero. */
     float    cam_raw_bias;
     float    cam_raw_sigma;
@@ -520,11 +519,9 @@ typedef struct {
      * POST /expose or a sweep that certified nothing. */
     uint32_t cam_exp_now;
     uint16_t cam_gain_now;
-    /* The FOLDED pair from the same 'D' query, i.e. this node's own /diag
-     * bias/sigma. The wire always carried them; they were parsed and dropped
-     * until the collector needed them. Together with cam_raw_* they also give
-     * the fold state for free: with the fold OFF the two pairs are the SAME
-     * bits and must match exactly. */
+    /* The bias/sigma pair from the same 'D' query, i.e. this node's own /diag
+     * values. The wire always carried them; they were parsed and dropped
+     * until the collector needed them. Same bits as cam_raw_* `[D65]`. */
     float    cam_bias_now;
     float    cam_sigma_now;
     /* The camera sigma of the LAST MEASUREMENT WINDOW on this node (D62),
@@ -595,7 +592,6 @@ typedef struct {
     float    die_temp[MAX_NODES];
     uint32_t cam_exp[MAX_NODES];    // 0 = not calibrated this loop
     uint16_t cam_gain[MAX_NODES];
-    uint8_t  cam_fold[MAX_NODES];
     uint8_t  cam_cal_ok[MAX_NODES]; // 0 = kept its previous setting, no gate passed
     float    cam_bias[MAX_NODES];   // bias of the window that chose it
     /* ── What the camera actually did DURING this block (2026-08-28) ───────
@@ -614,11 +610,11 @@ typedef struct {
      * separates "the lamp moved" from "the sensor moved". 0 = not reported
      * (a slave on firmware older than 2026-08-28 sends no ,px= field), which
      * is NOT the same as a dark frame.
-     * ⚠ `cam_rsig` is the PRE-FOLD σ. It has no null of 1 to be read against
+     * ⚠ `cam_rsig` is the LSB σ. It has no null of 1 to be read against
      * and is non-stationary per node minute to minute (D46) — record it, plot
      * it against its own history, never gate on its absolute level. */
-    float    cam_sig[MAX_NODES];    // folded per-mini-run σ during the block
-    float    cam_rsig[MAX_NODES];   // pre-fold per-mini-run σ during the block
+    float    cam_sig[MAX_NODES];    // per-mini-run σ during the block
+    float    cam_rsig[MAX_NODES];   // LSB per-mini-run σ during the block
     float    cam_px[MAX_NODES];     // mean raw pixel level; 0 = not reported
     uint16_t cal_ms;       // wall time the calibration cost AT THE TOP OF THIS
                            // LOOP. 0 = no sweep ran here (interval not elapsed,
@@ -747,7 +743,7 @@ typedef struct {
      * publishes as `completed`, what round_base is taken from, and what the CSV
      * header counts in `items=`. */
     volatile int     items_done;
-    /* Items dropped by compaction, i.e. measured and folded into the pass
+    /* Items dropped by compaction, i.e. measured and merged into the pass
      * statistics but no longer individually in results[] or the CSV. 0 for any
      * session that never filled the buffer, which is most of them.
      * ⚠ Published so an archive can say what it is NOT: a CSV with
@@ -831,25 +827,24 @@ typedef struct {
     int              wsig_sd_n;           // node-items behind wsig_sd
     double           v_eff;               // Var(Σz_i/√k) under measured σ and r
                                           // (1.0 = independent unit nodes)
-    /* ── The pre-fold ranking channel ──────────────────────────────────
-     * ⚠ It RANKS. It does not test. pass_mean/pass_sigma/pass_chi2 and the
-     * pass mean/σ stay on folded z alone — the pre-fold null is not one
-     * this instrument meets (D45). */
-    double           pre_w;               // weight of the PRE-FOLD half (D45), ?wpre=
+    /* ── Concordance ranking weight ────────────────────────────────
+     * ⚠ It RANKS. It does not test. pass_mean/pass_sigma/pass_chi2 stay
+     * on z alone (D45, D65). */
+    double           pre_w;               // concordance weight, ?wpre=
                                           // (0 = pure-z ranking)
     double           rank_mean;           // mean of rank_key() over ranked items
     double           rank_sigma;          // its sample σ — what the UI's Z* and
                                           // the nearest-mean table are built on
-    int              pre_n;               // ranked items that carry a pre-fold value
+    int              pre_n;               // ranked items that carry a LSB value
                                           // (zp_ctr != 0; zc_ctr may still be 0
                                           // on the same item — k < 2 after the
                                           // leave-one-out drop)
     int              pre_clamped;         // items pinned at the clamp in EITHER
-                                          // pre-fold channel (counted once)
-    /* Measured σ of the two pre-fold channels over the ranked items, from the
+                                          // LSB channel (counted once)
+    /* Measured σ of the two LSB channels over the ranked items, from the
      * UNCLAMPED archive. rank_key() divides each term by its own one before
      * weighting. 0 = not enough items yet; rank_key() then falls back to 1.0.
-     * ⚠ They are NOT interchangeable. rank_sig_p is the combined pre-fold z
+     * ⚠ They are NOT interchangeable. rank_sig_p is the combined LSB z
      * (measured 2,12 and 3,79); rank_sig_c is the concordance z, which the
      * leave-one-out drop and the min() of the two halves make substantially
      * smaller. Dividing one channel by the other's σ silently reweights the
@@ -857,7 +852,7 @@ typedef struct {
     double           rank_sig_p;
     double           rank_sig_c;
     double           loop_sigma;          // per-run σ of the LAST CLOSED BLOCK (1.0 = ideal)
-    int              loops_done;          // BLOCKS closed and folded into the drift stats
+    int              loops_done;          // BLOCKS closed and merged into the drift stats
     int              loop_hist_n;         // entries valid in loop_hist[] (<= LOOP_HIST)
     double           drift_slope;         // z-offset change per block (linear regression on
                                           // the master's raw per-run offset per block)
@@ -1061,7 +1056,7 @@ void results_archive_init(void);
 bool results_row_z(int j, RunResult *out_row, float out_z[MAX_NODES],
                    float out_p[MAX_NODES], float out_w[MAX_NODES]);
 
-/* The combined ranking key of one row: block-centred z and optional pre-fold z,
+/* The combined ranking key of one row: block-centred z and optional LSB z,
  * weighted by pre_w and rescaled to unit variance under H₀. The ONE accessor
  * every table and every survivor choice goes through, for the same reason
  * rank_z() is the only reader of z_ctr. */

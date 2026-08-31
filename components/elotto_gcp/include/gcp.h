@@ -25,9 +25,9 @@
 extern "C" {
 #endif
 
-/* One segment is seven 32-bit words, all bits used (D65). No XOR fold: each
+/* One segment is seven 32-bit words, all bits used (D65). LSB bits as measured: each
  * word is 32 raw LSBs. For a fair coin that is mean 112 and sd sqrt(224*0.25)
- * = sqrt(56). Sessions before D65 used 200 folded bits per segment; do not pool. */
+ * = sqrt(56). Sessions before D65 used 200 LSB bits per segment; do not pool. */
 #define GCP_SEGMENT_BITS   224
 #define GCP_SEGMENT_MEAN   112.0
 #define GCP_SEGMENT_SD     7.4833147735
@@ -75,7 +75,7 @@ typedef enum {
  * the max over nodes, so a mismatch would slow every measurement to the
  * slowest device.
  *
- * `*out` is the binomial z of the whole window (D65: the stream is unfolded).
+ * `*out` is the binomial z of the whole window (D65: the stream is LSB).
  * Half-window (D56): *out_h1 / *out_h2 are the same bits split at nseg/2
  * (NULL disables). nseg < 2 leaves both at 0. Written only on GCP_OK. */
 gcp_result_t gcp_zscore_raw(int nseg, bool (*on_yield)(void), double *out);

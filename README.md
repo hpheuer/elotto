@@ -17,7 +17,7 @@ noise** using
 ## Abstract
 
 A home-built GCP/PEAR-style instrument: each node draws bits from its **own** OV5647 (never shared).
-Frame-pair diff → LSB → segments of 224 bits → Stouffer z. No XOR fold `[D65]`.
+Frame-pair diff → LSB → segments of 224 bits → Stouffer z. LSB bits as measured `[D65]`.
 Up to four nodes combine as `Σz/√k` for the nodes that answered that run. Ranking is
 **block-centred** z plus concordance (`?wpre=`).
 Attended sessions show the target while bits are sampled (`focus=1`); attended and unattended are
@@ -86,4 +86,4 @@ Slave repo must sit **next to** this one (`EXTRA_COMPONENT_DIRS=../elotto/compon
 
 | | |
 |---|---|
-| **v3 / D65** | Single-pass + Unlimited; block centring; unfolded z + concordance ranking; OTA-only. Contract: `docs/PLAN.md` §2+. Never pool with folded sessions or v2.x. |
+| **v3 / D65** | Single-pass + Unlimited; block centring; LSB z + concordance ranking; OTA-only. Contract: `docs/PLAN.md` §2+. Never pool with prior-instrument sessions or v2.x. |
