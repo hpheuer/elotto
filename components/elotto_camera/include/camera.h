@@ -73,19 +73,11 @@ typedef struct {
     double   zero_diff_frac;      // fraction of pixels with diff==0 (noise below 1 ADU).
                                   // Diagnostic: diff==0 has LSB 0, so a high value here
                                   // directly explains a deficit-of-ones bias.
-    /* ── PRE-FOLD, i.e. the stream the SENSOR produced (2026-08-26) ────────
-     * Everything above describes the stream after the XOR fold. These two
-     * describe it before, and they are the front-end health the instrument
-     * used to be blind to: on 2026-08-26 a fold-off node read raw_bias 0,4934
-     * and raw_sigma 1,7233 where its folded peers were at 0,49994 / 1,0080,
-     * and seeing that took a firmware flash. Same definitions as `bias` and
-     * `sigma`, same 3200-bit mini-run.
-     * ⚠ With the fold OFF these are the SAME bits as `bias`/`sigma` and the
-     * pairs must agree; a divergence there is a bug, not a finding. */
-    double   raw_bias;            // pre-fold ones / pre-fold bits (ideal 0.5)
-    double   raw_sigma;           // stddev of per-mini-run z, pre-fold (ideal 1.0)
-    int      raw_sigma_samples;   // mini-runs folded into raw_sigma
-    uint64_t raw_bits;            // pre-fold bits == pixels consumed
+    /* Same bits as bias/sigma `[D65]`. Kept as a pair so /diagjson still lines up. */
+    double   raw_bias;
+    double   raw_sigma;
+    int      raw_sigma_samples;
+    uint64_t raw_bits;
     /* ── The RUNS channel, pre-fold (2026-08-27) ──────────────────────────
      * The entropy a rung delivers is short by two terms: one from the bits
      * being unbalanced, one from them depending on each other. `raw_bias` is
@@ -196,7 +188,6 @@ bool camera_stats_settled(void);
 bool camera_set_exposure(uint32_t exposure, uint32_t gain);
 void camera_get_exposure(uint32_t *exposure, uint32_t *gain);
 
-bool camera_get_xor_fold(void);
 /* Capture geometry. The WIDTH is the row length a spatial period in the bit
  * stream aliases against (was /specdump; endpoint deleted with the spectral channel). */
 void camera_get_geometry(uint32_t *w, uint32_t *h);

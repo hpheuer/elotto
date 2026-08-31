@@ -29,17 +29,16 @@ static inline void raw_tick(cam_raw_t *raw)
     raw->run_bits = 0;
 }
 
-void cam_extract_ref(const uint8_t *a, const uint8_t *b, uint32_t n, bool fold,
+void cam_extract_ref(const uint8_t *a, const uint8_t *b, uint32_t n,
                      cam_pack_t *st, cam_emit_fn emit, void *ctx,
                      uint32_t *out_zeros, uint32_t *out_any, uint32_t *out_psum,
                      cam_raw_t *raw)
 {
-    uint32_t acc = st->bitacc, pend = st->fold_pending;
+    uint32_t acc = st->bitacc;
     int      accn = st->bitacc_n;
-    bool     have = st->fold_have;
     uint32_t zeros = 0, psum = 0;
     uint8_t  any = 0;
-    uint32_t rw = 0;                 /* pre-fold ones since the last emit */
+    uint32_t rw = 0;
 
     for (uint32_t i = 0; i < n; i++) {
         psum += a[i];
@@ -53,17 +52,11 @@ void cam_extract_ref(const uint8_t *a, const uint8_t *b, uint32_t n, bool fold,
                        if (raw->have_prev) raw->trans += (bit ^ raw->prev);
                        raw->prev = bit; raw->have_prev = true;
                    } }
-        if (fold) {
-            if (!have) { pend = bit; have = true; continue; }
-            bit ^= pend;
-            have = false;
-        }
         acc = (acc << 1) | bit;
         if (++accn == 32) { emit(acc, rw, ctx); acc = 0; accn = 0; rw = 0; }
     }
 
     st->bitacc = acc; st->bitacc_n = accn;
-    st->fold_pending = pend; st->fold_have = have;
     if (out_zeros) *out_zeros += zeros;
     if (out_any)   *out_any   |= any;
     if (out_psum)  *out_psum  += psum;
@@ -93,16 +86,15 @@ void cam_extract_ref(const uint8_t *a, const uint8_t *b, uint32_t n, bool fold,
 #define GATHER_MUL 0x08040201u
 #define LOW7       0x7F7F7F7Fu
 
-void cam_extract_fast(const uint8_t *a, const uint8_t *b, uint32_t n, bool fold,
+void cam_extract_fast(const uint8_t *a, const uint8_t *b, uint32_t n,
                       cam_pack_t *st, cam_emit_fn emit, void *ctx,
                       uint32_t *out_zeros, uint32_t *out_any, uint32_t *out_psum,
                       cam_raw_t *raw)
 {
-    uint32_t acc = st->bitacc, pend = st->fold_pending;
+    uint32_t acc = st->bitacc;
     int      accn = st->bitacc_n;
-    bool     have = st->fold_have;
     uint32_t zeros = 0, orx = 0, psum = 0;
-    const int k = fold ? 2 : 4;          // bits produced per 4 pixels
+    const int k = 4;                     /* one bit per pixel */
     uint32_t i = 0;
 
     /* ── The pre-fold monitor, entirely in LOCALS for the duration ───────
@@ -155,16 +147,15 @@ void cam_extract_fast(const uint8_t *a, const uint8_t *b, uint32_t n, bool fold,
 #define RAW_EMIT()  do { emit(acc, r_word, ctx);                        \
                          r_ones += r_word; r_word = 0; } while (0)
 
-    /* The bulk path emits k bits at a time, so it can only run from a state
-     * where that cannot straddle a word boundary, and with no half-collected
-     * fold pair. A byte-wise prologue walks into that state; in practice the
-     * frame size is a multiple of 64 and the state is already clean, so the
-     * prologue runs zero times. */
+    /* The bulk path emits 4 bits at a time, so it can only run from a state
+     * where that cannot straddle a word boundary. A byte-wise prologue walks
+     * into that state; in practice the frame size is a multiple of 64 and the
+     * state is already clean, so the prologue runs zero times. */
     /* BOTH pointers must be 4-aligned, not just a: the bulk loads from each.
      * If the two frames happen to differ in alignment mod 4 this condition
      * never clears and the whole frame goes byte-wise -- correct, just slow.
      * The V4L2 buffers are DMA-aligned, so it does not happen here. */
-    while (i < n && (have || (accn % k) != 0 ||
+    while (i < n && ((accn % k) != 0 ||
                      (((uintptr_t)(a + i) | (uintptr_t)(b + i)) & 3u))) {
         psum += a[i];
         uint8_t d = (uint8_t)(b[i] - a[i]);
@@ -174,11 +165,6 @@ void cam_extract_fast(const uint8_t *a, const uint8_t *b, uint32_t n, bool fold,
         if (raw) { r_word += bit; r_run_ones += bit; r_run_bits++; RAW_TICK(); }
         if (wr) { r_trans += (r_tmask >> 3) & (bit ^ r_prev);
                   r_prev = bit; r_tmask = 0xFu; }
-        if (fold) {
-            if (!have) { pend = bit; have = true; i++; continue; }
-            bit ^= pend;
-            have = false;
-        }
         acc = (acc << 1) | bit;
         if (++accn == 32) { RAW_EMIT(); acc = 0; accn = 0; }
         i++;
@@ -229,18 +215,7 @@ void cam_extract_fast(const uint8_t *a, const uint8_t *b, uint32_t n, bool fold,
             r_tmask = 0xFu;
         }
 
-        uint32_t v;
-        if (fold) {
-            /* ⚠ SHIFT LEFT. nib holds p0 p1 p2 p3 from bit 3 down, so the
-             * partner of bit k is bit k-1 and must be brought UP. Written with
-             * >> first: bit 3 then XORed against a zero shifted in from bit 4,
-             * i.e. f0 came out as plain p0 and the fold silently vanished for
-             * half of every pair. The self-test caught it on case 1. */
-            uint32_t t = nib ^ (nib << 1);                    // t3 = p0^p1, t1 = p2^p3
-            v = ((t >> 2) & 2u) | ((t >> 1) & 1u);
-        } else {
-            v = nib;
-        }
+        uint32_t v = nib;
         acc = (acc << k) | v;
         accn += k;
         if (accn == 32) { RAW_EMIT(); acc = 0; accn = 0; }
@@ -255,11 +230,6 @@ void cam_extract_fast(const uint8_t *a, const uint8_t *b, uint32_t n, bool fold,
         if (raw) { r_word += bit; r_run_ones += bit; r_run_bits++; RAW_TICK(); }
         if (wr) { r_trans += (r_tmask >> 3) & (bit ^ r_prev);
                   r_prev = bit; r_tmask = 0xFu; }
-        if (fold) {
-            if (!have) { pend = bit; have = true; continue; }
-            bit ^= pend;
-            have = false;
-        }
         acc = (acc << 1) | bit;
         if (++accn == 32) { RAW_EMIT(); acc = 0; accn = 0; }
     }
@@ -285,7 +255,6 @@ void cam_extract_fast(const uint8_t *a, const uint8_t *b, uint32_t n, bool fold,
     }
 
     st->bitacc = acc; st->bitacc_n = accn;
-    st->fold_pending = pend; st->fold_have = have;
     if (out_zeros) *out_zeros += zeros;
     if (out_any)   *out_any   |= orx;
     if (out_psum)  *out_psum  += psum;
@@ -309,7 +278,7 @@ void cam_extract_fast(const uint8_t *a, const uint8_t *b, uint32_t n, bool fold,
  * particular size. */
 #define BENCH_MIN     (64u * 1024u)
 #define BENCH_MAX     (2048u * 1024u)
-#define BENCH_WORDS_FOR(n)   ((n) / 32u + 8u)    /* worst case: fold off */
+#define BENCH_WORDS_FOR(n)   ((n) / 32u + 8u)
 
 typedef struct { uint32_t *buf; uint32_t n, cap; } collect_t;
 
@@ -366,7 +335,7 @@ static uint32_t xs32(uint32_t *s)
 /* One equivalence case: run both implementations over the same bytes from the
  * same starting state and compare the emitted words, the zero count, and the
  * stuck-frame verdict. */
-static bool case_equal(const uint8_t *a, const uint8_t *b, uint32_t n, bool fold,
+static bool case_equal(const uint8_t *a, const uint8_t *b, uint32_t n,
                        uint32_t *wa, uint32_t *wb, uint32_t cap, uint32_t *out_words,
                        cam_selftest_t *rep)
 {
@@ -378,8 +347,8 @@ static bool case_equal(const uint8_t *a, const uint8_t *b, uint32_t n, bool fold
     cam_raw_t r1 = {0}, r2 = {0};
     r1.want_runs = true; r2.want_runs = true;
 
-    cam_extract_ref (a, b, n, fold, &s1, collect_emit, &c1, &z1, &a1, &p1, &r1);
-    cam_extract_fast(a, b, n, fold, &s2, collect_emit, &c2, &z2, &a2, &p2, &r2);
+    cam_extract_ref (a, b, n, &s1, collect_emit, &c1, &z1, &a1, &p1, &r1);
+    cam_extract_fast(a, b, n, &s2, collect_emit, &c2, &z2, &a2, &p2, &r2);
 
     if (out_words) *out_words = c1.n;
     rep->ref_z = z1; rep->fast_z = z2;
@@ -414,16 +383,11 @@ static bool case_equal(const uint8_t *a, const uint8_t *b, uint32_t n, bool fold
         rep->bad_at = (uint32_t)r1.bits;
         return false;
     }
-    /* With the fold OFF the raw stream IS the emitted stream, so the two ones
-     * counts must agree exactly. A free cross-check of the monitor against the
-     * path that has always been trusted. */
-    if (!fold) {
+    /* Emitted words ARE the LSBs, so ones in the monitor and popcount of the
+     * words must agree. Remainder sits in the packer. */
+    {
         uint64_t emitted = 0;
         for (uint32_t i = 0; i < c1.n; i++) emitted += cam_popcount32(wa[i]);
-        /* The words only carry COMPLETE 32-bit groups; the remainder is still
-         * in the packer. `acc` is built by (acc<<1)|bit from zero, so exactly
-         * its low bitacc_n bits are data and everything above them is zero —
-         * a plain popcount of it is the leftover ones. */
         emitted += cam_popcount32(s1.bitacc);
         if (emitted != r1.ones) {
             rep->what = 8;
@@ -435,9 +399,7 @@ static bool case_equal(const uint8_t *a, const uint8_t *b, uint32_t n, bool fold
      * D52), so it is held to the same standard as the bits: exactly equal. */
     if (p1 != p2) { rep->what = 6; rep->ref_w = p1; rep->fast_w = p2; return false; }
     if ((a1 != 0) != (a2 != 0))      { rep->what = 3; return false; }
-    if (s1.bitacc != s2.bitacc || s1.bitacc_n != s2.bitacc_n ||
-        s1.fold_have != s2.fold_have ||
-        (s1.fold_have && s1.fold_pending != s2.fold_pending)) {
+    if (s1.bitacc != s2.bitacc || s1.bitacc_n != s2.bitacc_n) {
         rep->what = 4; rep->ref_w = s1.bitacc; rep->fast_w = s2.bitacc;
         rep->bad_at = (uint32_t)s1.bitacc_n;
         return false;
@@ -515,21 +477,19 @@ bool cam_extract_selftest(cam_selftest_t *out, uint32_t bytes)
     int cases = 0, failed = 0;
     uint32_t words = 0, w;
 
-    /* 1/2: the real shape, both fold settings. */
-    cases++; if (!case_equal(a, b, BENCH_BYTES, true,  wa, wb, BENCH_WORDS, &w, out)) failed = cases;
+    /* 1: the real shape. */
+    cases++; if (!case_equal(a, b, BENCH_BYTES, wa, wb, BENCH_WORDS, &w, out)) failed = cases;
     words = w;
-    cases++; if (!failed && !case_equal(a, b, BENCH_BYTES, false, wa, wb, BENCH_WORDS, &w, out)) failed = cases;
-    /* 3: identical frames -- the stuck-frame path, and every diff zero. */
+    /* 2: identical frames -- the stuck-frame path, and every diff zero. */
     memcpy(b, a, BENCH_BYTES);
-    cases++; if (!failed && !case_equal(a, b, BENCH_BYTES, true, wa, wb, BENCH_WORDS, &w, out)) failed = cases;
-    /* 4: a single differing byte, so the stuck verdict must flip on one pixel. */
+    cases++; if (!failed && !case_equal(a, b, BENCH_BYTES, wa, wb, BENCH_WORDS, &w, out)) failed = cases;
+    /* 3: a single differing byte, so the stuck verdict must flip on one pixel. */
     b[BENCH_BYTES / 3] ^= 1u;
-    cases++; if (!failed && !case_equal(a, b, BENCH_BYTES, true, wa, wb, BENCH_WORDS, &w, out)) failed = cases;
-    /* 5/6: lengths that are NOT a multiple of 4, to exercise prologue and tail
-     * and the fold state carrying across a call boundary. */
+    cases++; if (!failed && !case_equal(a, b, BENCH_BYTES, wa, wb, BENCH_WORDS, &w, out)) failed = cases;
+    /* 4/5: lengths that are NOT a multiple of 4, to exercise prologue and tail. */
     for (uint32_t i = 0; i < BENCH_BYTES; i++) b[i] = (uint8_t)(a[i] + (xs32(&rs) & 3u) - 1u);
-    cases++; if (!failed && !case_equal(a, b, 1023, true,  wa, wb, BENCH_WORDS, &w, out)) failed = cases;
-    cases++; if (!failed && !case_equal(a + 1, b + 3, 4095, true, wa, wb, BENCH_WORDS, &w, out)) failed = cases;
+    cases++; if (!failed && !case_equal(a, b, 1023, wa, wb, BENCH_WORDS, &w, out)) failed = cases;
+    cases++; if (!failed && !case_equal(a + 1, b + 3, 4095, wa, wb, BENCH_WORDS, &w, out)) failed = cases;
 
     out->cases = cases;
     out->failed_case = failed;
@@ -554,12 +514,12 @@ bool cam_extract_selftest(cam_selftest_t *out, uint32_t bytes)
 
     st = (cam_pack_t){0}; z = 0; an = 0; sink = 0;
     t0 = esp_timer_get_time();
-    cam_extract_ref(a, b, N, true, &st, count_emit, (void *)&sink, &z, &an, &ps, NULL);
+    cam_extract_ref(a, b, N, &st, count_emit, (void *)&sink, &z, &an, &ps, NULL);
     out->ns_ref = (float)((esp_timer_get_time() - t0) * 1000.0 / N);
 
     st = (cam_pack_t){0}; z = 0; an = 0; sink = 0;
     t0 = esp_timer_get_time();
-    cam_extract_fast(a, b, N, true, &st, count_emit, (void *)&sink, &z, &an, &ps, NULL);
+    cam_extract_fast(a, b, N, &st, count_emit, (void *)&sink, &z, &an, &ps, NULL);
     out->ns_fast = (float)((esp_timer_get_time() - t0) * 1000.0 / N);
 
     /* The pre-fold monitor priced on its own, against ns_fast directly above.
@@ -570,14 +530,14 @@ bool cam_extract_selftest(cam_selftest_t *out, uint32_t bytes)
     { cam_raw_t rw; memset(&rw, 0, sizeof(rw));
       st = (cam_pack_t){0}; z = 0; an = 0; sink = 0;
       t0 = esp_timer_get_time();
-      cam_extract_fast(a, b, N, true, &st, count_emit, (void *)&sink, &z, &an, &ps, &rw);
+      cam_extract_fast(a, b, N, &st, count_emit, (void *)&sink, &z, &an, &ps, &rw);
       out->ns_raw = (float)((esp_timer_get_time() - t0) * 1000.0 / N);
       sink = (uint32_t)rw.ones; }
 
     { statsim_t ss; memset(&ss, 0, sizeof(ss));
       st = (cam_pack_t){0}; z = 0; an = 0;
       t0 = esp_timer_get_time();
-      cam_extract_fast(a, b, N, true, &st, stats_emit, &ss, &z, &an, &ps, NULL);
+      cam_extract_fast(a, b, N, &st, stats_emit, &ss, &z, &an, &ps, NULL);
       out->ns_stats = (float)((esp_timer_get_time() - t0) * 1000.0 / N);
       sink = (uint32_t)ss.ones; }
 

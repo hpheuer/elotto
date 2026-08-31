@@ -2846,7 +2846,7 @@ static esp_err_t diagjson_handler(httpd_req_t *req)
         (unsigned long)cam.stalls,
         cam.ms_pair, cam.ms_wait, cam.ms_extract, cam.ms_rest,
         (unsigned long)exp_now, (unsigned long)gain_now,
-        camera_get_xor_fold() ? "true" : "false");
+        "false");
 
     if (all) {
         /* The master's own image id, the same 16 characters its /status calls
@@ -2905,7 +2905,7 @@ static esp_err_t diagjson_handler(httpd_req_t *req)
                 N->ok ? "true" : "false", mb, cmb, (unsigned long)stl,
                 (unsigned long)enow, (unsigned long)gnow,
                 (unsigned long)N->cam_exp, (int)N->cam_cal_ok, N->cam_bias,
-                me ? (camera_get_xor_fold() ? 1 : 0) : (int)N->cam_fold,
+                me ? 0 : (int)N->cam_fold,
                 rb, rs, bi, sg, ct_txt,
                 N->soft_down ? "true" : "false", (unsigned long)N->lost,
                 (unsigned long)N->reboots,

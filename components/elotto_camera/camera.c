@@ -417,8 +417,6 @@ static void process_word(uint32_t w, uint32_t ro)
 /* Packer state, owned by the extractor (components/elotto_camera/extract.h).
  * It persists across frame pairs because a pair boundary can land mid-word. */
 static cam_pack_t s_pack;
-/* D65: fold is off. The Kconfig bit is ignored; do not turn it back on. */
-static volatile bool s_xor_fold = false;
 
 /* Frame pairs the capture task must throw away before a measurement window
  * opens. After an exposure change the driver still holds frames captured under
@@ -433,18 +431,12 @@ static void emit_word_cb(uint32_t w, uint32_t ro, void *ctx)
 
 /* One frame pair. The extraction itself lives in extract.c as two
  * implementations the on-target self-test holds against each other; this picks
- * one and does the frame-level bookkeeping around it.
- *
- * ⚠ `s_xor_fold` is read ONCE here instead of once per pixel. It is volatile,
- * so the per-pixel read could never be hoisted by the compiler, and it can only
- * change between windows anyway (calibration, which also clears the half-pair
- * state through camera_stats_reset). Reading it per frame additionally makes a
- * mid-frame change impossible, which is the behaviour that was always intended. */
+ * one and does the frame-level bookkeeping around it. */
 static void diff_and_extract(const uint8_t *a, const uint8_t *b, uint32_t n)
 {
     uint32_t zeros = 0, any = 0, psum = 0;
     /* The WORD-WISE path. cam_extract_ref() is still compiled in and is still
-     * the definition of correct: GET /camtest runs both over six cases on this
+     * the definition of correct: GET /camtest runs both over the cases on this
      * silicon and compares the emitted words, the zero count, the stuck verdict
      * and the leftover packer state. Do not switch this line without it. */
     /* ⚠ ALWAYS ON since 2026-08-26, and the duty cycle is gone with it. It was
@@ -465,7 +457,7 @@ static void diff_and_extract(const uint8_t *a, const uint8_t *b, uint32_t n)
      * was an idle reading against a loaded one. What DOES move ms_extract is
      * which core this task runs on -- see ELOTTO_CAM_TASK_CORE in camera.h and
      * D61. Compare ms_extract only between nodes in the same LOAD state. */
-    cam_extract_fast(a, b, n, s_xor_fold, &s_pack, emit_word_cb, NULL, &zeros, &any, &psum,
+    cam_extract_fast(a, b, n, &s_pack, emit_word_cb, NULL, &zeros, &any, &psum,
                      &s_raw);
 
     s_zero_diffs += zeros;
@@ -1160,7 +1152,6 @@ void camera_get_exposure(uint32_t *exposure, uint32_t *gain)
     if (gain)     *gain     = ((g0 & 0x03) << 8) | (g1 & 0xFF);
 }
 
-bool camera_get_xor_fold(void)    { return s_xor_fold; }
 void camera_get_geometry(uint32_t *w, uint32_t *h)
 {
     if (w) *w = s_frame_w;
@@ -1470,18 +1461,16 @@ static uint32_t cal_gate(const camera_cal_step_t *s)
 
 /* Measure one candidate. Returns false only if the sweep was aborted. */
 static bool cal_step(camera_cal_step_t *st, uint32_t exposure, uint32_t gain,
-                     bool fold, int64_t deadline_us, bool (*abort_cb)(void))
+                     int64_t deadline_us, bool (*abort_cb)(void))
 {
     memset(st, 0, sizeof(*st));
     st->exposure = exposure;
     st->gain     = gain;
-    st->xor_fold = fold;
 
     if (!camera_set_exposure(exposure, gain)) {
         st->fail = CAM_CAL_FAIL_APPLY;   // read-back disagreed; score nothing
         return true;
     }
-    s_xor_fold = fold;
 
     // Settle and flush BEFORE the window opens, or the score is a blend of two
     // settings: the driver still holds frames captured under the previous one
@@ -1536,10 +1525,10 @@ static bool cal_step(camera_cal_step_t *st, uint32_t exposure, uint32_t gain,
     /* The bias bar MOVES with the session's run length now, so a logged verdict
      * cannot be checked without it -- and z_off is what the bar is really about:
      * the per-run offset this rung would contribute if it were chosen. */
-    ESP_LOGI(TAG_CAM, "cal: exp=%-5lu gain=%-4lu fold=%d  bias=%.6f (%+.1e, bar %.1e, "
+    ESP_LOGI(TAG_CAM, "cal: exp=%-5lu gain=%-4lu  bias=%.6f (%+.1e, bar %.1e, "
              "z_off %+.2f) sigma=%.4f r=%.4f mean_px=%.2f zero=%.4f %.3f Mbit/s  "
              "%.1f Mbit  %s0x%03x",
-             (unsigned long)exposure, (unsigned long)gain, (int)fold,
+             (unsigned long)exposure, (unsigned long)gain,
              st->bias, st->bias - 0.5, cal_bias_bar(st->bits),
              (st->bias - 0.5) * s_cal_z_scale,
              st->sigma, st->autocorr_max,
@@ -1566,7 +1555,6 @@ bool camera_calibrate(int budget_ms, bool (*abort_cb)(void), camera_cal_t *out)
     // rung of the sweep (see below).
     uint32_t e0 = 0, g0 = 0;
     camera_get_exposure(&e0, &g0);
-    bool fold0 = s_xor_fold;
 
     if (budget_ms < 2000) budget_ms = 2000;
     // Steps: the entry setting, then the ladder. No fold trial — see below.
@@ -1582,36 +1570,15 @@ bool camera_calibrate(int budget_ms, bool (*abort_cb)(void), camera_cal_t *out)
      * And from loop 2 onward the entry setting is the previous loop's winner, so
      * this rung measures drift at a FIXED operating point, which is the only way
      * to tell a genuinely moving optimum from a noisy sweep. */
-    if (!cal_step(&out->step[n], e0, g0, fold0, t0 + slice_us, abort_cb)) goto aborted;
+    if (!cal_step(&out->step[n], e0, g0, t0 + slice_us, abort_cb)) goto aborted;
     n++;
 
     for (int i = 0; i < (int)CAL_LADDER_N && n < planned; i++) {
-        if (!cal_step(&out->step[n], s_cal_ladder[i], g0, fold0,
+        if (!cal_step(&out->step[n], s_cal_ladder[i], g0,
                       t0 + (int64_t)(n + 1) * slice_us, abort_cb)) goto aborted;
         n++;
     }
 
-    /* NO FOLD TRIAL. The XOR fold was in scope as a processing parameter
-     * (§1.7 decision 3) until the 10-loop session of 2026-07-26 measured
-     * what fold-off actually does, and the decision was WITHDRAWN.
-     *
-     * The trial worked exactly as designed and that was the problem: fold-off
-     * measured a bias of 0.500845 in its window, inside the 1e-3 gate, and won
-     * the rate tie-break at 5.57 vs 3.37 Mbit/s. The master then ran a whole
-     * loop on it and its per-run sigma went 1.043 -> 2.153, taking the combined
-     * sigma from 1.041 to 1.382. The three slaves, still folded, stayed at
-     * 0.97-0.99.
-     *
-     * The cause is that the unfolded LSB bias is NON-STATIONARY. Within that
-     * same loop it moved from +8.4e-4 at calibration to -1.3e-3 during the
-     * baseline minutes later — 2.1e-3 of travel against a 1e-3 gate. Neither
-     * gate could see it: the bias gate reads one window, and the sigma gate
-     * reads 3200-bit mini-runs *inside* that window, which are far too short to
-     * show drift over seconds. Run-to-run sigma over 2.39 Mbit runs spread
-     * across ten minutes is dominated by exactly that drift.
-     *
-     * So a 3 s window cannot certify fold-off; it can only get lucky. The fold
-     * squares the bias away and is left permanently on, as Kconfig sets it. */
     out->nsteps = n;
 
     /* ── The RELATIVE pre-fold dispersion gate ────────────────────────────
@@ -1734,8 +1701,7 @@ bool camera_calibrate(int budget_ms, bool (*abort_cb)(void), camera_cal_t *out)
         int inc = -1;
         for (int i = 0; i < n; i++) {
             if (out->step[i].fail) continue;
-            if (out->step[i].exposure == e0 && out->step[i].gain == g0 &&
-                out->step[i].xor_fold == fold0) { inc = i; break; }
+            if (out->step[i].exposure == e0 && out->step[i].gain == g0) { inc = i; break; }
         }
         if (inc >= 0 && inc != pick) {
             double margin = CAL_KEEP_MARGIN_K * cal_key_se(&out->step[pick]);
@@ -1755,18 +1721,15 @@ bool camera_calibrate(int budget_ms, bool (*abort_cb)(void), camera_cal_t *out)
 
     uint32_t use_e   = (pick >= 0) ? out->step[pick].exposure : e0;
     uint32_t use_g   = (pick >= 0) ? out->step[pick].gain     : g0;
-    bool     use_fld = (pick >= 0) ? out->step[pick].xor_fold : fold0;
 
     bool applied = camera_set_exposure(use_e, use_g);
-    s_xor_fold = use_fld;
     if (!applied && pick >= 0) {
         // It latched while being scored and refuses now. Do not run the session
         // on an unverified setting: fall back to the entry one and say so.
         ESP_LOGE(TAG_CAM, "cal: chosen exposure=%lu would not re-apply -- reverting",
                  (unsigned long)use_e);
         camera_set_exposure(e0, g0);
-        s_xor_fold = fold0;
-        use_e = e0; use_g = g0; use_fld = fold0;
+        use_e = e0; use_g = g0;
         pick  = -1;
     }
 
@@ -1775,7 +1738,6 @@ bool camera_calibrate(int budget_ms, bool (*abort_cb)(void), camera_cal_t *out)
     out->ok       = (pick >= 0);
     out->exposure = use_e;
     out->gain     = use_g;
-    out->xor_fold = use_fld;
 
     /* Report the measurements of the setting the camera is ACTUALLY on, whether
      * or not a gate certified it. When nothing passed we revert to the entry
@@ -1810,9 +1772,9 @@ bool camera_calibrate(int budget_ms, bool (*abort_cb)(void), camera_cal_t *out)
     }
 
     out->elapsed_ms = (uint32_t)((esp_timer_get_time() - t0) / 1000);
-    ESP_LOGI(TAG_CAM, "cal: %s exposure=%lu gain=%lu fold=%d (%d/%d passed, %lu ms)",
+    ESP_LOGI(TAG_CAM, "cal: %s exposure=%lu gain=%lu (%d/%d passed, %lu ms)",
              out->ok ? "chose" : "NO gated setting -- kept",
-             (unsigned long)use_e, (unsigned long)use_g, (int)use_fld,
+             (unsigned long)use_e, (unsigned long)use_g,
              pick >= 0 ? 1 : 0, n, (unsigned long)out->elapsed_ms);
     return out->ok;
 
@@ -1820,14 +1782,12 @@ aborted:
     s_raw_runs_on = false;  /* measurement does not rank runs (D55) */
     out->nsteps = n;
     camera_set_exposure(e0, g0);
-    s_xor_fold = fold0;
     // Re-arm rather than clear: nobody waits for it now, but the ring still holds
     // words extracted at whatever candidate the sweep died on, and the next
     // session must not draw them.
     camera_stats_reset(CAL_SETTLE_PAIRS);
     out->exposure   = e0;
     out->gain       = g0;
-    out->xor_fold   = fold0;
     out->elapsed_ms = (uint32_t)((esp_timer_get_time() - t0) / 1000);
     ESP_LOGW(TAG_CAM, "cal: aborted after %d step(s) -- entry setting restored", n);
     return false;

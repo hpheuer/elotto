@@ -20,9 +20,8 @@
  * subtraction is therefore not needed at all, and 4 pixels can be done with one
  * XOR of two 32-bit loads.
  *
- * Packing order is preserved exactly: bits go in MSB-first in pixel order, and
- * with the XOR fold on, pixel 2k is XORed with pixel 2k+1 (adjacent pixels are
- * different Bayer channels, which is the point of folding them).
+ * Packing order is preserved exactly: bits go in MSB-first in pixel order,
+ * one bit per pixel. No XOR fold `[D65]`.
  *
  * State persists ACROSS calls (a frame boundary may land mid-word), so the
  * caller owns it. */
@@ -30,14 +29,11 @@
 typedef struct {
     uint32_t bitacc;        // partial word, MSB-first
     int      bitacc_n;      // bits in bitacc (0..31)
-    uint32_t fold_pending;  // first bit of a fold pair
-    bool     fold_have;     // a fold pair is half-collected
 } cam_pack_t;
 
 /* Called once per completed 32-bit word. */
-/* `raw_ones` is the number of PRE-FOLD LSB ones among exactly the pixels that
- * produced this word — 0..64 folded, 0..32 not, and 0 when the caller passed
- * no cam_raw_t.
+/* `raw_ones` is the number of LSB ones among exactly the pixels that
+ * produced this word — 0..32, and 0 when the caller passed no cam_raw_t.
  *
  * ⚠ It is a parameter and not a field the callback reads back out of the
  * cam_raw_t, which is what it used to be. The callback is reached through a
@@ -48,32 +44,15 @@ typedef struct {
  * dependency, and the extractor keeps the whole monitor in locals. */
 typedef void (*cam_emit_fn)(uint32_t word, uint32_t raw_ones, void *ctx);
 
-/* ── PRE-FOLD monitor (2026-08-26) ─────────────────────────────────────────
- *
- * Everything camera.c publishes about the BIT stream — bias, mini-run σ,
- * lag-1..4 autocorrelation — is measured on the words the extractor EMITS, i.e.
- * after the XOR fold. The pixel-domain diagnostics (mean_pixel_level,
- * zero_diff) are pre-fold because they ride out of here separately. Between the
- * two, the raw LSB stream was unmonitored, and that is where a degrading sensor
- * shows up first: on 2026-08-26 a node running fold-off read bias 0,4934,
- * mini-run σ 1,7233 and lag-1..4 autocorr 0,0234 while its folded peers sat at
- * 0,49994 / 1,0080 / 0,0005. Seeing those numbers required flashing a
- * fold-off image — the instrument could not report on its own front end.
- *
- * This struct closes that. It is INTEGER-ONLY on purpose: the extractor is the
- * hot loop and stays free of soft-float, so σ is reduced from the sums at
- * publish time in camera.c, not here.
- *
- * `bits` counts PIXELS, one raw LSB each, fold or no fold. With the fold off
- * the raw stream and the emitted stream are the same bits, and the two sets of
- * statistics must then agree — which is a free consistency check.
- *
+/* Bit-stream monitor. INTEGER-ONLY: the extractor stays free of soft-float.
+ * `bits` counts pixels, one LSB each. The emitted words ARE those bits `[D65]`,
+ * so ones in the monitor and popcount of the words must agree.
  * NULL disables it at no cost beyond one branch per call. */
 #define CAM_RAW_MINIRUN_BITS 3200u   /* == MINIRUN_BITS in camera.c */
 
 typedef struct {
-    uint64_t ones;       /* pre-fold LSB ones                                  */
-    uint64_t bits;       /* pre-fold bits == pixels consumed                   */
+    uint64_t ones;       /* LSB ones                                           */
+    uint64_t bits;       /* bits == pixels consumed                            */
     uint32_t run_ones;   /* ones in the mini-run being filled                  */
     uint32_t run_bits;   /* bits in the mini-run being filled                  */
     uint32_t mr_n;       /* completed mini-runs                                */
@@ -91,14 +70,8 @@ typedef struct {
      * `prev`/`have_prev`, and V = trans + 1 recovers the count in one add.
      *
      * ⚠ `want_runs` gates it because it is NOT free: the bulk loop pays about
-     * nine more ops per four pixels, roughly doubling the pre-fold monitor,
-     * and this loop is compute-bound under measurement load (D25). It is armed
-     * at a stats reset and never mid-window — toggling it while a window is
-     * open leaves `prev` stale against the bits already consumed and costs one
-     * spurious transition, so the ratio trans/bits would describe two
-     * different spans.
-     * ⚠ With the fold OFF the raw stream IS the emitted stream, so this counts
-     * transitions of the measured bits themselves. */
+     * nine more ops per four pixels, and this loop is compute-bound under
+     * measurement load (D25). Armed at a stats reset, never mid-window. */
     uint64_t trans;      /* adjacent pre-fold bit pairs that differ            */
     uint32_t prev;       /* last pre-fold bit seen (0/1)                       */
     bool     have_prev;  /* false only before the very first bit of a window   */
@@ -126,11 +99,11 @@ typedef struct {
  * ⚠ *out_any is only ever tested against zero. The reference ORs the byte
  * differences and the fast path ORs the XORs; those are different numbers but
  * they are zero on exactly the same frames, which is the whole contract. */
-void cam_extract_ref (const uint8_t *a, const uint8_t *b, uint32_t n, bool fold,
+void cam_extract_ref (const uint8_t *a, const uint8_t *b, uint32_t n,
                       cam_pack_t *st, cam_emit_fn emit, void *ctx,
                       uint32_t *out_zeros, uint32_t *out_any, uint32_t *out_psum,
                       cam_raw_t *raw);
-void cam_extract_fast(const uint8_t *a, const uint8_t *b, uint32_t n, bool fold,
+void cam_extract_fast(const uint8_t *a, const uint8_t *b, uint32_t n,
                       cam_pack_t *st, cam_emit_fn emit, void *ctx,
                       uint32_t *out_zeros, uint32_t *out_any, uint32_t *out_psum,
                       cam_raw_t *raw);

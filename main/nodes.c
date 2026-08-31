@@ -496,13 +496,13 @@ static void calibrate_master(int budget_ms)
     bool ok = camera_calibrate(budget_ms, cal_abort_cb, s_cal);
     N->cam_exp      = s_cal->exposure;
     N->cam_gain     = (uint16_t)s_cal->gain;
-    N->cam_fold     = s_cal->xor_fold ? 1 : 0;
+    N->cam_fold     = 0;
     N->cam_bias     = (float)s_cal->bias;
     N->cam_cal_mbit = (float)s_cal->mbit_per_sec;
     N->cam_cal_ok   = ok ? 1 : 0;
-    printf("master: cal exposure=%lu gain=%lu fold=%d %s (%lu ms, %d steps)\n",
+    printf("master: cal exposure=%lu gain=%lu %s (%lu ms, %d steps)\n",
            (unsigned long)s_cal->exposure, (unsigned long)s_cal->gain,
-           (int)s_cal->xor_fold, ok ? "" : "(no gated setting -- kept previous)",
+           ok ? "" : "(no gated setting -- kept previous)",
            (unsigned long)s_cal->elapsed_ms, s_cal->nsteps);
 }
 
