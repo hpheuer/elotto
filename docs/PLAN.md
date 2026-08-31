@@ -36,9 +36,11 @@ Cadence ≈ drift resolution + insertion overhead + sample size for each centrin
 ### 2.3 z, ranking, results
 
 - **Stored z is always RAW** (the combined Σz/√k). `z_score` is the archive; **`z_ctr` is the
-  statistic** after block centring (§3.1). Ranking key is z plus concordance `[D65]`.
+  statistic** after block centring (§3.1). Ranking key is z plus concordance `[D65]`, each
+  channel divided by **that item's block σ** `[D68]`. Z* **is** the key. Scoring centres
+  per node over its own span, then the same mix `[D69]`.
 - **Results:** Top-5, Bottom-5 (`Z*`, `Z`, `Conc`), jump board, soft-down origins. `drift_t` on
-  the results screen.
+  the results screen. `/loops` carries `rank_sig_p` / `rank_sig_c` per block.
 
 ### 2.4 Export and API
 

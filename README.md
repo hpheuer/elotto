@@ -19,7 +19,8 @@ noise** using
 A home-built GCP/PEAR-style instrument: each node draws bits from its **own** OV5647 (never shared).
 Frame-pair diff → LSB → segments of 224 bits → Stouffer z. LSB bits as measured `[D65]`.
 Up to four nodes combine as `Σz/√k` for the nodes that answered that run. Ranking is
-**block-centred** z plus concordance (`?wpre=`).
+**block-centred** z plus concordance (`?wpre=`), Z* in units of that block's σ `[D68]`.
+Scoring uses the same per-node centre `[D69]`.
 The HTML page shows the number or combination being measured. Sessions are unattended `[D66]`;
 do not pool with old `focus=on` archives.
 

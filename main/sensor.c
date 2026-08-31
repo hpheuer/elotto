@@ -288,8 +288,11 @@ static void nth_combination(const uint8_t *pool, int n, int r, int k, uint8_t *o
 // numbers enter the pool, never the Phase-2 statistics measured on them.
 // A session whose pool choice must be trusted on its own wants several full
 // random passes; it must NOT go back to repeats in place (onset is the payload).
-static void score_one_run(bool *ok, double *z, double *zcn);
-static void score_build_keys(const double *zc, const double *zcc,
+static void score_one_run(bool *ok, float znode[MAX_NODES],
+                          float zhw[MAX_NODES], uint8_t *mask);
+static void score_build_keys(const float zn[][MAX_NODES],
+                             const float hw[][MAX_NODES],
+                             const uint8_t *mask,
                              const bool *scored, int max_val, double *scores);
 static void   center_block(int block_idx);  // forward: publish_valid centres the OPEN block
 
@@ -457,8 +460,8 @@ bool results_row_z(int j, RunResult *out_row, float out_z[MAX_NODES],
 }
 
 /* Running pass sums over RANKED items only (k > 0, !skip_rank). Ranking and
- * ranks recompute from results[] after every valid item so studentized
- * Top/Bottom track the live mean/σ rather than an early snapshot. */
+ * ranks recompute from results[] after every valid item so Top/Bottom track
+ * the live block-σ key rather than an early snapshot. */
 static double s_pass_sum, s_pass_sumsq;
 static int    s_pass_n;
 
@@ -492,6 +495,19 @@ static int s_blocks_centred;
  * them and the UI marks the tables, because "provisional" here means the VALUES
  * will change, not that they are meaningless. */
 static bool s_open_centred;
+
+/* Per-block ranking σ (D68). Indexed by results[].block. Frozen at close_block
+ * so compaction can drop the rows and rank_key() still divides by the σ of the
+ * WHOLE block, not of the surviving extremes. The open block is recomputed
+ * from the live rows each time the tables refresh. PSRAM: LOOP_HIST × ~16 B.
+ * ⚠ NOT loops_done / loop_hist: an aborted block is centred and ranked without
+ * a /loops row, and still needs a σ. */
+typedef struct {
+    float    sig_p;    // sample σ of z_ctr over the block; 0 = unknown
+    float    sig_c;    // sample σ of zc_ctr (nonzero items); 0 = unknown
+    uint8_t  frozen;   // 1 = closed (or aborted-and-centred); do not recompute
+} BlockRankSig;
+static BlockRankSig *s_bsig;
 
 /* Consecutive clean blocks while a node is soft_down (sticky clear). */
 static uint8_t s_soft_clean[MAX_NODES];
@@ -554,10 +570,16 @@ static void score_and_build_pool(int max_val, int pool_size, uint8_t *pool,
     double scores[51] = {0};
     bool   skip[51]   = {false};
     bool   scored[51] = {false};   // this pass produced a usable z (not void)
-    /* z and concordance per candidate (D65). Held to the end of the pass
-     * because the key needs the pass's own mean and σ per channel. */
-    double zc[51], zcc[51];
-    for (int i = 0; i < 51; i++) { zc[i] = 0.0; zcc[i] = NAN; }
+    /* Per-node archive for this scoring span (D69). Function-static: this
+     * is ~1,6 KB and elotto_task's stack is 8 KB. Held to the end because
+     * the key is built like the pass — per-node means, then combine, then mix. */
+    static float zn[51][MAX_NODES];
+    static float hw[51][MAX_NODES];
+    uint8_t smask[51];
+    for (int i = 0; i < 51; i++) {
+        smask[i] = 0;
+        for (int n = 0; n < MAX_NODES; n++) zn[i][n] = hw[i][n] = NAN;
+    }
     if (n_keep > pool_size) n_keep = pool_size;
     for (int i = 0; i < n_keep; i++)
         if (keep[i] >= 1 && keep[i] <= max_val) skip[keep[i]] = true;
@@ -596,15 +618,15 @@ static void score_and_build_pool(int max_val, int pool_size, uint8_t *pool,
         // per number (session run_segments): genuine onset, held once.
         focus_show_number(k, euro_pool);
         bool ok = false;
-        score_one_run(&ok, &zc[k], &zcc[k]);
+        score_one_run(&ok, zn[k], hw[k], &smask[k]);
         scored[k] = ok;
         g_status.scoring_done++;
         g_status.elapsed_ms = elapsed_ms_now();
         run_gap_ms(gap_for());
     }
-    /* Every candidate measured, so the pass's own mean and σ per channel exist:
-     * build the keys. Before this point scores[] is empty by construction. */
-    score_build_keys(zc, zcc, scored, max_val, scores);
+    /* Every candidate measured: per-node means exist, build the keys.
+     * Before this point scores[] is empty by construction. */
+    score_build_keys(zn, hw, smask, scored, max_val, scores);
 
     /* The kept numbers take the first slots, carrying the score that chose them
      * (they were not re-measured, so there is no new one to carry). */
@@ -836,7 +858,8 @@ static int measure_window(WindowMeas *w)
  * positive z, and under HIGH every negative one — so a camera that dropped one
  * run would steer which numbers enter the pool. The caller excludes void
  * candidates from selection instead. */
-static void score_one_run(bool *ok, double *z, double *zcn)
+static void score_one_run(bool *ok, float znode[MAX_NODES],
+                          float zhw[MAX_NODES], uint8_t *mask)
 {
     WindowMeas m;
     int k = measure_window(&m);
@@ -847,55 +870,105 @@ static void score_one_run(bool *ok, double *z, double *zcn)
      * scoring windows too, tagged with the 'M' sequence. */
     camera_winlog_push(0);
     if (ok) *ok = (k > 0);
-    *z  = (k > 0) ? m.z  : 0.0;
-    if (zcn) *zcn = (k > 0 && m.zc != 0.0) ? m.zc : NAN;
+    if (mask) *mask = (k > 0) ? m.mask : 0;
+    for (int i = 0; i < MAX_NODES; i++) {
+        znode[i] = m.have[i]  ? (float)m.znode[i] : NAN;
+        zhw[i]   = m.haveh[i] ? (float)m.zhw[i]   : NAN;
+    }
 }
 
-/* Scoring key = pass key: z plus BOTH LSB channels, the LSB
- * half split evenly between them (D58) — the same shape rank_key() uses.
+/* Scoring key = pass key (D69): per-node centre over this scoring span, then
+ * Stouffer / concordance, then the same mix rank_key() uses.
  *
- * ⚠ The pass standardises each channel on ITS OWN candidates, because no block
- * mean exists yet: this is the scoring pass, the first measurements of the
- * session (D48). That is what makes the LSB channels usable here at all —
- * uncentred they rank NODES, not numbers. */
-static void score_build_keys(const double *zc, const double *zcc,
+ * ⚠ There is no /loops block here — a scoring run is not an item. The span
+ * of this function is the block: each node's mean is over the numbers it
+ * actually answered. Uncentred LSB ranks NODES (D48); dropping the loudest
+ * RAW node before that centre dropped the camera on the bright rung, not
+ * the one with the real number-to-number jump. */
+static void score_build_keys(const float zn[][MAX_NODES],
+                             const float hw[][MAX_NODES],
+                             const uint8_t *mask,
                              const bool *scored, int max_val, double *scores)
 {
-    /* p = concordance weight, 1-p = z. Same shape as rank_key() (D65). */
+    double mz[MAX_NODES] = {0}, mhw[MAX_NODES] = {0};
+    int    nz[MAX_NODES] = {0}, nhw[MAX_NODES] = {0};
+    bool   okz[MAX_NODES] = {false}, okhw[MAX_NODES] = {false};
+    for (int k = 1; k <= max_val; k++) {
+        if (!scored[k]) continue;
+        for (int i = 0; i < MAX_NODES && i < g_status.node_count; i++) {
+            if (!isnan((double)zn[k][i])) { mz[i]  += (double)zn[k][i]; nz[i]++; }
+            if (!isnan((double)hw[k][i])) { mhw[i] += (double)hw[k][i]; nhw[i]++; }
+        }
+    }
+    for (int i = 0; i < MAX_NODES; i++) {
+        if (nz[i]  >= 2) { mz[i]  /= (double)nz[i];  okz[i]  = true; }
+        if (nhw[i] >= 2) { mhw[i] /= (double)nhw[i]; okhw[i] = true; }
+    }
+
+    double zc[51], zcc[51];
+    for (int k = 0; k <= max_val && k < 51; k++) { zc[k] = NAN; zcc[k] = NAN; }
+    for (int k = 1; k <= max_val; k++) {
+        if (!scored[k]) continue;
+        double sum = 0.0;
+        int    kk  = 0;
+        double zhwv[MAX_NODES];
+        bool   hwh[MAX_NODES];
+        for (int i = 0; i < MAX_NODES; i++) {
+            zhwv[i] = 0.0;
+            hwh[i]  = false;
+            if (!(mask[k] & (1u << i))) continue;
+            if (!isnan((double)zn[k][i])) {
+                sum += (double)zn[k][i] - (okz[i] ? mz[i] : 0.0);
+                kk++;
+            }
+            if (!isnan((double)hw[k][i])) {
+                zhwv[i] = (double)hw[k][i] - (okhw[i] ? mhw[i] : 0.0);
+                hwh[i]  = true;
+            }
+        }
+        zc[k]  = (kk > 0) ? sum / sqrt((double)kk) : NAN;
+        zcc[k] = conc_stouffer(zhwv, hwh, MAX_NODES);
+        if (zcc[k] == 0.0) zcc[k] = NAN;   /* k<2 or all halves disagreed: no conc */
+    }
+
+    /* p = concordance weight, 1-p = z. Same mix as rank_key() (D65/D68).
+     * σ is this scoring span's own, analogue of block σ. */
     double p = g_status.pre_w;
     double a = 1.0 - p;
     if (a < 0.0) a = 0.0;
     double norm = sqrt(a * a + p * p);
     if (!(norm > 0.0)) norm = 1.0;
 
-    double m[2] = {0}, s[2] = {1.0, 1.0};
+    double s[2] = {1.0, 1.0};
     const double *srcs[2] = { zc, zcc };
     for (int ch = 0; ch < 2; ch++) {
-        const double *src = srcs[ch];
-        if (!src) continue;
         double sum = 0.0, sq = 0.0;
         int    n   = 0;
         for (int k = 1; k <= max_val; k++) {
-            if (!scored[k] || isnan(src[k])) continue;
-            sum += src[k]; sq += src[k] * src[k]; n++;
+            if (!scored[k] || isnan(srcs[ch][k])) continue;
+            sum += srcs[ch][k]; sq += srcs[ch][k] * srcs[ch][k]; n++;
         }
         if (n < 2) continue;
-        m[ch] = sum / n;
-        double v = (sq - n * m[ch] * m[ch]) / (n - 1);
+        double mean = sum / n;
+        double v = (sq - n * mean * mean) / (n - 1);
         if (v > 1e-9) s[ch] = sqrt(v);
     }
 
     for (int k = 1; k <= max_val; k++) {
         if (!scored[k]) { scores[k] = 0.0; continue; }
-        double v[2];
-        const double raw[2] = { zc[k], zcc ? zcc[k] : NAN };
-        for (int ch = 0; ch < 2; ch++) {
-            if (isnan(raw[ch])) { v[ch] = 0.0; continue; }
-            v[ch] = (raw[ch] - m[ch]) / s[ch];
-            if (v[ch] >  ENT_Z_CLAMP) v[ch] =  ENT_Z_CLAMP;
-            if (v[ch] < -ENT_Z_CLAMP) v[ch] = -ENT_Z_CLAMP;
+        double vz = 0.0, vc = 0.0;
+        if (!isnan(zc[k]) && s[0] > 0.0) {
+            vz = zc[k] / s[0];
+            if (vz >  ENT_Z_CLAMP) vz =  ENT_Z_CLAMP;
+            if (vz < -ENT_Z_CLAMP) vz = -ENT_Z_CLAMP;
         }
-        scores[k] = (a * v[0] + p * v[1]) / norm;
+        if (!isnan(zcc[k]) && s[1] > 0.0) {
+            vc = zcc[k] / s[1];
+            if (vc >  ENT_Z_CLAMP) vc =  ENT_Z_CLAMP;
+            if (vc < -ENT_Z_CLAMP) vc = -ENT_Z_CLAMP;
+        }
+        if (p <= 0.0) scores[k] = vz;
+        else          scores[k] = (a * vz + p * vc) / norm;
     }
 }
 
@@ -937,40 +1010,6 @@ static double compute_v_eff(void)
  * place — mixing the two silently would be indistinguishable from a result. */
 static double rank_z(const RunResult *r) { return (double)r->z_ctr; }
 
-/* ── The ranking key: z and concordance, weighted ────────
- *
- * key = ((1−p)·z_ctr/σ_p + p·zc_ctr/σ_c) / √((1−p)² + p²)
- *
- * p = ?wpre= is the concordance weight; 1-p is z. p=0 is z alone.
- *   z_ctr  — combined window z (D65).
- *   zc_ctr — concordance (D56): half-window agreement, loudest node dropped.
- * ⚠ Each channel is divided by ITS OWN measured σ (rank_sig_p / rank_sig_c).
- * ⚠ Clamped. See ENT_Z_CLAMP — the archive keeps the real value. */
-double rank_key(const RunResult *r)
-{
-    /* p = concordance weight (D65). p=0 is z alone, the control arm. */
-    double p = g_status.pre_w;
-    if (p <= 0.0) return (double)r->z_ctr;
-
-    double sz = g_status.rank_sig_p;
-    if (!(sz > 0.0)) sz = 1.0;
-    double sc = g_status.rank_sig_c;
-    if (!(sc > 0.0)) sc = 1.0;
-
-    double z = (double)r->z_ctr / sz;
-    if (z >  ENT_Z_CLAMP) z =  ENT_Z_CLAMP;
-    if (z < -ENT_Z_CLAMP) z = -ENT_Z_CLAMP;
-
-    double zc = (double)r->zc_ctr / sc;
-    if (zc >  ENT_Z_CLAMP) zc =  ENT_Z_CLAMP;
-    if (zc < -ENT_Z_CLAMP) zc = -ENT_Z_CLAMP;
-
-    double a = 1.0 - p;
-    double n = sqrt(a * a + p * p);
-    if (!(n > 0.0)) return (double)r->z_ctr;
-    return (a * z + p * zc) / n;
-}
-
 static bool result_ranked(const RunResult *r)
 {
     return r && r->k > 0 && !r->skip_rank;
@@ -997,6 +1036,94 @@ static bool result_centred(const RunResult *r)
     return b < s_blocks_centred || (s_open_centred && b == s_blocks_centred);
 }
 
+/* σ of z_ctr / zc_ctr over one block's centred items. Frozen at close so
+ * compaction can drop the rows. skip_rank items still enter: the σ describes
+ * the instrument of that span, not the ranking set. */
+static void block_sig_compute(int block_idx, bool freeze)
+{
+    if (block_idx < 0 || block_idx >= LOOP_HIST || !s_bsig) return;
+    BlockRankSig *B = &s_bsig[block_idx];
+    if (B->frozen && !freeze) return;
+
+    double psum = 0.0, psq = 0.0, csum = 0.0, csq = 0.0;
+    int    pn = 0, cn = 0;
+    int ntot = g_status.runs_completed;
+    if (ntot > NUM_RUNS) ntot = NUM_RUNS;
+    for (int j = 0; j < ntot; j++) {
+        const RunResult *r = &g_status.results[j];
+        if ((int)r->block != block_idx || r->k == 0) continue;
+        if (!result_centred(r)) continue;
+        double z = rank_z(r);
+        psum += z; psq += z * z; pn++;
+        if (r->zc_ctr != 0.0f) {
+            double c = (double)r->zc_ctr;
+            csum += c; csq += c * c; cn++;
+        }
+    }
+    double pss = psq - (pn > 0 ? psum * psum / (double)pn : 0.0);
+    B->sig_p = (pn > 1 && pss > 0.0) ? (float)sqrt(pss / (double)(pn - 1)) : 0.0f;
+    double css = csq - (cn > 0 ? csum * csum / (double)cn : 0.0);
+    B->sig_c = (cn > 1 && css > 0.0) ? (float)sqrt(css / (double)(cn - 1)) : 0.0f;
+    if (freeze) B->frozen = 1;
+}
+
+static void block_sig_refresh_open(void)
+{
+    if (!s_open_centred) return;
+    int b = s_blocks_centred;
+    if (b < 0 || b >= LOOP_HIST || !s_bsig) return;
+    if (s_bsig[b].frozen) return;
+    block_sig_compute(b, false);
+}
+
+static void block_sig_of(const RunResult *r, double *out_p, double *out_c)
+{
+    double sz = 0.0, sc = 0.0;
+    int b = r ? (int)r->block : -1;
+    if (s_bsig && b >= 0 && b < LOOP_HIST) {
+        sz = (double)s_bsig[b].sig_p;
+        sc = (double)s_bsig[b].sig_c;
+    }
+    if (out_p) *out_p = sz;
+    if (out_c) *out_c = sc;
+}
+
+/* ── The ranking key: z and concordance, weighted, in units of BLOCK σ (D68)
+ *
+ * key = ((1−p)·z_ctr/σ_p + p·zc_ctr/σ_c) / √((1−p)² + p²)
+ *
+ * p = ?wpre=; 1-p is z. p=0 is z_ctr / σ_p of THIS item's block.
+ *   σ_p / σ_c  — that block's own sample σ, frozen at close. Session
+ *                rank_sig_p / rank_sig_c are diagnostics and do not scale this.
+ * ⚠ No block σ yet (open block under PASS_OPEN_MIN_N) → 0, do not rank on raw z.
+ * ⚠ Clamped. See ENT_Z_CLAMP — the archive keeps the real value. */
+double rank_key(const RunResult *r)
+{
+    if (!r) return 0.0;
+    double sz = 0.0, sc = 0.0;
+    block_sig_of(r, &sz, &sc);
+    if (!(sz > 0.0)) return 0.0;
+
+    double p = g_status.pre_w;
+    if (p <= 0.0) return (double)r->z_ctr / sz;
+
+    double z = (double)r->z_ctr / sz;
+    if (z >  ENT_Z_CLAMP) z =  ENT_Z_CLAMP;
+    if (z < -ENT_Z_CLAMP) z = -ENT_Z_CLAMP;
+
+    double zc = 0.0;
+    if (sc > 0.0) {
+        zc = (double)r->zc_ctr / sc;
+        if (zc >  ENT_Z_CLAMP) zc =  ENT_Z_CLAMP;
+        if (zc < -ENT_Z_CLAMP) zc = -ENT_Z_CLAMP;
+    }
+
+    double a = 1.0 - p;
+    double n = sqrt(a * a + p * p);
+    if (!(n > 0.0)) return (double)r->z_ctr / sz;
+    return (a * z + p * zc) / n;
+}
+
 /* ── What compaction left behind ──────────────────────────────────────────
  * Moments of the items pass_compact() dropped, so every pass statistic stays
  * EXACT over the whole session while results[] holds only the survivors.
@@ -1010,23 +1137,23 @@ static bool result_centred(const RunResult *r)
  * describe the TABLES (top/bottom/nearest, zmax) must not. */
 static double s_drop_sum, s_drop_sumsq;
 static int    s_drop_n, s_drop_void, s_drop_excl;
-/* The same for the two LSB channels — needed since rank_key() standardises
- * each by its measured σ. Without this, σ after a compaction would be the σ OF
- * THE SURVIVORS, which are the extremes by construction. Each keeps its own
- * count: an item can be ranked and carry neither, or carry zp_ctr and no
- * zc_ctr (fewer than two nodes survived the leave-one-out drop). */
+/* Session-wide channel σ (rank_sig_p / rank_sig_c in /status). Diagnostic
+ * only since D68 — rank_key() divides by the item's BLOCK σ, frozen at close,
+ * which compaction cannot change. These sums keep the published session σ
+ * exact over every item measured, not just the surviving extremes. */
 static double s_drop_psum, s_drop_psumsq;
 static int    s_drop_pn;
 static double s_drop_csum, s_drop_csumsq;
 static int    s_drop_cn;
 
-/* Recompute pass mean/σ/χ² and studentized Top-N / Bottom-N
- * from the ranked prefix. O(n·TOP_N) after each valid item — exact against
- * the live mean, which is the whole point of Z*. */
+/* Recompute pass mean/σ/χ² and Top-N / Bottom-N from the ranked prefix.
+ * O(n·TOP_N) after each valid item. Z* is rank_key() itself (block-σ units);
+ * rank_mean/rank_sigma of that key are diagnostics, not the table scale. */
 static void recompute_pass_ranks(void)
 {
     int ntot = g_status.runs_completed;
     if (ntot > NUM_RUNS) ntot = NUM_RUNS;
+    block_sig_refresh_open();
 
     /* Seeded with what compaction dropped, so mean/σ/χ² describe every item the
      * session measured and not just the rows still held.
@@ -1092,12 +1219,12 @@ static void recompute_pass_ranks(void)
      * Everything ABOVE runs on rank_z() and stays there: pass mean/σ/χ² are
      * instrument health on the LSB stream.
      *
-     * Everything BELOW — the three published tables — runs on rank_key().
-     * rank_mean/rank_sigma are its own moments. At ?wpre=0 the key IS z_ctr
-     * and the two pairs coincide exactly. */
-    /* First: each LSB channel's own σ, from the UNCLAMPED archive.
-     * rank_key() divides by them, so both have to be settled before the key is
-     * called below. Seeded with compaction moments for the same reason as z.
+     * Everything BELOW — the published tables — runs on rank_key() in units
+     * of the item's own block σ (D68). rank_mean/rank_sigma are moments of
+     * that already-standardised key (should sit near 0, 1). At ?wpre=0 the
+     * key is z_ctr/σ_block, so rank_* no longer equal pass_*. */
+    /* Session-wide channel σ, from the UNCLAMPED archive. Diagnostic (CSV
+     * header pre_sig/conc_sig). Seeded with compaction moments like z.
      *
      * ⚠ Two separate accumulators, not one. zp_ctr and zc_ctr are built from
      * the same bits but have different scales — the concordance takes the
@@ -1113,10 +1240,9 @@ static void recompute_pass_ranks(void)
         if (!result_ranked(r)) continue;
         /* ⚠ CENTRED BLOCKS ONLY. An UNCENTRED item still holds the raw value
          * (D8), which carries the per-node offset — on the LSB channel
-         * that offset is 20..95σ. Letting those into the σ that rank_key()
-         * divides by is a feedback loop (sawtooth in Z* on hardware 2026-08-27).
-         * The compaction seeds above are safe: pass_compact() runs after
-         * close_block(). */
+         * that offset is 20..95σ. Letting those into the published session σ
+         * is a false alarm (sawtooth 2026-08-27). rank_key() no longer reads
+         * this pair (D68); the gate stays so /status does not. */
         if (!result_centred(r)) continue;
         if (r->zp_ctr != 0.0f) {
             double pv = (double)r->zp_ctr;
@@ -1156,9 +1282,15 @@ static void recompute_pass_ranks(void)
          * have zp_ctr and no zc_ctr — the leave-one-out drop left k < 2 — so
          * the clamp count is over EITHER channel and counted once per item. */
         if (r->zp_ctr != 0.0f) pre_n++;
-        if ((r->zp_ctr != 0.0f && fabs((double)r->zp_ctr) / sp >= ENT_Z_CLAMP) ||
-            (r->zc_ctr != 0.0f && fabs((double)r->zc_ctr) / sc >= ENT_Z_CLAMP))
-            pre_clamped++;
+        {
+            double bsz = 0.0, bsc = 0.0;
+            block_sig_of(r, &bsz, &bsc);
+            if (bsz <= 0.0) bsz = sp;
+            if (bsc <= 0.0) bsc = sc;
+            if ((r->zp_ctr != 0.0f && fabs((double)r->zp_ctr) / bsz >= ENT_Z_CLAMP) ||
+                (r->zc_ctr != 0.0f && fabs((double)r->zc_ctr) / bsc >= ENT_Z_CLAMP))
+                pre_clamped++;
+        }
     }
     double kmean  = (kn > 0) ? ksum / (double)kn : 0.0;
     double kss    = ksumsq - (double)kn * kmean * kmean;
@@ -1168,10 +1300,7 @@ static void recompute_pass_ranks(void)
     g_status.pre_n        = pre_n;
     g_status.pre_clamped  = pre_clamped;
 
-    /* Subtracting the mean and dividing by σ is monotone, so it reorders
-     * nothing; it only sets the scale the UI prints.
-     *
-     * Built into LOCAL lists and published at the end: /status and
+    /* Built into LOCAL lists and published at the end: /status and
      * /results.csv read top[]/low[] from the HTTP task, and zeroing the counts
      * before refilling them let a poll land on an empty or half-built table.
      * The counts still move last, so a racing reader sees either the old list
@@ -1181,7 +1310,7 @@ static void recompute_pass_ranks(void)
 
     for (int j = 0; j < ntot; j++) {
         const RunResult *r = &g_status.results[j];
-        if (!result_ranked(r)) continue;
+        if (!result_ranked(r) || !result_centred(r)) continue;
 
         double key = rank_key(r);
         if (ltn < TOP_N || key > rank_key(&ltop[ltn - 1])) {
@@ -1756,6 +1885,12 @@ static void record_loop(double loop_mean, int loop_idx)
         memset(L, 0, sizeof(*L));
         L->mean  = (float)loop_mean;
         L->sigma = (float)g_status.loop_sigma;
+        /* Ranking scale of THIS block (D68). Frozen just before this call, so
+         * the row can say what rank_key() divided by. 0 = too few items. */
+        if (loop_idx >= 0 && loop_idx < LOOP_HIST && s_bsig) {
+            L->rank_sig_p = s_bsig[loop_idx].sig_p;
+            L->rank_sig_c = s_bsig[loop_idx].sig_c;
+        }
         L->nodes = (uint8_t)g_status.node_count;
         L->t_s   = (uint32_t)(g_status.elapsed_ms / 1000);
         // 0 when this loop skipped the sweep — g_status.cal_ms still holds the
@@ -2165,9 +2300,13 @@ static void close_block(int block_idx)
      * pairs_commit_block() clears, so both must run before it. */
     center_block(block_idx);
     /* Final from here on: the sums this block was centred from are about to be
-     * cleared, so its z_ctr will not change again. */
+     * cleared, so its z_ctr will not change again. Freeze the ranking σ now,
+     * while every row of the block is still in results[] — compaction at the
+     * round boundary would otherwise leave rank_key() dividing by the σ of
+     * the survivors. */
     if (block_idx + 1 > s_blocks_centred) s_blocks_centred = block_idx + 1;
     s_open_centred = false;              // the next block starts with nothing in it
+    block_sig_compute(block_idx, true);
     record_loop(m, block_idx);           // before the clear of the sums
     recompute_pass_ranks();              // centring moved every item in the block
     pairs_commit_block();
@@ -2248,6 +2387,10 @@ void elotto_task(void *pvParam)
     s_blocks_centred         = 0;   /* with loops_done: both count blocks, differently */
     s_open_centred           = false;
     g_status.loop_hist_n     = 0;
+    if (!s_bsig)
+        s_bsig = heap_caps_calloc(LOOP_HIST, sizeof(BlockRankSig), MALLOC_CAP_SPIRAM);
+    else
+        memset(s_bsig, 0, LOOP_HIST * sizeof(BlockRankSig));
     g_status.drift_slope     = 0.0;
     g_status.drift_t         = 0.0;
     g_status.off_first       = 0.0;
@@ -2647,7 +2790,7 @@ void elotto_task(void *pvParam)
             g_status.runs_completed = slot + 1;  // AFTER the row is complete: readers
                                                  // (/status, /results.csv) trust the rows
             g_status.items_done++;               // session progress; compaction never lowers it
-            if (k > 0) publish_valid(r);      // studentized top/low + pass health
+            if (k > 0) publish_valid(r);      // top/low + pass health
             g_status.elapsed_ms     = elapsed_ms_now();
             run_gap_ms(gap_for());
         }
@@ -2692,10 +2835,11 @@ done:
          * would rank nothing at all over a complete, correctly centred pass. */
         if (block + 1 > s_blocks_centred) s_blocks_centred = block + 1;
         s_open_centred = false;
+        block_sig_compute(block, true);
     }
     pairs_commit_block();
     publish_pair_stats();
-    recompute_pass_ranks();   /* studentized ranks from the valid prefix */
+    recompute_pass_ranks();   /* ranks from the valid prefix */
 
 finalize:
     /* Tell the nodes the session is over (D64). slave_abort() is a broadcast

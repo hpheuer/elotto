@@ -398,9 +398,8 @@ typedef struct {
      * bit stream: measured 1,06..1,28 across the four nodes on certified rungs
      * (2026-08-27), against 0,997..1,001 after adjacent-pixel XOR, and it degrades hard outside
      * them — 1,69 at mean_px 5, above 10 when over-lit. THIS field is the
-     * block-centred COMBINED z, whose sigma is rank_sig_p: measured 2,12 and
-     * 3,79 on the two sessions that carried it. rank_key() divides by that one,
-     * not by raw_sigma.
+     * block-centred COMBINED z. rank_key() divides by that block's own σ
+     * (D68), not by session rank_sig_p and not by raw_sigma.
      * ⚠ 0 means "no LSB value for this item" and reads as exactly average. */
     float      zp_ctr;
     /* Concordance z (D56): leave-one-out Stouffer of per-node half-window
@@ -414,8 +413,8 @@ typedef struct {
 /* ENT_Z_CLAMP bounds BOTH LSB terms IN THE RANKING KEY only — the archived
  * zp_ctr and zc_ctr are never clamped. 12 σ is far outside anything the null
  * produces (null extreme over 8000 items ~4,4).
- * ⚠ Bar in units of the CHANNEL'S OWN σ — rank_sig_p for zp_ctr, rank_sig_c
- * for zc_ctr — not raw z. The two sigmas differ by a factor of ~2. */
+ * ⚠ Bar in units of THAT ITEM'S BLOCK σ (D68), each channel its own —
+ * not session rank_sig_p / rank_sig_c, not raw z. */
 #define ENT_Z_CLAMP     12.0
 
 // Focus display: what is on screen right now, for
@@ -546,6 +545,11 @@ typedef struct {
 typedef struct {
     float    mean;         // combined per-run raw z mean over the loop
     float    sigma;        // combined per-run σ (== loop_sigma), ideal 1.0
+    /* Ranking scale of THIS block (D68). Sample σ of centred z_ctr / zc_ctr
+     * over the block's items, frozen at close. rank_key() divides by these,
+     * not by the session-wide rank_sig_p / rank_sig_c. 0 = too few items. */
+    float    rank_sig_p;
+    float    rank_sig_c;
     uint8_t  nodes;        // nodes contributing to this loop (master included)
     // Per node, index 0 = master. A node that did not take part leaves zeros,
     // which is distinguishable from a measured 0 by `nodes` and by sig_n == 0.
@@ -807,22 +811,20 @@ typedef struct {
     double           pre_w;               // concordance weight, ?wpre=
                                           // (0 = pure-z ranking)
     double           rank_mean;           // mean of rank_key() over ranked items
-    double           rank_sigma;          // its sample σ — what the UI's Z* and
-                                          // the nearest-mean table are built on
+    double           rank_sigma;          // its sample σ — diagnostic (D68: Z*
+                                          // IS the key, already in block-σ units)
     int              pre_n;               // ranked items that carry a LSB value
                                           // (zp_ctr != 0; zc_ctr may still be 0
                                           // on the same item — k < 2 after the
                                           // leave-one-out drop)
     int              pre_clamped;         // items pinned at the clamp in EITHER
                                           // LSB channel (counted once)
-    /* Measured σ of the two LSB channels over the ranked items, from the
-     * UNCLAMPED archive. rank_key() divides each term by its own one before
-     * weighting. 0 = not enough items yet; rank_key() then falls back to 1.0.
-     * ⚠ They are NOT interchangeable. rank_sig_p is the combined LSB z
-     * (measured 2,12 and 3,79); rank_sig_c is the concordance z, which the
-     * leave-one-out drop and the min() of the two halves make substantially
-     * smaller. Dividing one channel by the other's σ silently reweights the
-     * key — the whole reason they are two fields (D58). */
+    /* Session-wide σ of the two LSB channels over ranked items. Diagnostic
+     * (CSV pre_sig/conc_sig, /status). NOT what rank_key() divides by — that
+     * is the item's own block σ, LoopStat.rank_sig_p / rank_sig_c (D68).
+     * ⚠ They are NOT interchangeable with each other either (D58): rank_sig_c
+     * runs well below rank_sig_p because concordance takes min() of two
+     * halves and drops the loudest node. */
     double           rank_sig_p;
     double           rank_sig_c;
     double           loop_sigma;          // per-run σ of the LAST CLOSED BLOCK (1.0 = ideal)
@@ -1024,8 +1026,8 @@ void results_archive_init(void);
 bool results_row_z(int j, RunResult *out_row, float out_z[MAX_NODES],
                    float out_p[MAX_NODES], float out_w[MAX_NODES]);
 
-/* The combined ranking key of one row: block-centred z and optional LSB z,
- * weighted by pre_w and rescaled to unit variance under H₀. The ONE accessor
+/* The combined ranking key of one row, in units of that item's own block σ
+ * (D68): block-centred z and concordance, weighted by pre_w. The ONE accessor
  * every table and every survivor choice goes through, for the same reason
  * rank_z() is the only reader of z_ctr. */
 double rank_key(const RunResult *r);

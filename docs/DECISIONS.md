@@ -10,8 +10,8 @@ entries after that commit keep enough text that the decision survives. A rule an
 be changed together — a rule whose evidence has moved on is worse than no rule.
 
 ⚠ Everything here is dated. A measurement describes the instrument that made it; see D1.
-**Live instrument is D65** (LSB z + concordance). Earlier ranking-key formulae are evidence,
-not the current key.
+**Live instrument is D65** (LSB z + concordance). **Live ranking scale is D68** (block σ).
+Earlier ranking-key formulae are evidence, not the current key.
 
 ---
 
@@ -26,6 +26,7 @@ Sessions from different generations must never be pooled. The boundaries so far:
 | 2026-08-13 | block centring introduced | raw vs centred z; recompute both the same way or do not pool |
 | 2026-08-18 | extraction speed-up 3,42 → 5,71 Mbit/s | same nominal `?run=`, 1,85× the bits per item |
 | 2026-08-19 | onset flush on every window | the bit-to-item mapping changed |
+| 2026-08-31 | ranking key uses block σ (D68) | tables; `z_raw`/`z_ctr` still pool |
 
 Also: attended (`focus=1`) and unattended sessions are separate arms and are never pooled.
 Post-D66 is always unattended (`focus=off`). v3 and any v2.x session are separate instruments
@@ -647,9 +648,10 @@ boundary to the 100 most extreme `|rank_key|` (both tails). Live as of D65: z + 
 **Entscheidung:** Gone. Pass mean/σ/χ² stay as instrument health.
 
 ### D58 — Own-σ per ranking channel (2026-08-29)
-**Entscheidung (still live):** each ranking term is standardised by **its own** measured σ
-(`rank_sig_p` for z, `rank_sig_c` for concordance). One shared σ silently reweights the key.
-The three-term key is **superseded by D65**. Z* studentises on measured `rank_sigma`.
+**Entscheidung (still live, scale moved by D68):** each ranking term is standardised by **its own**
+measured σ. One shared σ silently reweights the key. Since D68 that σ is the item's **block** σ,
+not session `rank_sig_p` / `rank_sig_c`. Z* **is** the key; it no longer studentises on session
+`rank_sigma`.
 
 ### D59 — Gain 256 tried and reverted; slave0's light was the real fix (2026-08-30)
 **Entscheidung:** `CONFIG_ELOTTO_CAM_REG_GAIN` stays at **1023**. The operator's physical
@@ -997,3 +999,32 @@ longer started.
 
 **Pooling:** new sessions are `unlimited=on`. Do not pool with old single-pass (`unlimited=off`)
 without splitting on `round` (D1).
+
+### D68 — Ranking key in units of block σ (2026-08-31)
+**Entscheidung:** `rank_key()` divides z and concordance by **that item's own block σ**, frozen
+at `close_block()` (and on abort of a centred open block). Z* in the UI **is** the key. Session
+`rank_sig_p` / `rank_sig_c` / `rank_mean` / `rank_sigma` stay as diagnostics and do not scale
+the tables. Scoring self-standardises on its own span; per-node centring of that span is D69.
+
+**Warum:** a sweep can put the cameras on a different rung. Session-σ then mixes two instruments
+into one Top-5: a loud new block inflates the denominator and crushes older extremes; at
+`wpre>0` it can reorder two already-measured items whose Z/Conc never moved. Blocks exist to
+stop that. Sweeps stay — without them the bits stop being bits. `/loops` carries
+`rank_sig_p` / `rank_sig_c` per row so the scale is auditable.
+
+**Pooling:** tables post-D68 do not pool with pre-D68 tables. `z_raw` / `z_ctr` still do.
+
+### D69 — Scoring centres per node, then concordance, like the pass (2026-08-31)
+**Entscheidung:** `score_build_keys()` keeps per-node z / half-window z for the scoring span,
+subtracts each node's own mean over the numbers it answered, Stouffer-recombines over the same
+`have_mask`, then `conc_stouffer` on the **centred** halves. Mix and σ-scale unchanged (this
+span is the block). `score_one_run` no longer throws the per-node values away.
+
+**Warum:** on combined raw z, `(Z − mean_Z)` equals per-node centring only when every number
+has the same k. Concordance was worse: it dropped the loudest **raw** node — the camera sitting
+on the bright rung (offsets 20..95σ) — so that node never voted on the pool, even with a real
+number-to-number jump. After centring it is often the quietest. The pass already did centre-then-drop;
+scoring did drop-then-centre. Same key in the comments, different machine.
+
+**Pooling:** pools chosen post-D69 do not pool with pre-D69 pools (D48 split still applies).
+Pass `z_ctr` is unchanged.

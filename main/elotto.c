@@ -1010,8 +1010,8 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "document.getElementById('resCardTrip').style.display='none';"
 "return;}"
 "lastDisplayed=d.top;"
-// Z* studentizes the RANKING KEY, so it takes the key's own moments;
-// rank_mean/rank_sigma equal pass_mean/pass_sigma exactly at wpre=0.
+// Z* IS the ranking key (block-σ units, D68). Session rank_mean/rank_sigma
+// are diagnostics and must not rescale the cell.
 "var st={m:d.rank_mean||0,s:d.rank_sigma||0,p:d.pre_w||0,"
 "sp:d.rank_sig_p||0,sc:d.rank_sig_c||0};"
 "document.getElementById('resTitle').innerHTML="
@@ -1025,7 +1025,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "showWsig(d);"
 "showTrip(d);"
 "}"
-// One column of numbers: Z*, the studentized ranking key. Z / P and the
+// One column of numbers: Z*, the ranking key in block-σ units. Z / Conc and
 // uncorrected p live in the hover text built below.
 /* ⚠ The cell has TWO sources and they refresh at different rates: the
    /status poll re-renders the whole table every second, while the per-node
@@ -1051,7 +1051,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "function renderRunTable(headId,bodyId,res,isEuro,d,st){"
 "document.getElementById(headId).innerHTML="
 "'<tr><th>#</th><th>Item</th>'"
-"+(st?'<th title=\"studentized ranking key\">Z*</th>'"
+"+(st?'<th title=\"ranking key in units of its own block σ\">Z*</th>'"
 "+'<th title=\"block-centred combined z\">Z</th>'"
 "+'<th title=\"leave-one-out half-window concordance\">Conc</th>':'')"
 "+'<th>Numbers</th>'"
@@ -1066,7 +1066,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "for(var j=0;j<r.euro.length;j++)"
 "estr+='<span class=\"num euro\">'+r.euro[j]+'</span>';"
 "var z=r.z,kk=(r.key===undefined?(r.z_ctr===undefined?z:r.z_ctr):r.key);"
-"var zs=(st&&st.s>0)?(kk-st.m)/st.s:0;"
+"var zs=kk;"
 "var itm=(d.unlimited&&r.round)?(r.run+'/'+r.round):r.run;"
 "var zTxt=(r.z_ctr===undefined||r.z_ctr===null)?z.toFixed(2):r.z_ctr.toFixed(2);"
 "var concTxt=(r.zc===undefined||r.zc===null)?'\\u2014':r.zc.toFixed(2);"
@@ -1316,7 +1316,8 @@ static esp_err_t status_handler(httpd_req_t *req)
         "\"pass_n_excl\":%d,\"pass_n_open\":%d,"
         "\"v_eff\":%.4f,\"flush_timeouts\":%lu,"
         /* Ranking-key moments. ⚠ rank_mean/rank_sigma are of rank_key()
-         * and pass_mean/pass_sigma those of z; they coincide at pre_w = 0. */
+         * (already in block-σ units, D68). pass_mean/pass_sigma are of z.
+         * They no longer coincide at pre_w = 0. */
         "\"pre_w\":%.3f,"
         "\"pre_n\":%d,\"pre_clamped\":%d,"
         "\"rank_sig_p\":%.4f,\"rank_sig_c\":%.4f,"
@@ -1640,11 +1641,13 @@ static esp_err_t loops_handler(httpd_req_t *req)
          * per block, so it is not reconstructible from constants either. */
         len = snprintf(buf, sizeof(buf),
             "%s{\"loop\":%d,\"t_s\":%lu,\"raw_m\":%.4f,"
-            "\"mean\":%.4f,\"sigma\":%.4f,\"cal_ms\":%d,"
+            "\"mean\":%.4f,\"sigma\":%.4f,"
+            "\"rank_sig_p\":%.4f,\"rank_sig_c\":%.4f,\"cal_ms\":%d,"
             "\"win_ms\":%.1f,\"gap_ms\":%.1f,\"clear_sig\":%.3f,\"quar\":%d,"
             "\"nodes\":%d,\"n\":[",
             i ? "," : "", i + 1, (unsigned long)L->t_s,
-            L->mean_n[0], L->mean, L->sigma, (int)L->cal_ms,
+            L->mean_n[0], L->mean, L->sigma,
+            (double)L->rank_sig_p, (double)L->rank_sig_c, (int)L->cal_ms,
             L->win_ms, L->gap_ms, L->clear_sig, (int)L->quarantined, nn);
         send_chunk(req, buf, len, sizeof(buf));
         for (int k = 0; k < nn; k++) {
@@ -1687,15 +1690,16 @@ static const char *de_num(char *dst, size_t cap, double v, int prec)
 }
 
 /* One summary row: which group it belongs to, its rank inside that group, and
- * both views of its z. `z_std` is the studentized value against the pass
- * statistics in the header — for the `zero` group it IS the selection key, so
- * omitting it would leave the reader unable to check the choice. */
+ * both views of its z. `z_std` is rank_key() (block-σ units, D68) — the
+ * selection key, so a reader can check the choice without the live UI. */
 static int csv_row(char *buf, size_t cap, const char *group, int rank,
                    const RunResult *r, double mean, double sigma)
 {
     char zb[32], sb[32], ab[32], kb[32];
-    /* Studentized against the moments of the KEY THAT ORDERED THIS TABLE. */
-    double zs = (sigma > 0.0) ? (rank_key(r) - mean) / sigma : 0.0;
+    /* Z* = rank_key() (block-σ units, D68). mean/sigma kept in the
+     * signature so callers do not have to change; they no longer scale this. */
+    (void)mean; (void)sigma;
+    double zs = rank_key(r);
     return snprintf(buf, cap,
         "%s;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%s;%s;%s;%d;%d;%s\n",
         group, rank, r->index,
@@ -1706,7 +1710,7 @@ static int csv_row(char *buf, size_t cap, const char *group, int rank,
         de_num(sb, sizeof(sb), zs, 4),
         de_num(ab, sizeof(ab), (double)r->z_ctr, 4),
         (int)r->block, (int)r->k,
-        de_num(kb, sizeof(kb), rank_key(r), 4));
+        de_num(kb, sizeof(kb), zs, 4));
 }
 
 /* ── /results.csv GET – the three published groups; ?all=1 for everything ──
@@ -1726,9 +1730,9 @@ static int csv_row(char *buf, size_t cap, const char *group, int rank,
  * German CSV throughout (user decision): ';' separator, ',' decimal. Fixed
  * columns for both modes (n6 = 0, e1 = e2 = 0 where not applicable) so a
  * parser never has to sniff the mode from the width. `z_raw` is exactly
- * results[].z_score; the studentized view is (z_raw − pass_mean)/pass_sigma
- * with the pass_* values from the header line, so both views are derivable
- * from either file forever. */
+ * results[].z_score; `z_std` / `key` are rank_key() in that item's block-σ
+ * units (D68). pass_mean/pass_sigma in the header remain the session z
+ * health numbers and do not reconstruct Z*. */
 static esp_err_t results_csv_handler(httpd_req_t *req)
 {
     /* 768: the header line alone runs past 470 characters with the German
@@ -1916,13 +1920,11 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
         "group;rank;item;n1;n2;n3;n4;n5;n6;e1;e2;z_raw;z_std;z_ctr;block;k;"
         "key\n");
     send_chunk(req, buf, len, sizeof(buf));
-    /* Prefer the live published moments over the recomputed near-mean.
-     * ⚠ These are the moments of the RANKING KEY, because z_std in this file
-     * studentizes the key — the three groups below are the key's extremes and
-     * its middle. At ?wpre=0 rank_* equal pass_*. */
+    /* z_std in this file is rank_key() (block-σ units, D68). mean/sigma are
+     * unused by csv_row; kept so the three groups stay one code path. */
     if (g_status.pass_n_valid > 0) {
-        mean  = (g_status.pre_w > 0.0) ? g_status.rank_mean  : g_status.pass_mean;
-        sigma = (g_status.pre_w > 0.0) ? g_status.rank_sigma : g_status.pass_sigma;
+        mean  = g_status.rank_mean;
+        sigma = g_status.rank_sigma;
     }
 
     int tn = g_status.result_count; if (tn > TOP_N) tn = TOP_N;

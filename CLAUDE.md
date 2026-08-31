@@ -79,9 +79,10 @@ across rounds a combination can recur — identity is **(round, index)**.
 **Phase 0 — scoring.** Each number 1..N gets **exactly one long run** (the session window) in a
 fresh Fisher–Yates order. Direction pre-registered: `?score=high|low|abs`, default `high` — it only
 picks the pool. **The scoring key is the pass key** — z and concordance at the session's
-`?wpre=` `[D48]``[D65]`; `score_build_keys()` is the only place a scoring key is built.
-⚠ The scoring pass centres and standardises itself per channel, on its own candidates — no block
-mean exists yet `[D48]`.
+`?wpre=` `[D48]``[D65]``[D69]`; `score_build_keys()` is the only place a scoring key is built.
+⚠ Scoring has no `/loops` block; the scoring span **is** the block. Per-node centre over the
+numbers each camera actually answered, then concordance (loudest **centred** node dropped), then
+the same mix as the pass. σ is that span's own `[D69]`. Uncentred LSB ranks nodes `[D48]`.
 ⚠ `?wpre=0` is z alone.
 ⛔ Never repeat a target in place, in any form `[D5]`.
 
@@ -137,12 +138,12 @@ as backstop for a compaction that cannot allocate.
 ---
 
 ## The ranking channels
-One ranking key from z plus concordance `[D65]`:
+One ranking key from z plus concordance `[D65]``[D68]`:
 **key = ((1−p)·z_ctr/σ_z + p·zc_ctr/σ_c) / √((1−p)² + p²)** —
 p = `?wpre=` is the concordance weight (API default 0 = z alone, form 0,8). `?score=` only picks the pool.
-⚠ Each channel is standardised by ITS OWN σ — `rank_sig_p` for z, `rank_sig_c` for conc.
+⚠ Each channel is standardised by ITS OWN σ of **that item's block**, frozen at close — not by session `rank_sig_p` / `rank_sig_c` `[D68]`. Those two remain diagnostics (`pre_sig`/`conc_sig` in the CSV header).
 ⚠ Uncentred z ranks NODES, not items — a live table is meaningless before the first block closes.
-`ENT_Z_CLAMP` 12 bounds both terms **in the key only**. UI: **Z***, **Z**, **Conc**.
+`ENT_Z_CLAMP` 12 bounds both terms **in the key only**. UI: **Z\*** is the key itself (block-σ units), **Z**, **Conc**.
 
 **Concordance (D56).** Per node, split the window at nseg/2. Same sign → `√2 · min(|h1|,|h2|)`
 with that sign (equals full-window z when the bias is stable). Opposite sign or a zero half → 0.
@@ -169,7 +170,7 @@ what remains visible is an effect varying **between items inside a block**.
   figure, bottom row session-relative in every figure. ⚠ The bottom row is unlimited mode only —
   in a single pass it would repeat the row above it.
 - **Two tables of five**: Top-5, Bottom-5, item counter +
-  block badge, Save CSV. Columns: `Z*`, `Z`, `Conc`.
+  block badge, Save CSV. Columns: `Z*` (key in that item's block-σ units `[D68]`), `Z`, `Conc`.
 - **A third table, the camera-sigma jump board** `[D62]`: the five largest changes in a node's
   own camera noise from its previous measurement to this one, session-wide, named by
   (item/round) plus the drawn numbers. ⛔ **It is a SUSPICION list, not a ranking** — the top row
@@ -224,11 +225,13 @@ separate arm `[D1]`.
 | `focus=on` vs `off` | old attended vs unattended — never mix. Post-D66 is always `off` `[D66]` |
 | `pre_w` (2026-08-26) | one weight — for the TABLES. `z_raw`/`z_ctr` pool across weights `[D45]` |
 | scoring key 2026-08-28 | one side — a pool chosen before it was chosen on a different key `[D48]` |
+| scoring per-node centre 2026-08-31 | post-D69 only — pool chosen like the pass `[D69]` |
 | spectral channel deleted 2026-08-28 | post-D53 only — no `ent_w` / z_h `[D53]` |
 | runs ranking deleted 2026-08-29 | post-D55 only — no `wruns` / zr `[D55]` |
 | concordance / half-window ranking 2026-08-29 | post-D56 only — tables use `zc_ctr` `[D56]` |
 | both LSB channels rank 2026-08-29 | post-D58 only — D56 sessions ranked on `zc_ctr` ALONE `[D58]` |
 | LSB-as-is 2026-08-31 | post-D65 only — LSB z, no prior archive `[D65]` |
+| block-σ ranking 2026-08-31 | post-D68 only — tables in block-σ units `[D68]`. `z_raw`/`z_ctr` still pool |
 | v3 vs any v2.x | v3 only |
 
 Unlimited-mode data carries two more: split on `round` before pooling with a single-pass session,
