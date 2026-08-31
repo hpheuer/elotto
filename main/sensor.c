@@ -1083,6 +1083,12 @@ static void score_one_run(bool *ok, double *z, double *zp, double *zcn)
 {
     WindowMeas m;
     int k = measure_window(&m);
+    /* This node's own window log (D64), tag 0 = a scoring run: it has no item
+     * to be filed under, and leaving scoring out would put an unexplained gap
+     * of ~60 windows at every round boundary in the one time series that is
+     * supposed to make gaps impossible to misread. The slaves log their
+     * scoring windows too, tagged with the 'M' sequence. */
+    camera_winlog_push(0);
     if (ok) *ok = (k > 0);
     *z  = (k > 0) ? m.z  : 0.0;
     /* Both pre-fold channels, the same two rank_key() uses (D58). measure_window()
@@ -2888,6 +2894,10 @@ void elotto_task(void *pvParam)
             float wsig[MAX_NODES];
             wsig_collect(wsig);
             node_wsig_store(slot, wsig);
+            /* The same window into this node's own ring (D64), tagged with the
+             * combination id so /camlog lines up against results[] — which
+             * compaction will have eaten by the next round boundary. */
+            camera_winlog_push((uint32_t)(i + 1));
             pairs_add_run(w.znode, w.have);
             pacc_add_run(w.zpn, w.havep);
             hwacc_add_run(w.zhw, w.haveh);
@@ -2984,6 +2994,13 @@ done:
     recompute_pass_ranks();   /* studentized ranks from the valid prefix */
 
 finalize:
+    /* Tell the nodes the session is over (D64). slave_abort() is a broadcast
+     * 'A' and it was previously sent ONLY on abort_requested — a pass that ran
+     * to completion left every slave latched, so /expose and /linearity stayed
+     * refused until SESSION_IDLE_MS expired. Sending it here covers both exits;
+     * on the abort path it is the second 'A' and costs one datagram, because
+     * the slaves' g_abort is reset at the head of every 'M'/'K' anyway. */
+    slave_abort();
     focus_off();
     g_status.paused     = false;
     g_status.elapsed_ms = elapsed_ms_now();

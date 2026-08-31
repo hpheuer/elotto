@@ -2966,6 +2966,23 @@ static esp_err_t camtest_handler(httpd_req_t *req)
     return camera_selftest_handle(req, g_status.state == ELOTTO_RUNNING);
 }
 
+/* GET /camlog — this node's own per-window camera log (D64). Deliberately NOT
+ * refused while running: the whole reason it exists is that by the time a
+ * session ends, compaction has thrown away the rows that would have said what
+ * the camera was doing. Pull it mid-session, per node — this endpoint serves
+ * the MASTER's ring only, and each slave serves its own at the same path. */
+static esp_err_t camlog_handler(httpd_req_t *req)
+{
+    return camera_winlog_send_json(req);
+}
+
+/* GET /linearity — steady light or flickering light, in one request (D64).
+ * Drives the exposure registers, so it is refused for the whole session. */
+static esp_err_t linearity_handler(httpd_req_t *req)
+{
+    return camera_linearity_handle(req, g_status.state == ELOTTO_RUNNING);
+}
+
 /* ── Start-form prefs (D49) ─────────────────────────────────────────
  * NVS ns "elstart". Written only on POST /start?confirm=1 (the web UI).
  * Served as a trailing script on GET / so a reload fills the form. API
@@ -3081,7 +3098,7 @@ static void start_webserver(void)
      * logged. Adding /ready and /diagjson once took it silently over the old cap
      * of 16, and handlers counted carefully — count them when
      * adding one, and raise the cap before it bites rather than after. */
-    cfg.max_uri_handlers  = 24;
+    cfg.max_uri_handlers  = 24;   /* 18 here + 5 from elotto_ota = 23 */
     cfg.stack_size        = 8192;
     cfg.recv_wait_timeout = 20;   /* /update streams a ~700 KB body */
     cfg.send_wait_timeout = 20;
@@ -3105,6 +3122,8 @@ static void start_webserver(void)
         {"/probe", HTTP_POST, probe_handler, NULL},
         {"/expose", HTTP_POST, expose_handler, NULL},
         {"/camtest", HTTP_GET, camtest_handler, NULL},
+        {"/camlog", HTTP_GET, camlog_handler, NULL},
+        {"/linearity", HTTP_GET, linearity_handler, NULL},
     };
     for (int i = 0; i < (int)(sizeof(uris) / sizeof(uris[0])); i++)
         httpd_register_uri_handler(srv, &uris[i]);

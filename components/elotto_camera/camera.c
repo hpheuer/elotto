@@ -2043,3 +2043,244 @@ esp_err_t camera_selftest_handle(void *httpd_req, bool busy)
     httpd_resp_sendstr(req, buf);
     return ESP_OK;
 }
+
+/* ── The per-window log (D64) ──────────────────────────────────────────
+ *
+ * See camera.h for why this is here rather than on the master. The ring itself
+ * is internal RAM, not PSRAM: 512 * 40 B = 20 KB, and it is written from the
+ * consumer once per window and read from the HTTP task — both of which would
+ * rather not take a PSRAM stall on a path that already owns s_mutex. It is
+ * allocated lazily on the first push so a node that never measures never pays
+ * for it, and a failed allocation degrades to "no log", never to a crash. */
+typedef struct {
+    uint32_t t_ms;        /* node uptime when the window was pushed */
+    uint32_t tag;         /* caller's label; 0 = no item (a scoring run) */
+    float    wsig;        /* per-window folded sigma -- the D62 number */
+    int32_t  wn;          /* mini-runs behind wsig; 0 = below WIN_SIGMA_MIN_N */
+    float    rsig, rbias; /* PRE-FOLD sigma/bias, cumulative since the sweep */
+    float    sig, bias;   /* folded, likewise cumulative */
+    float    px;          /* mean pixel level -- the light */
+    float    ac1;         /* lag-1 autocorrelation */
+    float    zdiff;       /* zero-diff fraction */
+} cam_winlog_t;
+
+static cam_winlog_t *s_winlog;
+static uint32_t      s_winlog_head;    /* next slot to write */
+static uint32_t      s_winlog_n;       /* entries held, <= CAM_WINLOG_N */
+static uint32_t      s_winlog_dropped; /* entries overwritten since boot */
+
+void camera_winlog_push(uint32_t tag)
+{
+    if (!s_mutex) return;
+    if (!s_winlog) {
+        /* calloc, not malloc: a partially written ring read by /camlog before
+         * the first push completes would serve uninitialised floats as camera
+         * statistics, which is exactly the class of plausible-looking wrong
+         * number this whole file argues against. */
+        s_winlog = calloc(CAM_WINLOG_N, sizeof(cam_winlog_t));
+        if (!s_winlog) {
+            ESP_LOGW(TAG_CAM, "winlog: %d entries would not allocate -- log off",
+                     CAM_WINLOG_N);
+            return;
+        }
+    }
+    camera_stats_t cs;
+    camera_get_stats(&cs);          /* takes s_mutex itself; do not nest */
+
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    cam_winlog_t *e = &s_winlog[s_winlog_head];
+    e->t_ms  = (uint32_t)(esp_timer_get_time() / 1000);
+    e->tag   = tag;
+    e->wsig  = (float)cs.win_sigma;
+    e->wn    = cs.win_sigma_samples;
+    e->rsig  = (float)cs.raw_sigma;
+    e->rbias = (float)cs.raw_bias;
+    e->sig   = (float)cs.sigma;
+    e->bias  = (float)cs.bias;
+    e->px    = (float)cs.mean_pixel_level;
+    e->ac1   = (float)cs.autocorr_lag[0];
+    e->zdiff = (float)cs.zero_diff_frac;
+    s_winlog_head = (s_winlog_head + 1) % CAM_WINLOG_N;
+    if (s_winlog_n < CAM_WINLOG_N) s_winlog_n++;
+    else                           s_winlog_dropped++;
+    xSemaphoreGive(s_mutex);
+}
+
+esp_err_t camera_winlog_send_json(void *httpd_req)
+{
+    httpd_req_t *req = (httpd_req_t *)httpd_req;
+    char buf[320];
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+
+    if (!s_winlog || !s_mutex || s_winlog_n == 0) {
+        snprintf(buf, sizeof(buf), "{\"n\":0,\"dropped\":0,\"cap\":%d,\"win\":[]}",
+                 CAM_WINLOG_N);
+        httpd_resp_sendstr(req, buf);
+        return ESP_OK;
+    }
+
+    /* Snapshot the indices under the lock, then serialise outside it: chunked
+     * sends block on the socket, and holding s_mutex across a TCP write would
+     * stall the capture task's publish_stats() for as long as the client takes
+     * to read. A push during the send overwrites the oldest entry, which shows
+     * up as a `dropped` that moved -- honest, and better than a stalled sensor. */
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    uint32_t n = s_winlog_n, head = s_winlog_head, drop = s_winlog_dropped;
+    xSemaphoreGive(s_mutex);
+
+    int len = snprintf(buf, sizeof(buf),
+        "{\"n\":%lu,\"dropped\":%lu,\"cap\":%d,\"win\":[",
+        (unsigned long)n, (unsigned long)drop, CAM_WINLOG_N);
+    httpd_resp_send_chunk(req, buf, len);
+
+    /* Oldest first: head is the next slot to write, so the oldest of n entries
+     * sits n back from it. */
+    uint32_t start = (head + CAM_WINLOG_N - n) % CAM_WINLOG_N;
+    for (uint32_t i = 0; i < n; i++) {
+        cam_winlog_t e;
+        xSemaphoreTake(s_mutex, portMAX_DELAY);
+        e = s_winlog[(start + i) % CAM_WINLOG_N];
+        xSemaphoreGive(s_mutex);
+        len = snprintf(buf, sizeof(buf),
+            "%s{\"t_ms\":%lu,\"tag\":%lu,\"wsig\":%.4f,\"wn\":%ld,"
+            "\"rsig\":%.4f,\"rbias\":%.6f,\"sig\":%.4f,\"bias\":%.6f,"
+            "\"px\":%.2f,\"ac1\":%.4f,\"zdiff\":%.4f}",
+            i ? "," : "", (unsigned long)e.t_ms, (unsigned long)e.tag,
+            (double)e.wsig, (long)e.wn, (double)e.rsig, (double)e.rbias,
+            (double)e.sig, (double)e.bias, (double)e.px, (double)e.ac1,
+            (double)e.zdiff);
+        httpd_resp_send_chunk(req, buf, len);
+    }
+    httpd_resp_send_chunk(req, "]}", 2);
+    httpd_resp_send_chunk(req, NULL, 0);
+    return ESP_OK;
+}
+
+/* ── GET /linearity — steady light or flickering light (D64) ───────────
+ *
+ * Four exposures, mean_px at each. The RATIO between consecutive rungs is the
+ * answer and the absolute level is not, which is precisely why a single
+ * /expose reading cannot decide it.
+ *
+ * ⚠ CAL_SETTLE_PAIRS is not enough here. That constant only guarantees the
+ * ring holds no frames from the previous setting; mean_pixel_level is a
+ * running mean and needs actual frames behind it before it means anything, so
+ * each rung waits for the settle AND then integrates for `settle` ms. */
+#define LIN_MAX_STEPS     8
+#define LIN_SETTLE_MS_DEF 1200
+#define LIN_SETTLE_MS_MIN 200
+#define LIN_SETTLE_MS_MAX 5000
+
+esp_err_t camera_linearity_handle(void *httpd_req, bool busy)
+{
+    httpd_req_t *req = (httpd_req_t *)httpd_req;
+    char buf[320];
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+
+    if (busy) {
+        httpd_resp_set_status(req, "409 Conflict");
+        httpd_resp_sendstr(req,
+            "{\"ok\":false,\"err\":\"session running -- it drives the exposure "
+            "registers; abort the session first\"}");
+        return ESP_OK;
+    }
+    if (!camera_is_ready()) {
+        httpd_resp_set_status(req, "409 Conflict");
+        httpd_resp_sendstr(req, "{\"ok\":false,\"err\":\"camera not streaming\"}");
+        return ESP_OK;
+    }
+
+    uint32_t exps[LIN_MAX_STEPS] = {32, 64, 128, 256};
+    int      nexp = 4;
+    int      settle = LIN_SETTLE_MS_DEF;
+
+    char qry[128] = "", val[64] = "";
+    if (httpd_req_get_url_query_str(req, qry, sizeof(qry)) == ESP_OK) {
+        if (httpd_query_key_value(qry, "exp", val, sizeof(val)) == ESP_OK) {
+            int k = 0;
+            for (char *tok = strtok(val, ","); tok && k < LIN_MAX_STEPS;
+                 tok = strtok(NULL, ",")) {
+                uint32_t e = (uint32_t)strtoul(tok, NULL, 10);
+                if (e >= 1 && e <= 0xFFFF) exps[k++] = e;
+            }
+            /* An ?exp= that parsed to nothing usable is a typo, not a request
+             * for the defaults: answering with the default ladder would report
+             * a test the caller did not ask for under their own parameter. */
+            if (k == 0) {
+                httpd_resp_set_status(req, "400 Bad Request");
+                httpd_resp_sendstr(req,
+                    "{\"ok\":false,\"err\":\"exp= must be 1..8 comma-separated "
+                    "exposure values in 1..65535\"}");
+                return ESP_OK;
+            }
+            nexp = k;
+        }
+        if (httpd_query_key_value(qry, "settle", val, sizeof(val)) == ESP_OK) {
+            int m = atoi(val);
+            if (m >= LIN_SETTLE_MS_MIN && m <= LIN_SETTLE_MS_MAX) settle = m;
+        }
+    }
+
+    uint32_t e0 = 0, g0 = 0;
+    camera_get_exposure(&e0, &g0);
+
+    double px[LIN_MAX_STEPS] = {0};
+    double rs[LIN_MAX_STEPS] = {0};
+    double ac[LIN_MAX_STEPS] = {0};
+    bool   applied[LIN_MAX_STEPS] = {false};
+
+    for (int i = 0; i < nexp; i++) {
+        /* Gain is carried, never laddered -- same rule the sweep follows (D59):
+         * CONFIG_ELOTTO_CAM_REG_GAIN is the board's operating point, and a test
+         * that quietly moved it would answer about a different instrument. */
+        applied[i] = camera_set_exposure(exps[i], g0);
+        camera_stats_reset(CAL_SETTLE_PAIRS);
+        int64_t limit = esp_timer_get_time() + CAL_SETTLE_TIMEOUT_MS * 1000LL;
+        while (!camera_stats_settled() && esp_timer_get_time() < limit)
+            vTaskDelay(pdMS_TO_TICKS(10));
+        vTaskDelay(pdMS_TO_TICKS(settle));
+
+        camera_stats_t cs;
+        camera_get_stats(&cs);
+        px[i] = cs.mean_pixel_level;
+        rs[i] = cs.raw_sigma;
+        ac[i] = cs.autocorr_lag[0];
+    }
+
+    /* Restore BEFORE replying, not after: the reply can block on the socket for
+     * an unbounded time and the sensor must not sit on the last rung meanwhile. */
+    camera_set_exposure(e0, g0);
+    camera_stats_reset(CAL_SETTLE_PAIRS);
+
+    int len = snprintf(buf, sizeof(buf),
+        "{\"ok\":true,\"gain\":%lu,\"restored_exposure\":%lu,\"settle_ms\":%d,"
+        "\"steps\":[", (unsigned long)g0, (unsigned long)e0, settle);
+    httpd_resp_send_chunk(req, buf, len);
+
+    for (int i = 0; i < nexp; i++) {
+        /* ratio is against the PREVIOUS rung, and only when the exposure
+         * actually doubled-ish -- the caller may pass any ladder. Steady light
+         * gives ratio ~= exp[i]/exp[i-1]; flicker gives less. px_per_exp is the
+         * scale-free form, constant under steady light whatever the ladder. */
+        double ratio  = (i > 0 && px[i - 1] > 0.0) ? px[i] / px[i - 1] : 0.0;
+        double eratio = (i > 0) ? (double)exps[i] / (double)exps[i - 1] : 0.0;
+        len = snprintf(buf, sizeof(buf),
+            "%s{\"exposure\":%lu,\"applied\":%s,\"mean_px\":%.3f,"
+            "\"px_per_exp\":%.4f,\"ratio\":%.3f,\"exp_ratio\":%.3f,"
+            "\"raw_sigma\":%.4f,\"ac1\":%.4f}",
+            i ? "," : "", (unsigned long)exps[i],
+            applied[i] ? "true" : "false", px[i],
+            px[i] / (double)exps[i], ratio, eratio, rs[i], ac[i]);
+        httpd_resp_send_chunk(req, buf, len);
+    }
+    httpd_resp_send_chunk(req, "]}", 2);
+    httpd_resp_send_chunk(req, NULL, 0);
+
+    ESP_LOGI(TAG_CAM, "linearity: %d rungs, exposure restored to %lu/%lu",
+             nexp, (unsigned long)e0, (unsigned long)g0);
+    return ESP_OK;
+}

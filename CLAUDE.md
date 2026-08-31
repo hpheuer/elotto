@@ -353,7 +353,9 @@ one-sided**, after the whole ladder `[D46]`), no stuck frames, `mean_px` ≥ 5,0
   ⚠ **They are cumulative since the last SWEEP, not per block** `[D62]` — `camera_stats_reset()`
   runs only in the sweep and on `/expose`. Up to three blocks share one accumulation here, and a
   block right after a sweep has a shorter one and therefore a noisier σ. For anything that has to
-  be located in time use the **per-item** `w0..w3` in the CSV, not these.
+  be located in time use **`GET /camlog` on the node** `[D64]`, or the per-item `w0..w3` in the
+  CSV — never these. ⚠ `w0..w3` only survive until the next compaction; `/camlog` is the record
+  that does not depend on the master keeping the row.
   ⚠ Every other `cam_*` field is what the last SWEEP found: two blocks on one setting carry an
   identical `cam_bias` and describe neither. That is why a σ 6,94 block was unattributable.
   ⚠ `cam_px` 0 = the node does not report it (slave older than 2026-08-28), **not** a dark frame.
@@ -376,13 +378,44 @@ one-sided**, after the whole ladder `[D46]`), no stuck frames, `mean_px` ≥ 5,0
 
 ---
 
+## The per-window log — `GET /camlog` `[D64]`
+**Every node keeps its own**, 512 windows deep, one entry per measurement window. It is the only
+place a disturbance can still be located in time.
+- Entry: `t_ms` `tag` `wsig` `wn` `rsig` `rbias` `sig` `bias` `px` `ac1` `zdiff`.
+  `tag` = combination id on the master, answered `M` sequence on a slave, **0 = a scoring run**.
+- ⚠ **It is a RING** — ~25 min at 2,9 s per window. `dropped` counts what fell out, so a gap
+  never reads as a quiet stretch. **Pull it inside the session, per node**; there is no
+  master-side collector.
+- ⚠ `t_ms` is each node's OWN uptime. Align by `tag` or by ordinal, **never** by subtracting
+  timestamps across boards.
+- It records what never travels on the wire — `rsig`, `px`, `ac1`, `zdiff`. The wire carries
+  `wsig` and nothing else. That difference is what separates "the light moved" from "this sensor
+  is dispersing".
+- ⚠ Only windows that produced a **Z** are pushed; a faulted or voided run has no window.
+
+## ⚠ A session LOCKS every node's sensor `[D64]`
+`/expose`, `/linearity` and `/camtest` answer **409 for the whole session**, on slaves as well as
+the master. The slave has no session state of its own and derives one from the master's traffic:
+`M`/`K` latch it, `A` releases it, 60 s of silence releases it.
+- ⚠ **OTA keeps the NARROW predicate** (`g_measuring`, the ~2 s window) — "abort, then flash" is
+  unchanged and `/update` is not blocked for a whole session.
+- ⚠ **The idle release is a deliberate hole**: the attended gates park longer than 60 s with a
+  session open, so the latch expires under them. They are attended by definition. Without the
+  release, a master crash would leave every slave locked until someone rebooted it.
+- ⚠ Until 2026-08-31 the slave refused these only during the ~2 s window, so a request landing in
+  the 0,8 s gap was **accepted mid-session** — a parameterless `/expose` restarted a running
+  block's camera statistics that way. Do not assume an old node behaves like this one; check
+  `fw_nodes`.
+
 ## Illumination — standing rules
 The enclosure is **LIT, not dark** `[D28]`.
 - ⛔ **Never power illumination from a node's VSYS pin** `[D29]`.
 - ⚠ **After physical work, let the light settle ~30 min** before a long run `[D30]`.
 - ⚠ **Do not judge the light by one `mean_px` reading** — sweep, or take a time series.
-- ⚠ **The linearity test tells STEADY light from bright light, in a minute**: set exp 32, 64,
-  128, 256 and read `mean_px` at each. Steady light doubles it each time. On 2026-08-31 slave1
+- ⚠ **The linearity test tells STEADY light from bright light, in a minute**: `GET /linearity`
+  on the node in question `[D64]` — it ladders exp 32/64/128/256, reports `mean_px`,
+  `px_per_exp` and the ratio per rung, and restores the entry exposure. Steady light doubles
+  `mean_px` each time. 409 while a session runs; abort first. On 2026-08-31 slave1
   read 0,86 / 0,65 / 0,39 px per exposure unit — falling, not constant — with `raw_sigma` 6,0 and
   autocorr 0,042. That is FLICKERING light, not too much of it, and no single `mean_px` reading
   can show the difference. After the fix the same node read ×1,94 / ×2,08 / ×2,09 with
@@ -395,7 +428,7 @@ The enclosure is **LIT, not dark** `[D28]`.
 ## Project structure
 - **main/elotto.c** – app_main, Ethernet, webserver, HTML/JS UI. Endpoints: `/` `/status` `/start`
   `/abort` `/loops` `/results.csv` `/focus` `/pause` `/calibrate` `/pool` `/ready` `/probe`
-  `/expose` `/diag` `/diagjson` `/camtest`, +5 from elotto_ota. (`/spectest` `/specdump` deleted
+  `/expose` `/diag` `/diagjson` `/camtest` `/camlog` `/linearity`, +5 from elotto_ota. (`/spectest` `/specdump` deleted
   with the spectral channel `[D53]`.)
   ⚠ The URI-handler cap fails silently (404, return value unchecked) — the count lives at
   `start_webserver()`; prefer `?all=1` on an existing endpoint over a new handler.
@@ -411,12 +444,12 @@ The enclosure is **LIT, not dark** `[D28]`.
 - **main/nodes.c/h** – the array: UDP link, discovery, calibration handshake, per-node health,
   drop/reboot policy. sensor.c reaches other boards only through `nodes.h`.
 - **main/focus.c** – focus panel, pause, run gap, session clock — one file because they share state.
-- **partitions.csv** – shared table (factory 1 MB + ota_0/ota_1 3 MB on 32 MB flash); a board
-  flashed by one project must be updatable by the others.
 - **ota_firmware/** – the network updater, its own IDF project. Ethernet + HTTP + esp_ota only.
 - **components/elotto_camera/** – OV5647 entropy extraction. **`raw_bias`/`raw_sigma` are the
   PRE-FOLD stream** (`cam_raw_t`) — everything else published is post-fold `[D43]`; the runs half
-  is armed only inside a sweep `[D46]`. ⚠ With the fold OFF, raw and folded pairs must agree
+  is armed only inside a sweep `[D46]`. Also serves `/camlog`, `/linearity`, `/expose`,
+  `/calibrate` and `/camtest` for **every** node from one implementation — the four boards must
+  not describe their own cameras in four different shapes. ⚠ With the fold OFF, raw and folded pairs must agree
   exactly — a divergence is a bug, not a finding.
 - **components/elotto_link/** – the UDP wire format (`EL1 <seq> <payload>`, ports 5000/5001), plus
   `EL_SEG_MIN`/`EL_SEG_MAX` as ONE definition for both firmwares.

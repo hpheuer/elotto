@@ -357,6 +357,75 @@ esp_err_t camera_expose_handle(void *httpd_req, bool busy);
  * See extract.h for what it actually proves. */
 esp_err_t camera_selftest_handle(void *httpd_req, bool busy);
 
+/* ── The per-window log (D64) ──────────────────────────────────────────
+ *
+ * WHY THIS EXISTS. Until now the only per-window camera statistic that
+ * survived a measurement was `win_sigma`, and only because it rides the `Z:`
+ * reply as `,wsig=`. Everything else on /diag is cumulative since the last
+ * camera_stats_reset(), i.e. since the last sweep — on this rig up to three
+ * blocks, which cannot locate anything in time. The master's own copy of
+ * `wsig` lives in results[] and is eaten by compaction at every unlimited
+ * round boundary. So when slave2 started throwing z of −56 in bursts on
+ * 2026-08-31, the rows that would have said what its camera was doing at that
+ * moment had already been folded into moments.
+ *
+ * This ring is the answer, and it is deliberately ON THE NODE: it records what
+ * never travels on the wire (raw_sigma, mean_px, autocorr, zero_diff) and it
+ * records SCORING and sweep windows too, which have no item to be filed under
+ * on the master. One implementation for master and slaves, same argument as
+ * camera_cal_send_json() — four nodes must not describe their own cameras in
+ * four different shapes.
+ *
+ * ⚠ It is a RING. CAM_WINLOG_N entries, oldest silently overwritten; `dropped`
+ * in the reply counts what fell out, so a gap can never be mistaken for a
+ * quiet stretch. At ~2,9 s per window 512 entries is ~25 minutes — pull it
+ * within the session, not after it.
+ * ⚠ It logs what the caller asks it to log. Nothing in the camera knows where
+ * a window ends, so the consumer pushes at exactly the point it reads wsig for
+ * the wire. A window whose run faulted or voided is never pushed. */
+#define CAM_WINLOG_N   512
+
+/* Snapshot the CURRENT window statistics into the ring.
+ *
+ * `tag` is the caller's label for this window, echoed back untouched: the
+ * master passes the combination index, a slave passes the sequence number of
+ * the 'M' it is answering, and 0 means "no item" (a scoring run). It is not
+ * interpreted here — the ring's job is to be the time series, not to know what
+ * the node was doing.
+ *
+ * Cheap: one mutex take and a struct copy, called once per ~2 s window.
+ * Silently does nothing before camera_init(). */
+void camera_winlog_push(uint32_t tag);
+
+/* GET /camlog — the whole ring as JSON, OLDEST FIRST, chunked.
+ *
+ * `{"n":<entries>,"dropped":<overwritten>,"cap":512,"win":[{...},...]}` with
+ * per entry: t_ms (node uptime at the push), tag, wsig, wn, rsig, rbias,
+ * sig, bias, px, ac1, zdiff.
+ *
+ * ⚠ t_ms is THIS NODE's uptime, not a shared clock. Align two nodes by tag or
+ * by ordinal, never by subtracting their timestamps. */
+esp_err_t camera_winlog_send_json(void *httpd_req);
+
+/* GET /linearity[?exp=a,b,c,d][&settle=<ms>] — the light-quality test from
+ * CLAUDE.md as one request instead of four manual /expose calls.
+ *
+ * Steady light doubles mean_px when the exposure doubles. Light that FLICKERS
+ * does not: on 2026-08-31 slave1 read 0,86 / 0,65 / 0,39 px per exposure unit
+ * across 32/64/128/256 with raw_sigma 6,0, and no single mean_px reading could
+ * have told that from "too much light". After the fix the same node read
+ * ×1,94 / ×2,08 / ×2,09.
+ *
+ * Defaults to 32,64,128,256 and ~1200 ms of settling per rung. RESTORES the
+ * entry exposure and gain before returning, including on an early exit — the
+ * sweep owns the operating point, this must not silently redefine it.
+ *
+ * ⚠ Refused with 409 when `busy`: it drives the sensor registers, which is the
+ * one thing that must never happen underneath a running measurement.
+ * ⚠ It is not a substitute for the sweep. It answers "is the light steady",
+ * not "which rung should this node run on". */
+esp_err_t camera_linearity_handle(void *httpd_req, bool busy);
+
 // Priority of the extraction task created by camera_init().
 #define ELOTTO_CAM_TASK_PRIO 4
 

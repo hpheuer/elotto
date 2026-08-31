@@ -972,3 +972,64 @@ their three largest contributors with z and dev; the threshold was restored and 
 to a byte-identical image (`fw_sha` unchanged from before the test), confirming the revert. The
 recorded shape was itself the demonstration: three contributors at 2,1..2,5 sigma close
 together, i.e. a wide block rather than one excursion.
+
+### D64 — Every node keeps its own per-window camera log, and a session locks its sensor (2026-08-31)
+**Entscheidung:** three changes to the shared camera component, served by master and slaves at
+the same paths.
+
+1. **`GET /camlog`** — a 512-entry ring per node, one entry per measurement window, pushed by the
+   consumer at the exact point it reads `win_sigma` for the wire. Per entry: `t_ms`, `tag`,
+   `wsig`, `wn`, `rsig`, `rbias`, `sig`, `bias`, `px`, `ac1`, `zdiff`. `tag` is the combination
+   id on the master, the answered `M` sequence on a slave, **0 for a scoring run**. Oldest-first,
+   with a `dropped` counter so a gap can never read as a quiet stretch. Readable **during** a
+   session — that is the point.
+2. **`GET /linearity[?exp=a,b,c,d][&settle=<ms>]`** — the CLAUDE.md light test as one request.
+   Ladders the exposure only (gain carried, per D59), reports `mean_px`, `px_per_exp` and the
+   ratio against the previous rung, and restores the entry exposure before replying.
+3. **The slave session latch.** `slave_busy()` was `g_measuring`, true only for the ~2 s of a
+   window. It is now `g_measuring || session_active()`, where the latch is set by `M`/`K`,
+   cleared by `A`, and released after `SESSION_IDLE_MS` (60 s) of silence. `/expose`,
+   `/linearity` and `/camtest` answer 409 for the whole session; **OTA deliberately keeps the
+   narrow `g_measuring`**, so "abort, then flash" is unchanged.
+   `slave_abort()` is now also called at `finalize:` in the master, so a session that ends
+   normally releases the latch instead of leaving every slave locked for 60 s.
+
+**Warum:** on 2026-08-31 slave2 threw bursts of z at −31..−62 with per-block sigma up to 20,5 in
+blocks 6, 8, 13, 14 and 17, quiet in between. Nothing on the node could say what its camera was
+doing in those windows. `/loops` carries `cam_sig`/`cam_rsig`/`cam_px` cumulative **since the
+last sweep** (D62), i.e. up to three blocks — it cannot locate anything in time. The per-item
+`w0..w3` in the CSV can, but compaction had folded 971 of 1085 rows into moments by the time the
+question was asked. The jump board (D62) survives compaction but is a top-5, not a series.
+
+So the series is kept where it is produced. The node also records what never travels on the
+wire — `raw_sigma`, `mean_px`, `autocorr`, `zero_diff` — which is the difference between "the
+light moved", "this sensor is dispersing" and "neither".
+
+The latch is a bug found while answering that question: a parameterless `POST /expose` sent to
+slave2 mid-session was **accepted**, because the gap between two runs is 0,8 s and `g_measuring`
+is false throughout it. That request rewrote the exposure to its own value (harmless) and called
+`camera_stats_reset()` — the running block's camera statistics restarted mid-block. The same
+request with `?exp=` would have moved the operating point under a session that had already
+certified a rung, and nothing would have recorded it. The slave's own HTML page claimed "409
+while measuring", which an operator reads as "409 during a session"; it now says what it does.
+
+⚠ The latch has a known hole and it is deliberate: the attended gates (`PHASE_READY`,
+`PHASE_POOL_CONFIRM`) park longer than 60 s with a session genuinely open, so the latch expires
+under them. Those gates are attended by definition. The alternative — no idle release — would
+leave every slave locked after a master crash with no way back but a reboot, which is worse.
+Runs are 2..5 s and a sweep is ~10 s, so the latch never expires under a pass that is running.
+
+⚠ `/camlog` is a RING. At ~2,9 s per window, 512 entries is ~25 minutes. Pull it inside the
+session, per node; there is no master-side collector (`/diagjson?all=1` is 409 while measuring
+and would not fit this payload anyway).
+
+⚠ `t_ms` is each node's own uptime. Align nodes by `tag` or by ordinal, never by subtracting
+timestamps across boards.
+
+**Verifiziert** on hardware: all four nodes flashed (slaves `833d1d3f88b89786`, master
+`d61419b5b5759ce8`), `/camlog` empty after boot and filling at one entry per window on all four
+during a live session; `/expose`, `/linearity` and `/camtest` all answering 409 on slave2 while
+that session ran. `/linearity` run on all three slaves with no session: ratios 1,75/2,06/2,07
+(slave2), 1,57/1,92/2,03 (slave0), 1,90/2,00/1,94 (slave1) with `raw_sigma` 1,00..1,26 — steady
+light on all three at that moment, which is consistent with the disturbance being episodic and
+is exactly the reading the test exists to produce.
