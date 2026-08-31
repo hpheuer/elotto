@@ -6,7 +6,7 @@ Project **HISTORY snapshot**, not a rule. Rules: [`../CLAUDE.md`](../CLAUDE.md).
 
 **Instrument:** D65 LSB stream + concordance ranking (`?wpre=` = Conc-Gewicht). D66: always unattended; HTML **Now:** card. D67: rounds until Abort is the only session (no Unlimited checkbox, no pool overlay). Sweep `|bias−0,5|`; σ-Gate relativ (`CAL_RAW_SIGMA_K` 1,35). Soft-down 1,35 × Peer-Median-σ. Wire `Z:<z>,<h1>,<h2>[,wsig=]`.
 
-**On the rig.** Master `fw_sha` `203708f4f85eaeea` (`f2415ae`, D66, ota_1). Slaves `2465c2251beb01b6` (D65, no UI change). `?focus=` 400, `/ready` 404.
+**On the rig.** Master `fw_sha` `07de2eb06e6c82f0` (`f15bc0e`, D67, ota_0). Slaves `2465c2251beb01b6` (D65). `?focus=` 400, `/ready` 404, `?unlimited=0` and `/pool` 400.
 
 **Sweep + linearity** (aborted session, all four): light steady (ratios ≈1,8…2,0). Dark rungs fail DARK/ZDIFF. RSIG rejected nothing extra. Autocorr takes the bright end. slave1 still brightest (`px/exp` 0,25 vs slave0 0,13), chose exp 256 at ac 0,026 — under the bar, not a code fault.
 
