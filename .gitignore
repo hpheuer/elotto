@@ -16,3 +16,8 @@ ota_firmware/sdkconfig.old
 # The finished session belongs in docs/data/<date>_<mode>_<what>/ instead.
 # Ignored because `git add -A` swept these into two separate commits otherwise.
 docs/data/_live_now_*
+
+# Browser-test leftovers (Playwright MCP). Not firmware.
+.playwright-mcp/
+now-card-scoring.png
+node_modules/
