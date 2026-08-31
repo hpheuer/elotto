@@ -205,6 +205,15 @@ what remains visible is an effect varying **between items inside a block**.
   quiet session the board holds five rows at 2..3 σ and says so, and the card is shown even
   when empty `[D62]`.
   ⚠ It is filled from the MEASURING pass only; a scoring run has no item to name.
+- **A fourth table, Soft-down origins** `[D63]`: when a block trips a node, the three
+  measurements of that block whose z sat furthest from the block mean, captured at block close
+  because compaction takes the rows one round later. Hidden when nothing tripped.
+  ⚠ A trip belongs to a BLOCK, not to a measurement — σ is the spread over its ~63 items. This
+  names what carried the spread, not what "caused" it.
+  ⚠ The ×σ column is measured against that block's own spread, not the null: near 3 is
+  ordinary. Read the SHAPE — one item far out is an excursion, three close together mean the
+  block was simply wide.
+  ⚠ The block number shown is 1-based like `/loops`; `results[].block` is 0-based.
 - CSV is **German**: `;` separator, `,` decimal — a decimal point makes Excel read text.
 - **The start form remembers its last values** (NVS, survives reboot and OTA): measuring time,
   focus, unlimited + runs per round, direction, pre-fold weight. `/` serves them as a script chunk

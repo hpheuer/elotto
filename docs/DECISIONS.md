@@ -939,3 +939,36 @@ decimals (0,0155 both), and again exactly one archive jump crossed the floor and
 was on the board. After the floor was dropped: five entries by item 17, 1,8..2,7 sigma, i.e.
 the board fills from the first measurements and labels itself as quiet. `w0..w3` populated
 on every row from all four nodes throughout.
+
+### D63 — A soft-down trip records WHICH measurements carried it (2026-08-31)
+**Entscheidung:** when a block trips a node, `record_loop()` captures the `TRIPX_TOP_N` (3)
+items of that block whose per-node z sat furthest from the block mean, together with the block
+number, the node, the block sigma and mean. Kept in `g_status.trip_hist` (`TRIPX_MAX` 6 per
+session, oldest kept), published as `trips` in `/status`, and shown on the page as a fourth
+card, **Soft-down origins**. Hidden when nothing tripped.
+
+**Warum:** the operator asked which single measurement caused a soft-down. The honest answer is
+that none did — sigma is the spread of one node's z over the block's ~63 items and does not
+exist until the block closes. But the answerable question behind it, *which measurements made
+that spread big*, had no answer either: the block's rows are compacted away one round later.
+Twice in two days they were asked for hours afterwards and every row was gone, once for the
+only genuinely disturbed block of the session.
+
+So it is taken at the one moment it exists — inside `record_loop()`, where the block's items
+are still in `results[]` and their per-node z still in the archive. Same principle as D62's jump
+board: copy what names the measurement, do not hope the row survives.
+
+⚠ `dev` is (z - block mean) / block sigma: how far an item sat from the middle of the very
+spread it helped create. It is NOT a z against the null. With ~63 items a value near 3 is
+ordinary, and **the point is the shape**: one item far out is a single excursion, three close
+together mean the block was simply wide.
+
+⚠ The block number is stored 1-based, matching what `/loops` shows. `results[].block` is
+0-based, and confusing the two already caused one disturbed block to be read off by one.
+
+**Verifiziert** by temporarily lowering `NODE_SIGMA_SOFT` from 1,25 to 1,02 — a real trip is
+otherwise about one per eight hours, which is not a test. Three trips in block 1 each recorded
+their three largest contributors with z and dev; the threshold was restored and the node rebuilt
+to a byte-identical image (`fw_sha` unchanged from before the test), confirming the revert. The
+recorded shape was itself the demonstration: three contributors at 2,1..2,5 sigma close
+together, i.e. a wide block rather than one excursion.

@@ -435,6 +435,14 @@ static const char HTML[] =
 "<table><thead id='resHeadWsig'></thead>"
 "<tbody id='resBodyWsig'></tbody></table>"
 "</div>"
+/* What a soft-down trip was made of (D63). Hidden when nothing tripped: unlike
+   the jump board, an empty trip list says nothing the node table does not
+   already show. */
+"<div class='card' id='resCardTrip' style='display:none'>"
+"<h3 id='resTitleTrip' style='color:#e8a0a0;margin-bottom:4px'></h3>"
+"<div id='resSubTrip' style='font-size:.78em;opacity:.7;margin-bottom:6px'></div>"
+"<div id='resBodyTrip'></div>"
+"</div>"
 "</div>"
 "<script>"
 NODE_NAMES_JS
@@ -702,6 +710,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "document.getElementById('resCard').style.display='none';"
 "document.getElementById('resCardLow').style.display='none';"
 "document.getElementById('resCardWsig').style.display='none';"
+"document.getElementById('resCardTrip').style.display='none';"
 "document.getElementById('msg').textContent='';"
 "setMode(mode);"
 "if(timer)clearInterval(timer);"
@@ -1187,6 +1196,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "document.getElementById('saveAll').style.display='none';"
 "document.getElementById('resCardLow').style.display='none';"
 "document.getElementById('resCardWsig').style.display='none';"
+"document.getElementById('resCardTrip').style.display='none';"
 "return;}"
 "lastDisplayed=d.top;"
 // Z* studentizes the RANKING KEY, so it takes the key's own moments;
@@ -1202,6 +1212,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "document.getElementById('saveAll').style.display='';"
 "showLow(d);"
 "showWsig(d);"
+"showTrip(d);"
 "}"
 // One column of numbers: Z*, the studentized ranking key. Z / P and the
 // uncorrected p live in the hover text built below.
@@ -1274,6 +1285,46 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "var n=(d.nodes&&d.nodes[ix])?d.nodes[ix]:null;"
 "var ip=n?(n.ip==='self'?'192.168.178.100':n.ip):'';"
 "return NODE_NAMES[ip]||(ix===0?'master':'unnamed');}"
+/* A trip is a property of a BLOCK -- sigma is the spread over its ~63 items and
+   does not exist until the block closes -- so this does not name "the measurement
+   that tripped it". It names the measurements that carried the spread, which is
+   the answerable question, and it is captured at block close because one round
+   later compaction has taken the rows. See D63. */
+"function showTrip(d){"
+"var tr=d.trips,isEuro=d.mode==='euro';"
+"if(!tr||tr.length===0){document.getElementById('resCardTrip').style.display='none';return;}"
+"document.getElementById('resTitleTrip').innerHTML="
+"'\\u2193 Soft-down origins '+tr.length+'';"
+"document.getElementById('resSubTrip').innerHTML="
+"'The measurements furthest from the block mean in each block that tripped a node. '"
+"+'\\u00d7\\u03c3 is measured against that block\\u2019s own spread, not against the null: '"
+"+'near 3 is ordinary. One item far out is a single excursion; three close '"
+"+'together mean the block was simply wide.';"
+"var h='';"
+"for(var i=0;i<tr.length;i++){"
+"var t=tr[i];"
+"h+='<div style=\"margin:10px 0 4px;font-size:.9em\"><b>Block '+t.block+'</b> \\u00b7 '"
+"+wsigNode(d,t.node)+' \\u00b7 \\u03c3 '+t.sigma.toFixed(3)+' \\u00b7 mean '+t.mean.toFixed(3)+'</div>';"
+"h+='<table><thead><tr><th>Item</th><th>z</th><th>\\u00d7\\u03c3</th><th>Numbers</th>'"
+"+(isEuro?'<th>Bonus</th>':'')+'</tr></thead><tbody>';"
+"for(var k=0;k<t.items.length;k++){"
+"var e=t.items[k],nums='';"
+"for(var j=0;j<e.nums.length;j++)"
+"nums+='<span class=\"num\">'+e.nums[j]+'</span>';"
+"var estr='';"
+"if(isEuro&&e.euro&&e.euro.length)"
+"for(var j=0;j<e.euro.length;j++)"
+"estr+='<span class=\"num euro\">'+e.euro[j]+'</span>';"
+"var itm=(d.unlimited&&e.round)?(e.index+'/'+e.round):e.index;"
+"h+='<tr><td>'+itm+'</td><td>'+e.z.toFixed(3)+'</td>'"
+"+'<td><b>'+e.dev.toFixed(2)+'</b></td><td>'+nums+'</td>'"
+"+(isEuro?'<td>'+estr+'</td>':'')+'</tr>';"
+"}"
+"h+='</tbody></table>';"
+"}"
+"document.getElementById('resBodyTrip').innerHTML=h;"
+"document.getElementById('resCardTrip').style.display='block';"
+"}"
 "function showWsig(d){"
 "var ev=d.wsig,isEuro=d.mode==='euro';"
 /* Shown even with nothing on it. An empty board is a STATEMENT -- the
@@ -1665,8 +1716,41 @@ static esp_err_t status_handler(httpd_req_t *req)
                           emit_run(buf + pos, buf_room(pos, sizeof(buf)),
                                    &g_status.low[i], euro));
     }
+    buf_append(buf, sizeof(buf), &pos, "],");
+    /* What each soft-down trip was made of (D63). Empty when nothing tripped,
+       and then the card is hidden -- unlike the jump board, an empty trip list
+       says nothing the node table does not already show. */
+    buf_append(buf, sizeof(buf), &pos, "\"trips\":[");
+    for (int i = 0; i < g_status.trip_n && i < TRIPX_MAX; i++) {
+        const TripRec *t = &g_status.trip_hist[i];
+        buf_append(buf, sizeof(buf), &pos,
+            "%s{\"block\":%d,\"node\":%d,\"sigma\":%.3f,\"mean\":%.3f,\"items\":[",
+            i ? "," : "", (int)t->block, (int)t->node, t->sigma, t->mean);
+        for (int k = 0; k < t->n; k++) {
+            const TripItem *e = &t->it[k];
+            buf_append(buf, sizeof(buf), &pos,
+                "%s{\"round\":%d,\"index\":%d,\"z\":%.3f,\"dev\":%.2f,\"nums\":[",
+                k ? "," : "", (int)e->round, (int)e->index, e->z, e->dev);
+            bool g1 = true;
+            for (int m = 0; m < 6; m++) {
+                if (!e->nums[m]) continue;
+                buf_append(buf, sizeof(buf), &pos, "%s%d", g1 ? "" : ",", (int)e->nums[m]);
+                g1 = false;
+            }
+            buf_append(buf, sizeof(buf), &pos, "],\"euro\":[");
+            bool g2 = true;
+            for (int m = 0; m < 2; m++) {
+                if (!e->euro[m]) continue;
+                buf_append(buf, sizeof(buf), &pos, "%s%d", g2 ? "" : ",", (int)e->euro[m]);
+                g2 = false;
+            }
+            buf_append(buf, sizeof(buf), &pos, "]}");
+        }
+        buf_append(buf, sizeof(buf), &pos, "]}");
+    }
+    buf_append(buf, sizeof(buf), &pos, "],");
     buf_append(buf, sizeof(buf), &pos,
-        "],\"wsig_sd\":%.4f,\"wsig_sd_n\":%d,\"wsig\":[",
+        "\"wsig_sd\":%.4f,\"wsig_sd_n\":%d,\"wsig\":[",
         g_status.wsig_sd, g_status.wsig_sd_n);
     /* The camera-sigma jump board (D62): biggest |jump| first, session-wide.
      * NOT a ranking -- these are the items whose bits were least quiet while

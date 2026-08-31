@@ -1667,6 +1667,68 @@ static void wsig_note(const RunResult *r, const float *wsig, uint8_t mask)
     }
 }
 
+/* Record WHICH measurements carried a tripping block's spread (D63).
+ *
+ * Called from record_loop() at the moment the trip fires, which is the only
+ * moment the answer exists: the block's rows are still in results[] and their
+ * per-node z is still in the archive, and one round later compaction has taken
+ * both. `block_idx` is 0-based here and stored 1-based, matching what /loops
+ * displays — the two numbering schemes have already cost one wrong reading of a
+ * disturbed block.
+ *
+ * Keeps the TRIPX_TOP_N items furthest from the block mean, by |z - mean|. The
+ * archive is the raw per-node z, so this sees exactly what the sigma was
+ * computed from. */
+static void trip_record(int block_idx, int node, double mean, double sigma)
+{
+    if (g_status.trip_n >= TRIPX_MAX) return;   /* first trips are the ones worth having */
+    if (!s_node_z || node < 0 || node >= MAX_NODES) return;
+    if (!(sigma > 0.0)) return;
+
+    TripRec *t = &g_status.trip_hist[g_status.trip_n];
+    memset(t, 0, sizeof(*t));
+    t->block = (uint16_t)(block_idx + 1);
+    t->node  = (uint8_t)node;
+    t->sigma = (float)sigma;
+    t->mean  = (float)mean;
+
+    int ntot = g_status.runs_completed;
+    if (ntot > NUM_RUNS) ntot = NUM_RUNS;
+    for (int j = 0; j < ntot; j++) {
+        const RunResult *r = &g_status.results[j];
+        if ((int)r->block != block_idx || r->k == 0) continue;
+        float z = s_node_z[(size_t)j * MAX_NODES + node];
+        if (!isfinite(z)) continue;                 /* node did not contribute */
+        double dev = ((double)z - mean) / sigma;
+        double mag = dev < 0.0 ? -dev : dev;
+
+        int at = t->n;
+        for (int q = 0; q < t->n; q++) {
+            double e = t->it[q].dev;
+            if (e < 0.0) e = -e;
+            if (mag > e) { at = q; break; }
+        }
+        if (at >= TRIPX_TOP_N) continue;
+        for (int q = (t->n < TRIPX_TOP_N ? t->n : TRIPX_TOP_N - 1); q > at; q--)
+            t->it[q] = t->it[q - 1];
+        if (t->n < TRIPX_TOP_N) t->n++;
+
+        TripItem *e = &t->it[at];
+        e->round = r->round;
+        e->index = r->index;
+        memcpy(e->nums, r->nums, sizeof(e->nums));
+        memcpy(e->euro, r->euro, sizeof(e->euro));
+        e->z   = z;
+        e->dev = (float)dev;
+    }
+    if (t->n > 0) {
+        g_status.trip_n++;
+        printf("trip origin: block %d node %d sigma %.3f — worst item %d/%d at %.2f sigma\n",
+               (int)t->block, node, t->sigma, (int)t->it[0].index,
+               (int)t->it[0].round, (double)t->it[0].dev);
+    }
+}
+
 /* Quarantine every measured item in `block_idx` from pass ranking. CSV keeps
  * the rows (skip_rank=1). Called when that block *triggered* a soft-down. */
 static void quarantine_block(int block_idx)
@@ -2148,6 +2210,9 @@ static void record_loop(double loop_mean, int loop_idx)
                    mean_i[i], sig_i[i],
                    contaminated ? " — block quarantined" : " — was already out, block kept");
             if (contaminated) any_trip = true;
+            /* Before anything else touches results[]: this is the only moment
+             * the block's own rows still exist (D63). */
+            trip_record(loop_idx, i, mean_i[i], sig_i[i]);
             trip_mask |= (uint8_t)(1u << i);
             g_status.nodes[i].soft_down = 1;
             s_soft_clean[i] = 0;
@@ -2477,6 +2542,8 @@ void elotto_task(void *pvParam)
     }
     /* The board and the per-node history behind it start empty every session:
      * a jump across a reboot or a parameter change is not an event. */
+    memset(g_status.trip_hist, 0, sizeof(g_status.trip_hist));
+    g_status.trip_n = 0;
     memset(g_status.wsig_top, 0, sizeof(g_status.wsig_top));
     g_status.wsig_n = 0;
     for (int i = 0; i < MAX_NODES; i++) s_prev_wsig[i] = NAN;

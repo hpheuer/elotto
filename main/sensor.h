@@ -686,6 +686,44 @@ typedef struct {
  * ⚠ nums/euro are copied in rather than looked up later, because results[]
  * is compacted at every round boundary and the row would be gone. This board
  * has to survive that — it exists precisely because the rows do not. */
+/* What a soft-down trip was MADE OF (D63).
+ *
+ * A trip is a property of a whole block: sigma is the spread of one node's z
+ * over its ~63 items, and it does not exist until the block closes. The
+ * question a reader actually has — which measurements made that spread big
+ * — was unanswerable, because the block's rows are compacted away one round
+ * later. Twice in two days they were asked for hours afterwards and every one
+ * of them was gone.
+ *
+ * So the answer is taken at the only moment it exists: inside record_loop(),
+ * where the block's items are still in results[] and their per-node z is still
+ * in the archive. Same trick as the jump board — copy what names the
+ * measurement, do not hope the row survives.
+ *
+ * ⚠ `dev` is (z - block mean) / block sigma: how far that item sat from the
+ * middle of the very spread it helped create. It is NOT a z-score against the
+ * null and must not be read as one. With ~63 items a value near 3 is ordinary;
+ * the point is the SHAPE — ONE item far out is a single excursion, three of
+ * them close together mean the block was simply wide. */
+typedef struct {
+    uint16_t round, index;
+    uint8_t  nums[6], euro[2];
+    float    z;          // that node's RAW z on this item
+    float    dev;        // (z - block mean) / block sigma
+} TripItem;
+
+#define TRIPX_TOP_N 3    // items per trip: enough to tell one spike from a wide block
+#define TRIPX_MAX   6    // trips remembered per session
+
+typedef struct {
+    uint16_t block;      // 1-based, the number /loops shows, NOT results[].block
+    uint8_t  node;       // discovery order, 0 = master
+    uint8_t  n;          // items filled, 0..TRIPX_TOP_N
+    float    sigma;      // the block sigma that tripped
+    float    mean;       // the block mean it was measured about
+    TripItem it[TRIPX_TOP_N];
+} TripRec;
+
 typedef struct {
     uint16_t round;      // (round, index) is the identity in unlimited mode
     uint16_t index;      // combination id WITHIN that round
@@ -791,6 +829,11 @@ typedef struct {
      * one whose z deserves the least trust. It must never be read like
      * top[]/low[], and it excludes nothing by itself — the software
      * publishes the number and draws no verdict (D47). */
+    /* What each soft-down trip was made of (D63). Oldest kept, newest dropped
+     * once full: the FIRST trip of a session is the one worth keeping — a
+     * sticky node that keeps failing its gate produces all the rest. */
+    TripRec          trip_hist[TRIPX_MAX];
+    int              trip_n;
     WsigEvent        wsig_top[WSIG_TOP_N];
     int              wsig_n;              // entries in use, 0..WSIG_TOP_N
     /* Measured spread of the jump itself, over every node-item of this session
