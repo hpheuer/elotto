@@ -184,6 +184,7 @@ what remains visible is an effect varying **between items inside a block**.
 - **A fourth table, Soft-down origins** `[D63]`: when a block trips a node, the three
   measurements of that block whose z sat furthest from the block mean, captured at block close
   because compaction takes the rows one round later. Hidden when nothing tripped.
+  Title line: **Block · node · wall time · σ · mean**. Time is `now − (uptime_ms − t_ms)` — no RTC.
   ⚠ A trip belongs to a BLOCK, not to a measurement — σ is the spread over its ~63 items. This
   names what carried the spread, not what "caused" it.
   ⚠ The ×σ column is measured against that block's own spread, not the null: near 3 is

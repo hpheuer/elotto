@@ -679,6 +679,9 @@ typedef struct {
     uint8_t  n;          // items filled, 0..TRIPX_TOP_N
     float    sigma;      // the block sigma that tripped
     float    mean;       // the block mean it was measured about
+    /* Board uptime at the trip (ms). No RTC: the UI does
+     * wall = now − (uptime_ms − t_ms). 0 = not stamped (pre-this-field). */
+    int64_t  t_ms;
     TripItem it[TRIPX_TOP_N];
 } TripRec;
 

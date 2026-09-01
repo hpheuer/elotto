@@ -1555,6 +1555,7 @@ static void trip_record(int block_idx, int node, double mean, double sigma)
     t->node  = (uint8_t)node;
     t->sigma = (float)sigma;
     t->mean  = (float)mean;
+    t->t_ms  = esp_timer_get_time() / 1000;
 
     int ntot = g_status.runs_completed;
     if (ntot > NUM_RUNS) ntot = NUM_RUNS;

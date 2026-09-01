@@ -813,18 +813,6 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "if(d.paused_ms>0)s+=' \\u00b7 paused '+fmt(d.paused_ms)+' (excluded)';"
 "document.getElementById('focusInfo').textContent=s;"
 "}"
-/* Two-sided normal tail p = erfc(|z|/√2). Numerical Recipes rational
- * approximation (|error| < 1.2e-7) — enough for a per-row p column. The old
- * plab() thresholds only emitted "n.s." / "p<0.10" / … buckets, so during a
- * measurement almost every top-5 row looked empty of a p-value. */
-"function erfc(x){"
-"var z=Math.abs(x),t=1/(1+0.5*z);"
-"var a=t*Math.exp(-z*z-1.26551223+t*(1.00002368+t*(0.37409196+"
-"t*(0.09678418+t*(-0.18628806+t*(0.27886807+t*(-1.13520398+"
-"t*(1.48851587+t*(-0.82215223+t*0.17087277)))))))));"
-"return x>=0?a:2-a;}"
-"function p2(z){return erfc(Math.abs(z)/Math.SQRT2);}"
-"function pfmt(p){return p<0.001?p.toExponential(2):p.toFixed(4);}"
 "function showResults(d){"
 "var isEuro=d.mode==='euro';"
 "var sl=document.getElementById('sigLine');"
@@ -897,8 +885,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
    a column that gets misread. */
 "+'<tr style=\"color:#90ee90\">'"
 "+'<th align=left title=\"board and discovery address. Column order is DISCOVERY order and changes between sessions\">node</th>'"
-"+'<th align=left title=\"session mean of this node\\u2019s RAW per-run z. Uncentred \\u2014 a constant offset is normal\">Z</th>'"
-"+'<th align=left title=\"two-sided p of this node\\u2019s mean z (Stouffer). Health check, NOT a result\">p</th>'"
+"+'<th align=left title=\"session mean of this node\\u2019s RAW per-run z. Uncentred \\u2014 a constant offset is normal, from the exposure rung. Not a result\">Z</th>'"
 "+'<th align=left title=\"per-mini-run camera \\u03c3 this block. Soft-down trips on this vs the peers\">cam \\u03c3</th>'"
 "+'<th align=left title=\"bits a measurement CONSUMED per second of reading (gaps excluded). Not the extraction rate — that counts words the ring discarded. The SLOWEST node sets the window for all four\">Mbit/s</th>'"
 "+'<th align=left title=\"exposure this block\\u2019s sweep chose. ! = nothing certified, previous setting kept. Different rungs per node are normal\">exp</th>'"
@@ -930,14 +917,13 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 // certified nothing and kept its previous setting.
 "var ex='\\u2013';"
 "if(N.cam_exp>0)ex=N.cam_exp+(N.cam_cal?'':'!');"
-/* Z = session mean of this node's raw per-run z. p tests mean≠0 via
-   Stouffer: |mean|·√n against N(0,1) (each run z is already unit-normal). */
+/* Z = session mean of this node's raw per-run z. Offset from the rung;
+   centring removes it. No p-value: with n in the thousands every offset
+   prints as 0 and looks like a result (D57). */
 "var zn=N.z_n||0,zm=(zn>0)?N.z:0;"
 "var zTxt=(zn>0)?zm.toFixed(4):'\\u2013';"
-"var pTxt=(zn>0)?pfmt(p2(zm*Math.sqrt(zn))):'\\u2013';"
 "s3+='<tr style=\"opacity:'+(N.ok?1:.55)+'\"><td>'+nm+st+'</td>'"
 "+'<td title=\"mean raw z over '+zn+' runs\">'+zTxt+'</td>'"
-"+'<td title=\"two-sided p of mean (Stouffer)\">'+pTxt+'</td>'"
 "+'<td id=\"nodeSig'+i+'\">'+(H.sigma>0?H.sigma.toFixed(3):(N.cam_rsig>0?N.cam_rsig.toFixed(3):(N.sigma>0?N.sigma.toFixed(3):'\\u2013')))+'</td>'"
 /* ⚠ CONSUMPTION, not production. cam_mbit is what extraction wrote into
    the ring, including everything the ring then threw away -- on 2026-08-30
@@ -1070,8 +1056,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "var itm=(d.unlimited&&r.round)?(r.run+'/'+r.round):r.run;"
 "var zTxt=(r.z_ctr===undefined||r.z_ctr===null)?z.toFixed(2):r.z_ctr.toFixed(2);"
 "var concTxt=(r.zc===undefined||r.zc===null)?'\\u2014':r.zc.toFixed(2);"
-"var det='Z '+zTxt+' \\u00b7 Conc '+concTxt"
-"+' \\u00b7 p(Z*) '+pfmt(p2(st?zs:z));"
+"var det='Z '+zTxt+' \\u00b7 Conc '+concTxt;"
 "if(st)det+='\\nweights: z '+(1-(st.p||0)).toFixed(2)"
 "+' \\u00b7 conc '+(st.p||0).toFixed(2);"
 "tb.innerHTML+='<tr><td>'+(i+1)+'</td><td>'+itm+'</td>"
@@ -1110,11 +1095,18 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "+'\\u00d7\\u03c3 is measured against that block\\u2019s own spread, not against the null: '"
 "+'near 3 is ordinary. One item far out is a single excursion; three close '"
 "+'together mean the block was simply wide.';"
+"function tripWhen(d,t){"
+"if(!(t.t_ms>0)||!(d.uptime_ms>0))return '';"
+"var dt=new Date(Date.now()-(d.uptime_ms-t.t_ms));"
+"function z(n){return (n<10?'0':'')+n;}"
+"return z(dt.getDate())+'.'+z(dt.getMonth()+1)+'.'+dt.getFullYear()"
+"+' '+z(dt.getHours())+':'+z(dt.getMinutes());}"
 "var h='';"
 "for(var i=0;i<tr.length;i++){"
-"var t=tr[i];"
+"var t=tr[i],when=tripWhen(d,t);"
 "h+='<div style=\"margin:10px 0 4px;font-size:.9em\"><b>Block '+t.block+'</b> \\u00b7 '"
-"+wsigNode(d,t.node)+' \\u00b7 \\u03c3 '+t.sigma.toFixed(3)+' \\u00b7 mean '+t.mean.toFixed(3)+'</div>';"
+"+wsigNode(d,t.node)+(when?' \\u00b7 '+when:'')"
+"+' \\u00b7 \\u03c3 '+t.sigma.toFixed(3)+' \\u00b7 mean '+t.mean.toFixed(3)+'</div>';"
 "h+='<table><thead><tr><th>Item</th><th>z</th><th>\\u00d7\\u03c3</th><th>Numbers</th>'"
 "+(isEuro?'<th>Bonus</th>':'')+'</tr></thead><tbody>';"
 "for(var k=0;k<t.items.length;k++){"
@@ -1148,8 +1140,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
    jump of 0,05 is noise and one of 0,20 is not, and only this number
    says which is which. */
 "document.getElementById('resSubWsig').innerHTML="
-"'Largest change in a node\\u2019s camera noise from its previous measurement to this one. '"
-"+'These are the least trustworthy measurements, not the most interesting ones.'"
+"'Largest change in a node\\u2019s camera noise from its previous measurement to this one.'"
 "+((d.wsig_sd>0)?' Jump-to-jump noise this session: \\u00b1'+d.wsig_sd.toFixed(4)+' over '+d.wsig_sd_n+' node-measurements.':'');"
 "document.getElementById('resHeadWsig').innerHTML="
 "'<tr><th>#</th><th>Item</th><th>Node</th>'"
@@ -1533,8 +1524,10 @@ static esp_err_t status_handler(httpd_req_t *req)
     for (int i = 0; i < g_status.trip_n && i < TRIPX_MAX; i++) {
         const TripRec *t = &g_status.trip_hist[i];
         buf_append(buf, sizeof(buf), &pos,
-            "%s{\"block\":%d,\"node\":%d,\"sigma\":%.3f,\"mean\":%.3f,\"items\":[",
-            i ? "," : "", (int)t->block, (int)t->node, t->sigma, t->mean);
+            "%s{\"block\":%d,\"node\":%d,\"sigma\":%.3f,\"mean\":%.3f,"
+            "\"t_ms\":%lld,\"items\":[",
+            i ? "," : "", (int)t->block, (int)t->node, t->sigma, t->mean,
+            (long long)t->t_ms);
         for (int k = 0; k < t->n; k++) {
             const TripItem *e = &t->it[k];
             buf_append(buf, sizeof(buf), &pos,

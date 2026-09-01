@@ -869,7 +869,8 @@ on every row from all four nodes throughout.
 items of that block whose per-node z sat furthest from the block mean, together with the block
 number, the node, the block sigma and mean. Kept in `g_status.trip_hist` (`TRIPX_MAX` 6 per
 session, oldest kept), published as `trips` in `/status`, and shown on the page as a fourth
-card, **Soft-down origins**. Hidden when nothing tripped.
+card, **Soft-down origins**. Hidden when nothing tripped. Each title carries wall time from
+`t_ms` (board uptime at the trip; UI: `now − (uptime_ms − t_ms)`).
 
 **Warum:** the operator asked which single measurement caused a soft-down. The honest answer is
 that none did — sigma is the spread of one node's z over the block's ~63 items and does not
