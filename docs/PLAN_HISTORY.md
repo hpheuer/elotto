@@ -1,6 +1,6 @@
 # PLAN — settled history (§1.1 – §1.14)
 
-**This file is a stub.** Nothing here is a live instruction. The live contract is [`PLAN.md`](PLAN.md); rules are in [`../CLAUDE.md`](../CLAUDE.md); evidence in [`DECISIONS.md`](DECISIONS.md).
+**This file is a stub.** Nothing here is a live instruction. The live contract is [`../CLAUDE.md`](../CLAUDE.md); evidence in [`DECISIONS.md`](DECISIONS.md). Former PLAN: [`PLAN.md`](PLAN.md) (also a stub).
 
 The full §1.1–§1.14 text (closed design findings for Task 1 / per-loop calibration, enclosure lighting, etc.) lived here until the **2026-08-28 docs trim**. Recover it from git:
 
@@ -15,6 +15,6 @@ git show 1e62bca:docs/PLAN_HISTORY.md
 | citation | lives in |
 |---|---|
 | §1.1 – §1.14 | `git show 1e62bca:docs/PLAN_HISTORY.md` |
-| §1.15 onward (historical numbering) | superseded; v3 contract is [`PLAN.md`](PLAN.md) §2+ |
+| §1.15 onward (historical numbering) | superseded; v3 contract is [`../CLAUDE.md`](../CLAUDE.md) |
 
 Read findings there as **records of what was true when measured**, not as current state. Several were overturned later (enclosure is lit `[D28]`; selection key is `|bias−0,5|` `[D46]`; LSB-as-is `[D65]`).

@@ -5,7 +5,7 @@ noise** using
 [GCP methodology](https://grokipedia.com/page/Global_Consciousness_Project).
 
 **Rules and operator contract:** [`CLAUDE.md`](CLAUDE.md) · **Evidence:** [`docs/DECISIONS.md`](docs/DECISIONS.md) ·
-**Snapshot:** [`docs/STATUS.md`](docs/STATUS.md) · **v3 detail:** [`docs/PLAN.md`](docs/PLAN.md)
+**Snapshot:** [`docs/STATUS.md`](docs/STATUS.md)
 
 ## Authors
 
@@ -77,7 +77,7 @@ After OTA, poll `fw_sha` in `/status` until it **changes**. Fresh board: USB era
 main/            elotto.c (UI/HTTP), sensor.c/h, nodes.c/h, focus.c
 components/      elotto_camera, elotto_gcp, elotto_link, elotto_ota  (shared with slave)
 ota_firmware/    recovery image (factory)
-docs/            PLAN.md, DECISIONS.md, STATUS.md, PLAN_HISTORY.md (stub → git), data/
+docs/            DECISIONS.md, STATUS.md; PLAN.md / PLAN_HISTORY.md (stubs → git); data/
 ```
 
 Slave repo must sit **next to** this one (`EXTRA_COMPONENT_DIRS=../elotto/components`).
@@ -86,4 +86,4 @@ Slave repo must sit **next to** this one (`EXTRA_COMPONENT_DIRS=../elotto/compon
 
 | | |
 |---|---|
-| **v3 / D67** | Rounds until Abort; block centring; LSB z + concordance ranking; OTA-only. Contract: `docs/PLAN.md` §2+. Never pool with prior-instrument sessions or v2.x. |
+| **v3 / D67** | Rounds until Abort; block centring; LSB z + concordance ranking; OTA-only. Contract: `CLAUDE.md`. Never pool with prior-instrument sessions or v2.x. |
