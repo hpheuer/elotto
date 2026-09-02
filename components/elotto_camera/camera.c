@@ -25,7 +25,8 @@
 // OV5647 noise source. See include/camera.h on why "dark frame" is a label.
 // Extraction: non-overlapping frame pairs, diff = f[2k+1] - f[2k] per pixel
 // (cancels fixed-pattern noise exactly), LSB of each diff packed into a
-// ring buffer, adjacent-pixel XORed. camera_read_word_raw() feeds gcp_zscore_pre() in
+// ring buffer AS MEASURED -- the adjacent-pixel XOR was removed by D65, so a
+// word is 32 pixels. camera_read_word_raw() feeds gcp_zscore_pre() in
 // the shared elotto_gcp component, which is where a z is defined.
 // SHARED between the master and slave repos -- a change here affects both nodes.
 
@@ -73,8 +74,8 @@ static uint32_t *s_ring;
  * one advances with the producer and includes bits the consumer never saw
  * (ring drops).
  *
- * One byte per word: with adjacent-pixel XOR on a 32-bit word comes from 64 pixels, so
- * the count is 0..64; with it off, 32 pixels and 0..32. Both fit.
+ * One byte per word: 32 pixels per 32-bit word since D65, so the count is
+ * 0..32. (It was 0..64 while the adjacent-pixel XOR was on.) Both fit.
  * ⚠ Same indices as s_ring, written by the same producer under the same
  * head/tail discipline. Never index one without the other. */
 static uint8_t *s_ring_raw;
@@ -439,10 +440,11 @@ static void diff_and_extract(const uint8_t *a, const uint8_t *b, uint32_t n)
      * silicon and compares the emitted words, the zero count, the stuck verdict
      * and the leftover packer state. Do not switch this line without it. */
     /* ⚠ ALWAYS ON since 2026-08-26, and the duty cycle is gone with it. It was
-     * 1-in-8 while the raw stream was only a DIAGNOSTIC, to keep its cost off
-     * the loaded bit rate. The raw stream is now a MEASUREMENT CHANNEL (the
-     * LSB z), and a measurement cannot be sampled: every bit the consumer
-     * sees must be counted, or the z is over a window nobody can name.
+     * 1-in-8 while the LSB stream was only a DIAGNOSTIC, to keep its cost off
+     * the loaded bit rate. Since D65 that stream IS the measurement — the
+     * emitted words and the monitored bits are the same bits — and a
+     * measurement cannot be sampled: every bit the consumer sees must be
+     * counted, or the z is over a window nobody can name.
      * ⚠ The cost is +9,5 % of the extraction loop (/camtest 2026-08-27), down
      * from +28,6 % before the counters moved into locals. Still priced at IDLE
      * only, where the loop waits on the sensor — the loaded cost remains
@@ -1203,7 +1205,6 @@ static const uint32_t s_cal_ladder[] = { 4, 8, 16, 32, 64, 128, 256, 512 };
  * before. Quality first; rate is only the tie-break among candidates that pass. */
 #define CAL_BIAS_TOL        1e-3
 #define CAL_AUTOC_TOL       0.03   /* LSB; 0,01 was the LSB bar (D65) */
-#define CAL_SIGMA_TOL       0.05   /* unused as a gate since D65 */
 /* A window has to be long enough that the gate tests the SETTING and not the
  * sampling error of the window: SE(bias) = 0.5/sqrt(bits), so 2 Mbit gives
  * 3.5e-4 against a 1e-3 gate — about 3 sigma of headroom — and the 8 Mbit target
@@ -1275,6 +1276,11 @@ static const uint32_t s_cal_ladder[] = { 4, 8, 16, 32, 64, 128, 256, 512 };
 #define CAL_MAX_Z_OFFSET      1.0
 #define CAL_BIAS_SE_K         3.0
 /* ── The bias gate moves BEFORE adjacent-pixel XOR (2026-08-27) ─────────────────────
+ * ⚠ READ THIS BLOCK AND THE TWO BELOW IT HISTORICALLY. D65 deleted the XOR
+ * altogether, so "raw / before XOR" is simply THE stream today and "after
+ * XOR" is the pre-D65 comparison arm. The conclusions are still the live
+ * rules — selection on |raw_bias-0,5|, never a gate; a RELATIVE sigma bar —
+ * and they are why the gates survived D65 unchanged.
  * Everything above this block is still true and is the reason the gate had to
  * move: the bar is noise-limited, it cannot resolve the health bar it feeds.
  * What the 2026-08-27 session showed is that it is worse than noise-limited —
@@ -1323,7 +1329,7 @@ static const uint32_t s_cal_ladder[] = { 4, 8, 16, 32, 64, 128, 256, 512 };
  * The raw bias is NON-STATIONARY on the timescale of a session. This file
  * already records that for the LSB-as-is case further down ("+8,4e-4 at
  * calibration to -1,3e-3 during the baseline minutes later"); it holds with the
- * on too, and it is a large part of why adjacent-pixel XOR exists at all.
+ * on too, and it was a large part of why the adjacent-pixel XOR existed at all.
  *
  * What survives is that the raw bias is an excellent RELATIVE key: across two
  * sweeps 25 minutes apart it ordered each node's ladder the same way both
@@ -1345,9 +1351,9 @@ static const uint32_t s_cal_ladder[] = { 4, 8, 16, 32, 64, 128, 256, 512 };
  * drifting, which is the failure mode on the other side. */
 #define CAL_KEEP_MARGIN_K     3.0
 /* ── The dispersion gate moves BEFORE adjacent-pixel XOR too (2026-08-27) ───────────
- * Same disease as the bias gate, found in the same sweep. CAL_SIGMA_TOL reads
- * the mini-run sigma, and adjacent-pixel XOR pulls dispersion in as it pulls bias
- * in. Rungs the LSB gate CERTIFIED, with their raw figure beside it:
+ * Same disease as the bias gate, found in the same sweep. The old |σ−1| ≤ 0,05
+ * gate read the mini-run sigma, and adjacent-pixel XOR pulls dispersion in as it
+ * pulls bias in. Rungs that gate CERTIFIED, with their raw figure beside it:
  *
  *     .155 exp 256   raw 1,3405   1,0202
  *     .145 exp  64   raw 1,2964   0,9741
@@ -1377,14 +1383,15 @@ static const uint32_t s_cal_ladder[] = { 4, 8, 16, 32, 64, 128, 256, 512 };
  * a 1,24 best), .145 exp 128 (1,45 against 1,02), master exp 128 (1,49 against
  * 1,04) and every rung above them, and it rejects nothing any node chose.
  * ⚠ Honestly stated: on these two sweeps it rejects nothing the sigma
- * gate did not already reject, so its value today is prospective — it is the
- * gate that will see a front end degrading while adjacent-pixel XOR still hides it. It
- * does NOT catch the two rungs that motivated it (.155/256 at 1,31 against a
+ * gate did not already reject, so its value then was prospective — the gate
+ * that would see a front end degrading while the XOR still hid it. Since D65
+ * nothing hides it any more, and this bar is simply the sigma gate on the one
+ * stream there is. It does NOT catch the two rungs that motivated it (.155/256 at 1,31 against a
  * 1,05 best is a ratio of 1,25, inside K). Tightening K to catch them would
  * put the bar under the drift measured above. That is the trade, and it is
  * made in favour of never blanking a node.
- * ⚠ Does NOT replace CAL_SIGMA_TOL: the two test different streams and both
- * streams are used. A rung has to clear both. */
+ * ⚠ Since D65 this is the ONLY dispersion gate: there is one stream, and the
+ * |σ−1| ≤ 0,05 bar that used to sit beside it is gone with the other one. */
 #define CAL_RAW_SIGMA_K       1.35
 /* Frame pairs discarded before a window opens. Up to CAM_BUF_COUNT/2 pairs
  * already captured under the OLD setting can be sitting in the driver's queue,
@@ -1404,9 +1411,10 @@ void camera_cal_set_z_scale(double z_per_bias)
 }
 
 /* The LSB bias bar for ONE window. Publish/audit only since 2026-08-28
- * (D52) — cal_gate() no longer fails on it. After adjacent-pixel XOR every certified
- * rung sits near the window's own SE anyway [D19][D46]; selection is LSB
- * |raw_bias−0,5|. Kept so /calibrate and old sweep CSVs stay comparable. */
+ * (D52) — cal_gate() no longer fails on it. It was noise-limited even with the
+ * XOR on, every certified rung sitting near the window's own SE [D19][D46];
+ * selection is |raw_bias−0,5|. Kept so /calibrate and old sweep CSVs stay
+ * comparable. */
 static double cal_bias_bar(uint64_t bits)
 {
     if (s_cal_z_scale <= 0.0 || bits == 0) return CAL_BIAS_TOL;
@@ -1626,43 +1634,23 @@ bool camera_calibrate(int budget_ms, bool (*abort_cb)(void), camera_cal_t *out)
      * -1.6e-3 to -4.8e-5, ~30x the SE, so this reliably picks the right region
      * and only ties arbitrarily between rungs that are genuinely equivalent.
      *
-     * ── SIGMA MARGIN (added 2026-07-27, §1.17) ────────────────────
-     * Bias alone is not enough, because bias is NOT the property that hurts.
-     * A bias that survives calibration directly degrades the measurement, and
-     * an over-dispersed node costs SNR and drives loop_sigma.
-     *
-     * Measured, over a 200-loop session: node .145 sat on exposure 32 in 91 of
-     * 127 logged loops and produced every sigma excursion there (per-loop sigma
-     * SD 0.245, max 3.008), while on exposure 16 it was indistinguishable from
-     * a healthy node (SD 0.082 against the 0.089 expected from sampling alone).
-     * Its exposure-32 rung sits ON the sigma gate: it passes some sweeps and
-     * fails others, and when it passed, its bias often measured best — so the
-     * bias-only rule selected it. The rule optimised the wrong quantity.
-     *
-     * Fix: a candidate must clear the sigma gate with MARGIN to be selectable,
-     * not merely clear it. A rung that scrapes the gate is a rung on a cliff.
-     * Half the tolerance is the threshold; among candidates that meet it, the
-     * lowest |bias-0.5| still wins, so nothing else about the rule changes.
-     *
-     * Fallback to the bare gate if nothing meets the margin, so a node whose
-     * whole ladder is marginal still chooses rather than keeping a stale
-     * setting and reporting 'U'.
-     *
-     * ⚠ This narrows the window in which a cliff-edge rung can be picked; it
-     * does not abolish it. The deeper problem is that the sweep's sigma does
-     * not always predict the session's: .145's exposure 32 measured inside
-     * [0.95, 1.05] often enough to be chosen 91 times, then produced 3.0 in
-     * use. Verified not to disturb the healthy nodes — replayed against all
-     * four measured ladders, master/.103/.155 keep exactly the rung they had.
+     * ⛔ There is no dispersion MARGIN on top of the gate. A 2026-07-27 rule
+     * required a rung to clear CAL_SIGMA_TOL by half its tolerance to be
+     * selectable; D65 deleted that gate with the second stream it read, and the
+     * dispersion bar is now CAL_RAW_SIGMA_K, relative to this ladder's own best
+     * (see there). Do not re-add an absolute margin on top of a relative bar —
+     * the bar already moves with the node's level, which is the whole reason it
+     * is relative.
      *
      * ── LSB BIAS + HYSTERESIS (2026-08-27) ───────────────────
      * Two changes, one cause. See CAL_MAX_RAW_BIAS above for the measurement.
      *
      * 1. The key is |raw_bias - 0,5|, the monobit distance on the LSB stream.
-     *    After adjacent-pixel XOR every certified rung sits four times below the window's
-     *    own sampling error, so the old key was comparing three numbers that
-     *    are all the same — the same defect the RATE tie-break had, one layer
-     *    down. Before adjacent-pixel XOR the ladder is a clean U with ~20x the noise
+     *    Measured AFTER the then-live adjacent-pixel XOR, every certified rung
+     *    sat four times below the window's own sampling error, so the old key
+     *    was comparing three numbers that are all the same — the same defect
+     *    the RATE tie-break had, one layer down. On the un-XORed stream (which
+     *    since D65 is the only one) the ladder is a clean U with ~20x the noise
      *    between neighbours, and it orders the rungs the way their measured
      *    per-block offsets do.
      *

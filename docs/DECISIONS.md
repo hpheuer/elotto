@@ -10,7 +10,8 @@ entries after that commit keep enough text that the decision survives. A rule an
 be changed together — a rule whose evidence has moved on is worse than no rule.
 
 ⚠ Everything here is dated. A measurement describes the instrument that made it; see D1.
-**Live instrument is D65** (LSB z + concordance). **Live ranking scale is D68** (block σ).
+**Live instrument is D65** (LSB z + concordance). **Live ranking scale is D68** (block σ),
+unbounded and per-item weighted (D75), one block per round (D76).
 Earlier ranking-key formulae are evidence, not the current key.
 
 ---
@@ -123,13 +124,12 @@ Costs, both accepted as pre-registration: centring removes any real effect CONST
 block (what remains visible is an effect varying BETWEEN items inside a block), and it shrinks σ by
 (1 − 1/n_block), ~0,5 % at ~100 items per block — so σ(z_ctr) sits slightly under 1 by construction.
 
-### D9 — Nearest-zero means nearest the PASS MEAN
-Raw z carries the array's common offset — the 2026-08-05 pass ran at mean −1,82 — so |z_raw| ≈ 0
-would select items about +1,8σ ABOVE the array's own centre: the opposite of neutral.
-`results_near_mean()` picks by |z − mean|, which orders identically to the studentized |z − mean|/σ.
+### D9 — Nearest-zero means nearest the PASS MEAN (2026-08-05)
+**Dead.** v3 has no ranking modes and `results_near_mean()` is gone with them. Text:
+`git show 1e62bca:docs/DECISIONS.md`.
 
 ### D10 — The studentized-view checkbox of PLAN.md §2.3 was never built
-The studentized value exists only as the `Z*` column. Do not cite it as a feature.
+**Moot since D68:** `Z*` **is** the key, in block-σ units. Not a feature, and not a deferred one.
 
 ---
 
@@ -190,7 +190,7 @@ exclusions were mostly D12, not condition.
 
 ## Calibration
 
-### D16 — Rung selection: lowest |bias−0,5| among candidates clearing σ with MARGIN
+### D16 — Rung selection: lowest |bias−0,5| among candidates that clear every gate
 Selection used to take the FASTEST passing candidate, on the assumption that a shorter exposure means
 a faster frame rate means more bits. That assumption is dead: the bit rate is CPU-bound, and a full
 sweep measures 3,217–3,293 Mbit/s across exposure 4..512 — a 2,4 % spread, i.e. noise. The tie-break
@@ -199,15 +199,22 @@ master picked exposure 16 (bias −3,7e-4) over 32 (−2,1e-4) on a 0,7 % rate d
 5-loop session its choice wandered 128 → 256 → 8 → 128 → 128, once landing on a rung a standalone
 sweep had FAILED at −1,21e-3.
 
-The σ margin (2026-07-27) exists because bias alone is not the property that hurts. Over a 200-loop
-session, node .145 sat on exposure 32 in 91 of 127 logged loops and produced every σ excursion there
-(per-loop σ SD 0,245, max 3,008), while on exposure 16 it was indistinguishable from healthy (SD
-0,082 against 0,089 expected from sampling). Its exposure-32 rung sits ON the σ gate: it passes some
-sweeps and fails others, and when it passed its bias often measured best — so the bias-only rule
-selected it. A rung that scrapes a gate is a rung on a cliff.
+A σ MARGIN rule (2026-07-27) sat on top of this for a year: a rung had to clear `CAL_SIGMA_TOL` by
+half its tolerance to be selectable, because bias alone is not the property that hurts. Over a
+200-loop session, node .145 sat on exposure 32 in 91 of 127 logged loops and produced every σ
+excursion there (per-loop σ SD 0,245, max 3,008), while on exposure 16 it was indistinguishable from
+healthy (SD 0,082 against 0,089 expected from sampling). Its exposure-32 rung sat ON the σ gate: it
+passed some sweeps and failed others, and when it passed its bias often measured best — so the
+bias-only rule selected it. A rung that scrapes a gate is a rung on a cliff.
 
-⚠ This narrows the window in which a cliff-edge rung can be picked; it does not abolish it.
-⚠ Selection key moved to LSB bias in D46; the σ-margin rule above still holds.
+⛔ **The margin rule is GONE (2026-09-02).** D65 deleted `CAL_SIGMA_TOL` with the second stream it
+read, so there was no gate left for the margin to sit on; the code had already stopped applying it
+and only the comment survived. Dispersion is now gated by `CAL_RAW_SIGMA_K` 1,35, relative to the
+ladder's own best rung (D46). Do not re-add an absolute margin on top of a relative bar — the bar
+already travels with the node's level, which is the whole reason it is relative.
+⚠ Selection key moved to LSB bias in D46. The cliff-edge failure mode the margin addressed is NOT
+abolished — the sweep's σ does not always predict the session's, and soft-down (D12) is what catches
+it now.
 
 ### D17 — LSB-as-is has no σ≈1 null (2026-07-26 / 2026-08-26)
 **Superseded as a rule by D65** (LSB bits are measured as-is). Evidence stands: LSB bias is non-stationary;
@@ -265,9 +272,9 @@ failure D16's σ margin exists to contain. Per-loop calibration is **statistical
 
 ## Extraction
 
-### D22 — 3,42 → 5,71 Mbit/s per node (2026-08-18), bit-for-bit the same stream
-**Entscheidung:** Idle rate 5,71 via `-O2` (3,81) + inline popcount (4,60) + word-wise extraction.
-No Zbb; `__builtin_popcount` was a library call. `LSB(b−a) ≡ LSB(a)⊕LSB(b)`.
+### D22 — 3,42 → 5,71 Mbit/s per node (2026-08-18)
+→ **D23.** `-O2` + inline popcount + word-wise extraction, bit-for-bit the same stream.
+⚠ Both figures are the adjacent-pixel-XOR instrument, which D65 turned off.
 
 ### D23 — The idle ceiling is the sensor, and we are at 98,5 % of it
 The old "71 % of the ceiling" figure assumed 50 fps from the datasheet. `fps_raw`
@@ -276,6 +283,8 @@ sensor with extraction stopped: **36,11 and 36,22 fps** on two runs → a pair e
 against a live 56,0 ms, i.e. 18,1 pairs/s × 320.000 bit = **5,80 Mbit/s** against 5,71 measured.
 
 The measured PSRAM read floor is 7,1–7,9 cycles/pixel against ~21 for extraction+statistics.
+⚠ Those figures are the pre-D65 stream (D22). With the adjacent-pixel XOR off the word rate
+doubles: idle production measured **~7,4 Mbit/s**. The ceiling is still the sensor.
 
 ### D24 — Why the last two extraction changes bought nothing (answered 2026-08-18)
 **Entscheidung:** Idle loop is DQBUF-bound; CPU savings vanish into wait. `CAM_BUF_COUNT` 4→8 moved
@@ -482,44 +491,31 @@ splits the pooling table for TABLES.
 - reintroducing the on-chip TRNG in any form — **including an LFSR fed from the camera bits**
   (proposed 2026-08-26). An LFSR whose feedback is XORed with the raw stream IS the canonical
   whitened-hardware-RNG construction, so it falls under this line; it is named separately because the
-  line did not read as covering it. Simulated over 8,2 Mbit per arm (32-bit polynomial 32/22/2/1):
-  on a source carrying the measured LSB-as-is bias plus a period-4-segment line it reaches
-  bias 0,499929 / σ 0,9971 / autocorr 0,0004 — and the adjacent-pixel XOR reaches 0,496249 / 1,0015 / 0,0009,
-  i.e. **the LFSR buys nothing adjacent-pixel XOR does not already deliver**.
+  line did not read as covering it.
   ⛔ What it costs is the instrument: fed a **frozen camera** (every diff zero, every LSB
   deterministically 0) the LFSR emits bias 0,499993, σ 1,0001, autocorr 0,0004 — **it passes every
   gate this project has**, where the raw and LSB paths both read bias 0,000000 / σ 0,0000 and are
-  caught instantly. The 2026-08-26 LSB-as-is trial detected a merely *degraded* source in three
-  independent channels; behind an LFSR all three would have read clean.
-  Three further reasons: it has STATE, so it smears a time-localised deviation over the register
-  length and beyond, where adjacent-pixel XOR is memoryless and local (`bit(i) = LSB(2i) ⊕ LSB(2i+1)`); the
-  entropy channel's closed-form null assumes an i.i.d. source and does not hold for an LFSR sequence,
-  so `z_h` would become meaningless; and it puts a PRNG in the z path, which `fast_rng()` is
-  explicitly kept out of. The "cheap in hardware" argument does not transfer — adjacent-pixel XOR costs no
-  compute at all, it is fused into the extractor (`k = ? 2 : 4`), and its 2:1 rate is
-  net **1,22× better** than LSB-as-is once σ is accounted for;
-- NIST runs as a ranking channel (D54 tried, D55 deleted — underdispersed, orthogonal to Pre);
+  caught instantly. It also has STATE, so it smears a time-localised deviation over the register
+  length and beyond; and it puts a PRNG in the z path, which `fast_rng()` is explicitly kept out of.
+  ⚠ The 2026-08-26 text also priced the LFSR against the adjacent-pixel XOR ("buys nothing XOR does
+  not deliver", "1,22× better") and against the entropy channel `z_h`. **D65 turned that XOR off and
+  D53 deleted `z_h`**, so those comparisons are void — the frozen-camera argument above does not
+  depend on them. Full text: `git show 1e62bca:docs/DECISIONS.md`;
+- NIST runs as a ranking channel (tried and deleted, D55 — underdispersed, orthogonal to Pre);
 - chasing down the window/gap split (D2);
-- **adaptive bias correction as a replacement for the adjacent-pixel XOR** (proposed 2026-08-26): estimate p̂ by
-  EWMA over the raw LSB stream and standardise each run on `μ = 200·nseg·p̂`,
-  `σ = √(200·nseg·p̂(1−p̂))` instead of the fixed 0,5 / `GCP_SEGMENT_SD`. It is a LOCATION fix for a
-  SCALE failure and cannot work, quantified against D17's own re-test data:
-  at the measured LSB-as-is p̂ = 0,493375 the σ factor `√(p̂(1−p̂)/0,25)` is 0,999912 — a correction of
-  **8,8e-5 where 1/1,7233 = 0,58, i.e. −42 %, is needed. Short by 4800×.** The overdispersion is not
-  binomial, so no binomial σ built from p̂ reaches it; the entropy channel (z_h −201,7) says it is
-  spectral structure, which no rescaling of location or scale touches at all.
-  Three further reasons, each independently sufficient: **(a)** p̂ is estimated from the same data, so
-  the EWMA subtracts the signal — at α = 0,001 and ~3,2 s/run its time constant is **53 min, 3,6×
-  slower than the 15-min block**, i.e. a second, un-pre-registered centring on top of D8, removing
-  more than block centring already costs, not less. **(b)** A per-node private p̂ trajectory makes
-  `z0..z3` four different statistics, which breaks the Stouffer combine and would feed the p̂ dynamics
-  into `PairAcc` as correlation — exactly what the shared primitive in `elotto_gcp` exists to prevent
-  (D37) — and it moves every stored z, splitting the pooling table (D1).
-  **(c)** The bit-rate premise is wrong even on its own terms: LSB-as-is buys 2× nseg per unit time,
-  worth √2 = 1,414 in z resolution, against a z that is 1,7233× too wide — **net 1,22× worse.**
-  ⚠ With adjacent-pixel XOR ON the correction is pointless in the other direction: at p̂ = 0,499942 the σ factor
-  is 1 − 6,7e-9. The residual LOCATION term is real (−0,32 z/run) but block centring already removes
-  it, in the pre-registered way;
+- **adaptive bias correction** (proposed 2026-08-26): estimate p̂ by EWMA over the raw LSB stream
+  and standardise each run on `μ = 200·nseg·p̂`, `σ = √(200·nseg·p̂(1−p̂))` instead of the fixed
+  0,5 / `GCP_SEGMENT_SD`. It is a LOCATION fix for a SCALE failure: at the measured LSB p̂ = 0,493375
+  the σ factor `√(p̂(1−p̂)/0,25)` is 0,999912, a correction of **8,8e-5 where −42 % is needed —
+  short by 4800×**. The overdispersion is not binomial, so no binomial σ built from p̂ reaches it.
+  Two further reasons, each independently sufficient: p̂ is estimated from the same data, so the EWMA
+  subtracts the signal (at α = 0,001 its time constant is ~53 min against the 15-min block — a second,
+  un-pre-registered centring on top of D8); and a per-node private p̂ trajectory makes `z0..z3` four
+  different statistics, breaking the Stouffer combine and feeding the p̂ dynamics into `PairAcc` as
+  correlation — what the shared primitive exists to prevent (D37) — while moving every stored z (D1).
+  ⚠ The original framed this as "a replacement for the adjacent-pixel XOR" and costed it in bit rate
+  against XOR-on. **D65 turned the XOR off**, so that framing and its 1,22× are void; the scale
+  argument above stands on its own. Full text: `git show 1e62bca:docs/DECISIONS.md`;
 - keeping prior-instrument session CSVs in-tree — unpoolable with D65; wiped 2026-08-31 (user).
 
 ⛔ **Attended mode deleted (D66, 2026-08-31).** The deferred attended-vs-unattended comparison is closed.
@@ -560,8 +556,8 @@ deliberately not closed in software (answer: light). CSV lost `null_flags=`.
 ### D48 — The baseline phase is gone; the scoring key is the pass key (2026-08-28)
 **Entscheidung:** Baseline phase DELETED — block centring already gives the drift reference from
 ~200 runs. Scoring key now uses all three channels via `score_build_keys()`; scoring pass
-centres/standardises itself per channel (required for LSB — without it every candidate hits
-`ENT_Z_CLAMP`). `?baseline=` → 400. Slave still answers `B`. Pooling: split on 2026-08-28.
+centres/standardises itself per channel (required for LSB — without it every candidate ran off the
+scale). `?baseline=` → 400. Slave still answers `B`. Pooling: split on 2026-08-28.
 
 ### D49 — The start form remembers its last values, the API remembers nothing (2026-08-28)
 **Entscheidung:** Form fields persist in NVS, served as script on `/`. API defaults untouched. Only
@@ -633,10 +629,10 @@ and old CSV comparability; bit values stay defined as legacy.
 ### D53 — Spectral-entropy channel deleted (2026-08-28)
 **Entscheidung:** Gone. Do not re-open.
 
-### D54 — Runs ranking (2026-08-28)
-Tried one day; deleted D55.
+### D54 — Runs ranking
+→ **D55.**
 
-### D55 — Runs ranking deleted (2026-08-29)
+### D55 — Runs ranking: tried 2026-08-28, deleted 2026-08-29
 **Entscheidung:** Gone. Sweep still publishes `raw_runs_z` per rung, not a gate (D46). Underdispersed and orthogonal to the z outliers.
 
 ### D56 — Half-window concordance; compact 100 extremes (2026-08-29)
@@ -650,8 +646,8 @@ boundary to the 100 most extreme `|rank_key|` (both tails). Live as of D65: z + 
 ### D58 — Own-σ per ranking channel (2026-08-29)
 **Entscheidung (still live, scale moved by D68):** each ranking term is standardised by **its own**
 measured σ. One shared σ silently reweights the key. Since D68 that σ is the item's **block** σ,
-not session `rank_sig_p` / `rank_sig_c`. Z* **is** the key; it no longer studentises on session
-`rank_sigma`.
+not a session-wide channel σ (deleted by D72). Z* **is** the key; it no longer studentises on session
+the session key moments that D71 later deleted.
 
 ### D59 — Gain 256 tried and reverted; slave0's light was the real fix (2026-08-30)
 **Entscheidung:** `CONFIG_ELOTTO_CAM_REG_GAIN` stays at **1023**. The operator's physical
@@ -1004,14 +1000,14 @@ without splitting on `round` (D1).
 ### D68 — Ranking key in units of block σ (2026-08-31)
 **Entscheidung:** `rank_key()` divides z and concordance by **that item's own block σ**, frozen
 at `close_block()` (and on abort of a centred open block). Z* in the UI **is** the key. Session
-`rank_sig_p` / `rank_sig_c` / `rank_mean` / `rank_sigma` stay as diagnostics and do not scale
-the tables. Scoring self-standardises on its own span; per-node centring of that span is D69.
+`rank_sig_p` / `rank_sig_c` were diagnostics that did not scale the tables; D71 deleted
+`rank_mean` / `rank_sigma` and D72 deleted these two as well. Scoring self-standardises on its own span; per-node centring of that span is D69.
 
 **Warum:** a sweep can put the cameras on a different rung. Session-σ then mixes two instruments
 into one Top-5: a loud new block inflates the denominator and crushes older extremes; at
 `wpre>0` it can reorder two already-measured items whose Z/Conc never moved. Blocks exist to
 stop that. Sweeps stay — without them the bits stop being bits. `/loops` carries
-`rank_sig_p` / `rank_sig_c` per row so the scale is auditable.
+`rank_sig_p` / `rank_sig_c` per row so the scale is auditable. — **that publication was removed by D72**; the scale lives only in `s_bsig[]` at run time.
 
 **Pooling:** tables post-D68 do not pool with pre-D68 tables. `z_raw` / `z_ctr` still do.
 
@@ -1029,3 +1025,230 @@ scoring did drop-then-centre. Same key in the comments, different machine.
 
 **Pooling:** pools chosen post-D69 do not pool with pre-D69 pools (D48 split still applies).
 Pass `z_ctr` is unchanged.
+
+### D70 — Node agreement as a column beside Z* (2026-09-01)
+**Entscheidung:** `RunResult.node_sd` — the sample σ across the contributing nodes of their
+block-centred z, each node first divided by **its own σ over that block** — is computed in
+`center_block()` and shown as **Δn** in Top-5 / Bottom-5. NaN (UI: —) until the block is
+centred and whenever fewer than two nodes have a block σ (k < 2, or a node with < 3 runs in
+the block). It **ranks, selects and excludes nothing**; `rank_key()` is untouched.
+
+**Warum:** Z* alone cannot say whether the four cameras moved together on an item or whether
+one node carried the combine on its own — and with `NODE_SOFT_MIN_COMBINE` 1 a solo combine is
+legal, so the k column does not answer it either. Per-node standardisation is what makes the
+number readable: the per-node LSB σ is not 1 and differs between nodes (D17, D65), so the raw
+spread of z_i would mostly report which nodes contributed. After the division the null is ≈ 1
+for independent nodes at any scale — the same bargain D68 makes with the block σ. The mean the
+spread is taken around **is** the combined z: Σz_i/√k = √k·mean, so "deviation from the
+combined Z*" and "deviation from each other" are one number.
+
+**Warum kein Rankingkanal:** small Δn is agreement, not evidence — a block-wide common mode
+would produce it too, and centring has already removed exactly that. Making it a key would also
+break the pre-registration: the key is fixed at D65/D68.
+
+**Pooling:** no split. Display only; `z_raw` / `z_ctr` / `key` unchanged, and Δn is recomputable
+offline from the per-node `z0..z3` in the CSV.
+
+### D71 — `rank_mean` / `rank_sigma` deleted (2026-09-02)
+**Entscheidung:** Both fields are gone — from `ElottoStatus`, from `/status`, from the CSV header,
+from the UI's `st` object, and with them the `s_drop_ksum`/`ksumsq`/`kn` compaction seeds and the
+`mean`/`sigma` parameters of `csv_row()`. (`rank_sig_p` / `rank_sig_c` followed one step later,
+in D72.)
+
+**Warum:** since D68 nothing reads them. Z* **is** `rank_key()`, standardised on the item's own
+block σ, so the table never needed a session moment to scale against; `renderRunTable` took
+`st.m`/`st.s` and used neither. What was left was a pair of numbers in the CSV header that only
+a human could misread — and would: computed over `results[]`, which after the first compaction
+holds the 100 most extreme items by |key| plus the current round, they read mean 0,55 / σ 3,29 on
+a session whose `pass_sigma` was 1,027 (measured 2026-09-02, 27 517 items, 107 rows held). The
+seeds fixed the arithmetic but not the question — a session moment of an already-standardised key
+answers nothing. Deleting beats publishing a number nobody may use.
+
+**Pooling:** no split. Nothing measured, ranked or archived changes. ⚠ A parser that reads the CSV
+header positionally must drop the two `rank_*` fields (D72 drops three more).
+
+### D72 — Session channel σ and the clamp counter deleted (2026-09-02)
+**Entscheidung:** `rank_sig_p` / `rank_sig_c` are gone in both of their meanings — the session-wide
+pair in `ElottoStatus` (CSV `pre_sig=` / `conc_sig=`, `/status`) and the per-block copy in
+`LoopStat` (`/loops`). `pre_clamped` / `pre_clamp=` goes with them, and so do the compaction
+moments `s_drop_psum`/`psumsq`/`csum`/`csumsq`/`cn` (only `s_drop_pn` survives, for `pre_n`).
+`pre_n` and `pre_w` stay.
+
+**Was bleibt:** `s_bsig[block].sig_p` / `.sig_c` — the per-block σ that `rank_key()` actually
+divides by. That is unchanged and still frozen at `close_block()`. Only its publication is gone.
+
+**Warum:** the session pair had exactly one consumer left after D68: it was the fallback divisor
+for counting `pre_clamped`, for items whose block had no σ yet. That fallback contradicted
+`rank_key()`, which deliberately has none — no block σ means the key is 0. So the counter could
+report an item pinned at the clamp whose published Z* was 0. Since D68 the pair scaled nothing
+else; `renderRunTable` took `st.sp`/`st.sc` and never read them. Two published numbers that only
+one bookkeeping counter used, and that counter disagreed with the ranking, are worth less than the
+questions they invite. The operator's call: remove, and give up `pre_clamped`.
+
+**Was verloren geht, bewusst:** `/loops` no longer names the divisor of each block's Z*, so a
+finished session's key is no longer reconstructible from the CSV alone — `z_ctr` and `zc_ctr` are
+still there, but their block σ is not.
+
+**Pooling:** no split. Nothing measured, ranked or archived changes. ⚠ A positional CSV-header
+parser must drop `pre_clamp=`, `pre_sig=` and `conc_sig=`; `fw=` now follows `pre_n=` directly.
+
+### D73 — The second LSB channel and the pool gate deleted (2026-09-02)
+**Entscheidung:** two dead structures removed from the firmware, not merely marked dead.
+
+**1. `zp_ctr` and its per-node archive.** D45 built a second channel from the un-XORed LSB
+stream. D65 removed the adjacent-pixel XOR, at which point that channel WAS the z: `zp_ctr` was
+assigned `(float)z` verbatim, `s_node_p` was fed the same `w.znode` array as `s_node_z`, and
+`s_pacc` the same array as `s_nacc` — so its block centring reproduced z_ctr's arithmetic on
+identical inputs. Gone: the `RunResult` field, ~128 KB of PSRAM archive, one `NodeAcc[MAX_NODES]`,
+`node_p_store()`, `pacc_add_run()`, the `out_p` parameter of `results_row_z()` and the `"zp"` key
+in the per-row `/status` JSON (which no UI code read).
+⚠ The `?all=1` CSV is UNCHANGED: it never emitted `zp_ctr` or `p0..p3` — only a comment claimed
+it did. Recover the value offline as `z_ctr`; pre-D65 archives keep their own column and their own
+meaning.
+⚠ `s_bsig[].sig_p` keeps its name and is unaffected — it was always computed from `rank_z()`
+(= z_ctr), never from `zp_ctr`.
+
+**2. `pre_n` redefined.** It counted `zp_ctr != 0`, i.e. every valid item, which made the UI's
+"with pre n/valid ⚠" incapable of firing for a real reason. It now counts `zc_ctr != 0` — items
+the CONCORDANCE term could rank; 0 means the leave-one-out drop left k < 2 and only the z term
+carried that item. The compaction seed `s_drop_pn` follows.
+⚠ Same field name, different quantity, from 2026-09-02. Never compare `pre_n` across that date.
+
+**3. The pool-confirmation gate.** D66 stopped arming it and D67 made `POST /pool` answer 400, but
+`PHASE_POOL_CONFIRM`, `pool_confirm` and the `"poolconfirm"` phase string stayed — and their
+comments still described a session that STOPS after scoring. Deleted. `confirm=1` is now a local
+`from_form` flag in the `/start` handler whose only effect is `prefs_save()`; `pool_auto` stays in
+`/status` at a constant 1 as the record that nobody confirmed the pool.
+⚠ `/status` no longer carries `pool_confirm`, and `phase` can no longer read `"poolconfirm"`.
+
+**Pooling:** no split. No measured value moves; `z_raw`, `z_ctr`, `zc_ctr` and `key` are
+bit-identical.
+
+### D74 — Analog gain is NOT a calibration axis: measured on all four nodes, rejected (2026-09-02)
+⛔ **`CONFIG_ELOTTO_CAM_REG_GAIN` stays 1023 and the sweep stays a pure exposure ladder.** Do not
+re-open without new evidence — the measurement below is a full four-node ladder, not an argument.
+
+**Why it was asked.** The bit stream is `LSB(b−a) == LSB(a) ^ LSB(b)` (extract.h), so the width of
+the DIFFERENCE distribution cannot reach the LSB at all: the stream bias is `−2·e²` in the
+per-frame LSB bias `e`, and `e` is set by how the single-frame histogram sits on the ADC codes.
+Analog gain (0x350A/0x350B, pre-ADC) widens that histogram at constant photon count, so it is a
+second knob on the same axis exposure already moves — and unlike exposure it separates "where in
+the code range" from "how many photons".
+
+**Method.** Per gain value: `POST /expose?gain=` on the node, then one session start so the opening
+sweep walks the whole 4..512 exposure ladder at that gain, abort, read `/calibrate`. Sweeps hit all
+four nodes at once, so the slaves were laddered together while the master held 1023 as a drift
+control. Best rung per node, `|raw_bias−0,5|`:
+
+| gain | master | slave0 | slave1 | slave2 |
+|---|---|---|---|---|
+| 1023 | 3,23e-3 | 3,48e-3 | **1,67e-3** | 2,91e-3 |
+| 512 | 2,60e-3 | 4,70e-3 | 2,63e-3 | 3,46e-3 |
+| 256 | 1,71e-3 | **1,87e-3** | 2,77e-3 | **2,19e-3** |
+| 128 | **1,07e-3** | 2,88e-3 | 4,61e-3 | 5,61e-3 |
+| 64 | 9,23e-3 | 6,27e-3 | 9,55e-3 | 7,95e-3 |
+
+Repeatability at one setting, from five master repeats at gain 1023 over ~10 min: −3,04 / −3,88 /
+−3,94 / −4,06 / −3,48e-3, i.e. ±15 %. An out-of-order master retest reproduced gain 128 at
+−9,10e-4 against −1,07e-3, so the master's own factor of 3 is real.
+
+**Why it is rejected anyway — three reasons, any one sufficient:**
+
+1. **It does not reproduce across nodes.** The master improves 3×, slave0 1,9× and slave2 1,3× —
+   but slave1, the brightest node, gets 1,6× WORSE, and its gain-1023 figure is the best number any
+   node produced in the whole experiment. Three different nodes put their optimum at three
+   different gains. That is node-to-node variation being reshuffled, not a gain law.
+2. **The band does not move.** Best-case across the array is 1,7–3,5e-3 at gain 1023 and
+   1,1–5,6e-3 at gain 128. No node reaches a different regime; the array's floor is unchanged.
+3. **It buys the quantity the pipeline already subtracts.** A per-node bias of 3,5e-3 is a z offset
+   of `(b−0,5)·28,28·√nseg` = 16 at the 26087 segments of a `run=0,5` session — and `center_block()`
+   removes exactly that, whatever its size (D8, D65). What ranks and what soft-down trips on is the
+   DISPERSION, and `raw_sigma` at the best rung is 0,98–1,18 across every node at every gain. It
+   does not respond to gain at all.
+
+**And the price would have been high.** At gain 256 and below the sweep certifies NOTHING on any
+node — every rung fails `CAL_MAX_ZERO_DIFF` 0,125, because lower gain narrows the difference
+distribution and more differences land on 0. Operating there needs D18's gate moved for all four
+nodes, plus a rebuild and OTA of the whole array, plus a D1 archive split.
+
+**One genuine finding kept from this, against D18's stated mechanism.** D18 justifies the zdiff gate
+with "a zero difference has a deterministic LSB", which predicts a stream bias of about
+`−zero_diff/2`. Measured at gain 128 / exp 512: zero_diff 0,229 would predict −0,115, and the node
+read −1,07e-3 — a factor of 100 out. The zero bin is not a frozen population, it is the centre of
+the even class and cancels against ±2, ±4. The GATE still binds correctly along the exposure axis
+where its evidence was taken; the MECHANISM sentence is wrong. Also worth recording: the rungs D18
+was built to reject (gain 1023, exp 4/8/16: mean_px 2,87 / 3,33 / 4,32) all fail
+`CAL_MIN_MEAN_PX` 5,0 on their own today, so zdiff is not what is holding the dark end.
+
+⚠ The exposure ladder tops out at 512, and every low-gain optimum sat ON that top rung. The measured
+`mbit_s` is flat at 7,28–7,37 across the entire matrix, so exposure costs no rate here and the cap's
+stated frame-time justification is not visible in the data. Untested, and out of scope for D74.
+
+**Pooling:** no split. Every node was restored to gain 1023 and re-certified; no session data was
+taken at any other gain.
+
+### D75 — The ranking key: unbounded, per-item channel weights (2026-09-02)
+Two properties of `rank_key()` (the pass) and `score_build_keys()` (the pool), which must agree.
+
+**1. Unbounded.** Nothing truncates an extreme item. An extreme item is what the instrument exists
+to find, and there is no explosion to guard against: the item sits INSIDE the σ it divides by, so
+
+    |key| <= (n-1)/√n,  n = items contributing to that σ
+
+whatever σ comes out. A quiet block cannot manufacture a large key. Worked: n = 208, the block
+length of a 300-runs-per-round session, gives 207/√208 = 14,4. A scoring span holds at most 50
+numbers, so its ceiling is 49/√50 = 6,9. Pure chance over 38000 items reaches about 4.
+
+⚠ **The ceiling moves with n, so Z\* does not compare across blocks of different length** — 11,1 at
+n = 126 (`?run=5`, a full 15-minute block), 14,4 at 208, 23,1 at 535 (`?run=0,5`). n follows the
+measuring window and the round boundary, both operator-set, and a block ends at whichever of the two
+comes first. Read n off the CSV as ranked rows ÷ blocks; it cannot be derived from `?run=`, because
+the delivered window is set by the slowest node's bit rate (0,5 s asked, 1,17 s delivered).
+
+**2. A channel that cannot rank an item loses its WEIGHT, not just its value.** Both keys mix z and
+concordance and divide by `√((1−p)² + p²)`, p = `?wpre=`. A one-channel value under a two-channel
+normaliser comes out small — at the form's 0,8 it is 0,24 of proper size — and then competes in the
+same tables against fully scaled items. So the normaliser is rebuilt per item from the channels that
+item actually has: z alone is ranked on z at full scale, concordance alone likewise, neither is 0.
+
+Absent means exactly: `zc_ctr == 0` (the halves disagreed, or fewer than two nodes survived the
+loudest-node drop — this is what `pre_n` counts), or `sig_c == 0` for the whole block. Both are
+normal states, not faults.
+
+⚠ **In scoring the condition is PER NUMBER**, and it decides the pool: `zcc[k]` is NaN for any
+number whose halves disagreed, so those numbers are the ones the weighting has to get right or they
+lose the pool to numbers that happened to carry a concordance value.
+
+⛔ This is not a σ fallback. Each surviving channel still divides by its OWN block σ; no scale is
+borrowed from anywhere.
+
+**Pooling:** ⚠ **splits the tables AND the chosen pool.** `z_raw` / `z_ctr` / `zc_ctr` are untouched
+and pool across the boundary.
+
+### D76 — One block is one round; the wall-clock sweep trigger is gone (2026-09-02)
+⛔ **The round boundary is the only block boundary, and the only sweep trigger.** `?calint=` answers
+400. `?cal=<ms>` remains the sweep budget and `?cal=0` the no-calibration control.
+
+**Why.** `rank_key()` divides an item by the σ of its own block, and because the item is inside that
+σ the largest value a block can produce is `(n−1)/√n` in that block's item count n. A wall-clock
+trigger made n depend on where the 15-minute mark happened to fall inside a round, so **two blocks
+of ONE session had different ceilings and their Z\* did not compare** — 11,1 at n = 126, 14,4 at
+208, 23,1 at 535. Ranking within a session has to be comparable; that is the whole point of it.
+
+Round = block fixes n, because every round measures the same `maxruns`-sized space. `?maxruns=` is
+therefore the block-length knob, and it sets the drift regression's resolution with it.
+⚠ The last round is cut short by Abort, so its block is the one short one in a session.
+⚠ Across sessions with different `?maxruns=` the ceiling still differs — a pooling question.
+
+**What replaces the interval as a guard.** Nothing automatic. The start form previews the round
+length per mode and warns above `ROUND_WARN_MS` (30 min), and that is all it does: a long round is
+the operator's call. The warning names the cost — every item in the round is centred on one mean and
+scaled by one σ, and the cameras are re-swept only at the boundary.
+
+`calibrate_all()` keeps one backstop, now floored at **twice the sweep budget** rather than at the
+operator's interval: a round with a very small `?maxruns=` can be shorter than the sweep it would
+trigger, and re-tuning a camera that was tuned 20 s ago measures the sweep's own noise. At any sane
+round length it never fires; when it does, the block still closes on time, only the sweep is skipped.
+
+**Pooling:** no split for the archive. `z_raw` / `z_ctr` / `zc_ctr` are untouched. ⚠ A positional
+`/status` parser must drop `cal_interval_ms`.

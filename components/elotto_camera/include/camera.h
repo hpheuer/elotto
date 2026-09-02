@@ -104,8 +104,8 @@ typedef struct {
     uint64_t raw_trans;           // LSB adjacent bit pairs that differ
     double   raw_runs_z;          // NIST runs z, conditioned on the observed bias
 
-    /* P4 die temperature, the covariate for the raw-channel offset monitor
-     * (D44). ⚠ It is the SoC die, NOT the OV5647 — a proxy that shares the
+    /* P4 die temperature, the covariate for the raw-channel offset monitor.
+     * ⚠ It is the SoC die, NOT the OV5647 — a proxy that shares the
      * enclosure, never to be reported as sensor temperature.
      * ⚠ NAN when the driver did not install. Handle it; do not print 0,0. */
     float    die_temp_c;
@@ -496,7 +496,8 @@ bool camera_read_word(uint32_t *out);
 void camera_note_consumed(uint64_t bits, int64_t us);
 /* The same word, plus the LSB ones count of the pixels it came from, taken
  * as one unit so a and an LSB z cover the SAME window (2026-08-26).
- * With adjacent-pixel XOR on a word is 64 pixels (0..64 ones), with it off 32.
+ * Since D65 a word is 32 pixels (0..32 ones); it was 64 while the
+ * adjacent-pixel XOR was on.
  * ⚠ *out_raw is 0 when this node has no parallel ring — check
  * camera_raw_stream_ok() rather than reading 0 as a count.
  * ⚠ Never interleave with camera_read_word() inside one window: both advance

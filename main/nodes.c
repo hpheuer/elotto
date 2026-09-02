@@ -510,14 +510,14 @@ void calibrate_forget(void) { s_cal_last_us = 0; }
  * Skipped when the budget is 0 — that is the matched no-calibration control —
  * and when nothing is left to calibrate.
  *
- * Also skipped when the last sweep is younger than `cal_interval_ms`. The sweep
- * costs ~24 s, which is ~4 % of a full ~10 min loop but can be MOST of a short
- * one (a Runs-capped test loop runs in seconds), and what it corrects — thermal
- * drift of the sensors — moves on a wall-clock scale, not a per-loop one.
- * Re-tuning a camera that was tuned 20 s ago measures nothing but the sweep's
- * own noise. So the trigger is elapsed time since the last sweep, not the loop
- * boundary; at the default interval a full-length loop still calibrates every
- * loop, which is the behaviour §1.5.1 measured.
+ * Also skipped when the last sweep is younger than TWICE its own budget. The
+ * trigger is the round boundary `[D76]`, and a round with a very small
+ * `?maxruns=` can be shorter than the sweep it would trigger — re-tuning a
+ * camera that was tuned 20 s ago measures nothing but the sweep's own noise,
+ * and what the sweep corrects (thermal drift of the sensors) moves on a
+ * wall-clock scale, not a per-round one. Twice the budget is a backstop against
+ * that degenerate case, not a policy: at any sane round length it never fires,
+ * and it bounds the sweep to at most a third of the wall time when it does.
  *
  * ⚠ camera_calibrate() resets the camera statistics, so `mbit_s`/`bias` in
  * /status and /loops are "since the last sweep" — on a skipped loop they now
@@ -527,11 +527,13 @@ bool calibrate_all(void)
     if (g_status.cal_budget_ms <= 0) return false;
     if (g_status.node_ok == 0) return false;
 
-    if (s_cal_last_us && g_status.cal_interval_ms > 0) {
+    if (s_cal_last_us) {
         int64_t age_ms = (esp_timer_get_time() - s_cal_last_us) / 1000;
-        if (age_ms < (int64_t)g_status.cal_interval_ms) {
-            printf("calibration: skipped, last sweep %d s ago (interval %d s)\n",
-                   (int)(age_ms / 1000), g_status.cal_interval_ms / 1000);
+        int64_t floor_ms = 2 * (int64_t)g_status.cal_budget_ms;
+        if (age_ms < floor_ms) {
+            printf("calibration: skipped, last sweep %d s ago (floor %d s -- "
+                   "round shorter than twice the sweep budget)\n",
+                   (int)(age_ms / 1000), (int)(floor_ms / 1000));
             return false;
         }
     }

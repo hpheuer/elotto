@@ -4,9 +4,9 @@
 #include "camera.h"
 #include "elotto_link.h"
 
-/* v3.0 (PLAN.md §2): ONE pass, every combination measured exactly ONCE.
- * results[] holds the pass in MEASUREMENT order, so NUM_RUNS is the hard cap
- * on the combination space. 8000 and not more because results[] lives in
+/* v3 (D67): rounds until Abort. Inside a round every combination is measured
+ * exactly ONCE; results[] holds it in MEASUREMENT order and ACCUMULATES across
+ * rounds, so NUM_RUNS is the hard cap on the buffer, not on the session. 8000 and not more because results[] lives in
  * internal RAM, which is full — a few KB more of .bss fails the LINK, not the
  * run. Both pools below fit under it by construction. */
 /* ⚠ 8000 -> 7200 on 2026-08-26, and the reason is the LINKER, not statistics.
@@ -20,17 +20,17 @@
  * buffer merges instead of filling, so this cap is the BACKSTOP for a
  * compaction that cannot allocate, not the normal end of a session. In
  * practice only Abort ends an unlimited run.
- * ⚠ It IS still the hard cap for a single pass, and the largest space this
- * instrument measures is Eurojackpot's 7920 — which no longer fits in one
- * uncompacted pass. A full Euro pass now compacts once near the end instead of
- * stopping. Verify that on the next full Euro run rather than assuming it. */
+ * ⚠ It IS still the cap on one ROUND's uncompacted rows, and the largest space
+ * this instrument measures is Eurojackpot's 7920 — which does not fit. A full
+ * Euro round compacts once near the end instead of stopping. Verify that on the
+ * next full Euro run rather than assuming it. */
 #define NUM_RUNS      7200
 #define TOP_N            5
 /* ── Round-boundary compaction (D56) ──────────────────────────────────────
  * Unlimited rounds keep the 100 most extreme items by |rank_key| (both tails,
  * so Top-5 and Bottom-5 stay exact). Everything else merges into pass moments.
- * Offline re-analysis of the dropped rows is not a goal. A single pass still
- * only compacts if the combination space would not fit uncompacted. */
+ * Offline re-analysis of the dropped rows is not a goal. Since D67 every session
+ * is rounds, so every round boundary compacts. */
 #define PASS_KEEP_EXTREME 100
 #define POOL_MAIN_49    15   // C(15,6) = 5005 combinations
 #define POOL_MAIN_50    12   // C(12,5) =  792 combinations
@@ -53,18 +53,26 @@
  * ⚠ Defaults only. Every one is overridable per session on /start, and the
  * matched-control sessions in PLAN.md pass their values explicitly — so
  * changing a default here does NOT retroactively describe an archived run. */
+/* The form warns above this predicted ROUND length, and does nothing else about
+ * it — a long round is a legitimate choice `[D76]`. It matters because a round
+ * is a block: all of that round's items are centred on one mean and scaled by
+ * one σ, and the camera is re-swept only at the boundary, so a very long round
+ * puts a lot of measurement behind one operating point. Purely a UI hint. */
+#define ROUND_WARN_MS      1800000
 #define CAL_BUDGET_DEFAULT_MS 10000      // exposure-sweep CAP, split over 9 rungs
 #define CAL_BUDGET_MAX_MS   120000
-/* v3: the interval is the BLOCK length. Every cal_interval_ms the pass parks,
- * runs the camera sweep, and the boundary closes a block — the unit
- * that inherited everything that used to be per-loop (drift point, pairwise
- * close, /loops row). 15 min ≈ 205 items/block on the 4.4 s cycle, ~6 %
- * overhead, ~38 blocks over a full Eurojackpot pass — comfortably past
- * DRIFT_MIN_LOOPS. 0 = NO mid-pass insertions (one sweep at session
- * start only): with no loops left, "every loop" has nothing to mean, and the
- * zero control that still matters is "no re-tuning mid-pass". */
-#define CAL_INTERVAL_DEFAULT_MS  900000
-#define CAL_INTERVAL_MAX_MS     3600000
+/* ⛔ ONE BLOCK IS ONE ROUND, and there is no time trigger `[D76]`. The round
+ * boundary parks the pass, closes the block and runs the camera sweep; the block
+ * is the unit that carries the drift point, the pairwise close and the /loops
+ * row. `?cal=0` turns the sweep off; nothing else changes the boundary.
+ *
+ * Why: `rank_key()` divides by the block's own σ, and the largest value a block
+ * can produce is (n-1)/√n with n its item count. A wall-clock trigger made n
+ * depend on where the 15-minute mark happened to fall, so two blocks of ONE
+ * session had different ceilings and their Z* did not compare. Round = block
+ * makes n the same in every round, because every round measures the same
+ * `maxruns`-sized space.
+ * ⚠ The last round is cut short by Abort, so its block is the one exception. */
 /* Per-run window (one continuous window per item) and the
  * intentional blank after it. Both are session parameters on /start (?run= &
  * ?gap=), defaults match the 2026-08-02 live cal. Gap defaults to 40 % of the
@@ -172,8 +180,8 @@ _Static_assert(((long long)RUN_S_MAX * 1000 * RUN_SEGS_REF) / RUN_MS_REF <= EL_S
  * measurement and gets its own row — nothing is averaged or overwritten — so
  * `round` is part of a row's identity and `index` (the combination id) is only
  * meaningful WITHIN a round: the pool it enumerates changes every round.
- * ⚠ Never pool unlimited-mode data with a single-pass session without splitting
- * on the `round` column first. */
+ * ⚠ Never pool this with a PRE-D67 single-pass archive without splitting on the
+ * `round` column first. */
 #define UNLIM_RUNS_DEFAULT     100   // measurement runs per round
 #define UNLIM_RUNS_MIN          10
 #define UNLIM_RUNS_MAX    NUM_RUNS
@@ -212,8 +220,8 @@ _Static_assert(((long long)RUN_S_MAX * 1000 * RUN_SEGS_REF) / RUN_MS_REF <= EL_S
  * 4 because that is where a per-node mean stops being dominated by the single
  * value it is meant to be removed from (the variance of the correction falls as
  * 1/n, so 1 → 4 items already cuts it by a factor of four) and because at ~5 s per item it
- * is under half a minute of waiting. The alternative — 15 minutes of an empty
- * table, or the whole pass at ?calint=0 — was rejected by the user.
+ * is under half a minute of waiting. The alternative — an empty table for a
+ * whole round — was rejected by the user.
  * ⚠ A block-centred value is deflated by √(1−1/n) per node, which at n = 4 is
  * 13 %. That is real but it is the SAME bargain every closed block already
  * makes (D8), only noisier, and it shrinks as the block fills. */
@@ -337,13 +345,13 @@ typedef enum { ELOTTO_IDLE, ELOTTO_RUNNING, ELOTTO_DONE, ELOTTO_ABORTED } Elotto
 // PHASE_CALIBRATE is appended, not inserted: it runs FIRST in a loop but the
 // other three are wired into the UI and the CSV by value.
 typedef enum { PHASE_SCORING, PHASE_MEASURING,
-               PHASE_CALIBRATE, PHASE_POOL_CONFIRM } ElottoPhase;
+               PHASE_CALIBRATE } ElottoPhase;
 
-/* v3.0: NO ranking modes any more (user decision, 2026-08-02, PLAN.md §2).
- * With every combination measured exactly once there is nothing for the four
- * old rules to differ ABOUT — each item's published Z is its own single raw
- * measurement, stored in results[] untouched: no rewrite, no
- * subtraction and no cross-item normalization. */
+/* v3: NO ranking modes any more (user decision, 2026-08-02).
+ * Each item's published Z is its own single raw measurement, stored in
+ * results[] untouched: no rewrite, no subtraction, no cross-item
+ * normalization. A recurrence in a later round is a separate row, never an
+ * average — which is what leaves the four old rules nothing to differ ABOUT. */
 
 /* ENTROPY IS PHOTONS, AND ONLY PHOTONS (user decision, 2026-07-26).
  *
@@ -379,8 +387,8 @@ typedef struct {
      * CSV forever. Provisional (= z_score) until the block closes. */
     float      z_ctr;
     uint16_t   block;      // which block this item was measured in (v3)
-    /* Which ROUND measured it (unlimited mode; 1 for an ordinary single-pass
-     * session). The pool is re-scored every round, so `index` enumerates a
+    /* Which ROUND measured it, 1-based (a pre-D67 single-pass archive reads 1
+     * throughout). The pool is re-scored every round, so `index` enumerates a
      * DIFFERENT combination space per round — the pair (round, index) is the
      * identity, and nums[]/euro[] are what a reader should actually key on. */
     uint16_t   round;
@@ -389,33 +397,45 @@ typedef struct {
     uint8_t    skip_rank;  // 1 = exclude from pass mean/σ/Top-Bottom (trigger block)
     uint8_t    nums[6];
     uint8_t    euro[2];
-    /* The LSB combined z, block-centred on its own accumulator (D45).
-     * ⚠ Adjacent-pixel XOR suppresses a mean-bias effect by sqrt(2)*e — ~7000x at
-     * e = 1e-4 — so this channel carries the very quantity the z throws
-     * away. It is RANKED AND ARCHIVED, never tested.
-     * ⚠ Two different sigmas live near this field and they are NOT the same
-     * number. `raw_sigma` in /diag is the per-mini-run sigma of one node's raw
-     * bit stream: measured 1,06..1,28 across the four nodes on certified rungs
-     * (2026-08-27), against 0,997..1,001 after adjacent-pixel XOR, and it degrades hard outside
-     * them — 1,69 at mean_px 5, above 10 when over-lit. THIS field is the
-     * block-centred COMBINED z. rank_key() divides by that block's own σ
-     * (D68), not by session rank_sig_p and not by raw_sigma.
-     * ⚠ 0 means "no LSB value for this item" and reads as exactly average. */
-    float      zp_ctr;
-    /* Concordance z (D56): leave-one-out Stouffer of per-node half-window
-     * LSB z, block-centred. 0 = fewer than two nodes to corroborate.
-     * Since D58 BOTH LSB channels rank, each on its own sigma and each
-     * carrying half of pre_w: zp_ctr is the sensitive one, zc_ctr the robust
-     * one, and the key is their sum. */
+    /* ⛔ `zp_ctr`, the second LSB channel of D45, was DELETED on 2026-09-02:
+     * D65 left one stream, so it had become a bit-for-bit alias of z_ctr and
+     * its per-node archive a copy of z0..z3. Nothing is lost — recover it
+     * offline as z_ctr. Pre-D65 archives keep their own column.
+     * ⚠ `raw_sigma` in /diag is a DIFFERENT number: the per-mini-run sigma of
+     * one node's stream, 1,06..1,28 across the four nodes on certified rungs
+     * (2026-08-27) and degrading hard outside them — 1,69 at mean_px 5, above
+     * 10 when over-lit. rank_key() divides by the item's BLOCK σ (D68),
+     * s_bsig[block].sig_p, never by raw_sigma. */
+    /* Concordance z (D56): leave-one-out Stouffer of per-node half-window z,
+     * block-centred. 0 = fewer than two nodes to corroborate.
+     * ⚠ This is the ONLY channel beside z (D65) — `?wpre=` is its weight p and
+     * the key is ((1-p)·z_ctr/σ_z + p·zc_ctr/σ_c)/√((1-p)²+p²), each term on
+     * that item's own BLOCK σ (D68). Not a half-and-half split of pre_w. */
     float      zc_ctr;
+    /* NODE AGREEMENT on this item: sample σ across the contributing nodes of
+     * their own block-centred z, each standardised by that NODE's own σ over
+     * the same block. Small = the cameras moved together on this item, large =
+     * one node carried the combined z alone.
+     *
+     * Why standardise per node before comparing: the per-node LSB σ is NOT 1
+     * and differs between nodes (D17, D65), so the raw spread of z_i would
+     * mostly measure which nodes happened to contribute. After the division the
+     * null is ≈ 1 for independent nodes whatever their scale, which is the same
+     * bargain rank_key() makes with the block σ (D68).
+     *
+     * The mean the spread is taken around IS the combined z: Σz_i/√k = √k·mean,
+     * so "deviation from the combined Z*" and "deviation from each other" are
+     * the same number here.
+     *
+     * ⚠ It is a per-BLOCK quantity like z_ctr: provisional (NaN) until the
+     * block has been centred, recomputed by center_block() every time.
+     * ⚠ NaN when fewer than two nodes have a usable block σ — k < 2, or a node
+     * with fewer than 2 runs in the block. It is never 0 for "unknown".
+     * ⚠ It says nothing about whether the item is HIGH or LOW; it is a
+     * confidence column beside Z*, not a second ranking key. Nothing selects,
+     * excludes or reorders on it. */
+    float      node_sd;
 } RunResult;
-
-/* ENT_Z_CLAMP bounds BOTH LSB terms IN THE RANKING KEY only — the archived
- * zp_ctr and zc_ctr are never clamped. 12 σ is far outside anything the null
- * produces (null extreme over 8000 items ~4,4).
- * ⚠ Bar in units of THAT ITEM'S BLOCK σ (D68), each channel its own —
- * not session rank_sig_p / rank_sig_c, not raw z. */
-#define ENT_Z_CLAMP     12.0
 
 // Focus display: what is on screen right now, for
 // exactly the window its bits are collected in. The observer is meant to be
@@ -527,13 +547,13 @@ typedef struct {
 
 // Per-BLOCK health record (v3; the struct and the /loops endpoint keep their
 // historical names). A block is the span between two camera sweeps
-// (~15 min); each closed block stores the numbers a drift check
+// (one round); each closed block stores the numbers a drift check
 // needs — raw offsets and σ per node, plus camera health at that moment — and
 // /loops serves the whole table, one row per block. With raw z published,
 // slow drift is the one thing that widens the extremes, so this table and the
 // drift regression on it matter because raw values remain uncorrected.
 /* ⚠ Raised from 128 on 2026-08-19, because compaction removed the stop that was
- * hiding this one. At 52 blocks in 11,6 h — every `calint` plus one per round —
+ * hiding this one. At 52 blocks in 11,6 h —
  * 128 was ~28 h, so the FIRST session able to run longer than the buffer would
  * have gone blind here instead: the drift regression survives (running sums,
  * exact past the table) but /loops, the per-block camera settings and the
@@ -545,11 +565,6 @@ typedef struct {
 typedef struct {
     float    mean;         // combined per-run raw z mean over the loop
     float    sigma;        // combined per-run σ (== loop_sigma), ideal 1.0
-    /* Ranking scale of THIS block (D68). Sample σ of centred z_ctr / zc_ctr
-     * over the block's items, frozen at close. rank_key() divides by these,
-     * not by the session-wide rank_sig_p / rank_sig_c. 0 = too few items. */
-    float    rank_sig_p;
-    float    rank_sig_c;
     uint8_t  nodes;        // nodes contributing to this loop (master included)
     // Per node, index 0 = master. A node that did not take part leaves zeros,
     // which is distinguishable from a measured 0 by `nodes` and by sig_n == 0.
@@ -813,23 +828,10 @@ typedef struct {
      * on z alone (D45, D65). */
     double           pre_w;               // concordance weight, ?wpre=
                                           // (0 = pure-z ranking)
-    double           rank_mean;           // mean of rank_key() over ranked items
-    double           rank_sigma;          // its sample σ — diagnostic (D68: Z*
-                                          // IS the key, already in block-σ units)
-    int              pre_n;               // ranked items that carry a LSB value
-                                          // (zp_ctr != 0; zc_ctr may still be 0
-                                          // on the same item — k < 2 after the
-                                          // leave-one-out drop)
-    int              pre_clamped;         // items pinned at the clamp in EITHER
-                                          // LSB channel (counted once)
-    /* Session-wide σ of the two LSB channels over ranked items. Diagnostic
-     * (CSV pre_sig/conc_sig, /status). NOT what rank_key() divides by — that
-     * is the item's own block σ, LoopStat.rank_sig_p / rank_sig_c (D68).
-     * ⚠ They are NOT interchangeable with each other either (D58): rank_sig_c
-     * runs well below rank_sig_p because concordance takes min() of two
-     * halves and drops the loudest node. */
-    double           rank_sig_p;
-    double           rank_sig_c;
+    int              pre_n;               // ranked items carrying a CONCORDANCE
+                                          // value (zc_ctr != 0). 0 on an item
+                                          // means the leave-one-out drop left
+                                          // k < 2, so only the z term ranked it
     double           loop_sigma;          // per-run σ of the LAST CLOSED BLOCK (1.0 = ideal)
     int              loops_done;          // BLOCKS closed and merged into the drift stats
     int              loop_hist_n;         // entries valid in loop_hist[] (<= LOOP_HIST)
@@ -932,14 +934,6 @@ typedef struct {
     int              cal_ms;              // what the last loop's calibration
                                           // actually cost, master + ack wait —
                                           // the sweep-cost gate is a measured number
-    int              cal_interval_ms;      // minimum wall time between sweeps.
-                                          // A loop that starts sooner than this
-                                          // after the last one SKIPS calibration:
-                                          // the sweep costs ~24 s, a Runs-capped
-                                          // loop can be shorter than that, and
-                                          // thermal drift moves on wall-clock
-                                          // time rather than per loop. 0 = the
-                                          // old behaviour, sweep every loop
     bool             cal_did_sweep;       // did THIS loop calibrate? Recorded per
                                           // loop (LoopStat.cal_ms = 0 when not),
                                           // because "the setting was re-derived
@@ -963,18 +957,18 @@ typedef struct {
                                           // as words — a node silently missing from
                                           // the combine is the failure mode this whole
                                           // policy exists to prevent
-    /* ── Attended pool confirmation ────────────────────────────────────
-     * Scoring proposes a pool; with `pool_confirm` set the session STOPS at
-     * PHASE_POOL_CONFIRM and publishes the proposal here so the operator can
-     * edit it before thousands of runs are spent measuring it. Opt-in per
-     * session (`POST /start?confirm=1`) because a device that waits for a
-     * human would hang every scripted or overnight run — the web UI sends it,
-     * curl does not.
+    /* ── The pool scoring proposed ─────────────────────────────────────
+     * Scoring picks a pool and publishes it here for /status and the UI.
+     * ⛔ There is NO confirmation gate (D66/D67): the pass starts on the
+     * proposal and `POST /pool` answers 400. The gate, its PHASE_POOL_CONFIRM
+     * state and the `pool_confirm` flag were deleted on 2026-09-02; the web
+     * form's `confirm=1` is now only a "save my form values" marker, handled
+     * as a local in the /start handler.
      *
      * Keeping fewer numbers is legitimate and shrinks the combination space
      * exactly: at pool_n_main == pool_need_main (and, for Eurojackpot,
-     * pool_n_euro == 2) there is exactly ONE combination — measured exactly
-     * once, like everything else in the v3 single pass. */
+     * pool_n_euro == 2) there is exactly ONE combination — measured once per
+     * round, like everything else. */
     uint8_t          pool_main[POOL_MAIN_49];   // proposed/confirmed main numbers
     float            pool_main_z[POOL_MAIN_49]; // their scoring z, for display
     uint8_t          pool_euro[POOL_EURO_12];   // Eurojackpot bonus pool
@@ -983,10 +977,9 @@ typedef struct {
     uint8_t          pool_n_euro;
     uint8_t          pool_need_main;      // a draw needs this many (5 or 6)
     uint8_t          pool_need_euro;      // 2 for Eurojackpot, 0 for 6-of-49
-    uint8_t          pool_confirm;        // 1 = this session stops and asks
-    uint8_t          pool_auto;           // 1 = nobody answered; the proposal was
-                                          // taken unchanged after the timeout, and
-                                          // that fact belongs in the record
+    uint8_t          pool_auto;           // always 1 since D66: no human confirms the
+                                          // proposal, and that fact belongs in the
+                                          // record
     LoopStat        *loop_hist;           // per-block health table (LOOP_HIST entries,
                                           // PSRAM — internal RAM is full with results[];
                                           // NULL if the allocation failed, in which case
@@ -1027,7 +1020,7 @@ void results_archive_init(void);
  * one. Returns false if the archive is missing or j is out of range.
  * out_z[MAX_NODES] gets NaN for nodes that did not contribute that run. */
 bool results_row_z(int j, RunResult *out_row, float out_z[MAX_NODES],
-                   float out_p[MAX_NODES], float out_w[MAX_NODES]);
+                   float out_w[MAX_NODES]);
 
 /* The combined ranking key of one row, in units of that item's own block σ
  * (D68): block-centred z and concordance, weighted by pre_w. The ONE accessor

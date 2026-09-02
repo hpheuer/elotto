@@ -83,7 +83,7 @@ bool node_take_z(int k, double *out_z,
 // Broadcast 'K' and sweep the master's own ladder in parallel, then collect
 // each node's chosen setting. Nodes land on different exposures on purpose.
 // Returns true if a sweep actually ran, false if it was skipped (budget 0, no
-// nodes, or the last sweep is still younger than g_status.cal_interval_ms).
+// nodes, or the round was shorter than twice the sweep budget).
 bool calibrate_all(void);
 
 // Forget when the last sweep happened, so the next calibrate_all() sweeps

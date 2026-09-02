@@ -48,9 +48,10 @@
  * window credits an effect to an unrelated combination.
  *
  * ⚠ The measured figures below (588 ms, 1494 ms, n=16700/17000) are PRE-
- * 2026-08-18, from the ~3,4 Mbit/s instrument. At 1,85x the bits per second the
- * reachable windows are different; the duty-cycle argument holds, the numbers
- * need re-measuring before they are quoted.
+ * 2026-08-18, from the ~3,4 Mbit/s instrument, and D65 doubled the word rate
+ * again on top of that (~7,4 Mbit/s idle). The duty-cycle ARGUMENT holds; the
+ * numbers are two instrument generations old and must be re-measured before
+ * they are quoted.
  *
  * It is forced by the hardware too. A 1000 ms window at a 200 ms gap is 83 %
  * duty *by construction* — already past the ~72 % cliff above — so no segment
@@ -129,9 +130,9 @@ void focus_publish(FocusKind kind, const uint8_t *nums, int n,
         s_win_n = s_gap_n = 0;
         s_focus_off_us = 0;
     }
-    // No gap is charged when s_focus_off_us is 0 — that is what keeps a loop's
-    // first window from billing the whole calibration + baseline phase, which
-    // no window was open for, as inter-run dark time.
+    // No gap is charged when s_focus_off_us is 0 — that is what keeps a block's
+    // first window from billing the whole sweep + scoring pass, which no window
+    // was open for, as inter-run dark time.
     if (s_focus_off_us) { s_gap_sum += (double)(now - s_focus_off_us); s_gap_n++; }
     s_focus_on_us = now;
 
@@ -184,9 +185,9 @@ void focus_off(void)
  * progress, /loops keeps the completed ones, and the series across loops is the
  * drift record §1.5.3 asks for.
  *
- * Clearing s_focus_off_us also breaks the gap chain across the loop boundary,
- * so the next loop's first window is not billed for the calibration and
- * baseline phases it spent dark. */
+ * Clearing s_focus_off_us also breaks the gap chain across the block boundary,
+ * so the next block's first window is not billed for the sweep and scoring it
+ * spent dark. */
 void focus_timing_take(float *win_ms, float *gap_ms)
 {
     *win_ms = s_win_n ? (float)(s_win_sum / s_win_n / 1000.0) : 0.0f;

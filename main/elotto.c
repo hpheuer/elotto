@@ -228,7 +228,7 @@ static const char HTML[] =
 "</div>"
 "<div class='frow'>"
 "<label for='selScore' title='Pre-registered Phase-0 pool rule. Picks the pool only, never the "
-"measurement pass.'>Z-Score direction:</label>"
+"measurement pass.'>Num-Score direction:</label>"
 "<select id='selScore' class='fin' style='padding:4px 6px'>"
 "<option value='high' selected>High</option>"
 "<option value='low'>low</option>"
@@ -417,9 +417,9 @@ NODE_NAMES_JS
    an hour at run=15 — and in this mode there is no session end to discover that
    from later. Model in sensor.h (CYCLE_LOAD_MBIT_X100); once a session is live the ETA
    comes from the device's measured pace instead. A round is: the scoring sweep
-   (49 or 62 runs), the pool's combinations, one camera sweep at the round
-   boundary, plus one more per calint of MEASURING time — which is what the
-   device's block timer actually counts. */
+   (49 or 62 runs), the pool's combinations, and one camera sweep at the round
+   boundary. A round is exactly one block (D76), so this is also the block
+   length — which is why the >30 min warning below matters. */
 /* One measurement cycle, in ms. Model in sensor.h: the bits a run needs over
    the rate the SLOWEST node produces them at, plus the fixed per-run overhead
    and the requested gap. `mbit` is the live minimum from /status when there is
@@ -443,16 +443,24 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "var cyc=cycleMs(segsFor(runS),gapS,lastSlowMbit);"
 "var meas=combos*cyc;"
 "var ins=" EL_STR(CAL_BUDGET_DEFAULT_MS) ";"
-"var nins=1+Math.floor(meas/" EL_STR(CAL_INTERVAL_DEFAULT_MS) ");"
-"return (euro?62:49)*cyc+meas+nins*ins;}"
+/* Exactly one sweep per round since D76 — the round boundary is the only
+   trigger, so the count is 1 and not a function of elapsed time. */
+"return (euro?62:49)*cyc+meas+ins;}"
 "function unlimHint(){"
 "var c=parseInt(document.getElementById('numUnlimRuns').value)||0;"
 "var h=document.getElementById('unlimHint');"
 "if(!(c>=1)){h.innerHTML='';return;}"
 "var e=unlimPool(true,c),l=unlimPool(false,c);"
-"h.innerHTML='Euro '+e.p+'+'+e.q+' = '+e.c+' runs \u00b7 \u2248 '"
-"+fmt(roundMs(true,e.c))+'/round<br>6of49 '+l.p+' = '+l.c"
-"+' runs \u00b7 \u2248 '+fmt(roundMs(false,l.c))+'/round';}"
+/* A round IS a block (D76), so this preview is also the block length. Warn
+   past ROUND_WARN_MS and leave it at that: it is the operator's call. */
+"var te=roundMs(true,e.c),tl=roundMs(false,l.c);"
+"var w=(te>" EL_STR(ROUND_WARN_MS) "||tl>" EL_STR(ROUND_WARN_MS) ")"
+"?'<br><b style=\"color:#d08770\">⚠ over 30 min per round.</b> A round is one '"
+"+'block: every item in it is centred on one mean and scaled by one σ, and '"
+"+'the cameras are re-swept only at the boundary.':'';"
+"h.innerHTML='Euro '+e.p+'+'+e.q+' = '+e.c+' runs · ≈ '"
+"+fmt(te)+'/round<br>6of49 '+l.p+' = '+l.c"
+"+' runs · ≈ '+fmt(tl)+'/round'+w;}"
 "function setMode(mode){"
 "document.getElementById('subtitle').textContent="
 "mode===0?'Eurojackpot • 5 of 50 + 2 bonus numbers':'6 of 49 Lotto';}"
@@ -537,8 +545,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "if(d.focus_win_ms>0)p.push(pItem('window/gap',Math.round(d.focus_win_ms)"
 "+' / '+Math.round(d.focus_gap_ms||0)+' ms'));"
 "p.push(pItem('Sweep',d.cal_budget_ms>0"
-"?((d.cal_budget_ms/1000)+' s'+(d.cal_interval_ms>0"
-"?' every '+Math.round(d.cal_interval_ms/60000)+' min':' at start only'))"
+"?((d.cal_budget_ms/1000)+' s, every round')"
 ":'off'));"
 "var kz=1-(d.pre_w||0);"
 "var ktxt=(d.pre_w>0)"
@@ -836,7 +843,6 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "var e='\u2211 conc';"
 "if(d.pass_n_valid>0)e+=' \u00b7 with pre '+(d.pre_n||0)+'/'+d.pass_n_valid"
 "+((d.pre_n<d.pass_n_valid)?' \u26a0':'');"
-"if(d.pre_clamped>0)e+=' \u00b7 \u26a0 '+d.pre_clamped+' pre clamped';"
 "s2+='<br>'+e;}"
 // Carried into the results line because the Focus card — where these normally
 // live — is hidden once the session ends. `missed` is a gate, not a curiosity:
@@ -996,10 +1002,9 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "document.getElementById('resCardTrip').style.display='none';"
 "return;}"
 "lastDisplayed=d.top;"
-// Z* IS the ranking key (block-σ units, D68). Session rank_mean/rank_sigma
-// are diagnostics and must not rescale the cell.
-"var st={m:d.rank_mean||0,s:d.rank_sigma||0,p:d.pre_w||0,"
-"sp:d.rank_sig_p||0,sc:d.rank_sig_c||0};"
+// Z* IS the ranking key (block-σ units, D68) and the cell prints it as it
+// stands — there is no session moment of the key to rescale it with (D71).
+"var st={p:d.pre_w||0};"
 "document.getElementById('resTitle').innerHTML="
 "'\\uD83C\\uDFC6 Top '+d.top.length+' of '+d.comparisons+' valid'"
 "+(isEuro?' \\u2014 Eurojackpot':' \\u2014 6-of-49')"
@@ -1039,7 +1044,21 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "'<tr><th>#</th><th>Item</th>'"
 "+(st?'<th title=\"ranking key in units of its own block σ\">Z*</th>'"
 "+'<th title=\"block-centred combined z\">Z</th>'"
-"+'<th title=\"leave-one-out half-window concordance\">Conc</th>':'')"
+"+'<th title=\"leave-one-out half-window concordance\">Conc</th>'"
+/* Plain-language tooltip: the operator is the only reader of this cell, and the
+   column is worthless if its meaning has to be looked up. English like the rest
+   of the page (the CSV is the only German artefact). \\n inside a title
+   attribute wraps the tooltip -- same trick the per-row `det` title uses. */
+"+'<th title=\"Did the four cameras agree?\\n"
+"Each camera measures this item on its own. \\u0394n is how far apart those four "
+"values were, measured in each camera\\u2019s own noise.\\n"
+"small (below 0.6) = all four saw roughly the same thing\\n"
+"around 1.0 = ordinary spread, this is what pure chance looks like\\n"
+"large (1.5 and up) = one or two cameras carried the result alone, the others "
+"saw none of it\\n"
+"\\u2014 = not computed yet (block still open) or too few cameras\\n"
+"\\u0394n does not say whether the item is good or bad. It sorts and filters "
+"nothing.\">\\u0394n</th>':'')"
 "+'<th>Numbers</th>'"
 "+(isEuro?'<th>Bonus</th>':'')+'</tr>';"
 "var tb=document.getElementById(bodyId);tb.innerHTML='';"
@@ -1056,12 +1075,22 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "var itm=(d.unlimited&&r.round)?(r.run+'/'+r.round):r.run;"
 "var zTxt=(r.z_ctr===undefined||r.z_ctr===null)?z.toFixed(2):r.z_ctr.toFixed(2);"
 "var concTxt=(r.zc===undefined||r.zc===null)?'\\u2014':r.zc.toFixed(2);"
-"var det='Z '+zTxt+' \\u00b7 Conc '+concTxt;"
+/* Node agreement (nsd). null until the item's block has been centred -- the
+   same wait z_ctr has -- so a dash is the honest cell, never 0. It is dimmed
+   above 1 and highlighted below 0.6 so the eye finds the agreed items without
+   the column ever reordering anything: it is a confidence figure beside Z*,
+   not a second ranking key. */
+"var nsd=(r.nsd===undefined||r.nsd===null)?null:r.nsd;"
+"var nsdTxt=(nsd===null)?'\\u2014':nsd.toFixed(2);"
+"var nsdCol=(nsd===null)?'#9aa':(nsd<0.6?'#90ee90':(nsd>1.0?'#c09090':''));"
+"var det='Z '+zTxt+' \\u00b7 Conc '+concTxt"
+"+' \\u00b7 \\u0394n '+nsdTxt+' (k '+(r.k===undefined?'?':r.k)+')';"
 "if(st)det+='\\nweights: z '+(1-(st.p||0)).toFixed(2)"
 "+' \\u00b7 conc '+(st.p||0).toFixed(2);"
 "tb.innerHTML+='<tr><td>'+(i+1)+'</td><td>'+itm+'</td>"
 "'+(st?'<td title=\"'+det+'\">'+zs.toFixed(3)+'</td>'"
-"+'<td>'+zTxt+'</td><td>'+concTxt+'</td>':'')+'"
+"+'<td>'+zTxt+'</td><td>'+concTxt+'</td>'"
+"+'<td'+(nsdCol?' style=\"color:'+nsdCol+'\"':'')+'>'+nsdTxt+'</td>':'')+'"
 "<td>'+nums+'</td>"
 "'+(isEuro?'<td>'+estr+'</td>':'')+'</tr>';"
 "}"
@@ -1180,8 +1209,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "function showLow(d){"
 "var res=d.low,isEuro=d.mode==='euro';"
 "if(!res||res.length===0){document.getElementById('resCardLow').style.display='none';return;}"
-"var st={m:d.rank_mean||0,s:d.rank_sigma||0,p:d.pre_w||0,"
-"sp:d.rank_sig_p||0,sc:d.rank_sig_c||0};"
+"var st={p:d.pre_w||0};"
 "document.getElementById('resTitleLow').innerHTML="
 "'\\u2B07 Bottom '+res.length+' (lowest Z*)';"
 "renderRunTable('resHeadLow','resBodyLow',res,isEuro,d,st);"
@@ -1199,23 +1227,31 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
  * round, so the UI hides it there rather than printing a constant "/1". */
 static int emit_run(char *buf, int cap, const RunResult *r, bool euro)
 {
-    /* `zp` and `key` travel per row so the table can show the channel that put
-     * an item where it is, and so the UI never has to recompute the key. */
+    /* `zc` and `key` travel per row so the table can show the channel that put
+     * an item where it is, and so the UI never has to recompute the key.
+     * `nsd` is the node-agreement figure and travels as JSON null while the
+     * block is uncentred — "nan" is not JSON, and 0 would be a lie. */
+    char nsd[16];
+    if (isfinite((double)r->node_sd))
+        snprintf(nsd, sizeof(nsd), "%.3f", (double)r->node_sd);
+    else
+        snprintf(nsd, sizeof(nsd), "null");
+
     if (euro)
         return snprintf(buf, cap,
             "{\"run\":%d,\"round\":%d,\"z\":%.4f,\"z_ctr\":%.4f,"
-            "\"zp\":%.3f,\"zc\":%.3f,\"key\":%.4f,\"k\":%d,"
+            "\"zc\":%.3f,\"key\":%.4f,\"k\":%d,\"nsd\":%s,"
             "\"nums\":[%d,%d,%d,%d,%d],\"euro\":[%d,%d]}",
             r->index, (int)r->round, r->z_score, (double)r->z_ctr,
-            (double)r->zp_ctr, (double)r->zc_ctr, rank_key(r), (int)r->k,
+            (double)r->zc_ctr, rank_key(r), (int)r->k, nsd,
             r->nums[0], r->nums[1], r->nums[2], r->nums[3], r->nums[4],
             r->euro[0], r->euro[1]);
     return snprintf(buf, cap,
         "{\"run\":%d,\"round\":%d,\"z\":%.4f,\"z_ctr\":%.4f,"
-        "\"zp\":%.3f,\"zc\":%.3f,\"key\":%.4f,\"k\":%d,"
+        "\"zc\":%.3f,\"key\":%.4f,\"k\":%d,\"nsd\":%s,"
         "\"nums\":[%d,%d,%d,%d,%d,%d],\"euro\":[]}",
         r->index, (int)r->round, r->z_score, (double)r->z_ctr,
-        (double)r->zp_ctr, (double)r->zc_ctr, rank_key(r), (int)r->k,
+        (double)r->zc_ctr, rank_key(r), (int)r->k, nsd,
         r->nums[0], r->nums[1], r->nums[2],
         r->nums[3], r->nums[4], r->nums[5]);
 }
@@ -1289,7 +1325,6 @@ static esp_err_t status_handler(httpd_req_t *req)
     const char *phase_str =
         g_status.phase == PHASE_SCORING      ? "scoring"     :
         g_status.phase == PHASE_CALIBRATE    ? "calibrating" :
-        g_status.phase == PHASE_POOL_CONFIRM ? "poolconfirm" :
                                                "measuring";
     const char *score_str =
         g_status.score_dir == SCORE_DIR_LOW ? "low" :
@@ -1306,13 +1341,11 @@ static esp_err_t status_handler(httpd_req_t *req)
          * pass_n_valid and no pass statistic sees it. */
         "\"pass_n_excl\":%d,\"pass_n_open\":%d,"
         "\"v_eff\":%.4f,\"flush_timeouts\":%lu,"
-        /* Ranking-key moments. ⚠ rank_mean/rank_sigma are of rank_key()
-         * (already in block-σ units, D68). pass_mean/pass_sigma are of z.
-         * They no longer coincide at pre_w = 0. */
+        /* No channel σ and no key moments are published: rank_key() divides by
+         * the item's BLOCK σ (D68), the session-wide pre_sig / conc_sig went
+         * with D72 and rank_mean / rank_sigma with D71. */
         "\"pre_w\":%.3f,"
-        "\"pre_n\":%d,\"pre_clamped\":%d,"
-        "\"rank_sig_p\":%.4f,\"rank_sig_c\":%.4f,"
-        "\"rank_mean\":%.4f,\"rank_sigma\":%.4f,"
+        "\"pre_n\":%d,"
         "\"score_dir\":\"%s\","
         "\"loop_sigma\":%.4f,"
         "\"pair_r\":%.4f,\"pair_n\":%d,"
@@ -1331,7 +1364,7 @@ static esp_err_t status_handler(httpd_req_t *req)
         "\"focus_win_ms\":%.1f,\"focus_gap_ms\":%.1f,"
         "\"run_s\":%.2f,\"gap_s\":%.2f,\"run_segs\":%d,"
         "\"cal_budget_ms\":%d,\"cal_ms\":%d,\"cal_elapsed_ms\":%d,"
-        "\"cal_interval_ms\":%d,\"cal_did_sweep\":%d,"
+        "\"cal_did_sweep\":%d,"
         "\"loops_done\":%d,\"drift_slope\":%.5f,\"drift_t\":%.2f,"
         "\"off_first\":%.4f,\"off_last\":%.4f,"
         "\"sigma_lo\":%.4f,\"sigma_hi\":%.4f,"
@@ -1344,7 +1377,7 @@ static esp_err_t status_handler(httpd_req_t *req)
         "\"unlimited\":%s,\"runs_cap\":%d,\"round\":%d,"
         "\"round_base\":%d,\"round_done\":%d,\"round_total\":%d,"
         "\"round_start_ms\":%lu,"
-        "\"pool_confirm\":%d,\"pool_auto\":%d,"
+        "\"pool_auto\":%d,"
         "\"pool_need_main\":%d,\"pool_need_euro\":%d,",
         state_str, mode_str, phase_str,
         g_status.slave_connected ? "true" : "false",
@@ -1355,9 +1388,7 @@ static esp_err_t status_handler(httpd_req_t *req)
         g_status.pass_n_excl, g_status.pass_n_open,
         g_status.v_eff, (unsigned long)g_status.flush_timeouts,
         g_status.pre_w,
-        g_status.pre_n, g_status.pre_clamped,
-        g_status.rank_sig_p, g_status.rank_sig_c,
-        g_status.rank_mean, g_status.rank_sigma,
+        g_status.pre_n,
         score_str,
         g_status.loop_sigma,
         g_status.pair_r_max, g_status.pair_n,
@@ -1384,7 +1415,7 @@ static esp_err_t status_handler(httpd_req_t *req)
          * when a sweep ENDS, so it cannot drive a bar while one runs. */
         g_status.cal_start_us
             ? (int)((esp_timer_get_time() - g_status.cal_start_us) / 1000) : 0,
-        g_status.cal_interval_ms, g_status.cal_did_sweep ? 1 : 0,
+        g_status.cal_did_sweep ? 1 : 0,
         g_status.loops_done, g_status.drift_slope, g_status.drift_t,
         g_status.off_first, g_status.off_last,
         g_status.sigma_lo, g_status.sigma_hi,
@@ -1402,7 +1433,7 @@ static esp_err_t status_handler(httpd_req_t *req)
             ? g_status.items_done - g_status.round_item_base : 0,
         g_status.round_total,
         (unsigned long)g_status.round_start_ms,
-        g_status.pool_confirm, g_status.pool_auto,
+        g_status.pool_auto,
         g_status.pool_need_main, g_status.pool_need_euro);
 
     /* The proposed pool, and only while it is actually being asked about: it is
@@ -1410,17 +1441,14 @@ static esp_err_t status_handler(httpd_req_t *req)
      * there is no reason to carry it through the other 99 % of the run.
      *
      * RUNNING is part of the test, not decoration: `phase` keeps its last value
-     * after a session ends, so a cancelled confirmation leaves the device
-     * reading poolconfirm/aborted indefinitely. Both UI call sites gate on
-     * `pool_main` being present, so withholding it here is what stops the modal
-     * being raised over a session that is already gone. */
+     * after a session ends, so an ended session would otherwise keep serving
+     * its last pool. */
     /* Published for the whole run now, not only while the gate asks about it:
      * the UI shows the pool under the scoring bar, and in unlimited mode it is
      * re-scored every round, so "which numbers are being measured" is live
      * state. sensor.c clears the count while a scoring pass is choosing the
      * next one, so a stale pool is never served under a running bar. */
-    if (g_status.state == ELOTTO_RUNNING &&
-        (g_status.phase == PHASE_POOL_CONFIRM || g_status.pool_n_main > 0)) {
+    if (g_status.state == ELOTTO_RUNNING && g_status.pool_n_main > 0) {
         buf_append(buf, sizeof(buf), &pos, "\"pool_main\":[");
         for (int i = 0; i < g_status.pool_n_main; i++)
             buf_append(buf, sizeof(buf), &pos, "%s{\"n\":%d,\"z\":%.2f}",
@@ -1635,12 +1663,11 @@ static esp_err_t loops_handler(httpd_req_t *req)
         len = snprintf(buf, sizeof(buf),
             "%s{\"loop\":%d,\"t_s\":%lu,\"raw_m\":%.4f,"
             "\"mean\":%.4f,\"sigma\":%.4f,"
-            "\"rank_sig_p\":%.4f,\"rank_sig_c\":%.4f,\"cal_ms\":%d,"
+            "\"cal_ms\":%d,"
             "\"win_ms\":%.1f,\"gap_ms\":%.1f,\"clear_sig\":%.3f,\"quar\":%d,"
             "\"nodes\":%d,\"n\":[",
             i ? "," : "", i + 1, (unsigned long)L->t_s,
-            L->mean_n[0], L->mean, L->sigma,
-            (double)L->rank_sig_p, (double)L->rank_sig_c, (int)L->cal_ms,
+            L->mean_n[0], L->mean, L->sigma, (int)L->cal_ms,
             L->win_ms, L->gap_ms, L->clear_sig, (int)L->quarantined, nn);
         send_chunk(req, buf, len, sizeof(buf));
         for (int k = 0; k < nn; k++) {
@@ -1686,12 +1713,11 @@ static const char *de_num(char *dst, size_t cap, double v, int prec)
  * both views of its z. `z_std` is rank_key() (block-σ units, D68) — the
  * selection key, so a reader can check the choice without the live UI. */
 static int csv_row(char *buf, size_t cap, const char *group, int rank,
-                   const RunResult *r, double mean, double sigma)
+                   const RunResult *r)
 {
     char zb[32], sb[32], ab[32], kb[32];
-    /* Z* = rank_key() (block-σ units, D68). mean/sigma kept in the
-     * signature so callers do not have to change; they no longer scale this. */
-    (void)mean; (void)sigma;
+    /* Z* = rank_key() (block-σ units, D68) — already standardised on the
+     * item's own block, so nothing rescales it here (D71). */
     double zs = rank_key(r);
     return snprintf(buf, cap,
         "%s;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%s;%s;%s;%d;%d;%s\n",
@@ -1747,10 +1773,8 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
     int n = g_status.runs_completed;
     if (n > NUM_RUNS) n = NUM_RUNS;
 
-    double mean = 0.0, sigma = 0.0;
-
     char mb[32], sb[32], cb[32], vb[32], stb[32], rb[32], gb[32];
-    char rm[32], rs[32], pw[16], gp[32], gc[32];
+    char pw[16];
     /* The master's own image. The slaves' come from their 'D' replies and are
      * emitted on the fw_nodes line below; a node that never answered one, or
      * runs firmware older than the field, shows "?" rather than nothing, or the
@@ -1797,8 +1821,8 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
          * ⚠ `pre_w` SPLITS THE POOLING TABLE for the three tables.
          * z_raw/z_ctr still pool across weights. */
         "run_s=%s run_segs=%d gap_s=%s compacted=%d "
-        "pre_w=%s pre_n=%d pre_clamp=%d pre_sig=%s conc_sig=%s "
-        "rank_mean=%s rank_sigma=%s fw=%s/%s\n"
+        "pre_w=%s pre_n=%d "
+        "fw=%s/%s\n"
         "# nodes=",
         g_status.mode == MODE_EUROJACKPOT ? "euro" : "649",
         g_status.focus_mode ? "on" : "off", score_str,
@@ -1819,11 +1843,7 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
         de_num(gb, sizeof(gb), g_status.gap_ms / 1000.0, 2),
         g_status.compacted,
         de_num(pw, sizeof(pw), g_status.pre_w, 3),
-        g_status.pre_n, g_status.pre_clamped,
-        de_num(gp, sizeof(gp), g_status.rank_sig_p, 6),
-        de_num(gc, sizeof(gc), g_status.rank_sig_c, 6),
-        de_num(rm, sizeof(rm), g_status.rank_mean, 6),
-        de_num(rs, sizeof(rs), g_status.rank_sigma, 6),
+        g_status.pre_n,
         fw_desc->version, master_sha);
     send_chunk(req, buf, nlen, sizeof(buf));
     for (int i = 0; i < g_status.node_count && i < MAX_NODES; i++) {
@@ -1855,11 +1875,12 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
          * re-scored every round in unlimited mode, so the same id names a
          * different draw in a different round. Key on (round, item), or simply
          * on n1..n6/e1;e2, which are unambiguous either way. */
-        /* ⚠ `key` / `zp_ctr` / `p0..p3` are APPENDED after `round` so every
-         * column an existing script knows keeps its position (D45; zh/h*
-         * columns deleted with the spectral channel, D53).
-         * zp_ctr is the block-centred combined LSB z; p0..p3 are per-node
-         * RAW LSB z in discovery order. Empty = no report, not zero. */
+        /* ⚠ `key`, `zc_ctr` and `w0..w3` are APPENDED after `round` so every
+         * column an existing script knows keeps its position (zh/h* went with
+         * the spectral channel D53; zp_ctr/p0..p3 with the second LSB channel
+         * on 2026-09-02 — since D65 they were a copy of z_ctr and z0..z3).
+         * w0..w3 are the per-node camera σ of that item's own window (D62).
+         * Empty = no report, not zero. */
         int len = snprintf(buf, sizeof(buf),
             "order;item;n1;n2;n3;n4;n5;n6;e1;e2;z_raw;z_ctr;block;k;skip_rank;"
             "z0;z1;z2;z3;round;key;zc_ctr;w0;w1;w2;w3\n");
@@ -1874,10 +1895,10 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
              * z-values, not that the file is a self-consistent sample. The
              * compacted= header field already says the latter. */
             RunResult row;
-            float nodez[MAX_NODES], nodep[MAX_NODES], nodew[MAX_NODES];
-            if (!results_row_z(j, &row, nodez, nodep, nodew)) {
+            float nodez[MAX_NODES], nodew[MAX_NODES];
+            if (!results_row_z(j, &row, nodez, nodew)) {
                 for (int i = 0; i < MAX_NODES; i++)
-                    nodez[i] = nodep[i] = nodew[i] = NAN;
+                    nodez[i] = nodew[i] = NAN;
             }
             for (int i = 0; i < MAX_NODES; i++) {
                 if (isnan((double)nodez[i]))
@@ -1913,23 +1934,15 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
         "group;rank;item;n1;n2;n3;n4;n5;n6;e1;e2;z_raw;z_std;z_ctr;block;k;"
         "key\n");
     send_chunk(req, buf, len, sizeof(buf));
-    /* z_std in this file is rank_key() (block-σ units, D68). mean/sigma are
-     * unused by csv_row; kept so the three groups stay one code path. */
-    if (g_status.pass_n_valid > 0) {
-        mean  = g_status.rank_mean;
-        sigma = g_status.rank_sigma;
-    }
-
+    /* z_std in this file is rank_key() (block-σ units, D68). */
     int tn = g_status.result_count; if (tn > TOP_N) tn = TOP_N;
     for (int i = 0; i < tn; i++) {
-        len = csv_row(buf, sizeof(buf), "high", i + 1,
-                      &g_status.top[i], mean, sigma);
+        len = csv_row(buf, sizeof(buf), "high", i + 1, &g_status.top[i]);
         send_chunk(req, buf, len, sizeof(buf));
     }
     int ln = g_status.low_count; if (ln > TOP_N) ln = TOP_N;
     for (int i = 0; i < ln; i++) {
-        len = csv_row(buf, sizeof(buf), "low", i + 1,
-                      &g_status.low[i], mean, sigma);
+        len = csv_row(buf, sizeof(buf), "low", i + 1, &g_status.low[i]);
         send_chunk(req, buf, len, sizeof(buf));
     }
 
@@ -1945,10 +1958,11 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
  * carries the gate bitmask it failed, so a sweep that certified nothing says
  * which property was missing instead of only "no".
  *
- * Read-only: the sweep runs inside a session, at the start of every loop, so
+ * Read-only: the sweep runs inside a session, at the start of every block, so
  * this reports the real code path rather than a separate manual one that could
- * quietly diverge from it. `POST /start?runs=1&loops=1&baseline=1` gives a
- * curve in about a minute.
+ * quietly diverge from it. ⚠ The old one-line recipe for a quick curve
+ * (`?runs=1&loops=1&baseline=1`) is dead — all three parameters answer 400.
+ * Start a session, let the opening sweep run, then read this endpoint.
  *
  * Step 0 is always the setting that was in force when the sweep began. Against
  * the same exposure appearing later in the ladder it is the camera_stats_reset()
@@ -2061,21 +2075,17 @@ static esp_err_t start_handler(httpd_req_t *req)
          * split over the exposure ladder. 5 s was too short in warm/long runs
          * (no rung certified). ?cal=0 disables; ?cal=<ms> overrides. */
         g_status.cal_budget_ms  = CAL_BUDGET_DEFAULT_MS;
-        // v3: the interval IS the block length — every cal_interval_ms the
-        // pass parks for a camera sweep and the boundary closes a /loops
-        // block. 15 min default (~6 % overhead); 0 = no mid-pass insertions
-        // (sweep at session start only). Baseline phase deleted (D48).
-        g_status.cal_interval_ms = CAL_INTERVAL_DEFAULT_MS;
         g_status.focus_mode     = false;   /* D66: always unattended */
         g_status.score_dir      = SCORE_DIR_HIGH;
-        g_status.pool_confirm   = 0;
         g_status.pool_auto      = 0;
+        /* "this start came from the web form" — a local, not session state:
+         * its only job is to authorise prefs_save() at the end of this
+         * handler. The pool-confirmation gate it used to arm is gone (D66). */
+        bool from_form = false;
         /* Concordance weight. SESSION PARAMETER recorded in the CSV header.
          * ?wpre=0 is the control arm — pure-z ranking. */
         g_status.pre_w          = ENT_W_PRE_DEFAULT;
-        g_status.pre_n = g_status.pre_clamped = 0;
-        g_status.rank_mean = g_status.rank_sigma = 0.0;
-        g_status.rank_sig_p = g_status.rank_sig_c = 0.0;
+        g_status.pre_n = 0;
         if (httpd_req_get_url_query_str(req, qry, sizeof(qry)) == ESP_OK) {
             char val[16] = "";
             /* v3 removed ?loops=, ?runs= and ?rank=. Refuse them LOUDLY: an
@@ -2175,17 +2185,20 @@ static esp_err_t start_handler(httpd_req_t *req)
                 int c = atoi(val);
                 if (c >= 0 && c <= CAL_BUDGET_MAX_MS) g_status.cal_budget_ms = c;
             }
-            // ?calint=<ms> -> the block length (time between camera sweeps);
-            // 0 = no mid-pass insertions.
+            /* ?calint= deleted with the wall-clock block trigger (D76). */
             if (httpd_query_key_value(qry, "calint", val, sizeof(val)) == ESP_OK) {
-                int c = atoi(val);
-                if (c >= 0 && c <= CAL_INTERVAL_MAX_MS) g_status.cal_interval_ms = c;
+                httpd_resp_set_status(req, "400 Bad Request");
+                httpd_resp_sendstr(req,
+                    "calint= no longer exists -- one block is one round, so the "
+                    "round boundary is the only sweep trigger. Set the block "
+                    "length with maxruns=<n>; cal=0 turns the sweep off");
+                return ESP_OK;
             }
-            // ?confirm=1 -> stop after scoring and let the operator edit the
-            // pool. Opt-in: curl never sends it, so a script never parks here.
-            // The web UI always sends it.
+            // ?confirm=1 -> "this start came from the web form", nothing more:
+            // it authorises prefs_save() below so a curl start cannot overwrite
+            // the operator's saved form values with API defaults.
             if (httpd_query_key_value(qry, "confirm", val, sizeof(val)) == ESP_OK)
-                g_status.pool_confirm = (val[0] == '1');
+                from_form = (val[0] == '1');
             /* ?wpre= — concordance weight in the ranking key (D65). Default 0. */
             if (httpd_query_key_value(qry, "wpre", val, sizeof(val)) == ESP_OK) {
                 char *end = NULL;
@@ -2212,7 +2225,7 @@ static esp_err_t start_handler(httpd_req_t *req)
         }
         /* UI-only: persist the form. Curl never sends confirm=1, so a scripted
          * start cannot overwrite the operator's last weights with API defaults. */
-        if (g_status.pool_confirm)
+        if (from_form)
             prefs_save();
         /* Claim the RUNNING state synchronously, BEFORE the task exists, so a
          * second /start in the window between this handler and elotto_task's own
