@@ -1252,3 +1252,32 @@ round length it never fires; when it does, the block still closes on time, only 
 
 **Pooling:** no split for the archive. `z_raw` / `z_ctr` / `zc_ctr` are untouched. ⚠ A positional
 `/status` parser must drop `cal_interval_ms`.
+
+### D77 — Concordance: the sign test runs on CENTRED halves (2026-09-02)
+⛔ **Each half-window z is centred on its node's own per-half block mean before the sign test.**
+`s_node_hw` (the combined `√2·min`) is replaced by `s_node_h1`/`s_node_h2` (raw halves), `s_hwacc`
+by `s_h1acc`/`s_h2acc`, and `conc_halves()` is the one place that orders centre → sign test →
+`√2·min` → loudest-node drop → Stouffer, for scoring and the pass alike.
+
+**The defect.** `node_halfwin()` tested the sign of the RAW halves, and a raw half carries the
+node's LSB offset. At `?run=5` a window is 260 871 segments, a half 130 435; `gcp_z_per_bias` gives
+224·√130435/7,48 = 10 811 σ per unit of bias, so the measured per-node bias of 1e‑3..7e‑3 puts every
+half at 11..76 σ. Both halves therefore always shared a sign, the "opposite sign → 0" branch never
+ran (a 0 came only from k < 3), and algebraically `√2·min(h1,h2) = z_full − |h1−h2|/√2`. After
+centring the channel was `z_ctr` minus an independent half-normal term (σ 1, mean 0,8) — z with
+36 % extra variance and one node dropped, not concordance. At the form's `?wpre=0,8` that term
+carried 0,97 of the key against 0,24 for z, so pool choice and item ranking were noisier than z alone
+while the UI labelled the difference "Conc".
+
+**Why centring each half, not the combined value.** The sign test is the statistic; centring after
+it only removes the mean of a value the test had already decided. Centred halves are N(0, σ) under
+H₀, agree in sign half the time, and the surviving `√2·min` equals `z_ctr` for a stable window —
+the D56 definition, now actually computed. A node without halves (old firmware) gets `z/√2` in
+both, which after centring passes the test and returns `z_ctr`: "ranked on the full window" is
+unchanged.
+
+**Cost.** One more PSRAM archive (~115 KB) and one more accumulator per node. `pre_n` drops to
+about half of `ranked` under H₀ — the expected picture, not a fault.
+
+**Pooling:** ⚠ splits the TABLES and, at `pre_w` > 0, **the chosen POOL**. `zc_ctr` before this
+date is a different statistic; `z_raw` / `z_ctr` pool across the boundary.

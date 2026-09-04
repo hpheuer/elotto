@@ -406,8 +406,12 @@ typedef struct {
      * (2026-08-27) and degrading hard outside them — 1,69 at mean_px 5, above
      * 10 when over-lit. rank_key() divides by the item's BLOCK σ (D68),
      * s_bsig[block].sig_p, never by raw_sigma. */
-    /* Concordance z (D56): leave-one-out Stouffer of per-node half-window z,
-     * block-centred. 0 = fewer than two nodes to corroborate.
+    /* Concordance z (D56): leave-one-out Stouffer of per-node half-window z.
+     * Each HALF is centred on its own per-node block mean BEFORE the sign
+     * test (D77) — on raw halves the node offset (11..76 σ per half) made
+     * both halves always agree and the channel was z plus noise. 0 = halves
+     * disagreed on every surviving node, or fewer than two nodes to
+     * corroborate; under H₀ that is about half of all items.
      * ⚠ This is the ONLY channel beside z (D65) — `?wpre=` is its weight p and
      * the key is ((1-p)·z_ctr/σ_z + p·zc_ctr/σ_c)/√((1-p)²+p²), each term on
      * that item's own BLOCK σ (D68). Not a half-and-half split of pre_w. */

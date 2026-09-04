@@ -289,9 +289,11 @@ static void nth_combination(const uint8_t *pool, int n, int r, int k, uint8_t *o
 // A session whose pool choice must be trusted on its own wants several full
 // random passes; it must NOT go back to repeats in place (onset is the payload).
 static void score_one_run(bool *ok, float znode[MAX_NODES],
-                          float zhw[MAX_NODES], uint8_t *mask);
+                          float h1[MAX_NODES], float h2[MAX_NODES],
+                          uint8_t *mask);
 static void score_build_keys(const float zn[][MAX_NODES],
-                             const float hw[][MAX_NODES],
+                             const float h1[][MAX_NODES],
+                             const float h2[][MAX_NODES],
                              const uint8_t *mask,
                              const bool *scored, int max_val, double *scores);
 static void   center_block(int block_idx);  // forward: publish_valid centres the OPEN block
@@ -299,7 +301,11 @@ static void   center_block(int block_idx);  // forward: publish_valid centres th
 /* Per-item node-z archive (PSRAM). results[j] stays lean; re-analysis needs
  * the per-node series to recombine, drop a soft-failed node, or recompute r. */
 static float *s_node_z;   // [NUM_RUNS * MAX_NODES], NaN = did not contribute
-static float *s_node_hw;  /* per-node half-window pre z (D56), NaN = none */
+/* Per-node RAW half-window z (D56), both halves, NaN = none. Two arrays and
+ * not the combined √2·min: the sign test has to run on CENTRED halves, and
+ * the centre is not known until the block closes (D77). */
+static float *s_node_h1;
+static float *s_node_h2;
 /* Per-node CAMERA sigma of each item's own window (D62), NaN = not reported.
  * ⚠ Not a z and not comparable with the three arrays above: it is the
  * instrument's own noise while that item was measured, the covariate that
@@ -365,12 +371,17 @@ static void node_z_store(int j, const double *znode, const bool *have)
         row[i] = (have && have[i]) ? (float)znode[i] : NAN;
 }
 
-static void node_hw_store(int j, const double *zhw, const bool *have_hw)
+static void node_h_store(int j, const double *h1, const double *h2,
+                         const bool *have_h)
 {
-    if (!s_node_hw || j < 0 || j >= NUM_RUNS) return;
-    float *row = s_node_hw + (size_t)j * MAX_NODES;
-    for (int i = 0; i < MAX_NODES; i++)
-        row[i] = (have_hw && have_hw[i]) ? (float)zhw[i] : NAN;
+    if (!s_node_h1 || !s_node_h2 || j < 0 || j >= NUM_RUNS) return;
+    float *r1 = s_node_h1 + (size_t)j * MAX_NODES;
+    float *r2 = s_node_h2 + (size_t)j * MAX_NODES;
+    for (int i = 0; i < MAX_NODES; i++) {
+        bool h = have_h && have_h[i];
+        r1[i] = h ? (float)h1[i] : NAN;
+        r2[i] = h ? (float)h2[i] : NAN;
+    }
 }
 
 static void node_wsig_store(int j, const float *wsig)
@@ -397,9 +408,13 @@ static void node_z_move(int from, int to)
      * Separate move loops would be separate chances to compact one and forget
      * another, and the result — an item's z paired with a neighbour's halves
      * or camera σ — looks entirely plausible. */
-    if (s_node_hw)
-        memcpy(s_node_hw + (size_t)to   * MAX_NODES,
-               s_node_hw + (size_t)from * MAX_NODES,
+    if (s_node_h1)
+        memcpy(s_node_h1 + (size_t)to   * MAX_NODES,
+               s_node_h1 + (size_t)from * MAX_NODES,
+               MAX_NODES * sizeof(float));
+    if (s_node_h2)
+        memcpy(s_node_h2 + (size_t)to   * MAX_NODES,
+               s_node_h2 + (size_t)from * MAX_NODES,
                MAX_NODES * sizeof(float));
     if (s_node_wsig)
         memcpy(s_node_wsig + (size_t)to   * MAX_NODES,
@@ -554,11 +569,12 @@ static void score_and_build_pool(int max_val, int pool_size, uint8_t *pool,
      * is ~1,6 KB and elotto_task's stack is 8 KB. Held to the end because
      * the key is built like the pass — per-node means, then combine, then mix. */
     static float zn[51][MAX_NODES];
-    static float hw[51][MAX_NODES];
+    static float h1[51][MAX_NODES];
+    static float h2[51][MAX_NODES];
     uint8_t smask[51];
     for (int i = 0; i < 51; i++) {
         smask[i] = 0;
-        for (int n = 0; n < MAX_NODES; n++) zn[i][n] = hw[i][n] = NAN;
+        for (int n = 0; n < MAX_NODES; n++) zn[i][n] = h1[i][n] = h2[i][n] = NAN;
     }
     if (n_keep > pool_size) n_keep = pool_size;
     for (int i = 0; i < n_keep; i++)
@@ -598,7 +614,7 @@ static void score_and_build_pool(int max_val, int pool_size, uint8_t *pool,
         // per number (session run_segments): genuine onset, held once.
         focus_show_number(k, euro_pool);
         bool ok = false;
-        score_one_run(&ok, zn[k], hw[k], &smask[k]);
+        score_one_run(&ok, zn[k], h1[k], h2[k], &smask[k]);
         scored[k] = ok;
         g_status.scoring_done++;
         g_status.elapsed_ms = elapsed_ms_now();
@@ -606,7 +622,7 @@ static void score_and_build_pool(int max_val, int pool_size, uint8_t *pool,
     }
     /* Every candidate measured: per-node means exist, build the keys.
      * Before this point scores[] is empty by construction. */
-    score_build_keys(zn, hw, smask, scored, max_val, scores);
+    score_build_keys(zn, h1, h2, smask, scored, max_val, scores);
 
     /* The kept numbers take the first slots, carrying the score that chose them
      * (they were not re-measured, so there is no new one to carry). */
@@ -677,7 +693,13 @@ static void score_and_build_pool(int max_val, int pool_size, uint8_t *pool,
 /* Per-node half-window LSB z (D56).
  * Same sign on both halves → √2 · min(|h1|,|h2|) with that sign, which equals
  * the full-window z when the bias is stable across the window. Opposite sign
- * (or a zero half) → 0: a one-sided glitch does not rank. */
+ * (or a zero half) → 0: a one-sided glitch does not rank.
+ *
+ * ⚠ CENTRED halves only (D77). A raw half carries the node's own LSB offset —
+ * 11..76 σ per half at ?run=5 — so on raw values both halves always share a
+ * sign and this reduces to z − |h1−h2|/√2: z plus noise, not concordance. The
+ * callers subtract each node's per-half block mean first; the one raw use is
+ * the provisional value in measure_window(), replaced at centring. */
 static double node_halfwin(double h1, double h2)
 {
     if (!((h1 > 0.0 && h2 > 0.0) || (h1 < 0.0 && h2 < 0.0))) return 0.0;
@@ -703,6 +725,29 @@ static double conc_stouffer(const double *zhw, const bool *have, int n)
     for (int i = 0; i < k; i++)
         if (i != imax) sum += v[i];
     return sum / sqrt((double)(k - 1));
+}
+
+/* Concordance from per-node halves: centre each half on that node's mean
+ * (m1/m2 NULL = no centring, i.e. the provisional value), sign test and
+ * √2·min per node, then the leave-one-out Stouffer over `have`. The ONE
+ * place the three steps are ordered, so scoring and the pass cannot drift
+ * apart on it again (D77). */
+static double conc_halves(const double *h1, const double *h2,
+                          const double *m1, const double *m2,
+                          const bool *have, int n)
+{
+    double v[MAX_NODES];
+    bool   hv[MAX_NODES];
+    for (int i = 0; i < MAX_NODES; i++) {
+        v[i]  = 0.0;
+        hv[i] = false;
+        if (i >= n || !have[i]) continue;
+        double a = h1[i] - (m1 ? m1[i] : 0.0);
+        double b = h2[i] - (m2 ? m2[i] : 0.0);
+        v[i]  = node_halfwin(a, b);
+        hv[i] = true;
+    }
+    return conc_stouffer(v, hv, n);
 }
 
 /* Gather per-node z for this round and Stouffer-combine. Soft-downweighted
@@ -789,7 +834,7 @@ static int gather_and_combine(double z_master, bool master_ok,
  * publish it as a result. */
 typedef struct {
     double  z, zc;                      // zc 0 when fewer than two arms to corroborate
-    double  znode[MAX_NODES], zhw[MAX_NODES];
+    double  znode[MAX_NODES], h1[MAX_NODES], h2[MAX_NODES];   /* RAW halves */
     bool    have[MAX_NODES], haveh[MAX_NODES];
     uint8_t mask;
     int     k;
@@ -807,25 +852,29 @@ static int measure_window(WindowMeas *w)
     if (fresh && !zok) node_camera_failed(0, "stalled mid-run");
     if (nodes_have_slaves()) nodes_collect(LINK_MEAS_MS_FOR(nseg), true);
 
-    double h1[MAX_NODES], h2[MAX_NODES];
     w->z = 0.0; w->zc = 0.0; w->mask = 0;
     w->k = gather_and_combine(zm, zok, w->znode, w->have,
-                              h1, h2, w->haveh,
+                              w->h1, w->h2, w->haveh,
                               h1m, h2m, hok,
                               &w->z, &w->mask);
     for (int i = 0; i < MAX_NODES; i++) {
-        w->zhw[i] = 0.0;
-        if (!w->have[i]) continue;
-        if (w->haveh[i])
-            w->zhw[i] = node_halfwin(h1[i], h2[i]);
-        else
-            w->zhw[i] = w->znode[i];   /* old node: no halves, full window */
-        w->haveh[i] = true;
+        if (!w->have[i]) { w->h1[i] = w->h2[i] = 0.0; continue; }
+        if (!w->haveh[i]) {
+            /* Old node, no halves: the full window split evenly. After
+             * centring both halves are (z−m)/√2, the sign test passes and
+             * √2·min gives back z_ctr — "ranked on the full window". */
+            w->h1[i] = w->h2[i] = w->znode[i] / sqrt(2.0);
+            w->haveh[i] = true;
+        }
     }
     bool hw_have[MAX_NODES];
     for (int i = 0; i < MAX_NODES; i++)
         hw_have[i] = w->haveh[i] && (w->mask & (1u << i));
-    w->zc = conc_stouffer(w->zhw, hw_have, g_status.node_count);
+    /* PROVISIONAL, on raw halves — not the concordance (D77): the per-node
+     * offset makes both halves agree in sign whatever the window did.
+     * center_block() replaces it from PASS_OPEN_MIN_N items on; scoring
+     * never reads it. */
+    w->zc = conc_halves(w->h1, w->h2, NULL, NULL, hw_have, g_status.node_count);
     return w->k;
 }
 
@@ -839,7 +888,8 @@ static int measure_window(WindowMeas *w)
  * run would steer which numbers enter the pool. The caller excludes void
  * candidates from selection instead. */
 static void score_one_run(bool *ok, float znode[MAX_NODES],
-                          float zhw[MAX_NODES], uint8_t *mask)
+                          float h1[MAX_NODES], float h2[MAX_NODES],
+                          uint8_t *mask)
 {
     WindowMeas m;
     int k = measure_window(&m);
@@ -853,7 +903,8 @@ static void score_one_run(bool *ok, float znode[MAX_NODES],
     if (mask) *mask = (k > 0) ? m.mask : 0;
     for (int i = 0; i < MAX_NODES; i++) {
         znode[i] = m.have[i]  ? (float)m.znode[i] : NAN;
-        zhw[i]   = m.haveh[i] ? (float)m.zhw[i]   : NAN;
+        h1[i]    = m.haveh[i] ? (float)m.h1[i]    : NAN;
+        h2[i]    = m.haveh[i] ? (float)m.h2[i]    : NAN;
     }
 }
 
@@ -866,23 +917,32 @@ static void score_one_run(bool *ok, float znode[MAX_NODES],
  * RAW node before that centre dropped the camera on the bright rung, not
  * the one with the real number-to-number jump. */
 static void score_build_keys(const float zn[][MAX_NODES],
-                             const float hw[][MAX_NODES],
+                             const float h1[][MAX_NODES],
+                             const float h2[][MAX_NODES],
                              const uint8_t *mask,
                              const bool *scored, int max_val, double *scores)
 {
-    double mz[MAX_NODES] = {0}, mhw[MAX_NODES] = {0};
-    int    nz[MAX_NODES] = {0}, nhw[MAX_NODES] = {0};
-    bool   okz[MAX_NODES] = {false}, okhw[MAX_NODES] = {false};
+    /* Per-node means over the span: full z, and EACH HALF on its own (D77).
+     * The halves are centred before the sign test, or the node's offset
+     * decides the test instead of the window. */
+    double mz[MAX_NODES] = {0}, mh1[MAX_NODES] = {0}, mh2[MAX_NODES] = {0};
+    int    nz[MAX_NODES] = {0}, nh[MAX_NODES] = {0};
+    bool   okz[MAX_NODES] = {false};
     for (int k = 1; k <= max_val; k++) {
         if (!scored[k]) continue;
         for (int i = 0; i < MAX_NODES && i < g_status.node_count; i++) {
-            if (!isnan((double)zn[k][i])) { mz[i]  += (double)zn[k][i]; nz[i]++; }
-            if (!isnan((double)hw[k][i])) { mhw[i] += (double)hw[k][i]; nhw[i]++; }
+            if (!isnan((double)zn[k][i])) { mz[i] += (double)zn[k][i]; nz[i]++; }
+            if (!isnan((double)h1[k][i]) && !isnan((double)h2[k][i])) {
+                mh1[i] += (double)h1[k][i];
+                mh2[i] += (double)h2[k][i];
+                nh[i]++;
+            }
         }
     }
     for (int i = 0; i < MAX_NODES; i++) {
-        if (nz[i]  >= 2) { mz[i]  /= (double)nz[i];  okz[i]  = true; }
-        if (nhw[i] >= 2) { mhw[i] /= (double)nhw[i]; okhw[i] = true; }
+        if (nz[i] >= 2) { mz[i] /= (double)nz[i]; okz[i] = true; }
+        if (nh[i] >= 2) { mh1[i] /= (double)nh[i]; mh2[i] /= (double)nh[i]; }
+        else            { mh1[i] = mh2[i] = 0.0; }   /* no centre: raw, like z */
     }
 
     double zc[51], zcc[51];
@@ -891,23 +951,24 @@ static void score_build_keys(const float zn[][MAX_NODES],
         if (!scored[k]) continue;
         double sum = 0.0;
         int    kk  = 0;
-        double zhwv[MAX_NODES];
+        double hv1[MAX_NODES], hv2[MAX_NODES];
         bool   hwh[MAX_NODES];
         for (int i = 0; i < MAX_NODES; i++) {
-            zhwv[i] = 0.0;
-            hwh[i]  = false;
+            hv1[i] = hv2[i] = 0.0;
+            hwh[i] = false;
             if (!(mask[k] & (1u << i))) continue;
             if (!isnan((double)zn[k][i])) {
                 sum += (double)zn[k][i] - (okz[i] ? mz[i] : 0.0);
                 kk++;
             }
-            if (!isnan((double)hw[k][i])) {
-                zhwv[i] = (double)hw[k][i] - (okhw[i] ? mhw[i] : 0.0);
-                hwh[i]  = true;
+            if (!isnan((double)h1[k][i]) && !isnan((double)h2[k][i])) {
+                hv1[i] = (double)h1[k][i];
+                hv2[i] = (double)h2[k][i];
+                hwh[i] = true;
             }
         }
         zc[k]  = (kk > 0) ? sum / sqrt((double)kk) : NAN;
-        zcc[k] = conc_stouffer(zhwv, hwh, MAX_NODES);
+        zcc[k] = conc_halves(hv1, hv2, mh1, mh2, hwh, MAX_NODES);
         if (zcc[k] == 0.0) zcc[k] = NAN;   /* k<2 or all halves disagreed: no conc */
     }
 
@@ -1588,26 +1649,29 @@ typedef struct {
 
 static PairAcc s_pair[MAX_NODES][MAX_NODES];   // upper triangle, i < j
 static NodeAcc s_nacc[MAX_NODES];
-/* Concordance's own block accumulator (D56): per-node half-window z over the
- * OPEN block. Its own denominator for the same reason — a node that sends no
- * halves falls back to its full window, so the counts diverge. Cleared with
- * the others by pairs_commit_block(). */
-static NodeAcc s_hwacc[MAX_NODES];
+/* Concordance's own block accumulators (D56/D77): per-node RAW half-window z
+ * over the OPEN block, one per half, because center_block() subtracts each
+ * half's own mean before the sign test. Their own denominator for the same
+ * reason as before — a node that sends no halves gets a synthetic split, so
+ * the counts can diverge from s_nacc. Cleared with the others by
+ * pairs_commit_block(). */
+static NodeAcc s_h1acc[MAX_NODES];
+static NodeAcc s_h2acc[MAX_NODES];
 
 static void pairs_reset(void)
 {
     memset(s_pair, 0, sizeof(s_pair));
     memset(s_nacc, 0, sizeof(s_nacc));
-    memset(s_hwacc, 0, sizeof(s_hwacc));
+    memset(s_h1acc, 0, sizeof(s_h1acc));
+    memset(s_h2acc, 0, sizeof(s_h2acc));
 }
 
-static void hwacc_add_run(const double *zhw, const bool *have_hw)
+static void hacc_add_run(const double *h1, const double *h2, const bool *have_h)
 {
     for (int i = 0; i < g_status.node_count && i < MAX_NODES; i++) {
-        if (!have_hw[i]) continue;
-        s_hwacc[i].s  += zhw[i];
-        s_hwacc[i].ss += zhw[i] * zhw[i];
-        s_hwacc[i].n++;
+        if (!have_h[i]) continue;
+        s_h1acc[i].s += h1[i]; s_h1acc[i].ss += h1[i] * h1[i]; s_h1acc[i].n++;
+        s_h2acc[i].s += h2[i]; s_h2acc[i].ss += h2[i] * h2[i]; s_h2acc[i].n++;
     }
 }
 
@@ -1650,13 +1714,14 @@ static void pairs_commit_block(void)
             a->cloops++;
         }
         a->s = a->ss = 0.0; a->n = 0;
-        /* ⚠ s_hwacc is cleared HERE and nowhere else, in the same loop as
-         * s_nacc, because center_block() reads both and this call is what ends
-         * their block. The equivalent clear was missing for the old LSB
-         * accumulator until 2026-08-26 and cost that channel outright: its
-         * mean became cumulative over every block, so from the second block on
-         * every item was centred on the wrong number. */
-        s_hwacc[i].s = s_hwacc[i].ss = 0.0; s_hwacc[i].n = 0;
+        /* ⚠ s_h1acc/s_h2acc are cleared HERE and nowhere else, in the same
+         * loop as s_nacc, because center_block() reads all three and this call
+         * is what ends their block. The equivalent clear was missing for the
+         * old LSB accumulator until 2026-08-26 and cost that channel outright:
+         * its mean became cumulative over every block, so from the second
+         * block on every item was centred on the wrong number. */
+        s_h1acc[i].s = s_h1acc[i].ss = 0.0; s_h1acc[i].n = 0;
+        s_h2acc[i].s = s_h2acc[i].ss = 0.0; s_h2acc[i].n = 0;
 
         for (int j = i + 1; j < MAX_NODES; j++) {
             PairAcc *p = &s_pair[i][j];
@@ -2120,12 +2185,14 @@ static void center_block(int block_idx)
      * ⚠ And it costs the most: an effect CONSTANT across a block is removed
      * with that offset. What survives is variation between items inside one
      * block — which is the pre-registered bargain (D8). */
-    double mhw[MAX_NODES] = {0};
-    bool   okhw[MAX_NODES] = {false};
+    /* Each HALF on its own mean (D77). A raw half carries the node's LSB
+     * offset at 11..76 σ, so an uncentred sign test always passes and the
+     * channel collapses to z − |h1−h2|/√2. No centre (n < 2) → raw, like z. */
+    double mh1[MAX_NODES] = {0}, mh2[MAX_NODES] = {0};
     for (int i = 0; i < g_status.node_count && i < MAX_NODES; i++) {
-        if (s_hwacc[i].n >= 2) {
-            mhw[i]  = s_hwacc[i].s / (double)s_hwacc[i].n;
-            okhw[i] = true;
+        if (s_h1acc[i].n >= 2 && s_h2acc[i].n >= 2) {
+            mh1[i] = s_h1acc[i].s / (double)s_h1acc[i].n;
+            mh2[i] = s_h2acc[i].s / (double)s_h2acc[i].n;
         }
     }
     int ntot = g_status.runs_completed;
@@ -2167,19 +2234,21 @@ static void center_block(int block_idx)
             r->node_sd = NAN;
         }
 
-        const float *hwrow = s_node_hw ? s_node_hw + (size_t)j * MAX_NODES : NULL;
-        double zhw[MAX_NODES];
+        const float *r1 = s_node_h1 ? s_node_h1 + (size_t)j * MAX_NODES : NULL;
+        const float *r2 = s_node_h2 ? s_node_h2 + (size_t)j * MAX_NODES : NULL;
+        double hv1[MAX_NODES], hv2[MAX_NODES];
         bool   hwh[MAX_NODES];
         for (int i = 0; i < MAX_NODES; i++) {
-            zhw[i] = 0.0;
+            hv1[i] = hv2[i] = 0.0;
             hwh[i] = false;
-            if (!hwrow) continue;
+            if (!r1 || !r2) continue;
             if (!(r->have_mask & (1u << i))) continue;
-            if (isnan(hwrow[i])) continue;
-            zhw[i] = (double)hwrow[i] - (okhw[i] ? mhw[i] : 0.0);
+            if (isnan(r1[i]) || isnan(r2[i])) continue;
+            hv1[i] = (double)r1[i];
+            hv2[i] = (double)r2[i];
             hwh[i] = true;
         }
-        r->zc_ctr = (float)conc_stouffer(zhw, hwh, MAX_NODES);
+        r->zc_ctr = (float)conc_halves(hv1, hv2, mh1, mh2, hwh, MAX_NODES);
     }
     if (n > 0)
         printf("block %d: centred %d items (node means %+.3f %+.3f %+.3f %+.3f)\n",
@@ -2318,12 +2387,17 @@ void elotto_task(void *pvParam)
         for (size_t i = 0; i < (size_t)NUM_RUNS * MAX_NODES; i++)
             s_node_z[i] = NAN;
     }
-    if (!s_node_hw)
-        s_node_hw = heap_caps_malloc((size_t)NUM_RUNS * MAX_NODES * sizeof(float),
+    /* Raw halves, both of them (D77): ~115 KB each in PSRAM. Missing one
+     * costs the concordance channel for the session, never a measurement. */
+    if (!s_node_h1)
+        s_node_h1 = heap_caps_malloc((size_t)NUM_RUNS * MAX_NODES * sizeof(float),
                                      MALLOC_CAP_SPIRAM);
-    if (s_node_hw) {
+    if (!s_node_h2)
+        s_node_h2 = heap_caps_malloc((size_t)NUM_RUNS * MAX_NODES * sizeof(float),
+                                     MALLOC_CAP_SPIRAM);
+    if (s_node_h1 && s_node_h2) {
         for (size_t i = 0; i < (size_t)NUM_RUNS * MAX_NODES; i++)
-            s_node_hw[i] = NAN;
+            s_node_h1[i] = s_node_h2[i] = NAN;
     }
     /* The camera-sigma archive (D62), same shape and the same NaN convention.
      * A failed allocation costs the CSV columns and the jump board, never a
@@ -2626,7 +2700,7 @@ void elotto_task(void *pvParam)
             /* Archive every node that produced a z (including soft-down ones),
              * so post-hoc recombine is possible. */
             node_z_store(slot, w.znode, w.have);
-            node_hw_store(slot, w.zhw, w.haveh);
+            node_h_store(slot, w.h1, w.h2, w.haveh);
             /* The instrument's own noise while THIS item was measured (D62).
              * Read before anything can trigger the next window: cam_wsig_now
              * holds one window and the next 'M' overwrites it. */
@@ -2638,7 +2712,7 @@ void elotto_task(void *pvParam)
              * compaction will have eaten by the next round boundary. */
             camera_winlog_push((uint32_t)(i + 1));
             pairs_add_run(w.znode, w.have);
-            hwacc_add_run(w.zhw, w.haveh);
+            hacc_add_run(w.h1, w.h2, w.haveh);
 
             r->index     = i + 1;
             r->block     = (uint16_t)block;

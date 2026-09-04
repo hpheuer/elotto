@@ -19,7 +19,8 @@ Two channels, one key `[D65]`:
 
 - **z** — binomial of the camera LSBs in that window (the old z_pre; there is no second z,
   and since `[D73]` no second field either)
-- **conc** — half-window concordance of the same bits (same sign both halves, loudest node dropped)
+- **conc** — half-window concordance of the same bits (same sign both **centred** halves, loudest
+  node dropped) `[D77]`
 
 `?wpre=` is the concordance weight (form 0,8; API 0 = z alone). Scoring **selects** the pool on
 that key; the pass **ranks** items on the same key; the UI shows Z*, Z, Conc.
@@ -162,9 +163,16 @@ whatever σ comes out. A quiet block cannot manufacture a large key.
 the last round of a session is short because Abort cut it.
 UI: **Z\*** is the key itself (block-σ units), **Z**, **Conc**.
 
-**Concordance (D56).** Per node, split the window at nseg/2. Same sign → `√2 · min(|h1|,|h2|)`
-with that sign (equals full-window z when the bias is stable). Opposite sign or a zero half → 0.
-Then drop the loudest node and Stouffer-combine the rest. k < 2 after the drop → 0.
+**Concordance (D56, D77).** Per node, split the window at nseg/2 and **centre each half on that
+node's own per-half block mean** (scoring: span mean). Same sign → `√2 · min(|h1|,|h2|)` with that
+sign (equals z_ctr when the bias is stable). Opposite sign or a zero half → 0. Then drop the loudest
+node and Stouffer-combine the rest. k < 2 after the drop → 0.
+⚠ **The sign test is on CENTRED halves, and only there does it test anything** `[D77]`: a raw half
+carries the node's LSB offset at 11..76 σ, so raw halves always agree and the value degenerates to
+z − |h1−h2|/√2 — z plus noise. That is what every session before 2026-09-02 ranked on. The
+provisional `zc` in `measure_window()` is still raw and is replaced at centring.
+⚠ Under H₀ centred halves agree in sign half the time, so **Conc = 0 on roughly half of all items
+is the expected picture**, and `pre_n` ≈ half of `ranked` is not a fault.
 
 Wire: `Z:<z>[,<h1>,<h2>][,wsig=<σ>]` `[D65]`. `,wsig=` TAGGED. Every node measures the commanded `nseg`.
 
@@ -263,6 +271,7 @@ separate arm `[D1]`.
 | LSB-as-is 2026-08-31 | post-D65 only — LSB z, no prior archive `[D65]` |
 | block-σ ranking 2026-08-31 | post-D68 only — tables in block-σ units `[D68]`. `z_raw`/`z_ctr` still pool |
 | unbounded key, per-item weights 2026-09-02 | post-D75 only — earlier keys were truncated at 12 and scaled an item down when it had no concordance. Splits TABLES **and the chosen POOL**; `z_raw`/`z_ctr`/`zc_ctr` still pool `[D75]` |
+| centred-half concordance 2026-09-02 | post-D77 only — earlier `zc_ctr` is z − \|h1−h2\|/√2, not a sign test. Splits TABLES **and the chosen POOL** at `pre_w` > 0; `z_raw`/`z_ctr` still pool `[D77]` |
 | v3 vs any v2.x | v3 only |
 
 Unlimited-mode data carries two more: split on `round` before pooling with a single-pass session,
