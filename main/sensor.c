@@ -1175,6 +1175,45 @@ double rank_key(const RunResult *r)
     return (a * z + p * zc) / n;
 }
 
+/* ── The live extreme set, for the sortable Top/Bottom tables (D78) ────────
+ * The up-to `max` ranked & centred rows with the largest |rank_key|, both
+ * tails, copied into out[0..return) under the archive lock. This is the live
+ * form of the compaction survivors (PASS_KEEP_EXTREME): the same "most extreme
+ * by |Z*|" set, computed on demand from the current prefix so it reflects every
+ * item measured so far, not only what the last round boundary kept.
+ *
+ * ⚠ ONLY selection lives here — which items. The ordering the tables show is
+ * the page's, on whichever column the operator clicked; this always ranks by
+ * |Z*| so a new item enters the set exactly as before (D78). out[] is kept
+ * sorted by |key| desc by insertion so the tail comparison is O(1); the whole
+ * scan is O(n·max) worst case and runs once per results-page poll, not per item.
+ * result_ranked / result_centred gate it to the same rows every statistic uses,
+ * so an uncentred open-block item with its raw node offsets can never appear. */
+int results_extremes(RunResult *out, int max)
+{
+    if (!out || max <= 0) return 0;
+    archive_lock();
+    int ntot = g_status.runs_completed;
+    if (ntot > NUM_RUNS) ntot = NUM_RUNS;
+    int m = 0;
+    for (int j = 0; j < ntot; j++) {
+        const RunResult *r = &g_status.results[j];
+        if (!result_ranked(r) || !result_centred(r)) continue;
+        double a = fabs(rank_key(r));
+        if (m < max) {
+            int p = m++;
+            while (p > 0 && fabs(rank_key(&out[p - 1])) < a) { out[p] = out[p - 1]; p--; }
+            out[p] = *r;
+        } else if (a > fabs(rank_key(&out[m - 1]))) {
+            int p = m - 1;
+            while (p > 0 && fabs(rank_key(&out[p - 1])) < a) { out[p] = out[p - 1]; p--; }
+            out[p] = *r;
+        }
+    }
+    archive_unlock();
+    return m;
+}
+
 /* ── What compaction left behind ──────────────────────────────────────────
  * Moments of the items pass_compact() dropped, so every pass statistic stays
  * EXACT over the whole session while results[] holds only the survivors.
@@ -2504,7 +2543,6 @@ void elotto_task(void *pvParam)
      * centring never mixes items from either side of a re-scoring. */
     int     round          = 0;
     bool    space_full     = false;
-    int64_t last_insert_us = esp_timer_get_time();
 
     for (;;) {
         round++;
@@ -2655,7 +2693,6 @@ void elotto_task(void *pvParam)
             uint16_t t = s_perm[i]; s_perm[i] = s_perm[j]; s_perm[j] = t;
         }
 
-        last_insert_us = esp_timer_get_time();
         g_status.phase = PHASE_MEASURING;
         for (int j = 0; j < round_total; j++) {
             if (g_status.abort_requested) { slave_abort(); goto done; }

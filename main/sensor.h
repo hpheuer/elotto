@@ -1031,3 +1031,10 @@ bool results_row_z(int j, RunResult *out_row, float out_z[MAX_NODES],
  * every table and every survivor choice goes through, for the same reason
  * rank_z() is the only reader of z_ctr. */
 double rank_key(const RunResult *r);
+
+/* The up-to `max` most extreme ranked & centred rows by |rank_key| (both
+ * tails), copied into out[0..return) under the archive lock. The live form of
+ * the compaction survivors, for the sortable Top/Bottom tables (D78). The
+ * caller sorts on whichever column it displays; selection here is by |Z*|
+ * only, so a newly measured item joins the set exactly as it did before. */
+int results_extremes(RunResult *out, int max);

@@ -197,6 +197,14 @@ what remains visible is an effect varying **between items inside a block**.
 - **Two tables of five**: Top-5, Bottom-5, item counter +
   block badge, Save CSV. Columns: `Z*` (key in that item's block-σ units `[D68]`), `Z`, `Conc`,
   `Δn`.
+  ⚠ **The two tables are the two ends of the ~100 most extreme items by `|Z*|`, and a column
+  header sorts that set** `[D78]`. `GET /extremes` (streamed JSON, `emit_run` row shape, its own
+  poll — 100 rows do not fit the 8 KB `/status` buffer) carries them; the page sorts client-side.
+  Click `Z*`/`Z`/`Conc`/`Δn` → Top shows the leading end, Bottom the trailing end; a second click
+  on the same header flips direction (arrow ▾/▴, ⇅ on the inactive ones). ⛔ Items still ENTER the
+  set by `|Z*|` only — the sort reorders the view, never the held 100 or the pool `[D78]`. A missing
+  `Δn` (solo item) sinks to the bottom of a `Δn` sort. Until the first `/extremes` reply lands the
+  tables fall back to `/status` `top`/`low`.
   **`Δn` is node agreement** `[D70]`: σ across the contributing nodes of their block-centred z,
   each node divided by ITS OWN σ over that block. Small = the cameras moved together on this
   item; **≈ 1 is what independent nodes give**, so read it against 1, not against 0.

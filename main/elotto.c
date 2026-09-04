@@ -1004,15 +1004,13 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "lastDisplayed=d.top;"
 // Z* IS the ranking key (block-σ units, D68) and the cell prints it as it
 // stands — there is no session moment of the key to rescale it with (D71).
-"var st={p:d.pre_w||0};"
-"document.getElementById('resTitle').innerHTML="
-"'\\uD83C\\uDFC6 Top '+d.top.length+' of '+d.comparisons+' valid'"
-"+(isEuro?' \\u2014 Eurojackpot':' \\u2014 6-of-49')"
-"+' (highest Z*)';"
-"renderRunTable('resHead','resBody',d.top,isEuro,d,st);"
+// The Top/Bottom tables are built by renderExtremeTables() from the /extremes
+// set so they can be re-sorted by column (D78); the titles and both bodies are
+// set there. d.top/d.low are the fallback until the first /extremes lands.
+"LD=d;"
 "document.getElementById('btnSave').style.display='';"
 "document.getElementById('saveAll').style.display='';"
-"showLow(d);"
+"fetchExtremes();"
 "showWsig(d);"
 "showTrip(d);"
 "}"
@@ -1039,12 +1037,55 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "var c=(H.cons>0)?H.cons:(N.cam_cons_mbit>0?N.cam_cons_mbit:0);"
 "return c>0?'bits consumed per second of reading'"
 ":'no consumption rate reported — extraction rate shown in brackets';}"
+/* ── Sortable Top/Bottom over the 100 extremes (D78) ──────────────────────
+   The two tables are the two ends of the /extremes set (the ~100 most extreme
+   items by |Z*|). A click on a stat header sorts that set by the column; the
+   Top table shows the leading end, the Bottom table the trailing one. A second
+   click on the same header flips the direction (largest-first <-> smallest-
+   first), shown by the arrow. Items still ENTER the set by |Z*| only — the sort
+   reorders what is shown, it never changes which 100 are held or the pool. */
+"var EX=[],SORTK='key',SORTD=-1,LD=null;"
+"function colVal(r,k){var v;"
+"if(k==='key')v=r.key;"
+"else if(k==='z_ctr')v=(r.z_ctr===undefined||r.z_ctr===null)?r.z:r.z_ctr;"
+"else if(k==='zc')v=r.zc;"
+"else v=r.nsd;"
+"return (v===undefined||v===null||v!==v)?null:v;}"
+/* desc, and a missing value (Δn on a solo item) always sinks to the end. */
+"function exCmp(a,b){var x=colVal(a,SORTK),y=colVal(b,SORTK);"
+"if(x===null&&y===null)return 0;if(x===null)return 1;if(y===null)return -1;return y-x;}"
+"function exArrow(k){if(SORTK!==k)return ' <span style=\"color:#667\">\\u21c5</span>';"
+"return SORTD<0?' \\u25be':' \\u25b4';}"
+"function sortBy(k){if(SORTK===k)SORTD=-SORTD;else{SORTK=k;SORTD=-1;}renderExtremeTables();}"
+"function fetchExtremes(){"
+"fetch('/extremes').then(function(r){return r.json();}).then(function(x){"
+"EX=(x&&x.extremes)?x.extremes:[];renderExtremeTables();}).catch(function(){});}"
+"function renderExtremeTables(){"
+"if(!LD)return;var d=LD,isEuro=d.mode==='euro',st={p:d.pre_w||0};"
+"var lab={key:'Z*',z_ctr:'Z',zc:'Conc',nsd:'\\u0394n'};"
+"var top,bot,hiTxt,loTxt;"
+"if(EX.length){"
+"var s=EX.slice().sort(exCmp);if(SORTD>0)s.reverse();"
+"top=s.slice(0,5);"
+"bot=(s.length>5)?s.slice(-5).reverse():[];"
+"hiTxt=(SORTD<0)?'highest':'lowest';loTxt=(SORTD<0)?'lowest':'highest';"
+"}else{top=d.top||[];bot=d.low||[];hiTxt='highest';loTxt='lowest';}"
+"document.getElementById('resTitle').innerHTML="
+"'\\uD83C\\uDFC6 Top '+top.length+' of '+(EX.length||d.comparisons||top.length)"
+"+(isEuro?' \\u2014 Eurojackpot':' \\u2014 6-of-49')+' ('+hiTxt+' '+lab[SORTK]+')';"
+"renderRunTable('resHead','resBody',top,isEuro,d,st);"
+"var lc=document.getElementById('resCardLow');"
+"if(!bot||!bot.length){lc.style.display='none';}else{"
+"document.getElementById('resTitleLow').innerHTML="
+"'\\u2B07 Bottom '+bot.length+' ('+loTxt+' '+lab[SORTK]+')';"
+"renderRunTable('resHeadLow','resBodyLow',bot,isEuro,d,st);"
+"lc.style.display='block';}}"
 "function renderRunTable(headId,bodyId,res,isEuro,d,st){"
 "document.getElementById(headId).innerHTML="
 "'<tr><th>#</th><th>Item</th>'"
-"+(st?'<th title=\"ranking key in units of its own block σ\">Z*</th>'"
-"+'<th title=\"block-centred combined z\">Z</th>'"
-"+'<th title=\"leave-one-out half-window concordance\">Conc</th>'"
+"+(st?'<th style=\"cursor:pointer\" title=\"ranking key in units of its own block σ. Click to sort the 100\" onclick=\"sortBy(\\'key\\')\">Z*'+exArrow('key')+'</th>'"
+"+'<th style=\"cursor:pointer\" title=\"block-centred combined z. Click to sort the 100\" onclick=\"sortBy(\\'z_ctr\\')\">Z'+exArrow('z_ctr')+'</th>'"
+"+'<th style=\"cursor:pointer\" title=\"leave-one-out half-window concordance. Click to sort the 100\" onclick=\"sortBy(\\'zc\\')\">Conc'+exArrow('zc')+'</th>'"
 /* Plain-language tooltip: the operator is the only reader of this cell, and the
    column is worthless if its meaning has to be looked up. English like the rest
    of the page (the CSV is the only German artefact). \\n inside a title
@@ -1057,8 +1098,9 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "large (1.5 and up) = one or two cameras carried the result alone, the others "
 "saw none of it\\n"
 "\\u2014 = not computed yet (block still open) or too few cameras\\n"
-"\\u0394n does not say whether the item is good or bad. It sorts and filters "
-"nothing.\">\\u0394n</th>':'')"
+"\\u0394n does not change which numbers enter the pool; the table can be sorted "
+"by it. Click to sort the 100.\" style=\"cursor:pointer\" onclick=\"sortBy(\\'nsd\\')\">"
+"\\u0394n'+exArrow('nsd')+'</th>':'')"
 "+'<th>Numbers</th>'"
 "+(isEuro?'<th>Bonus</th>':'')+'</tr>';"
 "var tb=document.getElementById(bodyId);tb.innerHTML='';"
@@ -1206,15 +1248,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "}"
 "document.getElementById('resCardWsig').style.display='block';"
 "}"
-"function showLow(d){"
-"var res=d.low,isEuro=d.mode==='euro';"
-"if(!res||res.length===0){document.getElementById('resCardLow').style.display='none';return;}"
-"var st={p:d.pre_w||0};"
-"document.getElementById('resTitleLow').innerHTML="
-"'\\u2B07 Bottom '+res.length+' (lowest Z*)';"
-"renderRunTable('resHeadLow','resBodyLow',res,isEuro,d,st);"
-"document.getElementById('resCardLow').style.display='block';"
-"}"
+/* Bottom-5 is built by renderExtremeTables() now (D78), not a separate pass. */
 /* Full pass is the record (never re-measured). Summary is a secondary link. */
 "function doSave(){window.location='/results.csv?all=1';}"
 "</script></body></html>";
@@ -1693,6 +1727,43 @@ static esp_err_t loops_handler(httpd_req_t *req)
             send_chunk(req, buf, len, sizeof(buf));
         }
         httpd_resp_send_chunk(req, "]}", 2);
+    }
+    httpd_resp_send_chunk(req, "]}", 2);
+    httpd_resp_send_chunk(req, NULL, 0);
+    return ESP_OK;
+}
+
+/* ── /extremes GET — the ~100 most extreme ranked items by |Z*| (D78) ──────
+ * Same row shape as top/low (emit_run), so the page reuses renderRunTable and
+ * sorts them client-side. Streamed and on its OWN fetch, not folded into
+ * /status: 100 rows outgrow the 8 KB /status buffer, and /status is polled
+ * once a second by everything — this is pulled only while the results tables
+ * are on screen. Live: results_extremes() rebuilds the set from the current
+ * prefix on every call, so a newly measured item enters it by |Z*| exactly as
+ * the compaction survivors do. The 100-row scratch lives in PSRAM (internal
+ * RAM is full — a few KB of .bss fails the link); on a PSRAM shortfall it
+ * answers an empty set rather than a fault. */
+#define EXTREMES_MAX 100
+static esp_err_t extremes_handler(httpd_req_t *req)
+{
+    static RunResult *ex;   /* httpd serialises handlers, so one shared buffer */
+    if (!ex)
+        ex = heap_caps_malloc((size_t)EXTREMES_MAX * sizeof(RunResult),
+                              MALLOC_CAP_SPIRAM);
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+
+    int n = ex ? results_extremes(ex, EXTREMES_MAX) : 0;
+    bool euro = (g_status.mode == MODE_EUROJACKPOT);
+
+    char buf[256];
+    int len = snprintf(buf, sizeof(buf), "{\"n\":%d,\"extremes\":[", n);
+    send_chunk(req, buf, len, sizeof(buf));
+    for (int i = 0; i < n; i++) {
+        if (i) httpd_resp_send_chunk(req, ",", 1);
+        len = emit_run(buf, sizeof(buf), &ex[i], euro);
+        send_chunk(req, buf, len, sizeof(buf));
     }
     httpd_resp_send_chunk(req, "]}", 2);
     httpd_resp_send_chunk(req, NULL, 0);
@@ -2765,11 +2836,11 @@ static bool origin_ok(httpd_req_t *req)
 static void start_webserver(void)
 {
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
-    /* 17 here + 5 registered by elotto_ota = 22 against a cap of 24. Keep
+    /* 18 here + 5 registered by elotto_ota = 23 against a cap of 25. Keep
      * headroom: registration past this limit fails, and the return value is not
      * checked at either call site, so an endpoint would simply 404 with nothing
      * logged. Count them when adding one, and raise the cap before it bites. */
-    cfg.max_uri_handlers  = 24;   /* 17 here + 5 from elotto_ota = 22 */
+    cfg.max_uri_handlers  = 25;   /* 18 here + 5 from elotto_ota = 23 */
     cfg.stack_size        = 8192;
     cfg.recv_wait_timeout = 20;   /* /update streams a ~700 KB body */
     cfg.send_wait_timeout = 20;
@@ -2784,6 +2855,7 @@ static void start_webserver(void)
         {"/diag",     HTTP_GET, diag_handler,     NULL},
         {"/diagjson", HTTP_GET, diagjson_handler, NULL},
         {"/loops",  HTTP_GET,  loops_handler,  NULL},
+        {"/extremes", HTTP_GET, extremes_handler, NULL},
         {"/results.csv", HTTP_GET, results_csv_handler, NULL},
         {"/focus",  HTTP_GET,  focus_handler,  NULL},
         {"/pause",  HTTP_POST, pause_handler,  NULL},

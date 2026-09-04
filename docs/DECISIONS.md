@@ -1281,3 +1281,30 @@ about half of `ranked` under H₀ — the expected picture, not a fault.
 
 **Pooling:** ⚠ splits the TABLES and, at `pre_w` > 0, **the chosen POOL**. `zc_ctr` before this
 date is a different statistic; `z_raw` / `z_ctr` pool across the boundary.
+
+### D78 — Sortable Top/Bottom over the 100 extremes (2026-09-04)
+**Entscheidung:** The results screen's Top-5 and Bottom-5 tables are the two ends of the ~100 most
+extreme measured items by `|Z*|`. Clicking a column header (`Z*`, `Z`, `Conc`, `Δn`) sorts that set
+by the column: the Top table shows the leading end, the Bottom table the trailing end. A second
+click on the same header flips direction (largest-first ↔ smallest-first), shown by an arrow (▾/▴,
+and ⇅ on the inactive sortable headers). Newly measured items enter the set by `|Z*|` exactly as
+before; the sort only reorders the view.
+
+**Transport.** A new streamed endpoint `GET /extremes` emits the set as JSON in the same row shape
+as `top`/`low` (`emit_run`), and the page sorts client-side. NOT folded into `/status`: 100 rows
+(~15 KB) overflow that handler's 8 KB buffer, and `/status` is polled once a second by everything —
+`/extremes` is fetched only while the results tables are on screen. `results_extremes()` in sensor.c
+rebuilds the set from the current prefix under the archive lock on every call (O(n·100), once per
+poll), gated to `result_ranked && result_centred` so an uncentred open-block item with its raw node
+offsets can never appear. The 100-row scratch is one lazily-allocated PSRAM buffer, not `.bss`
+(internal RAM is full — a few KB more fails the link); a PSRAM shortfall answers an empty set.
+
+⛔ **The sort is a view, not a ranking rule.** It never changes which 100 are held, how an item
+enters the set, or the pool. `Δn` gains a sort but remains what D70 says it is — a confidence figure
+that ranks and excludes nothing; a missing `Δn` (a solo item) sinks to the end of a `Δn` sort.
+
+Handler count: 18 in elotto.c + 5 from elotto_ota = 23; `max_uri_handlers` raised 24 → 25 to keep
+headroom (registration past the cap 404s silently, return unchecked).
+
+**Pooling:** no effect on data. Display only; `z_raw`/`z_ctr`/`zc_ctr` and every statistic are
+untouched.
