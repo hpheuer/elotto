@@ -70,8 +70,8 @@ across rounds a combination can recur — identity is **(round, index)**.
   `[D2]``[D51]`.
 - **`results[]` is in MEASUREMENT order** (`.index` = combination id, `.block` stamped), so the
   prefix is always complete: aborts need no compaction, `GET /results.csv?all=1` streams live
-  mid-session. ⚠ RAM only — pull it periodically over a long pass; a master reboot loses
-  unrepeatable measurements. ⚠ Bare `/results.csv` is the 15-row summary, **not** the record.
+  mid-session. ⚠ RAM only — a master reboot loses unrepeatable measurements. ⚠ Bare
+  `/results.csv` is the 15-row summary, **not** the record.
 - **Blocks are the statistics unit, and ONE BLOCK IS ONE ROUND** `[D76]`. The round boundary is the
   only block boundary: the pass parks there → `/loops` row, drift point, pairwise close, block
   centring, then the camera sweep before the next round scores. ⛔ There is no wall-clock trigger and
