@@ -1308,3 +1308,11 @@ headroom (registration past the cap 404s silently, return unchecked).
 
 **Pooling:** no effect on data. Display only; `z_raw`/`z_ctr`/`zc_ctr` and every statistic are
 untouched.
+
+### D78a — One sortable Top-10 table; Δn shows its node count (2026-09-05)
+Refinement of D78. The Bottom-5 table is removed: since the column headers sort, the low end is
+reached by clicking a header a second time (direction flip), so a second table is redundant. The
+results screen now shows ONE table — the leading 10 of the active sort over the ~100 most extreme
+items by |Z*|. `Δn` now prints the node count it is taken over in parentheses (`0,79 (3)` = three
+cameras, i.e. `k`, the combine size); a dash carries no count. The /extremes set stays at 100 (PSRAM,
+not internal RAM — RAM is not the constraint); trim EXTREMES_MAX if a future change needs it.

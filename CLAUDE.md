@@ -194,17 +194,17 @@ what remains visible is an effect varying **between items inside a block**.
 - **Two rows of four stat cards; the split is load-bearing**: top row round-relative in every
   figure, bottom row session-relative in every figure. ⚠ The bottom row is unlimited mode only —
   in a single pass it would repeat the row above it.
-- **Two tables of five**: Top-5, Bottom-5, item counter +
-  block badge, Save CSV. Columns: `Z*` (key in that item's block-σ units `[D68]`), `Z`, `Conc`,
-  `Δn`.
-  ⚠ **The two tables are the two ends of the ~100 most extreme items by `|Z*|`, and a column
-  header sorts that set** `[D78]`. `GET /extremes` (streamed JSON, `emit_run` row shape, its own
-  poll — 100 rows do not fit the 8 KB `/status` buffer) carries them; the page sorts client-side.
-  Click `Z*`/`Z`/`Conc`/`Δn` → Top shows the leading end, Bottom the trailing end; a second click
-  on the same header flips direction (arrow ▾/▴, ⇅ on the inactive ones). ⛔ Items still ENTER the
-  set by `|Z*|` only — the sort reorders the view, never the held 100 or the pool `[D78]`. A missing
-  `Δn` (solo item) sinks to the bottom of a `Δn` sort. Until the first `/extremes` reply lands the
-  tables fall back to `/status` `top`/`low`.
+- **One sortable table of ten**: Top-10, item counter + block badge, Save CSV. Columns: `Z*` (key
+  in that item's block-σ units `[D68]`), `Z`, `Conc`, `Δn`.
+  ⚠ **The table is the leading 10 of the ~100 most extreme items by `|Z*|`, sorted by whichever
+  column header was clicked** `[D78]`. `GET /extremes` (streamed JSON, `emit_run` row shape, its own
+  poll — 100 rows do not fit the 8 KB `/status` buffer) carries the set; the page sorts client-side
+  and shows the top 10 of the active sort. Click `Z*`/`Z`/`Conc`/`Δn` to sort; a second click on the
+  same header flips direction (arrow ▾/▴, ⇅ on the inactive ones), so the low end is one click away —
+  which is why the old Bottom-5 table is gone. ⛔ Items still ENTER the set by `|Z*|` only — the sort
+  reorders the view, never the held 100 or the pool `[D78]`. A missing `Δn` (solo item) sinks to the
+  bottom of a `Δn` sort. `Δn` prints the node count it is taken over in parentheses — `0,79 (3)` is
+  three cameras. Until the first `/extremes` reply lands the table falls back to `/status` `top`.
   **`Δn` is node agreement** `[D70]`: σ across the contributing nodes of their block-centred z,
   each node divided by ITS OWN σ over that block. Small = the cameras moved together on this
   item; **≈ 1 is what independent nodes give**, so read it against 1, not against 0.
