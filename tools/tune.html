@@ -59,7 +59,7 @@
 <div class="legend">
   <b>Ampel (aus dem <code>/linearity</code>-Sweep, exp 32/64/128/256):</b><br>
   <b>ratio</b> — Verdopplung von mean_px pro Belichtungsverdopplung; stetiges Licht → ≈ 2,0. Am Dunkelende (kurze Rungs) normalerweise unter 2 — das ist kein Fehler; nur ein niedriger Wert an der längsten Rung (unter 1,7) zählt.<br>
-  <b>raw σ</b> — Kamerarauschen pro Rung; gesund ≈ 1,0 und flach. Ein Ausschlag (v. a. bei exp 256) = Dunkelstrom/RTS im Sensor. Das ist der stärkste Indikator, zusammen mit ac1.<br>
+  <b>raw σ</b> — Kamerarauschen pro Rung; gesund ≈ 1,0 und flach. Ein Ausschlag bei ausreichend Licht (v. a. bei exp 256) = Dunkelstrom/RTS im Sensor. An dunklen kurzen Rungs (mean_px unter 10) wird raw σ NICHT gewertet — dort ist es normal und der Sweep verwirft die Rung. raw σ und ac1 sind die stärksten Indikatoren.<br>
   <b>ac1</b> — Autokorrelation; Nullwert ≈ 0. Über 0,005 = zeitlich strukturierte Störung.<br>
   <b>mean_px</b> — Helligkeit; unter 5 zu dunkel.<br>
   ⚠ raw σ und Bias sind pro Node nicht-stationär — die Ampel urteilt bewusst über den ganzen Sweep, nicht über einen Einzelwert (D46/D59). Beobachte den Trend über mehrere Sweeps, nicht einen einzelnen.
@@ -113,10 +113,17 @@ function judge(steps){
   const bump = (lvl)=>{ if(lvl>worst) worst=lvl; };
   const lowest = steps[0];
   const top = steps[steps.length-1];
+  // Below LIT is the dark end: raw σ degrades there by construction (D18) and
+  // the sweep's relative σ gate rejects such a rung, so it is not a fault.
+  // ac1, being a dimensionless temporal correlation, is judged on every rung —
+  // it is the fingerprint that separates a real disturbance from dark noise.
+  const LIT = 10;
   if (lowest && lowest.mean_px < 5){ bump(1); reasons.push('mean_px '+lowest.mean_px.toFixed(1)+' @ exp'+lowest.exposure+' — zu dunkel'); }
   for (const s of steps){
-    if (s.raw_sigma > 1.6){ bump(2); reasons.push('raw σ '+s.raw_sigma.toFixed(2)+' @ exp'+s.exposure+' — RTS/Dunkelstrom'); }
-    else if (s.raw_sigma > 1.4){ bump(1); reasons.push('raw σ '+s.raw_sigma.toFixed(2)+' @ exp'+s.exposure); }
+    if (s.mean_px >= LIT){
+      if (s.raw_sigma > 1.6){ bump(2); reasons.push('raw σ '+s.raw_sigma.toFixed(2)+' @ exp'+s.exposure+' — RTS/Dunkelstrom'); }
+      else if (s.raw_sigma > 1.4){ bump(1); reasons.push('raw σ '+s.raw_sigma.toFixed(2)+' @ exp'+s.exposure); }
+    }
     if (Math.abs(s.ac1) > 0.008){ bump(2); reasons.push('ac1 '+s.ac1.toFixed(4)+' @ exp'+s.exposure+' — Störung'); }
     else if (Math.abs(s.ac1) > 0.005){ bump(1); reasons.push('ac1 '+s.ac1.toFixed(4)+' @ exp'+s.exposure); }
   }
@@ -131,7 +138,7 @@ function renderTable(name, steps){
   let h = '<table><tr><th>exp</th><th>mean_px</th><th>ratio</th><th>raw σ</th><th>ac1</th></tr>';
   const last = steps[steps.length-1];
   for (const s of steps){
-    const sigFlag = s.raw_sigma > 1.4 ? ' class="flag"' : '';
+    const sigFlag = (s.mean_px >= 10 && s.raw_sigma > 1.4) ? ' class="flag"' : '';
     const acFlag  = Math.abs(s.ac1) > 0.005 ? ' class="flag"' : '';
     const rFlag   = (s===last && s.ratio>0 && s.ratio<1.7) ? ' class="flag"' : '';
     h += '<tr><td>'+s.exposure+'</td><td>'+s.mean_px.toFixed(1)+'</td>'+
