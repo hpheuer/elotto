@@ -58,8 +58,8 @@
 
 <div class="legend">
   <b>Ampel (aus dem <code>/linearity</code>-Sweep, exp 32/64/128/256):</b><br>
-  <b>ratio</b> — Verdopplung von mean_px pro Belichtungsverdopplung; stetiges Licht → ≈ 2,0. Unter 1,85 = unterlinear (Flackern oder Dunkelende).<br>
-  <b>raw σ</b> — Kamerarauschen pro Rung; gesund ≈ 1,0 und flach. Ein Ausschlag (v. a. bei exp 256) = Dunkelstrom/RTS im Sensor.<br>
+  <b>ratio</b> — Verdopplung von mean_px pro Belichtungsverdopplung; stetiges Licht → ≈ 2,0. Am Dunkelende (kurze Rungs) normalerweise unter 2 — das ist kein Fehler; nur ein niedriger Wert an der längsten Rung (unter 1,7) zählt.<br>
+  <b>raw σ</b> — Kamerarauschen pro Rung; gesund ≈ 1,0 und flach. Ein Ausschlag (v. a. bei exp 256) = Dunkelstrom/RTS im Sensor. Das ist der stärkste Indikator, zusammen mit ac1.<br>
   <b>ac1</b> — Autokorrelation; Nullwert ≈ 0. Über 0,005 = zeitlich strukturierte Störung.<br>
   <b>mean_px</b> — Helligkeit; unter 5 zu dunkel.<br>
   ⚠ raw σ und Bias sind pro Node nicht-stationär — die Ampel urteilt bewusst über den ganzen Sweep, nicht über einen Einzelwert (D46/D59). Beobachte den Trend über mehrere Sweeps, nicht einen einzelnen.
