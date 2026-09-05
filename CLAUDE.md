@@ -196,9 +196,10 @@ what remains visible is an effect varying **between items inside a block**.
   in a single pass it would repeat the row above it.
 - **One sortable table of ten**: Top-10, item counter + block badge, Save CSV. Columns: `Z*` (key
   in that item's block-σ units `[D68]`), `Z`, `Conc`, `Δn`.
-  ⚠ **The table is the leading 10 of the ~100 most extreme items by `|Z*|`, sorted by whichever
-  column header was clicked** `[D78]`. `GET /extremes` (streamed JSON, `emit_run` row shape, its own
-  poll — 100 rows do not fit the 8 KB `/status` buffer) carries the set; the page sorts client-side
+  ⚠ **The table is the leading 10 of the ~50 most extreme items by `|Z*|`, sorted by whichever
+  column header was clicked** `[D78]``[D78b]`. `GET /extremes` (streamed JSON, `emit_run` row shape,
+  polled every **5 s** — it is a ~15 KB scan on the master's HTTP task, which shares the consumer
+  core, so a 1 s poll stole the master's extraction CPU `[D78b]`) carries the set; the page sorts client-side
   and shows the top 10 of the active sort. Click `Z*`/`Z`/`Conc`/`Δn` to sort; a second click on the
   same header flips direction (arrow ▾/▴, ⇅ on the inactive ones), so the low end is one click away —
   which is why the old Bottom-5 table is gone. ⛔ Items still ENTER the set by `|Z*|` only — the sort

@@ -1032,8 +1032,8 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "var c=(H.cons>0)?H.cons:(N.cam_cons_mbit>0?N.cam_cons_mbit:0);"
 "return c>0?'bits consumed per second of reading'"
 ":'no consumption rate reported — extraction rate shown in brackets';}"
-/* ── Sortable Top/Bottom over the 100 extremes (D78) ──────────────────────
-   The two tables are the two ends of the /extremes set (the ~100 most extreme
+/* ── Sortable Top-10 over the extremes set (D78, D78a, D78b) ──────────────
+   The table is the leading 10 of the /extremes set (the ~50 most extreme
    items by |Z*|). A click on a stat header sorts that set by the column; the
    Top table shows the leading end, the Bottom table the trailing one. A second
    click on the same header flips the direction (largest-first <-> smallest-
@@ -1052,7 +1052,16 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "function exArrow(k){if(SORTK!==k)return ' <span style=\"color:#667\">\\u21c5</span>';"
 "return SORTD<0?' \\u25be':' \\u25b4';}"
 "function sortBy(k){if(SORTK===k)SORTD=-SORTD;else{SORTK=k;SORTD=-1;}renderExtremeTables();}"
+/* Throttled to 5 s (D78b): /extremes is a ~15 KB streamed scan served on the
+   MASTER's HTTP task, which shares the consumer core with the GCP consumer
+   (D61) — fetching it every 1 s stole extraction CPU from the master alone and
+   lowered its mbit/s. Between fetches the cached list is re-rendered, and sort
+   clicks run on the cache, so the table stays live at a fraction of the load. */
+"var lastEx=0;"
 "function fetchExtremes(){"
+"var now=Date.now();"
+"if(now-lastEx<5000){renderExtremeTables();return;}"
+"lastEx=now;"
 "fetch('/extremes').then(function(r){return r.json();}).then(function(x){"
 "EX=(x&&x.extremes)?x.extremes:[];renderExtremeTables();}).catch(function(){});}"
 "function renderExtremeTables(){"
@@ -1726,7 +1735,7 @@ static esp_err_t loops_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* ── /extremes GET — the ~100 most extreme ranked items by |Z*| (D78) ──────
+/* ── /extremes GET — the ~50 most extreme ranked items by |Z*| (D78/D78b) ──
  * Same row shape as top/low (emit_run), so the page reuses renderRunTable and
  * sorts them client-side. Streamed and on its OWN fetch, not folded into
  * /status: 100 rows outgrow the 8 KB /status buffer, and /status is polled
@@ -1736,7 +1745,10 @@ static esp_err_t loops_handler(httpd_req_t *req)
  * the compaction survivors do. The 100-row scratch lives in PSRAM (internal
  * RAM is full — a few KB of .bss fails the link); on a PSRAM shortfall it
  * answers an empty set rather than a fault. */
-#define EXTREMES_MAX 100
+#define EXTREMES_MAX 50   /* display pool for the Top-10 table (D78b: 100 -> 50,
+                             halves the per-poll scan/serialize on the master).
+                             The compaction archive (PASS_KEEP_EXTREME) is
+                             separate and stays at 100. */
 static esp_err_t extremes_handler(httpd_req_t *req)
 {
     static RunResult *ex;   /* httpd serialises handlers, so one shared buffer */

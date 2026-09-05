@@ -1316,3 +1316,22 @@ results screen now shows ONE table — the leading 10 of the active sort over th
 items by |Z*|. `Δn` now prints the node count it is taken over in parentheses (`0,79 (3)` = three
 cameras, i.e. `k`, the combine size); a dash carries no count. The /extremes set stays at 100 (PSRAM,
 not internal RAM — RAM is not the constraint); trim EXTREMES_MAX if a future change needs it.
+
+### D78b — /extremes throttled to 5 s and the display pool cut to 50 (2026-09-05)
+The results page fetched `/extremes` on every 1 s poll. That endpoint scans the held rows
+(O(n·pool)), serialises ~15 KB and streams it, all on the MASTER's HTTP task — which shares the
+consumer core with the GCP consumer (D61). So it stole extraction CPU from the master ALONE and
+lowered its `consume_mbit_s` (and plausibly widened its per-block σ, feeding the master's soft-down
+oscillation), a regression against the pre-D78 software where the per-second poll was only `/status`.
+
+Two cuts: the page now re-fetches `/extremes` at most every **5 s** (cached list re-rendered in
+between; sort clicks run on the cache), and `EXTREMES_MAX` drops **100 → 50** (halves the scan and
+the serialised payload). Together ~10× less master load. The display pool of 50 is ample for a
+Top-10 sorted by any column. ⛔ `PASS_KEEP_EXTREME` (the compaction archive) is SEPARATE and stays
+100 — it is the offline record, not a per-second cost.
+
+⚠ Not the PSRAM archives: where bytes live (PSRAM vs internal RAM) does not change throughput. The
+cost was the per-second compute+stream on the master's shared core, nothing about D77's half-window
+arrays. The live pass stats (mean/σ/χ²/Stouffer/pre_n/pairwise) are cheap — µs over the ~180 held
+rows against a ~5 s window — and stay live; deferring them would save nothing and lose the
+intermediate-results view.
