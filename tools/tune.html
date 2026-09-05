@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>elotto — Node-Justage</title>
+<style>
+  :root{
+    --bg:#f6f5f1; --card:#fff; --ink:#1a1a19; --mut:#6b6a64; --line:#d9d7cf;
+    --green:#1d9e75; --greenbg:#e1f5ee; --amber:#ba7517; --amberbg:#faeeda;
+    --red:#c0392b; --redbg:#fbeaea; --gray:#888780; --graybg:#efeee9;
+  }
+  @media (prefers-color-scheme:dark){:root{
+    --bg:#191817; --card:#242320; --ink:#f0efec; --mut:#a8a69c; --line:#38362f;
+    --greenbg:#0f3a2c; --amberbg:#3a2a0c; --redbg:#3a1614; --graybg:#2c2b27;
+  }}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 system-ui,Segoe UI,Roboto,sans-serif;padding:16px}
+  h1{font-size:18px;font-weight:600;margin:0 0 2px}
+  .sub{color:var(--mut);font-size:13px;margin:0 0 14px}
+  .bar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:14px}
+  .bar label{font-size:13px;color:var(--mut)}
+  button{font:inherit;padding:7px 14px;border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:8px;cursor:pointer}
+  button:hover{border-color:var(--mut)}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px}
+  .head{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+  .name{font-weight:600;font-size:15px}
+  .ip{color:var(--mut);font-size:12px;font-weight:400}
+  .lamp{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;font-size:12px;font-weight:600}
+  .dot{width:10px;height:10px;border-radius:50%}
+  .g{background:var(--greenbg);color:var(--green)} .g .dot{background:var(--green)}
+  .a{background:var(--amberbg);color:var(--amber)} .a .dot{background:var(--amber)}
+  .r{background:var(--redbg);color:var(--red)} .r .dot{background:var(--red)}
+  .n{background:var(--graybg);color:var(--gray)} .n .dot{background:var(--gray)}
+  .reason{font-size:12.5px;color:var(--mut);margin:2px 0 10px;min-height:16px}
+  table{width:100%;border-collapse:collapse;font-size:12.5px}
+  th,td{text-align:right;padding:3px 6px;border-bottom:1px solid var(--line)}
+  th:first-child,td:first-child{text-align:left}
+  th{color:var(--mut);font-weight:500}
+  td.flag{color:var(--red);font-weight:600}
+  .live{display:flex;gap:14px;flex-wrap:wrap;font-size:12.5px;color:var(--mut);margin-top:8px}
+  .live b{color:var(--ink);font-weight:600}
+  .ts{color:var(--mut);font-size:11.5px}
+  .legend{font-size:12px;color:var(--mut);margin-top:16px;line-height:1.7}
+  code{background:var(--graybg);padding:1px 5px;border-radius:4px}
+</style>
+</head>
+<body>
+<h1>elotto — Node-Justage</h1>
+<p class="sub">Live-Feedback beim physischen Einstellen von Licht und Optik. Grün = der Sweep sieht ein stetiges, gesundes Bild. Nur im Leerlauf (keine laufende Session) nutzbar.</p>
+<div class="bar">
+  <button id="sweep">Jetzt sweepen</button>
+  <label><input type="checkbox" id="auto" checked> automatisch alle <span id="ivs">15</span> s</label>
+  <span id="status" class="ts"></span>
+</div>
+<div class="grid" id="grid"></div>
+
+<div class="legend">
+  <b>Ampel (aus dem <code>/linearity</code>-Sweep, exp 32/64/128/256):</b><br>
+  <b>ratio</b> — Verdopplung von mean_px pro Belichtungsverdopplung; stetiges Licht → ≈ 2,0. Unter 1,85 = unterlinear (Flackern oder Dunkelende).<br>
+  <b>raw σ</b> — Kamerarauschen pro Rung; gesund ≈ 1,0 und flach. Ein Ausschlag (v. a. bei exp 256) = Dunkelstrom/RTS im Sensor.<br>
+  <b>ac1</b> — Autokorrelation; Nullwert ≈ 0. Über 0,005 = zeitlich strukturierte Störung.<br>
+  <b>mean_px</b> — Helligkeit; unter 5 zu dunkel.<br>
+  ⚠ raw σ und Bias sind pro Node nicht-stationär — die Ampel urteilt bewusst über den ganzen Sweep, nicht über einen Einzelwert (D46/D59). Beobachte den Trend über mehrere Sweeps, nicht einen einzelnen.
+</div>
+
+<script>
+// Node-Adressen — bei Bedarf anpassen.
+const NODES = [
+  {name:"master", ip:"192.168.178.100"},
+  {name:"slave0", ip:"192.168.178.103"},
+  {name:"slave1", ip:"192.168.178.145"},
+  {name:"slave2", ip:"192.168.178.155"},
+];
+const INTERVAL_S = 15;
+document.getElementById('ivs').textContent = INTERVAL_S;
+
+const grid = document.getElementById('grid');
+const cards = {};
+for (const n of NODES){
+  const el = document.createElement('div');
+  el.className = 'card';
+  el.innerHTML =
+    '<div class="head"><div><span class="name">'+n.name+'</span> '+
+    '<span class="ip">'+n.ip+'</span></div>'+
+    '<span class="lamp n" id="lamp-'+n.name+'"><span class="dot"></span><span>—</span></span></div>'+
+    '<div class="reason" id="reason-'+n.name+'"></div>'+
+    '<div id="tbl-'+n.name+'"></div>'+
+    '<div class="live" id="live-'+n.name+'"></div>'+
+    '<div class="ts" id="ts-'+n.name+'"></div>';
+  grid.appendChild(el);
+  cards[n.name] = el;
+}
+
+function setLamp(name, cls, text){
+  const l = document.getElementById('lamp-'+name);
+  l.className = 'lamp '+cls;
+  l.lastElementChild.textContent = text;
+}
+
+// Verdict from a /linearity result. Returns {cls, text, reasons[]}.
+//
+// The strong, honest signals are raw σ and ac1 — a σ spike at the LONG
+// exposure plus temporal correlation (ac1) is the RTS/dark-current fingerprint
+// we traced to the master and slave2 modules. ratio is only weakly informative:
+// near the dark floor mean_px doubles SUB-linearly by construction (a fixed
+// offset over a small signal), so a low ratio at exp32/64 is normal and must
+// NOT turn a node red — only a low ratio at the LONGEST rung is worth an amber.
+function judge(steps){
+  const reasons = [];
+  let worst = 0; // 0 ok, 1 amber, 2 red
+  const bump = (lvl)=>{ if(lvl>worst) worst=lvl; };
+  const lowest = steps[0];
+  const top = steps[steps.length-1];
+  if (lowest && lowest.mean_px < 5){ bump(1); reasons.push('mean_px '+lowest.mean_px.toFixed(1)+' @ exp'+lowest.exposure+' — zu dunkel'); }
+  for (const s of steps){
+    if (s.raw_sigma > 1.6){ bump(2); reasons.push('raw σ '+s.raw_sigma.toFixed(2)+' @ exp'+s.exposure+' — RTS/Dunkelstrom'); }
+    else if (s.raw_sigma > 1.4){ bump(1); reasons.push('raw σ '+s.raw_sigma.toFixed(2)+' @ exp'+s.exposure); }
+    if (Math.abs(s.ac1) > 0.008){ bump(2); reasons.push('ac1 '+s.ac1.toFixed(4)+' @ exp'+s.exposure+' — Störung'); }
+    else if (Math.abs(s.ac1) > 0.005){ bump(1); reasons.push('ac1 '+s.ac1.toFixed(4)+' @ exp'+s.exposure); }
+  }
+  // ratio only at the longest rung, amber only (dark-end sub-doubling is normal).
+  if (top && top.ratio > 0 && top.ratio < 1.7){ bump(1); reasons.push('ratio '+top.ratio.toFixed(2)+' @ exp'+top.exposure+' — unterlinear'); }
+  if (worst===0) return {cls:'g', text:'optimal', reasons:['stetig, rauscharm, linear']};
+  if (worst===1) return {cls:'a', text:'grenzwertig', reasons};
+  return {cls:'r', text:'nicht ok', reasons};
+}
+
+function renderTable(name, steps){
+  let h = '<table><tr><th>exp</th><th>mean_px</th><th>ratio</th><th>raw σ</th><th>ac1</th></tr>';
+  const last = steps[steps.length-1];
+  for (const s of steps){
+    const sigFlag = s.raw_sigma > 1.4 ? ' class="flag"' : '';
+    const acFlag  = Math.abs(s.ac1) > 0.005 ? ' class="flag"' : '';
+    const rFlag   = (s===last && s.ratio>0 && s.ratio<1.7) ? ' class="flag"' : '';
+    h += '<tr><td>'+s.exposure+'</td><td>'+s.mean_px.toFixed(1)+'</td>'+
+         '<td'+rFlag+'>'+(s.ratio>0?s.ratio.toFixed(2):'—')+'</td>'+
+         '<td'+sigFlag+'>'+s.raw_sigma.toFixed(3)+'</td>'+
+         '<td'+acFlag+'>'+s.ac1.toFixed(4)+'</td></tr>';
+  }
+  h += '</table>';
+  document.getElementById('tbl-'+name).innerHTML = h;
+}
+
+async function sweepNode(n){
+  try{
+    const r = await fetch('http://'+n.ip+'/linearity', {cache:'no-store'});
+    if (r.status === 409){ setLamp(n.name,'n','Session läuft'); document.getElementById('reason-'+n.name).textContent='Sensor gesperrt — Session zuerst beenden.'; return; }
+    if (!r.ok) throw new Error('HTTP '+r.status);
+    const d = await r.json();
+    const steps = d.steps||[];
+    renderTable(n.name, steps);
+    const v = judge(steps);
+    setLamp(n.name, v.cls, v.text);
+    document.getElementById('reason-'+n.name).textContent = v.reasons.join(' · ');
+    document.getElementById('ts-'+n.name).textContent = 'Sweep '+new Date().toLocaleTimeString()+' · gain '+d.gain+' · zurückgesetzt auf exp '+d.restored_exposure;
+  }catch(e){
+    setLamp(n.name,'n','offline');
+    document.getElementById('reason-'+n.name).textContent = 'nicht erreichbar: '+e.message;
+  }
+}
+
+// Fast live strip (raw σ / bias now) from the master's aggregated collector.
+async function liveStrip(){
+  try{
+    const r = await fetch('http://'+NODES[0].ip+'/diagjson?all=1',{cache:'no-store'});
+    if(!r.ok) return;
+    const d = await r.json();
+    const byName = {}; byName[NODES[0].ip]='master';
+    for(const n of NODES) byName[n.ip]=n.name;
+    for(const nd of (d.nodes||[])){
+      const nm = nd.ip==='master' ? 'master' : (byName[nd.ip]||nd.ip);
+      const el = document.getElementById('live-'+nm);
+      if(!el) continue;
+      const db = Math.abs((nd.bias!=null?nd.bias:0.5)-0.5);
+      el.innerHTML = 'jetzt: exp <b>'+nd.exposure+'</b> · raw σ <b>'+(nd.raw_sigma!=null?nd.raw_sigma.toFixed(3):'—')+
+        '</b> · |bias−0,5| <b>'+db.toFixed(4)+'</b>';
+    }
+  }catch(e){/* ignore */}
+}
+
+let busy=false;
+async function sweepAll(){
+  if(busy) return; busy=true;
+  document.getElementById('status').textContent='sweepe …';
+  await Promise.all(NODES.map(sweepNode));
+  document.getElementById('status').textContent='fertig '+new Date().toLocaleTimeString();
+  busy=false;
+}
+
+document.getElementById('sweep').onclick = sweepAll;
+
+let timer=null;
+function reschedule(){
+  if(timer){ clearInterval(timer); timer=null; }
+  if(document.getElementById('auto').checked){
+    timer = setInterval(()=>{ sweepAll(); }, INTERVAL_S*1000);
+  }
+}
+document.getElementById('auto').onchange = reschedule;
+
+setInterval(liveStrip, 1500);
+liveStrip();
+sweepAll();
+reschedule();
+</script>
+</body>
+</html>
