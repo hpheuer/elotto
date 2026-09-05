@@ -190,8 +190,14 @@ async function liveStrip(){
 let busy=false;
 async function sweepAll(){
   if(busy) return; busy=true;
-  document.getElementById('status').textContent='sweepe …';
-  await Promise.all(NODES.map(sweepNode));
+  // Sequential, NOT parallel: a /linearity locks the sensor and ladders for
+  // ~5 s, and hitting all four at once transiently wedged the master's
+  // webserver (it pings but refuses port 80 until it recovers — the D40 state).
+  // One node at a time keeps every node reachable throughout.
+  for (const n of NODES){
+    document.getElementById('status').textContent='sweepe '+n.name+' …';
+    await sweepNode(n);
+  }
   document.getElementById('status').textContent='fertig '+new Date().toLocaleTimeString();
   busy=false;
 }
