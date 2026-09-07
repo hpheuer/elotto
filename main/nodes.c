@@ -91,17 +91,14 @@ void node_camera_failed(int node, const char *why)
  * writes — the one difference that matters physically, since the premise is
  * that all nodes integrate the *same* window.
  *
- * The command semantics are byte-for-byte the ones the UART link carried
- * ('P'/'B'/'M'/'D'/'A' and their 'OK' / 'Z:' / 'D:' answers). Nothing above
- * this block changed, which is what makes Phase C a controlled A/B: if pair_r
- * or sigma move against the UART-era numbers, the transport moved them.
- *
- * Loss is handled explicitly, never assumed away (Risk 3). See elotto_link.h
- * for why every frame carries the sequence number it answers.
+ * Commands: 'P' discovery, 'M<seg>' measure, 'K<ms>,<segs>' calibrate,
+ * 'D' diagnostics, 'A' abort, 'R' reboot. Replies 'OK' / 'Z:' / 'D:' / 'E:' /
+ * 'V:'. Loss is handled explicitly, never assumed away (Risk 3). See
+ * elotto_link.h for why every frame carries the sequence number it answers.
  * ─────────────────────────────────────────────────────────────────── */
 #define LINK_PROBE_TRIES   4      // discovery broadcasts before declaring solo
 #define LINK_PROBE_MS    600
-#define LINK_MEAS_MS    4000      // a run is ~1 s, so this is generous headroom
+#define LINK_MEAS_MS    4000      // leftover floor; live wait is LINK_MEAS_MS_FOR(nseg)
 #define LINK_DIAG_MS    1500
 
 /* Slack added on top of a phase's own expected duration before its ack wait
@@ -404,7 +401,7 @@ void nodes_discover(void)
     printf(")\n");
 }
 
-/* ── Per-loop camera calibration (docs/PLAN.md Task 1) ────────────────────
+/* ── Round-boundary camera calibration ────────────────────────────────────
  *
  * One broadcast starts every node's sweep at once, the master runs its own in
  * parallel, then waits for every ack. Not pausable: one 'K' sets every slave

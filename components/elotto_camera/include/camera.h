@@ -139,7 +139,7 @@ esp_err_t camera_init(void);
 bool camera_is_ready(void);
 void camera_get_stats(camera_stats_t *out);
 
-/* ── Calibration control (docs/PLAN.md Task 1) ─────────────────────────────
+/* ── Calibration control (exposure sweep) ──────────────────────────────────
  *
  * Everything in camera_stats_t is cumulative since the stream started (or since
  * the last reset). That is why a reset exists at all: to score a candidate

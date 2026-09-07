@@ -32,15 +32,17 @@ do not pool with old `focus=on` archives.
 
 - **Rounds until Abort:** score → measure a cap-sized pool → re-score. No loops, no ranking modes.
 - **Window:** `?run=` 0,5–5 s (default 5); actual wall time is `focus_win_ms` (slowest node).
-- **Blocks** (~15 min): sweep, centre, drift, pairwise, soft-down.
-- **UI:** parameter line from `/status`, Top-5 / Bottom-5 (Z*, Z, Conc), jump board, GCP health line
-  (`pass_σ`, `v_eff`, `|r|√n`), German CSV (`?all=1` = archive).
+- **Blocks:** one round = one block (`?maxruns=`, default 100). Sweep, centre, drift, pairwise,
+  soft-down at the round boundary.
+- **UI:** parameter line from `/status`, one sortable Top-10 (Z*, Z, Conc, Δn), jump board,
+  GCP health line (`pass_σ`, `v_eff`, `|r|√n`), German CSV (`?all=1` = archive).
+- **Illumination:** `tools/tune.html` — live per-node linearity/sweep board (idle only).
 
 ## Screenshots
 
-| Start | Focus | Done |
+| Start | Session | Results |
 |---|---|---|
-| ![start](docs/ui_start.png) | ![focus](docs/ui_focus.png) | ![done](docs/ui_done.png) |
+| ![start](docs/ui_start.png) | ![session](docs/ui_focus.png) | ![results](docs/ui_done.png) |
 
 ## Hardware
 
@@ -77,6 +79,7 @@ After OTA, poll `fw_sha` in `/status` until it **changes**. Fresh board: USB era
 main/            elotto.c (UI/HTTP), sensor.c/h, nodes.c/h, focus.c
 components/      elotto_camera, elotto_gcp, elotto_link, elotto_ota  (shared with slave)
 ota_firmware/    recovery image (factory)
+tools/           tune.html (live illumination board)
 docs/            DECISIONS.md, STATUS.md; PLAN.md / PLAN_HISTORY.md (stubs → git); data/
 ```
 
@@ -86,4 +89,4 @@ Slave repo must sit **next to** this one (`EXTRA_COMPONENT_DIRS=../elotto/compon
 
 | | |
 |---|---|
-| **v3 / D67** | Rounds until Abort; block centring; LSB z + concordance ranking; OTA-only. Contract: `CLAUDE.md`. Never pool with prior-instrument sessions or v2.x. |
+| **v3 / D67** | Rounds until Abort; block = round (D76); LSB z + centred-half concordance (D77); sortable Top-10 (D78). Contract: `CLAUDE.md`. Never pool with prior-instrument sessions or v2.x. |

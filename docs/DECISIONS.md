@@ -978,6 +978,8 @@ dozen runs and correct the pair if the window is not the requested `?run=`.
 no form checkbox. The session is unattended. Scoring numbers and pass combinations still
 appear on the HTML "Now:" card via `GET /focus` (always published, not gated on `focus_mode`).
 Pool confirmation stays on `confirm=1` (UI only). CSV writes `focus=off`. `?focus=` → 400.
+⚠ **Superseded by D73:** the pool-confirmation gate is deleted. `confirm=1` now only authorises
+NVS form prefs.
 
 **Warum:** the operator is not part of the measurement. The card is a live readout, not a
 GCP/PEAR observer protocol.
@@ -1029,7 +1031,8 @@ Pass `z_ctr` is unchanged.
 ### D70 — Node agreement as a column beside Z* (2026-09-01)
 **Entscheidung:** `RunResult.node_sd` — the sample σ across the contributing nodes of their
 block-centred z, each node first divided by **its own σ over that block** — is computed in
-`center_block()` and shown as **Δn** in Top-5 / Bottom-5. NaN (UI: —) until the block is
+`center_block()` and shown as **Δn** in the ranking table (then Top-5 / Bottom-5; since D78a
+one sortable Top-10). NaN (UI: —) until the block is
 centred and whenever fewer than two nodes have a block σ (k < 2, or a node with < 3 runs in
 the block). It **ranks, selects and excludes nothing**; `rank_key()` is untouched.
 
@@ -1204,6 +1207,7 @@ n = 126 (`?run=5`, a full 15-minute block), 14,4 at 208, 23,1 at 535 (`?run=0,5`
 measuring window and the round boundary, both operator-set, and a block ends at whichever of the two
 comes first. Read n off the CSV as ranked rows ÷ blocks; it cannot be derived from `?run=`, because
 the delivered window is set by the slowest node's bit rate (0,5 s asked, 1,17 s delivered).
+⚠ **Superseded by D76:** one block is one round; there is no wall-clock trigger. n is `?maxruns=`.
 
 **2. A channel that cannot rank an item loses its WEIGHT, not just its value.** Both keys mix z and
 concordance and divide by `√((1−p)² + p²)`, p = `?wpre=`. A one-channel value under a two-channel
@@ -1335,3 +1339,17 @@ cost was the per-second compute+stream on the master's shared core, nothing abou
 arrays. The live pass stats (mean/σ/χ²/Stouffer/pre_n/pairwise) are cheap — µs over the ~180 held
 rows against a ~5 s window — and stay live; deferring them would save nothing and lose the
 intermediate-results view.
+
+### D79 — /start is a whitelist; out-of-range session parameters answer 400 (2026-09-07)
+**Entscheidung:** Unknown `POST /start` keys answer **400**. Deleted keys keep their specific
+messages so a v2 script is not misread as a typo. `?gap=`, `?cal=`, `?maxruns=` outside their
+documented range answer **400**, no fallback — same contract as `?run=` and `?wpre=`.
+`maxruns` range is `UNLIM_RUNS_MIN`..`UNLIM_RUNS_MAX` (10..7200). `?score=` must be
+`high|low|abs`. `?unlimited=` omitted or `1`; any other value 400. Omitted keys still
+resolve to the compiled-in defaults. `?mode=` is unchanged (`val[0]=='1'` → 6-of-49).
+
+**Warum:** a silent ignore is the bug class the 409-on-running and the 400 on `loops`/`runs`/`rank`
+existed to prevent — `?wper=0,8` or `?maxruns=5` would run a different experiment than the one
+asked for.
+
+**Pooling:** no effect on data. Starts that would have been ignored now refuse.

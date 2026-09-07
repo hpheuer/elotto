@@ -9,12 +9,12 @@
  * here and nowhere else — two hand-written parsers that disagree about framing
  * would produce a transport bug that looks exactly like a statistics bug.
  *
- * SEGMENT COUNT BOUNDS: the run length travels on the wire (`M<seg>`,
- * `B<runs>,<seg>`) precisely so a node cannot disagree about it, which only
- * holds while both ends accept the same range. The bounds therefore belong to
- * the wire definition, here, and not to one parser each — the master used to
- * carry the upper bound as a bare 200000 in two places and the slave as its own
- * SEG_MAX, three copies that nothing forced to agree.
+ * SEGMENT COUNT BOUNDS: the run length travels on the wire (`M<seg>`)
+ * precisely so a node cannot disagree about it, which only holds while both
+ * ends accept the same range. The bounds therefore belong to the wire
+ * definition, here, and not to one parser each — the master used to carry the
+ * upper bound as a bare 200000 in two places and the slave as its own SEG_MAX,
+ * three copies that nothing forced to agree.
  *
  * ⚠ A value outside this range is NOT clamped by the receiver; see
  * seg_from_cmd() in the slave. Keep the master's ?run= validation inside it.
@@ -25,10 +25,10 @@
 /*
  * FRAME:  "EL1 <seq> <payload>"      (plain ASCII, one command per datagram)
  *
- * The payload is the *unchanged* UART command/reply text — "M", "B100", "D",
- * "A", "P" and the "Z:<z>,<C|T>" / "D:..." / "OK" answers. That is the rule:
- * keep the command semantics, swap only the transport, so the statistics layer
- * needs no changes and the A/B compares like with like.
+ * The payload is the command/reply text — "M<seg>", "K<ms>,<segs>", "D",
+ * "A", "P", "R" and the "Z:<z>[,h1,h2][,wsig=]" / "D:..." / "OK" / "E:" / "V:"
+ * answers. Transport is UDP; the sequence number is the only addition over the
+ * old UART framing.
  *
  * WHY A SEQUENCE NUMBER: the UART link was effectively lossless and strictly
  * ordered, so a reply could only belong to the command just sent. UDP offers

@@ -15,7 +15,7 @@ The last full PLAN (v3 §2 single-pass + §4 unlimited, later contradicted by D6
 git show 4c58802:docs/PLAN.md
 ```
 
-Source comments still say `PLAN.md §2` and `PLAN.md Task 1`. Those resolve here as:
+Historical PLAN citations resolve here as:
 
 | citation | now |
 |---|---|

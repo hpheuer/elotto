@@ -1,7 +1,7 @@
 /* ── The node array: UDP transport, discovery, and per-node health ──────
  *
  * Everything about talking to the other boards lives behind this header —
- * the broadcast link, discovery, the per-loop calibration handshake, the
+ * the broadcast link, discovery, the round-boundary calibration handshake, the
  * drop/reboot policy, and the diagnostics poll. sensor.c keeps the GCP
  * statistics and calls in here when it needs the array to do something.
  *

@@ -1098,7 +1098,7 @@ bool camera_read_word(uint32_t *out)
 
 bool camera_raw_stream_ok(void) { return s_ring_raw != NULL; }
 
-/* ── Calibration control (PLAN.md Task 1) ─────────────────────────────── */
+/* ── Calibration control (exposure sweep) ─────────────────────────────── */
 
 void camera_stats_reset(int settle_pairs)
 {
@@ -1184,7 +1184,7 @@ double camera_fps_probe(int frames, int timeout_ms)
     return 0.0;
 }
 
-/* ── The sweep (PLAN.md Task 1) ────────────────────────────────────────────
+/* ── The sweep ─────────────────────────────────────────────────────────────
  *
  * Exposure ladder, in sensor line units (the integer part of regs
  * 0x3500-0x3502). Geometric, and spanning BOTH sides of the power-on default

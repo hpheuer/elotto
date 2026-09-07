@@ -162,9 +162,8 @@ static void camera_source_begin(void)
 
 /* Segments for one run. v3: ONE count for every phase — scoring and
  * the measurement pass all use g_status.run_segments behind g_status.gap_ms.
- * The count still travels on the wire (`M<seg>`, `B<runs>,<seg>`) so a slave
- * cannot disagree about it. Baseline uses the same length for the
- * same-instrument rule. Defaults are filled in on /start if unset. */
+ * The count travels on the wire (`M<seg>`) so a slave cannot disagree about
+ * it. Defaults are filled in on /start if unset. */
 static int segments_for(void)
 {
     if (g_status.run_segments <= 0)
@@ -182,7 +181,7 @@ static int gap_for(void)
 
 /* The master's own run, via the shared primitive in components/elotto_gcp — the
  * same object code the slaves run, so no node can compute z differently from
- * another — with the LSB channel alongside.
+ * another. One LSB stream (D65).
  *
  * NULL yield callback: the master aborts between runs, never inside one, so
  * there is nothing to poll mid-run. A false return means the run produced no
@@ -455,7 +454,7 @@ bool results_row_z(int j, RunResult *out_row, float out_z[MAX_NODES],
 }
 
 /* Running pass sums over RANKED items only (k > 0, !skip_rank). Ranking and
- * ranks recompute from results[] after every valid item so Top/Bottom track
+ * ranks recompute from results[] after every valid item so top[]/low[] track
  * the live block-σ key rather than an early snapshot. */
 static double s_pass_sum, s_pass_sumsq;
 static int    s_pass_n;
@@ -640,9 +639,8 @@ static void score_and_build_pool(int max_val, int pool_size, uint8_t *pool,
     }
     /* Pick by pre-registered score_dir, on the KEY score_build_keys() just
      * produced — not on z. HIGH = largest key (historical default); LOW =
-     * smallest; ABS = largest |key|. So at ?wpre=0,8 the direction applies to a
-     * LSB-dominated quantity, which is the point: the pool is chosen by
-     * the same rule the pass is ranked by. Direction is a session parameter
+     * smallest; ABS = largest |key|. At ?wpre=0,8 concordance dominates the
+     * mix; the pool is chosen by the same rule the pass is ranked by. Direction is a session parameter
      * (?score=) so the hypothesis is on the record before the pass.
      * Void runs (scored[k] == false) are excluded: a void is not a z of 0 and
      * ranking it as one would steer the pool toward numbers whose runs failed. */
@@ -750,11 +748,11 @@ static double conc_halves(const double *h1, const double *h2,
     return conc_stouffer(v, hv, n);
 }
 
-/* Gather per-node z for this round and Stouffer-combine. Soft-downweighted
+/* Gather per-node z for this run and Stouffer-combine. Soft-downweighted
  * nodes stay in `have[]` (pairwise diagnostics still see them) but are
- * skipped in the combine when that still leaves k ≥ 2; otherwise they are
- * used (never force a solo combine that would collapse the scientific floor).
- * Returns k; k == 0 means VOID — caller must not publish as a result.
+ * skipped in the combine when that still leaves k ≥ NODE_SOFT_MIN_COMBINE
+ * (1 — a solo combine is possible). Returns k; k == 0 means VOID — caller
+ * must not publish as a result.
  * *out_mask receives the bit mask of nodes that actually entered the combine. */
 static int gather_and_combine(double z_master, bool master_ok,
                               double znode[MAX_NODES], bool have[MAX_NODES],
@@ -1045,7 +1043,7 @@ static double compute_v_eff(void)
     return (v > 1e-12) ? v : 1.0;
 }
 
-/* True if this row enters pass mean/σ and Top/Bottom. Void and quarantined
+/* True if this row enters pass mean/σ and the ranking tables. Void and quarantined
  * trigger-block rows stay in results[] / CSV but not in the ranking. */
 /* The value every pass statistic and every ranking runs on: the block-centred
  * combine, not the raw z. One accessor so the choice is made in exactly one
@@ -1148,7 +1146,7 @@ static void block_sig_of(const RunResult *r, double *out_p, double *out_c)
  * whatever σ comes out — 14,4 at n=208, 6,9 at the <=50 numbers a scoring span
  * holds. A quiet block cannot manufacture a large key. ⚠ That ceiling MOVES
  * with n, so Z* is not comparable across blocks of different length; the block
- * length follows `?run=` and the round boundary, both operator-set. */
+ * length is `?maxruns=` (one round = one block, D76). */
 double rank_key(const RunResult *r)
 {
     if (!r) return 0.0;
@@ -1175,7 +1173,7 @@ double rank_key(const RunResult *r)
     return (a * z + p * zc) / n;
 }
 
-/* ── The live extreme set, for the sortable Top/Bottom tables (D78) ────────
+/* ── The live extreme set, for the sortable Top-10 (D78) ───────────────────
  * The up-to `max` ranked & centred rows with the largest |rank_key|, both
  * tails, copied into out[0..return) under the archive lock. This is the live
  * form of the compaction survivors (PASS_KEEP_EXTREME): the same "most extreme
@@ -1224,7 +1222,7 @@ int results_extremes(RunResult *out, int max)
  * OF THE TABLES: σ ≈ 2 and rising with every compaction, from an instrument
  * whose null gate then fires on its own bookkeeping. Anything that reduces over
  * results[] to describe the SESSION has to add these; anything that reduces to
- * describe the TABLES (top/bottom/nearest, zmax) must not. */
+ * describe the TABLES (top/low, zmax) must not. */
 static double s_drop_sum, s_drop_sumsq;
 static int    s_drop_n, s_drop_void, s_drop_excl;
 /* Items carrying a concordance value that compaction dropped, so pre_n keeps
@@ -1261,8 +1259,8 @@ static void recompute_pass_ranks(void)
      * bar) and is measurably unsettled early in every block, tightening as the
      * block fills and shifting once at the close. Accepted for the live tables
      * (user, 2026-08-28); read pass_sigma at a block boundary, not at its
-     * start. Only the z is affected -- the LSB channel ranks but
-     * never enters the null (D45).
+     * start. pass_mean/σ/χ² run on z_ctr (D65); concordance ranks beside it
+     * and does not enter the null.
      * The compaction seeds are safe: pass_compact() runs at a round boundary,
      * i.e. after close_block(), so everything it in was centred.
      * ⚠ VOID and EXCLUDED are counted over EVERYTHING. They are archive facts,
@@ -1310,7 +1308,7 @@ static void recompute_pass_ranks(void)
     /* ⚠ pre_n is SEEDED with what compaction dropped, because the UI prints it
      * against pass_n_valid — and that one is seeded (nv = s_drop_n above). Two
      * counters over two different sets read as an instrument fault: after the
-     * first compaction the ratio collapses and the UI's "with pre n/valid ⚠"
+     * first compaction the ratio collapses and the UI's "∑ conc n/valid ⚠"
      * fires on its own bookkeeping, not on the array (seen 2026-08-30 as
      * "pre 132/788" while every surviving row carried a value). */
     int    pre_n = s_drop_pn;
@@ -1366,22 +1364,15 @@ static void recompute_pass_ranks(void)
 }
 
 /* ── Round-boundary compaction ─────────────────────────────────────────────
- * Merge everything except the three published tables into moments, so an
+ * Merge everything except the |rank_key| extremes into moments, so an
  * unlimited session runs until it is aborted instead of stopping at NUM_RUNS.
  *
- * Called ONLY at a round boundary, and only when the next round would not fit.
- * Both halves matter:
- *
- *  - At a round boundary every block of the round has closed, so center_block()
- *    has replaced every provisional z_ctr and the ranking key is FINAL. Doing
- *    this mid-block would rank on values that are about to be rewritten:
- *    replayed against the 2026-08-19 session, a running top-5 on the
- *    provisional values keeps 3 of the true 5, and the item that ends 4th sits
- *    at raw rank 16 when it is measured.
- *  - Only when needed, so a session that fits keeps its complete archive and
- *    behaves exactly as before. Compaction costs rows that can never be
- *    recovered -- the per-node z0..z3 of a dropped item is how the exposure
- *    finding was made -- so it is a last resort, not a policy.
+ * Called at every round boundary (D56), after close_block() so every z_ctr is
+ * FINAL. n ≤ PASS_KEEP_EXTREME is a no-op, so a short session keeps every row.
+ * A second call before a round starts if the next space would not fit in the
+ * remaining buffer (D42 backstop). Compaction costs rows that can never be
+ * recovered — the per-node z0..z3 of a dropped item is how the exposure
+ * finding was made.
  *
  * Survivors: the PASS_KEEP_EXTREME items with largest |rank_key| (both tails).
  * Kept in MEASUREMENT ORDER, and s_node_z moves with them.
@@ -1403,8 +1394,7 @@ static void pass_compact(void)
     }
 
     /* Keep the K most extreme by |rank_key|. Linear scan per slot: n is at most
-     * NUM_RUNS and K is 100. Both tails survive, so Top-5 and Bottom-5 stay
-     * exact over the session. */
+     * NUM_RUNS and K is 100. Both tails survive. */
     for (int slot = 0; slot < K; slot++) {
         int    best = -1;
         double best_key = 0.0;
@@ -2295,11 +2285,10 @@ static void center_block(int block_idx)
 }
 
 /* ── Block close (v3) ──────────────────────────────────────────────────
- * A block is the span between two camera sweeps. Closing one
- * turns its running sums into the per-block σ, appends the /loops row, feeds
- * the drift regression and merges the pairwise moments — everything that used
- * to happen at a loop boundary, now on a wall-clock cadence. Nothing here
- * touches results[]: the measured z's are final the moment they are stored. */
+ * A block is one round (D76). Closing one centres results[] for that block
+ * (z_ctr / zc_ctr / node_sd), freezes the per-block σ, appends the /loops
+ * row, feeds the drift regression and merges the pairwise moments. Trigger
+ * is the round boundary, not a wall clock. */
 static void close_block(int block_idx)
 {
     double m = 0.0, s = 0.0;
@@ -2500,9 +2489,9 @@ void elotto_task(void *pvParam)
 
     uint8_t pool_main[POOL_MAIN_49] = {0};   // 15 slots, enough for both modes
     uint8_t pool_euro[POOL_EURO_12] = {0};
-    // Pool sizes are variables, not constants: pool confirmation can shrink
-    // either, unlimited mode derives both from the per-round run cap, and every
-    // count downstream is derived from them.
+    // Pool sizes are variables, not constants: unlimited mode derives both
+    // from the per-round run cap, and every count downstream is derived from
+    // them.
     int     pool_nm = euro ? POOL_MAIN_50 : POOL_MAIN_49;
     int     pool_ne = euro ? POOL_EURO_12 : 0;
     if (g_status.unlimited) {
@@ -2527,20 +2516,15 @@ void elotto_task(void *pvParam)
     if (g_status.abort_requested) { slave_abort(); goto done; }
 
     /* ── Rounds ────────────────────────────────────────────────────────
-     * An ordinary v3 session is ONE round: score, confirm the pool, measure
-     * every combination of it exactly once, done.
-     *
-     * Unlimited mode repeats that indefinitely (user, 2026-08-18). Each round
-     * re-scores every number from scratch and keeps only as many of the best as
-     * fit `runs_cap` measurement runs, so the pool is small and the whole space
-     * of THAT pool is measured before the next round re-picks it. Rounds stop
-     * on Abort or when results[] is full.
+     * Every session is rounds until Abort (D67): score, measure that pool once,
+     * score again. No pool-confirmation gate (D73). Each round re-scores every
+     * number from scratch and keeps only as many of the best as fit `runs_cap`
+     * measurement runs. Rounds stop on Abort or when results[] is full.
      *
      * results[] keeps filling across rounds — nothing is cleared between them —
-     * so every ranking and the pass mean/σ run on the
-     * union of all rounds measured so far, which is what "new results are sorted
-     * in" means. Each round is closed as its own block (or blocks), so block
-     * centring never mixes items from either side of a re-scoring. */
+     * so every ranking and the pass mean/σ run on the union of all rounds
+     * measured so far. Each round is closed as its own block, so centring
+     * never mixes items from either side of a re-scoring. */
     int     round          = 0;
     bool    space_full     = false;
 
@@ -2612,11 +2596,11 @@ void elotto_task(void *pvParam)
         int euro_combos = euro ? comb(pool_ne, 2) : 1;
         int full_combos = main_combos * euro_combos;
         /* s_perm is NUM_RUNS wide and the shuffle below now indexes the WHOLE
-         * space, so the space must fit it. Euro 12+5 = 7920 and 6-of-49 pool 15
-         * = 5005 are both under NUM_RUNS 8000. A pool that still exceeds it is
-         * an inflated proposal, so this is a hard stop, NOT a silent clamp:
-         * truncating would measure a subset and publish it as complete — the
-         * mislabelling this instrument refuses to do. */
+         * space, so the space must fit it. NUM_RUNS is 7200; Euro 12+5 = 7920
+         * does not. A pool that exceeds it is an inflated proposal, so this is
+         * a hard stop, NOT a silent clamp: truncating would measure a subset
+         * and publish it as complete — the mislabelling this instrument
+         * refuses to do. */
         if (full_combos > NUM_RUNS) {
             snprintf(g_status.fault, sizeof(g_status.fault),
                      "combination space %d exceeds NUM_RUNS %d — pool grew past "
@@ -2644,7 +2628,7 @@ void elotto_task(void *pvParam)
          * dropped rows sitting in front of it, and count them a second time on
          * top of the moments they were already merged into. That shipped: the
          * 2026-08-20 session reported pass_n_valid 15806 for 8019 items, with
-         * every survivor duplicated in top/low/near.
+         * every survivor duplicated in top/low.
          * The tell is n, not sigma -- doubling identical values barely moves
          * mean or sigma, so the D42 sanity check does not catch this. */
         g_status.round_base      = g_status.runs_completed;

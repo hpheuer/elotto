@@ -45,8 +45,8 @@ void elotto_ota_boot_check(void);
  * recoverable over the wire. No-op when not in PENDING_VERIFY. */
 void elotto_ota_mark_valid(void);
 
-/* Registers POST /update, /boot, /reboot and GET /otainfo on an existing
- * server. Needs 4 free URI handler slots. */
+/* Registers POST /update, /boot, /reboot, /poison and GET /otainfo on an
+ * existing server. Needs 5 free URI handler slots. */
 esp_err_t elotto_ota_register(httpd_handle_t server, elotto_ota_busy_fn busy);
 
 /* JSON key/value fragment describing the running image — no surrounding braces,

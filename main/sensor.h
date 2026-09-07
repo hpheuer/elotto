@@ -6,9 +6,9 @@
 
 /* v3 (D67): rounds until Abort. Inside a round every combination is measured
  * exactly ONCE; results[] holds it in MEASUREMENT order and ACCUMULATES across
- * rounds, so NUM_RUNS is the hard cap on the buffer, not on the session. 8000 and not more because results[] lives in
- * internal RAM, which is full — a few KB more of .bss fails the LINK, not the
- * run. Both pools below fit under it by construction. */
+ * rounds, so NUM_RUNS is the hard cap on the buffer, not on the session.
+ * 7200 because results[] lives in internal RAM, which is full — a few KB more
+ * of .bss fails the LINK, not the run. */
 /* ⚠ 8000 -> 7200 on 2026-08-26, and the reason is the LINKER, not statistics.
  * results[] lives in INTERNAL RAM (see the resources note) and the LSB
  * channel added a float to RunResult. The double in the record forces 8-byte
@@ -27,10 +27,10 @@
 #define NUM_RUNS      7200
 #define TOP_N            5
 /* ── Round-boundary compaction (D56) ──────────────────────────────────────
- * Unlimited rounds keep the 100 most extreme items by |rank_key| (both tails,
- * so Top-5 and Bottom-5 stay exact). Everything else merges into pass moments.
- * Offline re-analysis of the dropped rows is not a goal. Since D67 every session
- * is rounds, so every round boundary compacts. */
+ * Unlimited rounds keep the 100 most extreme items by |rank_key| (both tails).
+ * Everything else merges into pass moments. Offline re-analysis of the dropped
+ * rows is not a goal. Since D67 every session is rounds, so every round
+ * boundary calls pass_compact() (no-op while n ≤ 100). */
 #define PASS_KEEP_EXTREME 100
 #define POOL_MAIN_49    15   // C(15,6) = 5005 combinations
 #define POOL_MAIN_50    12   // C(12,5) =  792 combinations
@@ -50,8 +50,7 @@
  * through EL_STR() rather than being written out again. A limit changed here
  * now changes the form field, the clamp and the validator together.
  *
- * ⚠ Defaults only. Every one is overridable per session on /start, and the
- * matched-control sessions in PLAN.md pass their values explicitly — so
+ * ⚠ Defaults only. Every one is overridable per session on /start, so
  * changing a default here does NOT retroactively describe an archived run. */
 /* The form warns above this predicted ROUND length, and does nothing else about
  * it — a long round is a legitimate choice `[D76]`. It matters because a round
@@ -327,11 +326,11 @@ _Static_assert(((long long)RUN_S_MAX * 1000 * RUN_SEGS_REF) / RUN_MS_REF <= EL_S
 
 /* Phase-0 scoring direction (pre-registered). Only affects WHICH numbers enter
  * the pool — never the Phase-2 measurement statistics. Default HIGH matches
- * the historical "largest positive z" rule. */
+ * the historical "largest positive key" rule. */
 typedef enum {
-    SCORE_DIR_HIGH = 0,   // pick largest raw z
-    SCORE_DIR_LOW  = 1,   // pick smallest raw z
-    SCORE_DIR_ABS  = 2,   // pick largest |z|
+    SCORE_DIR_HIGH = 0,   // pick largest rank_key
+    SCORE_DIR_LOW  = 1,   // pick smallest rank_key
+    SCORE_DIR_ABS  = 2,   // pick largest |rank_key|
 } ScoreDir;
 
 /* Stringify, so the HTML/JS copies of the numbers above are the SAME token the
@@ -342,8 +341,8 @@ typedef enum {
 
 typedef enum { MODE_EUROJACKPOT = 0, MODE_LOTTO_649 = 1 } ElottoMode;
 typedef enum { ELOTTO_IDLE, ELOTTO_RUNNING, ELOTTO_DONE, ELOTTO_ABORTED } ElottoState;
-// PHASE_CALIBRATE is appended, not inserted: it runs FIRST in a loop but the
-// other three are wired into the UI and the CSV by value.
+// PHASE_CALIBRATE is appended, not inserted: it runs FIRST in a round but
+// the enum values are wired into the UI and /status by number.
 typedef enum { PHASE_SCORING, PHASE_MEASURING,
                PHASE_CALIBRATE } ElottoPhase;
 
@@ -441,10 +440,9 @@ typedef struct {
     float      node_sd;
 } RunResult;
 
-// Focus display: what is on screen right now, for
-// exactly the window its bits are collected in. The observer is meant to be
-// present while the noise is sampled — the original GCP/PEAR protocol — so the
-// one property that must hold is `active` ⟺ a run is sampling.
+// Current-item display: what is on screen right now, for exactly the window
+// its bits are collected in. The session is unattended `[D66]`; the one
+// property that must hold is `active` ⟺ a run is sampling.
 typedef enum { FOCUS_NONE = 0, FOCUS_NUMBER = 1, FOCUS_DRAW = 2 } FocusKind;
 
 // Written by elotto_task, read by the /focus handler on the HTTP task. Not
@@ -498,8 +496,8 @@ typedef struct {
                             // not report it (slave older than 2026-08-30) or no
                             // run has completed yet -- never "reads nothing".
     uint32_t cam_stalls;
-    // What this node's camera calibration chose at the start of the current loop
-    // (PLAN.md Task 1). Nodes land on DIFFERENT settings and that is correct —
+    // What this node's camera calibration chose at the last sweep (round
+    // boundary). Nodes land on DIFFERENT settings and that is correct —
     // the cameras are physically different units — which is exactly why the
     // setting has to be published per node rather than as one session number.
     uint32_t cam_exp;       // 0 = this node has not calibrated (yet, or at all)
@@ -666,7 +664,7 @@ typedef struct {
 /* What a soft-down trip was MADE OF (D63).
  *
  * A trip is a property of a whole block: sigma is the spread of one node's z
- * over its ~63 items, and it does not exist until the block closes. The
+ * over that round's ?maxruns= items, and it does not exist until the block closes. The
  * question a reader actually has — which measurements made that spread big
  * — was unanswerable, because the block's rows are compacted away one round
  * later. Twice in two days they were asked for hours afterwards and every one
@@ -679,7 +677,7 @@ typedef struct {
  *
  * ⚠ `dev` is (z - block mean) / block sigma: how far that item sat from the
  * middle of the very spread it helped create. It is NOT a z-score against the
- * null and must not be read as one. With ~63 items a value near 3 is ordinary;
+ * null and must not be read as one. At n=`?maxruns=` (default 100) a value near 3 is ordinary;
  * the point is the SHAPE — ONE item far out is a single excursion, three of
  * them close together mean the block was simply wide. */
 typedef struct {
@@ -740,8 +738,8 @@ typedef struct {
     volatile int     runs_completed;
     /* Items measured this session, across every round. Monotone: a compaction
      * never lowers it, because the measurement happened. This is what /status
-     * publishes as `completed`, what round_base is taken from, and what the CSV
-     * header counts in `items=`. */
+     * publishes as `completed`, what round_item_base is taken from, and what
+     * the CSV header counts in `items=`. */
     volatile int     items_done;
     /* Items dropped by compaction, i.e. measured and merged into the pass
      * statistics but no longer individually in results[] or the CSV. 0 for any
@@ -788,8 +786,8 @@ typedef struct {
      * ⚠ They are PUBLISHED, not enforced (2026-08-28). The software draws no
      * verdict from them and excludes nothing on them — exclusion is soft-down
      * and block quarantine, and neither reads this block. */
-    double           pass_mean;           // mean of valid raw z so far
-    double           pass_sigma;          // sample σ (df = n−1) of valid raw z
+    double           pass_mean;           // mean of valid rank_z() (z_ctr) so far
+    double           pass_sigma;          // sample σ (df = n−1) of valid z_ctr
     double           pass_chi2;           // Σ z² over valid items (≈ χ²(n) under H₀)
     double           pass_stouffer;       // mean · √n — test of a common offset
     int              pass_n_valid;        // ranked items in CLOSED blocks — the set
@@ -860,9 +858,9 @@ typedef struct {
     // maximum answers neither. Upper triangle used; index 0 is the master.
     double           pair_r[MAX_NODES][MAX_NODES];
     int              result_count;       // valid entries in top[] (published)
-    RunResult        top[TOP_N];          // highest raw z measured so far, desc
+    RunResult        top[TOP_N];          // highest rank_key so far, desc
     int              low_count;           // valid entries in low[] (published)
-    RunResult        low[TOP_N];          // lowest raw z measured so far, asc
+    RunResult        low[TOP_N];          // lowest rank_key so far, asc
     volatile bool    abort_requested;
     // ── Current-item display (always on; session is unattended, D66) ──
     bool             focus_mode;          // always false; CSV `focus=off` so new
@@ -929,16 +927,16 @@ typedef struct {
                                           // link bounce that already healed is
                                           // still visible after the fact
     int              drop_node;           // node index that went first, -1 none
-    // ── Per-loop camera calibration (PLAN.md Task 1) ───────────────────
-    int              cal_budget_ms;       // sweep budget per loop, 0 = do not
+    // ── Camera calibration (round-boundary sweep) ─────────────────────
+    int              cal_budget_ms;       // sweep budget per round boundary, 0 = do not
                                           // calibrate. A no-calibration session
                                           // is the matched control this change
                                           // has to be compared against, so it is
                                           // a session parameter, not a #define
-    int              cal_ms;              // what the last loop's calibration
-                                          // actually cost, master + ack wait —
+    int              cal_ms;              // what the last sweep actually cost,
+                                          // master + ack wait —
                                           // the sweep-cost gate is a measured number
-    bool             cal_did_sweep;       // did THIS loop calibrate? Recorded per
+    bool             cal_did_sweep;       // did THIS round-boundary calibrate? Recorded per
                                           // loop (LoopStat.cal_ms = 0 when not),
                                           // because "the setting was re-derived
                                           // here" and "it was carried over" are
@@ -1034,7 +1032,7 @@ double rank_key(const RunResult *r);
 
 /* The up-to `max` most extreme ranked & centred rows by |rank_key| (both
  * tails), copied into out[0..return) under the archive lock. The live form of
- * the compaction survivors, for the sortable Top/Bottom tables (D78). The
+ * the compaction survivors, for the sortable Top-10 (D78). The
  * caller sorts on whichever column it displays; selection here is by |Z*|
  * only, so a newly measured item joins the set exactly as it did before. */
 int results_extremes(RunResult *out, int max);

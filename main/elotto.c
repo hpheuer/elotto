@@ -1,4 +1,6 @@
 #include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
 #include <string.h>
 #include <math.h>
 #include <stdarg.h>
@@ -220,14 +222,14 @@ static const char HTML[] =
 "<span style='display:flex;align-items:center;gap:8px'>"
 "<input id='numUnlimRuns' class='fin' type='number'"
 " value='" EL_STR(UNLIM_RUNS_DEFAULT) "' min='" EL_STR(UNLIM_RUNS_MIN) "'"
-" max='" EL_STR(UNLIM_RUNS_MAX) "' step='" EL_STR(UNLIM_RUNS_STEP) "'"
+" max='" EL_STR(NUM_RUNS) "' step='" EL_STR(UNLIM_RUNS_STEP) "'"
 " oninput='unlimHint()'>"
 "<span id='unlimHint' style='color:#8fae8f;font-size:.85em;line-height:1.55'>"
 "</span>"
 "</span>"
 "</div>"
 "<div class='frow'>"
-"<label for='selScore' title='Pre-registered Phase-0 pool rule. Picks the pool only, never the "
+"<label for='selScore' title='Pre-registered scoring direction. Picks the pool only, never the "
 "measurement pass.'>Num-Score direction:</label>"
 "<select id='selScore' class='fin' style='padding:4px 6px'>"
 "<option value='high' selected>High</option>"
@@ -237,7 +239,7 @@ static const char HTML[] =
 "</div>"
 "<div class='frow'>"
 "<label for='numPreW' title='Weight of concordance in the ranking key (D65). "
-"The key is ((1-p)*Z + p*Conc)/sqrt((1-p)^2+p^2). 0 is z alone. "
+"The key is ((1-p)*z_ctr/\u03c3_z + p*zc_ctr/\u03c3_c)/sqrt((1-p)^2+p^2). 0 is z alone. "
 "Tables mean nothing before the first block closes: uncentred offsets are huge.'>"
 "Concordance weight:</label>"
 "<input id='numPreW' class='fin' type='number' min='0' max='1' step='0.05' "
@@ -255,9 +257,8 @@ static const char HTML[] =
 // need its own spacing rule. Set here, it applies to whichever one appears.
 // JS only ever writes .style.display, so the margin survives show/hide.
 "<div class='btns' id='runBtns' style='display:none;margin-bottom:16px'>"
-// Pause is required, not a nicety: without it the only way to stop attending is
-// to abort and throw the loop away, which guarantees that tired-observer data
-// gets measured rather than skipped.
+// Pause holds BETWEEN runs (never inside one). Paused time is excluded from
+// elapsed_ms, so a break does not inflate the session clock.
 "<button class='btn' id='btnPause' onclick='doPause()' "
 "style='background:#a08030;color:#fff'>&#9208; Pause</button>"
 "<button class='btn btn-abort' id='btnAbort' onclick='doAbort()'>&#9632; Abort</button>"
@@ -349,7 +350,7 @@ static const char HTML[] =
 /* Bottom card removed (D78): one sortable Top-10 replaces Top-5 + Bottom-5;
    the low end is a header click away (direction flip). */
 /* The camera-sigma jump board (D62). Deliberately the LAST card and in a
-   different colour from Top/Bottom: it is a suspicion list, not a ranking.
+   different colour from the ranking table: it is a suspicion list, not a ranking.
    What stands at the top is the item whose bits were least quiet while they
    were taken -- the z that deserves the least trust, not the most interest. */
 "<div class='card' id='resCardWsig' style='display:none'>"
@@ -588,7 +589,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "var mxr=parseInt(document.getElementById('numUnlimRuns').value)"
 "||" EL_STR(UNLIM_RUNS_DEFAULT) ";"
 "if(mxr<" EL_STR(UNLIM_RUNS_MIN) ")mxr=" EL_STR(UNLIM_RUNS_MIN) ";"
-"if(mxr>" EL_STR(UNLIM_RUNS_MAX) ")mxr=" EL_STR(UNLIM_RUNS_MAX) ";"
+"if(mxr>" EL_STR(NUM_RUNS) ")mxr=" EL_STR(NUM_RUNS) ";"
 "var score=document.getElementById('selScore').value||'high';"
 // Clamped here as well as validated in C: /start answers 400 for anything
 // outside 0..1 rather than falling back, so the form must not be able to send
@@ -798,10 +799,8 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "}"
 "}).catch(function(){});"
 "}"
-/* The Phase 5 gate in one line: the measured lit window (must be within +-10%
-   of 1000 ms scoring / 500 ms draw), the measured natural inter-run gap (which
-   says whether the ~200 ms blanking was free or had to be paid for), and the
-   count of windows the UI missed entirely (must stay 0). */
+/* Live window readout: measured lit window (focus_win_ms, set by the slowest
+   node), measured gap, and how many windows the UI missed (must stay 0). */
 "function updateFocusInfo(d){"
 /* Also hidden whenever nothing is being measured. This runs on every /status
    poll, so without the state test it re-showed the card immediately after
@@ -834,10 +833,10 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "}"
 "sl.innerHTML=ph||'';"
 "var s2='';"
-/* LSB channel health when weight is on. */
+/* Concordance coverage when weight is on: pre_n = items with zc_ctr != 0. */
 "if((d.pre_w||0)>0){"
 "var e='\u2211 conc';"
-"if(d.pass_n_valid>0)e+=' \u00b7 with pre '+(d.pre_n||0)+'/'+d.pass_n_valid"
+"if(d.pass_n_valid>0)e+=' '+(d.pre_n||0)+'/'+d.pass_n_valid"
 "+((d.pre_n<d.pass_n_valid)?' \u26a0':'');"
 "s2+='<br>'+e;}"
 // Carried into the results line because the Focus card — where these normally
@@ -996,12 +995,11 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "document.getElementById('resCardWsig').style.display='none';"
 "document.getElementById('resCardTrip').style.display='none';"
 "return;}"
-"lastDisplayed=d.top;"
 // Z* IS the ranking key (block-σ units, D68) and the cell prints it as it
 // stands — there is no session moment of the key to rescale it with (D71).
-// The Top/Bottom tables are built by renderExtremeTables() from the /extremes
-// set so they can be re-sorted by column (D78); the titles and both bodies are
-// set there. d.top/d.low are the fallback until the first /extremes lands.
+// The Top-10 is built by renderExtremeTables() from the /extremes set so it
+// can be re-sorted by column (D78); d.top is the fallback until the first
+// /extremes lands.
 "LD=d;"
 "document.getElementById('btnSave').style.display='';"
 "document.getElementById('saveAll').style.display='';"
@@ -1034,11 +1032,10 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 ":'no consumption rate reported — extraction rate shown in brackets';}"
 /* ── Sortable Top-10 over the extremes set (D78, D78a, D78b) ──────────────
    The table is the leading 10 of the /extremes set (the ~50 most extreme
-   items by |Z*|). A click on a stat header sorts that set by the column; the
-   Top table shows the leading end, the Bottom table the trailing one. A second
-   click on the same header flips the direction (largest-first <-> smallest-
-   first), shown by the arrow. Items still ENTER the set by |Z*| only — the sort
-   reorders what is shown, it never changes which 100 are held or the pool. */
+   items by |Z*|). A click on a stat header sorts that set by the column; a
+   second click flips the direction (largest-first <-> smallest-first), shown
+   by the arrow. Items still ENTER the set by |Z*| only — the sort reorders
+   what is shown, it never changes the display pool of 50 or the pool. */
 "var EX=[],SORTK='key',SORTD=-1,LD=null;"
 "function colVal(r,k){var v;"
 "if(k==='key')v=r.key;"
@@ -1083,9 +1080,9 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "function renderRunTable(headId,bodyId,res,isEuro,d,st){"
 "document.getElementById(headId).innerHTML="
 "'<tr><th>#</th><th>Item</th>'"
-"+(st?'<th style=\"cursor:pointer\" title=\"ranking key in units of its own block σ. Click to sort the 100\" onclick=\"sortBy(\\'key\\')\">Z*'+exArrow('key')+'</th>'"
-"+'<th style=\"cursor:pointer\" title=\"block-centred combined z. Click to sort the 100\" onclick=\"sortBy(\\'z_ctr\\')\">Z'+exArrow('z_ctr')+'</th>'"
-"+'<th style=\"cursor:pointer\" title=\"leave-one-out half-window concordance. Click to sort the 100\" onclick=\"sortBy(\\'zc\\')\">Conc'+exArrow('zc')+'</th>'"
+"+(st?'<th style=\"cursor:pointer\" title=\"ranking key in units of its own block σ. Click to sort the 50\" onclick=\"sortBy(\\'key\\')\">Z*'+exArrow('key')+'</th>'"
+"+'<th style=\"cursor:pointer\" title=\"block-centred combined z. Click to sort the 50\" onclick=\"sortBy(\\'z_ctr\\')\">Z'+exArrow('z_ctr')+'</th>'"
+"+'<th style=\"cursor:pointer\" title=\"leave-one-out half-window concordance. Click to sort the 50\" onclick=\"sortBy(\\'zc\\')\">Conc'+exArrow('zc')+'</th>'"
 /* Plain-language tooltip: the operator is the only reader of this cell, and the
    column is worthless if its meaning has to be looked up. English like the rest
    of the page (the CSV is the only German artefact). \\n inside a title
@@ -1099,7 +1096,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "saw none of it\\n"
 "\\u2014 = not computed yet (block still open) or too few cameras\\n"
 "\\u0394n does not change which numbers enter the pool; the table can be sorted "
-"by it. Click to sort the 100.\" style=\"cursor:pointer\" onclick=\"sortBy(\\'nsd\\')\">"
+"by it. Click to sort the 50.\" style=\"cursor:pointer\" onclick=\"sortBy(\\'nsd\\')\">"
 "\\u0394n'+exArrow('nsd')+'</th>':'')"
 "+'<th>Numbers</th>'"
 "+(isEuro?'<th>Bonus</th>':'')+'</tr>';"
@@ -1153,11 +1150,11 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "var n=(d.nodes&&d.nodes[ix])?d.nodes[ix]:null;"
 "var ip=n?(n.ip==='self'?'192.168.178.100':n.ip):'';"
 "return NODE_NAMES[ip]||(ix===0?'master':'unnamed');}"
-/* A trip is a property of a BLOCK -- sigma is the spread over its ~63 items and
-   does not exist until the block closes -- so this does not name "the measurement
-   that tripped it". It names the measurements that carried the spread, which is
-   the answerable question, and it is captured at block close because one round
-   later compaction has taken the rows. See D63. */
+/* A trip is a property of a BLOCK -- sigma is the spread over that round's
+   ?maxruns= items and does not exist until the block closes -- so this does
+   not name "the measurement that tripped it". It names the measurements that
+   carried the spread, captured at block close because one round later
+   compaction has taken the rows. See D63. */
 "function showTrip(d){"
 "var tr=d.trips,isEuro=d.mode==='euro';"
 "if(!tr||tr.length===0){document.getElementById('resCardTrip').style.display='none';return;}"
@@ -1204,8 +1201,8 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "var ev=d.wsig,isEuro=d.mode==='euro';"
 /* Shown even with nothing on it. An empty board is a STATEMENT -- the
    cameras were quiet -- and hiding the card makes that look like a missing
-   feature instead. Top/Bottom hide when empty because an empty ranking says
-   nothing; this one is not a ranking. */
+   feature instead. The ranking table hides when empty because an empty ranking
+   says nothing; this one is not a ranking. */
 "ev=ev||[];"
 "document.getElementById('resTitleWsig').innerHTML="
 "'\\u26A0 Camera jumps'+(ev.length?' '+ev.length:'')+' (largest change in window sigma)';"
@@ -1250,7 +1247,6 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "}"
 "document.getElementById('resCardWsig').style.display='block';"
 "}"
-/* Bottom-5 is built by renderExtremeTables() now (D78), not a separate pass. */
 /* Full pass is the record (never re-measured). Summary is a secondary link. */
 "function doSave(){window.location='/results.csv?all=1';}"
 "</script></body></html>";
@@ -1259,8 +1255,8 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 /* `round` travels with every published row because `index` alone does not
  * identify an item in unlimited mode: it is the position within ITS round, and
  * a later round re-uses the same numbers. The identity is (round, index) — see
- * the unlimited-mode notes in sensor.h. Single-pass sessions run exactly one
- * round, so the UI hides it there rather than printing a constant "/1". */
+ * the unlimited-mode notes in sensor.h. The UI prints round because every
+ * session is rounds (D67); index alone does not identify an item. */
 static int emit_run(char *buf, int cap, const RunResult *r, bool euro)
 {
     /* `zc` and `key` travel per row so the table can show the channel that put
@@ -1345,10 +1341,9 @@ static esp_err_t status_handler(httpd_req_t *req)
     /* The master's own camera, for the fields nodes[0] cannot get from
      * slaves_diag() — see the note at the node loop below. */
     camera_stats_t st_cam; camera_get_stats(&st_cam);
-    // 30 full top/low/near entries (~110 B each) on top of the fixed head;
-    // 6144 was sized for 10 coverage picks and would sit within ~600 B of the
-    // cap. A measured 4-node /status is ~3 KB, so the third group fits with
-    // room to spare — but it IS the third, so check this again before a fourth.
+    // top[]/low[] (5 each, ~110 B) on top of the fixed head. A measured
+    // 4-node /status is ~3 KB against this 8 KB buffer. /extremes is a
+    // separate stream because 50 rows would overflow this one.
     static char buf[8192];
     int  pos = 0;
     const char *state_str =
@@ -1555,8 +1550,8 @@ static esp_err_t status_handler(httpd_req_t *req)
         }
     buf_append(buf, sizeof(buf), &pos, "],");
 
-    // Top-N / Bottom-N by raw z, updated after EVERY measured item, so the
-    // live ranking is always visible — the intermediate-results promise of v3.
+    // Top-N / Bottom-N by rank_key(), fallback for the table until /extremes
+    // lands. Updated after EVERY measured item.
     bool euro = (g_status.mode == MODE_EUROJACKPOT);
 
     buf_append(buf, sizeof(buf), &pos, "\"top\":[");
@@ -1738,13 +1733,13 @@ static esp_err_t loops_handler(httpd_req_t *req)
 /* ── /extremes GET — the ~50 most extreme ranked items by |Z*| (D78/D78b) ──
  * Same row shape as top/low (emit_run), so the page reuses renderRunTable and
  * sorts them client-side. Streamed and on its OWN fetch, not folded into
- * /status: 100 rows outgrow the 8 KB /status buffer, and /status is polled
- * once a second by everything — this is pulled only while the results tables
- * are on screen. Live: results_extremes() rebuilds the set from the current
+ * /status: the set outgrows the 8 KB /status buffer, and /status is polled
+ * once a second by everything — this is pulled only while the results table
+ * is on screen. Live: results_extremes() rebuilds the set from the current
  * prefix on every call, so a newly measured item enters it by |Z*| exactly as
- * the compaction survivors do. The 100-row scratch lives in PSRAM (internal
- * RAM is full — a few KB of .bss fails the link); on a PSRAM shortfall it
- * answers an empty set rather than a fault. */
+ * the compaction survivors do. The scratch lives in PSRAM (internal RAM is
+ * full — a few KB of .bss fails the link); on a PSRAM shortfall it answers
+ * an empty set rather than a fault. */
 #define EXTREMES_MAX 50   /* display pool for the Top-10 table (D78b: 100 -> 50,
                              halves the per-poll scan/serialize on the master).
                              The compaction archive (PASS_KEEP_EXTREME) is
@@ -1808,19 +1803,17 @@ static int csv_row(char *buf, size_t cap, const char *group, int rank,
         de_num(kb, sizeof(kb), zs, 4));
 }
 
-/* ── /results.csv GET – the three published groups; ?all=1 for everything ──
- * Default is the SUMMARY the results screen shows: Top-5 by raw z, Bottom-5,
- * and the 5 closest to the pass mean — fifteen rows, one file, `group` naming
- * which is which. `GET /results.csv?all=1` streams the full pass instead: one
- * row per measured item, RAW z, in measurement order, live at any moment and
- * still there after an abort. The prefix [0..runs_completed) is complete by
- * construction — runs_completed is bumped only after a row is fully written.
+/* ── /results.csv GET – Top-5 + Bottom-5 by rank_key(); ?all=1 for everything
+ * Default is the 10-row SUMMARY (`group` = high/low). `GET /results.csv?all=1`
+ * streams the full pass: one row per measured item, RAW z, in measurement
+ * order, live at any moment and still there after an abort. The prefix
+ * [0..runs_completed) is complete by construction — runs_completed is bumped
+ * only after a row is fully written.
  *
- * ⚠ RAM only, and ⚠ the summary is not the record. Fifteen rows cannot be
+ * ⚠ RAM only, and ⚠ the summary is not the record. Ten rows cannot be
  * re-derived into a pass, no item is ever re-measured, and a master reboot
- * loses everything: on a long session pull `?all=1` periodically. The Save
- * button on the page deliberately fetches the summary — the archival pull is
- * the operator's separate, explicit act.
+ * loses everything: on a long session pull `?all=1`. The Save button fetches
+ * `?all=1`; the summary link is the secondary act.
  *
  * German CSV throughout (user decision): ';' separator, ',' decimal. Fixed
  * columns for both modes (n6 = 0, e1 = e2 = 0 where not applicable) so a
@@ -1889,12 +1882,12 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
          * (readable), elf sha second (exact, and the only field that separates
          * two builds of the same commit). */
         /* `compacted=` is what this file is NOT. Non-zero means the rows below
-         * are the three published tables plus whatever else survived, not a
+         * are the |rank_key| extremes plus whatever else survived, not a
          * sample of the session — the pass statistics in this header still
          * describe every item measured, but a distribution computed from the
          * rows will not. Zero for any session that never filled the buffer. */
         /* ── Concordance weight ───────────────────────────────────────
-         * ⚠ `pre_w` SPLITS THE POOLING TABLE for the three tables.
+         * ⚠ `pre_w` SPLITS THE POOLING TABLE for the ranking tables.
          * z_raw/z_ctr still pool across weights. */
         "run_s=%s run_segs=%d gap_s=%s compacted=%d "
         "pre_w=%s pre_n=%d "
@@ -2026,19 +2019,17 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* ── /calibrate GET – the master's last camera sweep (PLAN.md Task 1) ──
- * The WHOLE per-candidate table, not just the winner. The Task 1 gate is
- * "a full sweep produces a monotonic, explainable bias-vs-exposure curve rather
- * than noise — if bias does not respond to exposure, the premise is wrong and
- * the task stops there", and one chosen point cannot answer that. Each row
- * carries the gate bitmask it failed, so a sweep that certified nothing says
- * which property was missing instead of only "no".
+/* ── /calibrate GET – the master's last camera sweep ──
+ * The WHOLE per-candidate table, not just the winner. A full sweep should
+ * produce a monotonic, explainable bias-vs-exposure curve rather than noise —
+ * if bias does not respond to exposure, the premise is wrong. One chosen point
+ * cannot answer that. Each row carries the gate bitmask it failed, so a sweep
+ * that certified nothing says which property was missing instead of only "no".
  *
- * Read-only: the sweep runs inside a session, at the start of every block, so
- * this reports the real code path rather than a separate manual one that could
- * quietly diverge from it. ⚠ The old one-line recipe for a quick curve
- * (`?runs=1&loops=1&baseline=1`) is dead — all three parameters answer 400.
- * Start a session, let the opening sweep run, then read this endpoint.
+ * Read-only: the sweep runs at the ROUND BOUNDARY (D76), so this reports the
+ * real code path rather than a separate manual one that could quietly diverge
+ * from it. ⚠ `?runs=` / `?loops=` / `?baseline=` answer 400. Start a session,
+ * let the opening sweep run, then read this endpoint.
  *
  * Step 0 is always the setting that was in force when the sweep began. Against
  * the same exposure appearing later in the ladder it is the camera_stats_reset()
@@ -2123,6 +2114,110 @@ static esp_err_t pause_handler(httpd_req_t *req)
  * session still carrying the PREVIOUS run's parameters, so a /start whose
  * loops= or runs= were quietly ignored looked identical to one that worked.
  * Same contract as /update, which has refused mid-measurement since Phase B. */
+static esp_err_t start_refuse(httpd_req_t *req, const char *msg)
+{
+    httpd_resp_set_status(req, "400 Bad Request");
+    httpd_resp_sendstr(req, msg);
+    return ESP_OK;
+}
+
+static bool parse_int_all(const char *s, int *out)
+{
+    if (!s || !*s) return false;
+    char *end = NULL;
+    long v = strtol(s, &end, 10);
+    if (end == s || *end != '\0') return false;
+    if (v < (long)INT32_MIN || v > (long)INT32_MAX) return false;
+    *out = (int)v;
+    return true;
+}
+
+static bool parse_double_all(const char *s, double *out)
+{
+    if (!s || !*s) return false;
+    char *end = NULL;
+    double v = strtod(s, &end);
+    if (end == s || *end != '\0') return false;
+    *out = v;
+    return true;
+}
+
+static bool start_key_eq(const char *k, size_t n, const char *lit)
+{
+    return strlen(lit) == n && memcmp(k, lit, n) == 0;
+}
+
+/* Whitelist (D79). Unknown key → 400. Deleted keys keep a specific message so
+ * a v2 script does not read as a typo. Returns true if the request was refused. */
+static bool start_refuse_unknown_keys(httpd_req_t *req, const char *qry)
+{
+    static const char *allow[] = {
+        "mode", "run", "gap", "score", "wpre", "maxruns",
+        "confirm", "cal", "unlimited",
+    };
+    static const struct { const char *key; const char *msg; } gone[] = {
+        { "loops",
+          "v3: loops/runs/rank/focus no longer exist -- rounds until "
+          "Abort, always unattended. Cap a round with maxruns=<n>" },
+        { "runs",
+          "v3: loops/runs/rank/focus no longer exist -- rounds until "
+          "Abort, always unattended. Cap a round with maxruns=<n>" },
+        { "rank",
+          "v3: loops/runs/rank/focus no longer exist -- rounds until "
+          "Abort, always unattended. Cap a round with maxruns=<n>" },
+        { "focus",
+          "v3: loops/runs/rank/focus no longer exist -- rounds until "
+          "Abort, always unattended. Cap a round with maxruns=<n>" },
+        { "went",
+          "went= no longer exists -- the spectral-entropy channel was "
+          "removed; ranking is z_ctr and optional ?wpre= only" },
+        { "wruns",
+          "wruns= no longer exists -- the runs ranking channel was "
+          "removed; ranking is z_ctr and optional ?wpre= only" },
+        { "baseline",
+          "baseline= no longer exists -- the baseline phase was deleted; "
+          "block centring is the drift reference" },
+        { "calint",
+          "calint= no longer exists -- one block is one round, so the "
+          "round boundary is the only sweep trigger. Set the block "
+          "length with maxruns=<n>; cal=0 turns the sweep off" },
+    };
+    for (const char *p = qry; *p; ) {
+        while (*p == '&') p++;
+        if (!*p) break;
+        const char *eq = p;
+        while (*eq && *eq != '=' && *eq != '&') eq++;
+        size_t kn = (size_t)(eq - p);
+        if (kn == 0) {
+            p = (*eq == '&') ? eq + 1 : eq;
+            continue;
+        }
+        bool allowed = false;
+        for (size_t i = 0; i < sizeof(allow) / sizeof(allow[0]); i++) {
+            if (start_key_eq(p, kn, allow[i])) { allowed = true; break; }
+        }
+        if (!allowed) {
+            for (size_t i = 0; i < sizeof(gone) / sizeof(gone[0]); i++) {
+                if (start_key_eq(p, kn, gone[i].key)) {
+                    start_refuse(req, gone[i].msg);
+                    return true;
+                }
+            }
+            char msg[96];
+            snprintf(msg, sizeof(msg), "unknown start parameter: %.*s",
+                     (int)kn, p);
+            start_refuse(req, msg);
+            return true;
+        }
+        if (*eq == '=') {
+            eq++;
+            while (*eq && *eq != '&') eq++;
+        }
+        p = (*eq == '&') ? eq + 1 : eq;
+    }
+    return false;
+}
+
 static esp_err_t start_handler(httpd_req_t *req)
 {
     if (!origin_ok(req)) return ESP_OK;
@@ -2147,9 +2242,9 @@ static esp_err_t start_handler(httpd_req_t *req)
         g_status.run_segments   = 0;   // filled below after parsing
         // No ?src= any more: the camera is the only source this firmware has
         // (sensor.h). A session that cannot run on photons does not run.
-        /* Camera calibration sweep budget (PLAN.md Task 1). Default 10 s,
-         * split over the exposure ladder. 5 s was too short in warm/long runs
-         * (no rung certified). ?cal=0 disables; ?cal=<ms> overrides. */
+        /* Camera calibration sweep budget. Default 10 s, split over the
+         * exposure ladder. 5 s was too short in warm/long runs (no rung
+         * certified). ?cal=0 disables; ?cal=<ms> overrides. */
         g_status.cal_budget_ms  = CAL_BUDGET_DEFAULT_MS;
         g_status.focus_mode     = false;   /* D66: always unattended */
         g_status.score_dir      = SCORE_DIR_HIGH;
@@ -2164,82 +2259,48 @@ static esp_err_t start_handler(httpd_req_t *req)
         g_status.pre_n = 0;
         if (httpd_req_get_url_query_str(req, qry, sizeof(qry)) == ESP_OK) {
             char val[16] = "";
-            /* v3 removed ?loops=, ?runs= and ?rank=. Refuse them LOUDLY: an
-             * ignored parameter that looks accepted is exactly the bug class
-             * the 409-on-running fix was about — a v2 script would get a
-             * session that silently measures a different experiment than the
-             * one it asked for. */
-            if (httpd_query_key_value(qry, "loops", val, sizeof(val)) == ESP_OK ||
-                httpd_query_key_value(qry, "runs",  val, sizeof(val)) == ESP_OK ||
-                httpd_query_key_value(qry, "rank",  val, sizeof(val)) == ESP_OK ||
-                httpd_query_key_value(qry, "focus", val, sizeof(val)) == ESP_OK) {
-                httpd_resp_set_status(req, "400 Bad Request");
-                httpd_resp_sendstr(req,
-                    "v3: loops/runs/rank/focus no longer exist -- rounds until "
-                    "Abort, always unattended. Cap a round with maxruns=<n>");
+            if (start_refuse_unknown_keys(req, qry))
                 return ESP_OK;
-            }
-            /* ?went= deleted with the spectral-entropy channel (D53). */
-            if (httpd_query_key_value(qry, "went", val, sizeof(val)) == ESP_OK) {
-                httpd_resp_set_status(req, "400 Bad Request");
-                httpd_resp_sendstr(req,
-                    "went= no longer exists -- the spectral-entropy channel was "
-                    "removed; ranking is z_ctr and optional ?wpre= only");
-                return ESP_OK;
-            }
-            /* ?wruns= deleted with the runs ranking channel (D55). */
-            if (httpd_query_key_value(qry, "wruns", val, sizeof(val)) == ESP_OK) {
-                httpd_resp_set_status(req, "400 Bad Request");
-                httpd_resp_sendstr(req,
-                    "wruns= no longer exists -- the runs ranking channel was "
-                    "removed; ranking is z_ctr and optional ?wpre= only");
-                return ESP_OK;
-            }
-            /* ?baseline= deleted with the baseline phase (D48). */
-            if (httpd_query_key_value(qry, "baseline", val, sizeof(val)) == ESP_OK) {
-                httpd_resp_set_status(req, "400 Bad Request");
-                httpd_resp_sendstr(req,
-                    "baseline= no longer exists -- the baseline phase was deleted; "
-                    "block centring is the drift reference");
-                return ESP_OK;
-            }
             /* D67: a single pass is gone. Omitted unlimited= is on. */
-            if (httpd_query_key_value(qry, "unlimited", val, sizeof(val)) == ESP_OK
-                && val[0] == '0') {
-                httpd_resp_set_status(req, "400 Bad Request");
-                httpd_resp_sendstr(req,
-                    "unlimited=0 no longer exists -- sessions are rounds until Abort");
-                return ESP_OK;
+            if (httpd_query_key_value(qry, "unlimited", val, sizeof(val)) == ESP_OK) {
+                if (val[0] == '0')
+                    return start_refuse(req,
+                        "unlimited=0 no longer exists -- sessions are rounds until Abort");
+                if (val[0] != '1')
+                    return start_refuse(req,
+                        "unlimited= must be 1 (sessions are rounds until Abort); omit it");
             }
             if (httpd_query_key_value(qry, "maxruns", val, sizeof(val)) == ESP_OK) {
-                int m = atoi(val);
-                if (m >= 1 && m <= UNLIM_RUNS_MAX) g_status.runs_cap = m;
+                int m;
+                if (!parse_int_all(val, &m) ||
+                    m < UNLIM_RUNS_MIN || m > UNLIM_RUNS_MAX)
+                    return start_refuse(req,
+                        "maxruns= must be between " EL_STR(UNLIM_RUNS_MIN) " and "
+                        EL_STR(NUM_RUNS));
+                g_status.runs_cap = m;
             }
             if (httpd_query_key_value(qry, "mode", val, sizeof(val)) == ESP_OK)
                 g_status.mode = (val[0] == '1') ? MODE_LOTTO_649 : MODE_EUROJACKPOT;
-            // ?run=<seconds> — continuous window per focus element (default 5).
+            // ?run=<seconds> — continuous window per item (default 5).
             // Wall time is measured as focus_win_ms; long values may stretch.
             if (httpd_query_key_value(qry, "run", val, sizeof(val)) == ESP_OK) {
-                double rs = atof(val);
-                /* 400, not a silent fall-back to the default. The window is
-                 * fixed at 1..5 s (sensor.h) and a request outside it is a
-                 * different experiment from the one that would run — exactly
-                 * the class of bug the 409-on-running and the 400 on
-                 * loops/runs/rank exist to prevent. */
-                if (!(rs >= RUN_S_MIN && rs <= RUN_S_MAX)) {
-                    httpd_resp_set_status(req, "400 Bad Request");
-                    httpd_resp_sendstr(req,
+                double rs;
+                if (!parse_double_all(val, &rs) ||
+                    !(rs >= RUN_S_MIN && rs <= RUN_S_MAX))
+                    return start_refuse(req,
                         "run= must be between " EL_STR(RUN_S_MIN) " and "
                         EL_STR(RUN_S_MAX) " seconds");
-                    return ESP_OK;
-                }
                 g_status.run_target_ms = (int)(rs * 1000.0 + 0.5);
             }
             // ?gap=<seconds> — intentional blank. Absent: 40 % of ?run=.
             if (httpd_query_key_value(qry, "gap", val, sizeof(val)) == ESP_OK) {
-                double gs = atof(val);
-                if (gs >= GAP_S_MIN && gs <= GAP_S_MAX)
-                    g_status.gap_ms = (int)(gs * 1000.0 + 0.5);
+                double gs;
+                if (!parse_double_all(val, &gs) ||
+                    !(gs >= GAP_S_MIN && gs <= GAP_S_MAX))
+                    return start_refuse(req,
+                        "gap= must be between " EL_STR(GAP_S_MIN) " and "
+                        EL_STR(GAP_S_MAX) " seconds");
+                g_status.gap_ms = (int)(gs * 1000.0 + 0.5);
             } else {
                 int auto_gap = (int)(g_status.run_target_ms * 0.4 + 0.5);
                 if (auto_gap < 500) auto_gap = 500;
@@ -2253,22 +2314,19 @@ static esp_err_t start_handler(httpd_req_t *req)
                     g_status.score_dir = SCORE_DIR_LOW;
                 else if (val[0] == 'a' || val[0] == 'A')
                     g_status.score_dir = SCORE_DIR_ABS;
-                else
+                else if (val[0] == 'h' || val[0] == 'H')
                     g_status.score_dir = SCORE_DIR_HIGH;
+                else
+                    return start_refuse(req, "score= must be high, low or abs");
             }
-            // ?cal=<ms> -> sweep budget per loop; 0 = do not calibrate.
+            // ?cal=<ms> -> sweep budget per round boundary; 0 = do not calibrate.
             if (httpd_query_key_value(qry, "cal", val, sizeof(val)) == ESP_OK) {
-                int c = atoi(val);
-                if (c >= 0 && c <= CAL_BUDGET_MAX_MS) g_status.cal_budget_ms = c;
-            }
-            /* ?calint= deleted with the wall-clock block trigger (D76). */
-            if (httpd_query_key_value(qry, "calint", val, sizeof(val)) == ESP_OK) {
-                httpd_resp_set_status(req, "400 Bad Request");
-                httpd_resp_sendstr(req,
-                    "calint= no longer exists -- one block is one round, so the "
-                    "round boundary is the only sweep trigger. Set the block "
-                    "length with maxruns=<n>; cal=0 turns the sweep off");
-                return ESP_OK;
+                int c;
+                if (!parse_int_all(val, &c) || c < 0 || c > CAL_BUDGET_MAX_MS)
+                    return start_refuse(req,
+                        "cal= must be 0.." EL_STR(CAL_BUDGET_MAX_MS)
+                        " ms (0 = no sweep)");
+                g_status.cal_budget_ms = c;
             }
             // ?confirm=1 -> "this start came from the web form", nothing more:
             // it authorises prefs_save() below so a curl start cannot overwrite
@@ -2277,15 +2335,11 @@ static esp_err_t start_handler(httpd_req_t *req)
                 from_form = (val[0] == '1');
             /* ?wpre= — concordance weight in the ranking key (D65). Default 0. */
             if (httpd_query_key_value(qry, "wpre", val, sizeof(val)) == ESP_OK) {
-                char *end = NULL;
-                double p = strtod(val, &end);
-                if (end == val || p < 0.0 || p > 1.0) {
-                    httpd_resp_set_status(req, "400 Bad Request");
-                    httpd_resp_sendstr(req,
+                double p;
+                if (!parse_double_all(val, &p) || p < 0.0 || p > 1.0)
+                    return start_refuse(req,
                         "wpre= is the concordance weight in the ranking key and must "
                         "be 0..1 (0 = the control arm, ranking unchanged)");
-                    return ESP_OK;
-                }
                 g_status.pre_w = p;
             }
         }

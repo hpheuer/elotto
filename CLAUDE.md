@@ -60,18 +60,24 @@ the best as fit `?maxruns=` (default 100), measures that space once in a Fisher�
 then scores again. Ends on **Abort**. Inside a round each combination is measured exactly once;
 across rounds a combination can recur — identity is **(round, index)**.
 
-- **No loops, no Runs cap, no ranking modes.** Unknown start parameters answer **400**. 100 % of the progress bar is the full combination space. `NUM_RUNS` 7200 is the hard cap —
-  ⚠ **Eurojackpot's 7920 does not fit uncompacted**; a full Euro pass compacts once near the end
-  `[D45]`. Verify, do not assume.
+- **No loops, no Runs cap, no ranking modes.** `/start` is a **whitelist** `[D79]`: an unknown
+  key answers **400**. Deleted keys (`loops`, `runs`, `rank`, `focus`, `went`, `wruns`,
+  `baseline`, `calint`, `unlimited=0`) keep a specific 400. Allowed: `mode`, `run`, `gap`,
+  `score`, `wpre`, `maxruns`, `confirm`, `cal`, `unlimited`. 100 % of the progress bar is the
+  full combination space. `NUM_RUNS` 7200 is the hard cap on `results[]`.
+  ⚠ **Eurojackpot's 7920 cannot be one round**: `UNLIM_RUNS_MAX` is `NUM_RUNS`, and a
+  combination space larger than that **aborts** rather than compacting mid-round.
 - **Measuring time is a session parameter.** `?run=<s>` is **0,5–5 s, default 5**; out of range
-  answers **400**, no fallback. `?gap=<s>` defaults to 40 % of run (floor `GAP_S_MIN` 0,5);
-  segment count follows from `RUN_SEGS_REF`/`RUN_MS_REF` in `sensor.h`. ⚠ The requested window is
+  answers **400**, no fallback. `?gap=<s>` if present must be 0,5–10 s, else **400**; omitted →
+  40 % of run (floor `GAP_S_MIN` 0,5). `?cal=` 0..`CAL_BUDGET_MAX_MS` (0 = no sweep),
+  `?maxruns=` 10..7200; out of range **400**, no fallback `[D79]`. Segment count follows from
+  `RUN_SEGS_REF`/`RUN_MS_REF` in `sensor.h`. ⚠ The requested window is
   not the wall time you get — actual is `focus_win_ms`, set by the **slowest** node's bit rate
   `[D2]``[D51]`.
 - **`results[]` is in MEASUREMENT order** (`.index` = combination id, `.block` stamped), so the
   prefix is always complete: aborts need no compaction, `GET /results.csv?all=1` streams live
   mid-session. ⚠ RAM only — a master reboot loses unrepeatable measurements. ⚠ Bare
-  `/results.csv` is the 15-row summary, **not** the record.
+  `/results.csv` is the 10-row summary (Top-5 + Bottom-5 by `rank_key`), **not** the record.
 - **Blocks are the statistics unit, and ONE BLOCK IS ONE ROUND** `[D76]`. The round boundary is the
   only block boundary: the pass parks there → `/loops` row, drift point, pairwise close, block
   centring, then the camera sweep before the next round scores. ⛔ There is no wall-clock trigger and
@@ -112,11 +118,10 @@ as backstop for a compaction that cannot allocate.
   tie-break `[D3]`.
 - **Results ACCUMULATE** — `results[]` is never cleared between rounds; every statistic runs on the
   union of all rounds.
-- **Every unlimited round compact at the boundary** `[D56]`: the 100 most extreme items by
-  `|rank_key|` stay as rows (both tails, so Top-5/Bottom-5 stay exact). The rest merges into
-  moments — pass mean/σ/χ² stay exact. A single pass only compact if the space
-  would not fit uncompacted `[D42]` — with D67 every session is rounds, so every
-  round boundary compact.
+- **Every round compact at the boundary** `[D56]`: the 100 most extreme items by
+  `|rank_key|` stay as rows (both tails). The rest merges into moments — pass mean/σ/χ²
+  stay exact. `n ≤ 100` is a no-op, so a short session keeps every row. The display
+  pool (`GET /extremes`, 50) is separate from this archive.
   ⚠ The counter and round-base semantics after a compaction (`completed`/`runs_completed`,
   `round_base`/`round_item_base`) are subtle and documented at their definitions in `sensor.h` —
   read them before touching anything that counts or indexes items; getting them wrong is what broke
@@ -191,9 +196,10 @@ what remains visible is an effect varying **between items inside a block**.
   and a reloaded page both label themselves. "per run" is measured pace once ≥ 5 runs exist, else
   the rate model, and says which. ⚠ The measured value reads high early — `elapsed_ms` also
   contains the opening sweep.
-- **Two rows of four stat cards; the split is load-bearing**: top row round-relative in every
-  figure, bottom row session-relative in every figure. ⚠ The bottom row is unlimited mode only —
-  in a single pass it would repeat the row above it.
+- **Two rows of three stat cards; the split is load-bearing**: top row round-relative in every
+  figure (Items, Progress, Time/ETA), bottom row session-relative (Round, Total Measured,
+  Total Time). ⚠ The bottom row is shown only while a session runs — every session is rounds
+  `[D67]`.
 - **One sortable table of ten**: Top-10, item counter + block badge, Save CSV. Columns: `Z*` (key
   in that item's block-σ units `[D68]`), `Z`, `Conc`, `Δn`.
   ⚠ **The table is the leading 10 of the ~50 most extreme items by `|Z*|`, sorted by whichever
@@ -203,7 +209,7 @@ what remains visible is an effect varying **between items inside a block**.
   and shows the top 10 of the active sort. Click `Z*`/`Z`/`Conc`/`Δn` to sort; a second click on the
   same header flips direction (arrow ▾/▴, ⇅ on the inactive ones), so the low end is one click away —
   which is why the old Bottom-5 table is gone. ⛔ Items still ENTER the set by `|Z*|` only — the sort
-  reorders the view, never the held 100 or the pool `[D78]`. A missing `Δn` (solo item) sinks to the
+  reorders the view, never the display pool of 50 or the compaction archive of 100 `[D78]``[D78b]`. A missing `Δn` (solo item) sinks to the
   bottom of a `Δn` sort. `Δn` prints the node count it is taken over in parentheses — `0,79 (3)` is
   three cameras. Until the first `/extremes` reply lands the table falls back to `/status` `top`.
   **`Δn` is node agreement** `[D70]`: σ across the contributing nodes of their block-centred z,
@@ -228,8 +234,8 @@ what remains visible is an effect varying **between items inside a block**.
   measurements of that block whose z sat furthest from the block mean, captured at block close
   because compaction takes the rows one round later. Hidden when nothing tripped.
   Title line: **Block · node · wall time · σ · mean**. Time is `now − (uptime_ms − t_ms)` — no RTC.
-  ⚠ A trip belongs to a BLOCK, not to a measurement — σ is the spread over its ~63 items. This
-  names what carried the spread, not what "caused" it.
+  ⚠ A trip belongs to a BLOCK, not to a measurement — σ is the spread over that round's
+  `?maxruns=` items (default 100). This names what carried the spread, not what "caused" it.
   ⚠ The ×σ column is measured against that block's own spread, not the null: near 3 is
   ordinary. Read the SHAPE — one item far out is an excursion, three close together mean the
   block was simply wide.
@@ -244,7 +250,7 @@ what remains visible is an effect varying **between items inside a block**.
 
 ### CSV header
 `# elotto v3 mode= focus= score= items=<measured>/<planned> ranked= excl= void= blocks= paused_ms=
-pass_* v_eff= flush_timeouts= drift_t= unlimited= runs_cap= rounds= run_s= run_segs=
+pass_* v_eff= open= flush_timeouts= drift_t= unlimited= runs_cap= rounds= run_s= run_segs=
 gap_s= compacted= pre_w= pre_n=
 fw=<version>/<elf sha>`, then `# nodes=<ip list, discovery order>` and
 `# fw_nodes=<sha per node, same order>` (`?` = never answered).
@@ -441,7 +447,7 @@ The enclosure is **LIT, not dark** `[D28]`.
 
 ## Project structure
 - **main/elotto.c** – app_main, Ethernet, webserver, HTML/JS UI. Endpoints: `/` `/status` `/start`
-  `/abort` `/loops` `/results.csv` `/focus` `/pause` `/calibrate` `/pool` (400) `/probe`
+  `/abort` `/loops` `/extremes` `/results.csv` `/focus` `/pause` `/calibrate` `/pool` (400) `/probe`
   `/expose` `/diag` `/diagjson` `/camtest` `/camlog` `/linearity`, +5 from elotto_ota.
   ⚠ The URI-handler cap fails silently (404, return value unchecked) — the count lives at
   `start_webserver()`; prefer `?all=1` on an existing endpoint over a new handler.
@@ -457,6 +463,8 @@ The enclosure is **LIT, not dark** `[D28]`.
 - **main/nodes.c/h** – the array: UDP link, discovery, calibration handshake, per-node health,
   drop/reboot policy. sensor.c reaches other boards only through `nodes.h`.
 - **main/focus.c** – current-item card, pause, run gap, session clock — one file because they share state.
+- **tools/tune.html** – live per-node exposure/health board (`/linearity` + last sweep). Open in a
+  browser on the operator PC; 409 while a session runs. Not served by the master.
 - **ota_firmware/** – the network updater, its own IDF project. Ethernet + HTTP + esp_ota only.
 - **components/elotto_camera/** – OV5647 entropy extraction. One stream `[D65]`; the runs half
   is armed only inside a sweep `[D46]`. Also serves `/camlog`, `/linearity`, `/expose`,
