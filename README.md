@@ -16,7 +16,7 @@ noise** using
 
 ## Abstract
 
-A home-built GCP/PEAR-style instrument: each node draws bits from its **own** OV5647 (never shared).
+A home-built GCP/PEAR-style instrument: each node draws bits from its **own** camera (OV5647 or IMX219, never shared).
 Frame-pair diff → LSB → segments of 224 bits → Stouffer z. LSB bits as measured `[D65]`.
 Up to four nodes combine as `Σz/√k` for the nodes that answered that run. Ranking is
 **block-centred** z plus concordance (`?wpre=`), Z* in units of that block's σ `[D68]`.

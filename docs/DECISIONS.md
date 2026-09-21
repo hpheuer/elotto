@@ -1389,3 +1389,18 @@ existed to prevent — `?wper=0,8` or `?maxruns=5` would run a different experim
 asked for.
 
 **Pooling:** no effect on data. Starts that would have been ignored now refuse.
+
+### D80 — IMX219 is a first-class camera, detected at boot (2026-09-21)
+**Entscheidung:** If an IMX219 (Pi Camera v2, I2C 0x10, PID 0x0219) is on the CSI
+connector instead of the OV5647 (0x36, PID 0x5647), the node binds it and measures
+from it. Both drivers are linked; `esp_video` probes and keeps the chip that
+answers. Exposure is still in line units (IMX219 0x015A/0x015B); analog gain
+clamps at 232 (native max), not 1023. Packed RAW10 LSBs feed the same z path.
+`/status` `cam_sensor` and the CSV `sensor=` field name the bound chip.
+
+**Warum:** the 15-pin CSI takes either module. D32 forbids swapping cameras on the
+theory the OV5647 is the problem; this does not swap, it accepts whichever is
+plugged in.
+
+**Pooling:** IMX219 vs OV5647 is a hardware change — do not pool the two. Same
+`sensor=` only.

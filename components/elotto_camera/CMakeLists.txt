@@ -6,6 +6,8 @@ idf_component_register(
         "include"
     REQUIRES
         esp_video
+        esp_cam_sensor
+        mushbraindave__esp_cam_sensor_imx
         esp_timer
         esp_http_server
         esp_driver_tsens

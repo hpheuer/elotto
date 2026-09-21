@@ -1,7 +1,7 @@
-menu "Elotto Camera (OV5647 dark-frame entropy)"
+menu "Elotto Camera (OV5647 / IMX219 entropy)"
 
     config ELOTTO_CAM_ENABLE
-        bool "Enable OV5647 camera entropy"
+        bool "Enable camera entropy (OV5647 or IMX219)"
         default n
         help
             Shared by the master (elotto) and slave (elotto_slave) firmwares --

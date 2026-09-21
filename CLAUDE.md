@@ -25,7 +25,7 @@ Two channels, one key `[D65]`:
 `?wpre=` is the concordance weight (form 0,8; API 0 = z alone). Scoring **selects** the pool on
 that key; the pass **ranks** items on the same key; the UI shows Z*, Z, Conc.
 
-**How the cameras stay usable.** Frame-pair LSB — z is the camera bits. The **sweep**
+**How the cameras stay usable.** One OV5647 **or** IMX219 per node — `esp_video` probes both (OV at I2C 0x36, IMX at 0x10) and binds whichever chip answers `[D80]`. Frame-pair LSB — z is the camera bits. IMX219 streams packed RAW10; the extractor takes the 10-bit LSB. `/status` `cam_sensor` names the bound chip. ⚠ IMX219 sessions do not pool with OV5647. The **sweep**
 picks the exposure with the lowest |bias−0,5| among rungs that still look like noise (autocorr,
 relative σ, dark / zero_diff). If a node's block σ is too loud against its peers, **soft-down**
 takes it out of the combine. The next sweep — at the next round boundary —
@@ -39,7 +39,7 @@ discovered by broadcast at every session start — no IP table, no node count co
 z = **Σ z_node / √k** over the k nodes that answered *that* run, so a missing reply costs that
 run's gain, not the session.
 
-**Entropy is photons, and only photons** (user decision). One OV5647 per node, never shared.
+**Entropy is photons, and only photons** (user decision). One camera per node (OV5647 or IMX219), never shared.
 Non-overlapping frame pairs, diff = f[2k+1]−f[2k] per pixel (cancels FPN exactly), LSB packed.
 ⛔ LSB bits as measured `[D65]`. ⛔ No on-chip TRNG (covers an LFSR fed from the camera). The Fisher–Yates
 order uses an xorshift32 seeded from the camera; it never enters a z.
@@ -255,7 +255,7 @@ what remains visible is an effect varying **between items inside a block**.
   compiled-in value. Mode is not remembered — it is which button was pressed, not a field.
 
 ### CSV header
-`# elotto v3 mode= focus= score= items=<measured>/<planned> ranked= excl= void= blocks= paused_ms=
+`# elotto v3 mode= sensor= focus= score= items=<measured>/<planned> ranked= excl= void= blocks= paused_ms=
 pass_* v_eff= open= flush_timeouts= drift_t= unlimited= runs_cap= rounds= run_s= run_segs=
 gap_s= compacted= pre_w= pre_n=
 fw=<version>/<elf sha>`, then `# nodes=<ip list, discovery order>` and
@@ -294,6 +294,7 @@ separate arm `[D1]`.
 | unbounded key, per-item weights 2026-09-02 | post-D75 only — earlier keys were truncated at 12 and scaled an item down when it had no concordance. Splits TABLES **and the chosen POOL**; `z_raw`/`z_ctr`/`zc_ctr` still pool `[D75]` |
 | centred-half concordance 2026-09-02 | post-D77 only — earlier `zc_ctr` is z − \|h1−h2\|/√2, not a sign test. Splits TABLES **and the chosen POOL** at `pre_w` > 0; `z_raw`/`z_ctr` still pool `[D77]` |
 | v3 vs any v2.x | v3 only |
+| camera chip `[D80]` | one of OV5647, IMX219 — `sensor=` in the CSV |
 
 Unlimited-mode data carries two more: split on `round` before pooling with a single-pass session,
 and decide what to do about combinations that recur across rounds before pooling rounds together.
@@ -472,7 +473,7 @@ The enclosure is **LIT, not dark** `[D28]`.
 - **tools/tune.html** – live per-node exposure/health board (`/linearity` + last sweep). Open in a
   browser on the operator PC; 409 while a session runs. Not served by the master.
 - **ota_firmware/** – the network updater, its own IDF project. Ethernet + HTTP + esp_ota only.
-- **components/elotto_camera/** – OV5647 entropy extraction. One stream `[D65]`; the runs half
+- **components/elotto_camera/** – OV5647 / IMX219 entropy extraction. One stream `[D65]`; the runs half
   is armed only inside a sweep `[D46]`. Also serves `/camlog`, `/linearity`, `/expose`,
   `/calibrate` and `/camtest` for **every** node from one implementation — the four boards must
   not describe their own cameras in four different shapes.

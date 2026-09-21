@@ -2,3 +2,8 @@ dependencies:
   idf: ">=5.4"
   espressif/esp_video:
     version: "*"
+  # Official esp_cam_sensor has no IMX219. This add-on registers into the
+  # same auto-detect section, so esp_video probes OV5647 (0x36) and IMX219
+  # (0x10) and binds whichever chip answers.
+  mushbraindave/esp_cam_sensor_imx:
+    version: "^0.3.0"

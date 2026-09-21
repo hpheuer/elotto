@@ -47,6 +47,11 @@ CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
 CONFIG_CAMERA_OV5647=y
 CONFIG_CAMERA_OV5647_MIPI_RAW8_800X800_50FPS=y
 CONFIG_CAMERA_OV5647_MIPI_DEFAULT_FMT_RAW8_800X800_50FPS=y
+# IMX219 (Pi Camera v2) on the same 15-pin CSI. Probe both; bind whoever
+# answers. IMX708 off — not on this rig, and it would pull the AF motor.
+CONFIG_CAMERA_IMX219=y
+CONFIG_CAMERA_IMX219_AUTO_DETECT_MIPI_INTERFACE_SENSOR=y
+CONFIG_CAMERA_IMX708=n
 
 # Shared elotto_camera component. XCLK stays unwired because RPi-style OV5647
 # modules clock themselves; SCCB on GPIO8/7.

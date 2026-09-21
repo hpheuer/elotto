@@ -3,7 +3,8 @@
 #include <stdbool.h>
 #include "esp_err.h"
 
-// OV5647 noise source: photon shot + read noise from non-overlapping frame
+// Camera noise source (OV5647 or IMX219, whichever answers on SCCB): photon
+// shot + read noise from non-overlapping frame
 // pairs. ⚠ "dark frame" survives in names and docs as a LABEL only — the
 // enclosure is lit with constant ambient light, and the dark end of the
 // exposure ladder is gated off because too few photons stop whitening the LSB.
@@ -105,7 +106,7 @@ typedef struct {
     double   raw_runs_z;          // NIST runs z, conditioned on the observed bias
 
     /* P4 die temperature, the covariate for the raw-channel offset monitor.
-     * ⚠ It is the SoC die, NOT the OV5647 — a proxy that shares the
+     * ⚠ It is the SoC die, NOT the camera — a proxy that shares the
      * enclosure, never to be reported as sensor temperature.
      * ⚠ NAN when the driver did not install. Handle it; do not print 0,0. */
     float    die_temp_c;
@@ -130,11 +131,14 @@ typedef struct {
     double   ms_rest;
 } camera_stats_t;
 
-// Bring up MIPI-CSI + OV5647, disable AEC/AGC, apply fixed exposure/gain from
-// Kconfig, start capture task. Pin/register values MUST be set via
-// `idf.py menuconfig` -> "Elotto Camera (OV5647) Configuration" to match the
-// actual CSI wiring before this will do anything useful.
+// Bring up MIPI-CSI, probe OV5647 (I2C 0x36) and IMX219 (I2C 0x10), bind
+// whichever chip answers, disable AE, apply fixed exposure/gain, start capture.
+// Pin values MUST match the 15-pin CSI wiring (menuconfig Elotto Camera).
 esp_err_t camera_init(void);
+
+/* Bound sensor after camera_init(), "?" before. OV5647 or IMX219. */
+const char *camera_sensor_name(void);
+uint16_t    camera_sensor_pid(void);
 
 bool camera_is_ready(void);
 void camera_get_stats(camera_stats_t *out);
@@ -181,10 +185,9 @@ bool camera_stats_settled(void);
 // value — a silently ignored write would make calibration score the previous
 // setting and then "choose" it. exposure 1..0xFFFF, gain 0..0x3FF.
 //
-// The exposure range is the one the REGISTERS can hold, not the one the OV5647
-// datasheet lists: 0x3500[3:0]/0x3501/0x3502[7:4] carry 16 integer bits, so a
-// value above 0xFFFF would be truncated on the way in and read back as a
-// different number. Clamping to what round-trips keeps set/get honest.
+// Exposure is in sensor line units on both chips. Gain is the native analog
+// register: OV5647 0..1023 (10-bit), IMX219 0..232. Values above the chip's
+// max are clamped so set/get still round-trips.
 bool camera_set_exposure(uint32_t exposure, uint32_t gain);
 void camera_get_exposure(uint32_t *exposure, uint32_t *gain);
 

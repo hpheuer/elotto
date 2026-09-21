@@ -18,6 +18,7 @@
 #include "esp_video_init.h"
 #include "esp_video_ioctl.h"
 #include "esp_cam_sensor_xclk.h"
+#include "esp_cam_sensor.h"
 #include "esp_http_server.h"
 #include "camera.h"
 #include "extract.h"
@@ -48,6 +49,13 @@ static uint32_t s_frame_size = 0;
  * the bit stream aliases against (former /specdump). s_frame_size alone cannot
  * give it. */
 static uint32_t s_frame_w = 0, s_frame_h = 0;
+/* Bound after camera_init. OV5647 PID 0x5647, IMX219 PID 0x0219. */
+#define CAM_PID_OV5647  0x5647
+#define CAM_PID_IMX219  0x0219
+#define IMX219_GAIN_MAX 232u
+static uint16_t s_sensor_pid = 0;
+static const char *s_sensor_name = "?";
+static bool     s_packed_raw10 = false;
 static uint8_t *s_bufs[CAM_BUF_COUNT];
 static uint32_t s_buf_len[CAM_BUF_COUNT];   // mmap length per buffer, for fail-path munmap
 #if CONFIG_ELOTTO_CAM_XCLK_PIN > 0
@@ -319,17 +327,46 @@ static esp_err_t cam_reg_read(uint32_t regaddr, uint32_t *value)
 // proof they stuck: the driver rewrites the whole format array on S_FMT, and
 // some OV5647 revisions latch exposure only via group-hold. Without this, a
 // silently ignored exposure/gain setting looks identical to a working one.
+static void cam_identify(void)
+{
+    esp_cam_sensor_id_t id = {0};
+    struct v4l2_ext_control ctrl = {
+        .id   = ESP_CAM_SENSOR_IOC_G_CHIP_ID,
+        .p_u8 = (uint8_t *)&id,
+        .size = sizeof(id),
+    };
+    struct v4l2_ext_controls ctrls = {
+        .ctrl_class = V4L2_CTRL_CLASS_ESP_CAM_IOCTL,
+        .count      = 1,
+        .controls   = &ctrl,
+    };
+    if (ioctl(s_fd, VIDIOC_G_EXT_CTRLS, &ctrls) != 0) {
+        ESP_LOGW(TAG_CAM, "G_CHIP_ID failed -- assuming OV5647 registers");
+        s_sensor_pid  = CAM_PID_OV5647;
+        s_sensor_name = "OV5647";
+        return;
+    }
+    s_sensor_pid = id.pid;
+    if (id.pid == CAM_PID_IMX219)      s_sensor_name = "IMX219";
+    else if (id.pid == CAM_PID_OV5647) s_sensor_name = "OV5647";
+    else                               s_sensor_name = "?";
+    ESP_LOGI(TAG_CAM, "sensor %s PID=0x%04x", s_sensor_name, (unsigned)id.pid);
+}
+
+const char *camera_sensor_name(void) { return s_sensor_name; }
+uint16_t    camera_sensor_pid(void)  { return s_sensor_pid; }
+
+static uint32_t cam_gain_max(void)
+{
+    return (s_sensor_pid == CAM_PID_IMX219) ? IMX219_GAIN_MAX : 0x3FFu;
+}
+
 static void cam_verify_regs(const char *when)
 {
-    uint32_t aec = 0, e0 = 0, e1 = 0, e2 = 0, g0 = 0, g1 = 0;
-    cam_reg_read(0x3503, &aec);
-    cam_reg_read(0x3500, &e0); cam_reg_read(0x3501, &e1); cam_reg_read(0x3502, &e2);
-    cam_reg_read(0x350a, &g0); cam_reg_read(0x350b, &g1);
-    uint32_t exposure = ((e0 & 0x0F) << 12) | ((e1 & 0xFF) << 4) | ((e2 & 0xF0) >> 4);
-    uint32_t gain     = ((g0 & 0x03) << 8) | (g1 & 0xFF);
-    ESP_LOGI(TAG_CAM, "regs[%s] 0x3503=0x%02x (AEC/AGC manual=%s) exposure=%lu (want %d) "
-             "gain=%lu (want %d)",
-             when, (unsigned)aec, ((aec & 0x03) == 0x03) ? "yes" : "NO",
+    uint32_t exposure = 0, gain = 0;
+    camera_get_exposure(&exposure, &gain);
+    ESP_LOGI(TAG_CAM, "regs[%s] %s exposure=%lu (want %d) gain=%lu (want %d)",
+             when, s_sensor_name,
              (unsigned long)exposure, CONFIG_ELOTTO_CAM_REG_EXPOSURE,
              (unsigned long)gain, CONFIG_ELOTTO_CAM_REG_GAIN);
 }
@@ -429,6 +466,8 @@ static volatile int s_settle_pairs = 0;
 static void emit_word_cb(uint32_t w, uint32_t ro, void *ctx)
 { (void)ctx; process_word(w, ro); }
 
+static void diff_and_extract_raw10(const uint8_t *a, const uint8_t *b, uint32_t n);
+
 /* One frame pair. The extraction itself lives in extract.c as two
  * implementations the on-target self-test holds against each other; this picks
  * one and does the frame-level bookkeeping around it. */
@@ -458,6 +497,10 @@ static void diff_and_extract(const uint8_t *a, const uint8_t *b, uint32_t n)
      * was an idle reading against a loaded one. What DOES move ms_extract is
      * which core this task runs on -- see ELOTTO_CAM_TASK_CORE in camera.h and
      * D61. Compare ms_extract only between nodes in the same LOAD state. */
+    if (s_packed_raw10) {
+        diff_and_extract_raw10(a, b, n);
+        return;
+    }
     cam_extract_fast(a, b, n, &s_pack, emit_word_cb, NULL, &zeros, &any, &psum,
                      &s_raw);
 
@@ -465,6 +508,60 @@ static void diff_and_extract(const uint8_t *a, const uint8_t *b, uint32_t n)
     s_diff_n += n;
     s_pixel_sum += psum;
     s_pixel_n   += n;
+
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    s_stats.frame_pairs++;
+    if (!any) s_stats.stuck_frame_count++;
+    xSemaphoreGive(s_mutex);
+}
+
+/* MIPI RAW10 packed: 4 pixels in 5 bytes. LSB of each 10-bit sample is the
+ * entropy bit (same identity LSB(b-a)==LSB(a)^LSB(b)). mean_px uses the high
+ * 8 bits so the 0..255 scale matches the OV5647 RAW8 path. */
+static void diff_and_extract_raw10(const uint8_t *a, const uint8_t *b, uint32_t n)
+{
+    uint32_t zeros = 0, any = 0, psum = 0, npix = 0;
+    uint32_t acc = s_pack.bitacc;
+    int      accn = s_pack.bitacc_n;
+    uint32_t rw = 0;
+    uint32_t groups = n / 5;
+    for (uint32_t g = 0; g < groups; g++) {
+        const uint8_t *pa = a + g * 5;
+        const uint8_t *pb = b + g * 5;
+        uint8_t la = pa[4], lb = pb[4];
+        for (int p = 0; p < 4; p++) {
+            uint16_t va = ((uint16_t)pa[p] << 2) | ((la >> (p * 2)) & 3u);
+            uint16_t vb = ((uint16_t)pb[p] << 2) | ((lb >> (p * 2)) & 3u);
+            psum += pa[p];
+            uint16_t d = (uint16_t)(vb - va);
+            if (d == 0) zeros++;
+            if (d) any = 1;
+            uint32_t bit = d & 1u;
+            s_raw.ones += bit; s_raw.run_ones += bit; rw += bit;
+            s_raw.bits++; s_raw.run_bits++;
+            if (s_raw.run_bits >= CAM_RAW_MINIRUN_BITS) {
+                uint64_t o = s_raw.run_ones;
+                s_raw.mr_sum   += o;
+                s_raw.mr_sumsq += o * o;
+                s_raw.mr_n++;
+                s_raw.run_ones = 0;
+                s_raw.run_bits = 0;
+            }
+            if (s_raw.want_runs) {
+                if (s_raw.have_prev) s_raw.trans += (bit ^ s_raw.prev);
+                s_raw.prev = bit; s_raw.have_prev = true;
+            }
+            acc = (acc << 1) | bit;
+            if (++accn == 32) { emit_word_cb(acc, rw, NULL); acc = 0; accn = 0; rw = 0; }
+            npix++;
+        }
+    }
+    s_pack.bitacc = acc; s_pack.bitacc_n = accn;
+
+    s_zero_diffs += zeros;
+    s_diff_n += npix;
+    s_pixel_sum += psum;
+    s_pixel_n   += npix;
 
     xSemaphoreTake(s_mutex, portMAX_DELAY);
     s_stats.frame_pairs++;
@@ -912,16 +1009,16 @@ esp_err_t camera_init(void)
              V4L2_FMT_STR_ARG(fmt.fmt.pix.pixelformat),
              (unsigned)fmt.fmt.pix.width, (unsigned)fmt.fmt.pix.height, (unsigned)s_frame_size);
 
-    // Disable AEC/AGC (manual mode) and force fixed exposure/gain by direct
-    // register write. The esp_cam_sensor OV5647 driver's public API only
-    // exposes an "AE target" control (auto-exposure setpoint, not a manual
-    // override) -- ESP_CAM_SENSOR_IOC_S_REG bypasses it. See PLAN Phase 0.
-    cam_reg_write(0x3503, 0x03);   // bit1 AGC manual, bit0 AEC manual
-    cam_reg_write(0x350a, ((uint32_t)CONFIG_ELOTTO_CAM_REG_GAIN >> 8) & 0x03);
-    cam_reg_write(0x350b, (uint32_t)CONFIG_ELOTTO_CAM_REG_GAIN & 0xFF);
-    cam_reg_write(0x3500, ((uint32_t)CONFIG_ELOTTO_CAM_REG_EXPOSURE >> 12) & 0x0F);
-    cam_reg_write(0x3501, ((uint32_t)CONFIG_ELOTTO_CAM_REG_EXPOSURE >> 4) & 0xFF);
-    cam_reg_write(0x3502, ((uint32_t)CONFIG_ELOTTO_CAM_REG_EXPOSURE << 4) & 0xF0);
+    /* Packed RAW10 if the buffer is ~10/8 of w*h (IMX219). RAW8 is exactly w*h
+     * (OV5647). The extractor follows this, not the fourcc name. */
+    s_packed_raw10 = (s_frame_w > 0 && s_frame_h > 0 &&
+                      s_frame_size >= (s_frame_w * s_frame_h * 5u) / 4u);
+    cam_identify();
+
+    uint32_t boot_g = (uint32_t)CONFIG_ELOTTO_CAM_REG_GAIN;
+    if (boot_g > cam_gain_max()) boot_g = cam_gain_max();
+    if (!camera_set_exposure((uint32_t)CONFIG_ELOTTO_CAM_REG_EXPOSURE, boot_g))
+        ESP_LOGW(TAG_CAM, "boot exposure/gain did not latch");
     cam_verify_regs("after-write");
 
     struct v4l2_requestbuffers req = {
@@ -1120,18 +1217,25 @@ bool camera_set_exposure(uint32_t exposure, uint32_t gain)
 {
     if (s_fd < 0) return false;
     if (exposure < 1) exposure = 1;
-    // 0xFFFF, not 0xFFFFF: the three registers below hold 16 integer bits, so a
-    // larger value loses its top bits on the way in and reads back as something
-    // else — which this function would then report as "did not latch".
     if (exposure > 0xFFFF) exposure = 0xFFFF;
-    if (gain > 0x3FF) gain = 0x3FF;
+    uint32_t gmax = cam_gain_max();
+    if (gain > gmax) gain = gmax;
 
-    cam_reg_write(0x3503, 0x03);                       // keep AEC/AGC manual
-    cam_reg_write(0x350a, (gain >> 8) & 0x03);
-    cam_reg_write(0x350b, gain & 0xFF);
-    cam_reg_write(0x3500, (exposure >> 12) & 0x0F);
-    cam_reg_write(0x3501, (exposure >> 4) & 0xFF);
-    cam_reg_write(0x3502, (exposure << 4) & 0xF0);
+    if (s_sensor_pid == CAM_PID_IMX219) {
+        /* Group hold, then coarse integration (16-bit BE) and analog gain. */
+        cam_reg_write(0x0104, 1);
+        cam_reg_write(0x015A, (exposure >> 8) & 0xFF);
+        cam_reg_write(0x015B, exposure & 0xFF);
+        cam_reg_write(0x0157, gain & 0xFF);
+        cam_reg_write(0x0104, 0);
+    } else {
+        cam_reg_write(0x3503, 0x03);                       // keep AEC/AGC manual
+        cam_reg_write(0x350a, (gain >> 8) & 0x03);
+        cam_reg_write(0x350b, gain & 0xFF);
+        cam_reg_write(0x3500, (exposure >> 12) & 0x0F);
+        cam_reg_write(0x3501, (exposure >> 4) & 0xFF);
+        cam_reg_write(0x3502, (exposure << 4) & 0xF0);
+    }
 
     uint32_t re = 0, rg = 0;
     camera_get_exposure(&re, &rg);
@@ -1146,6 +1250,14 @@ bool camera_set_exposure(uint32_t exposure, uint32_t gain)
 
 void camera_get_exposure(uint32_t *exposure, uint32_t *gain)
 {
+    if (s_sensor_pid == CAM_PID_IMX219) {
+        uint32_t eh = 0, el = 0, g = 0;
+        cam_reg_read(0x015A, &eh); cam_reg_read(0x015B, &el);
+        cam_reg_read(0x0157, &g);
+        if (exposure) *exposure = ((eh & 0xFF) << 8) | (el & 0xFF);
+        if (gain)     *gain     = g & 0xFF;
+        return;
+    }
     uint32_t e0 = 0, e1 = 0, e2 = 0, g0 = 0, g1 = 0;
     cam_reg_read(0x3500, &e0); cam_reg_read(0x3501, &e1); cam_reg_read(0x3502, &e2);
     cam_reg_read(0x350a, &g0); cam_reg_read(0x350b, &g1);
@@ -1900,8 +2012,8 @@ esp_err_t camera_expose_handle(void *httpd_req, bool busy)
      * clamps the gain, but a rejected value should be visible in the reply
      * rather than silently corrected two layers down. */
     if (want_e < 1)       want_e = 1;
-    if (want_e > 1048575) want_e = 1048575;
-    if (want_g > 0x3FF)   want_g = 0x3FF;
+    if (want_e > 0xFFFF)  want_e = 0xFFFF;
+    if (want_g > cam_gain_max()) want_g = cam_gain_max();
 
     bool applied = camera_set_exposure(want_e, want_g);
     camera_stats_reset(CAL_SETTLE_PAIRS);

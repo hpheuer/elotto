@@ -213,7 +213,7 @@ static const char HTML[] =
 "</div>"
 "<div class='frow'>"
 "<span>Entropy:</span>"
-"<span style='font-size:.92em'>&#128247; OV5647 dark-frame photons</span>"
+"<span style='font-size:.92em'>&#128247; camera photons (OV5647 / IMX219)</span>"
 "</div>"
 "<div class='frow'>"
 "<label for='numUnlimRuns' title='Measurement runs ONE round may spend. The pool is sized so its whole "
@@ -1363,7 +1363,7 @@ static esp_err_t status_handler(httpd_req_t *req)
     pos = buf_append(buf, sizeof(buf), &pos,
         "{\"state\":\"%s\",\"mode\":\"%s\",\"phase\":\"%s\","
         "\"slave\":%s,"
-        "\"src\":\"camera\",\"src_stalled\":%s,\"fault\":\"%s\","
+        "\"src\":\"camera\",\"cam_sensor\":\"%s\",\"src_stalled\":%s,\"fault\":\"%s\","
         "\"comparisons\":%d,"
         "\"pass_mean\":%.4f,\"pass_sigma\":%.4f,\"pass_chi2\":%.4f,"
         "\"pass_stouffer\":%.4f,\"pass_n_valid\":%d,\"pass_n_void\":%d,"
@@ -1412,6 +1412,7 @@ static esp_err_t status_handler(httpd_req_t *req)
         "\"pool_need_main\":%d,\"pool_need_euro\":%d,",
         state_str, mode_str, phase_str,
         g_status.slave_connected ? "true" : "false",
+        camera_sensor_name(),
         g_status.noise_stalled ? "true" : "false", g_status.fault,
         g_status.comparisons,
         g_status.pass_mean, g_status.pass_sigma, g_status.pass_chi2,
@@ -1864,7 +1865,7 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
                 ? g_status.round_item_base + g_status.round_total
                 : g_status.runs_total;
     int nlen = snprintf(buf, sizeof(buf),
-        "# elotto v3 mode=%s focus=%s score=%s items=%d/%d ranked=%d excl=%d void=%d "
+        "# elotto v3 mode=%s sensor=%s focus=%s score=%s items=%d/%d ranked=%d excl=%d void=%d "
         "blocks=%d paused_ms=%lld pass_mean=%s pass_sigma=%s pass_chi2=%s "
         "pass_stouffer=%s v_eff=%s open=%d flush_timeouts=%lu drift_t=%.2f "
         "unlimited=%s runs_cap=%d rounds=%d "
@@ -1894,6 +1895,7 @@ static esp_err_t results_csv_handler(httpd_req_t *req)
         "fw=%s/%s\n"
         "# nodes=",
         g_status.mode == MODE_EUROJACKPOT ? "euro" : "649",
+        camera_sensor_name(),
         g_status.focus_mode ? "on" : "off", score_str,
         n, planned, g_status.pass_n_valid, g_status.pass_n_excl,
         g_status.pass_n_void,
@@ -2896,15 +2898,17 @@ static esp_err_t diagjson_handler(httpd_req_t *req)
                 "\"stalls\":%lu,"
                 /* exposure/gain are LIVE; cal_exp is what the last sweep chose.
                  * They differ after a manual /expose or an uncertified sweep. */
+                "\"cam_sensor\":\"%s\","
                 "\"exposure\":%lu,\"gain\":%lu,"
                 "\"cal_exp\":%lu,\"cal_ok\":%d,\"cal_bias\":%.6f,"
                 "\"raw_bias\":%.6f,\"raw_sigma\":%.4f,"
                 "\"bias\":%.6f,\"sigma\":%.4f,"
-                /* ⚠ P4 DIE, not the OV5647. null = this node did not report it. */
+                /* ⚠ P4 DIE, not the camera. null = this node did not report it. */
                 "\"die_temp\":%s,"
                 "\"soft_down\":%s,\"lost\":%lu,\"reboots\":%lu,\"fw_sha\":\"%s\"}",
                 i ? "," : "", me ? "master" : N->ip,
                 N->ok ? "true" : "false", mb, cmb, (unsigned long)stl,
+                me ? camera_sensor_name() : "?",
                 (unsigned long)enow, (unsigned long)gnow,
                 (unsigned long)N->cam_exp, (int)N->cam_cal_ok, N->cam_bias,
                 rb, rs, bi, sg, ct_txt,
