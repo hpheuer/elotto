@@ -50,8 +50,7 @@ static uint16_t s_perm[NUM_RUNS];
  * The Fisher–Yates shuffle needs thousands of values per loop and camera
  * entropy is rate-limited, so drawing them from the camera would stall the
  * session for bits that never enter a z-score. The generator is instead SEEDED
- * from the camera once per session and run forward arithmetically. Nothing here
- * touches the on-chip TRNG — it is not present in this firmware at all. */
+ * from the camera once per session and run forward arithmetically. */
 static uint32_t s_prng = 0x9E3779B9u;
 
 /* Not static: nodes.c seeds the link's sequence number from it. One generator
@@ -548,125 +547,130 @@ static bool onset_settle(void)
     return false;
 }
 
+static int score_pick_best(const double *acc, const bool *ok, const bool *used,
+                           const bool *skip, int max_val)
+{
+    int b = 0;
+    double bs = 0.0;
+    bool first = true;
+    for (int j = 1; j <= max_val; j++) {
+        if (used[j] || skip[j] || !ok[j]) continue;
+        double s = acc[j], key;
+        switch (g_status.score_dir) {
+        case SCORE_DIR_LOW: key = -s;      break;
+        case SCORE_DIR_ABS: key = fabs(s); break;
+        default:            key = s;       break;
+        }
+        if (first || key > bs) { b = j; bs = key; first = false; }
+    }
+    return b;
+}
+
+static void score_publish_live(bool euro_pool, const double *acc, const bool *ok,
+                               const bool *skip, int max_val, int pool_size)
+{
+    bool used[51] = {false};
+    int n = 0;
+    for (int i = 0; i < pool_size; i++) {
+        int b = score_pick_best(acc, ok, used, skip, max_val);
+        if (!b) break;
+        used[b] = true;
+        if (euro_pool) {
+            g_status.pool_euro[n]   = (uint8_t)b;
+            g_status.pool_euro_z[n] = (float)acc[b];
+        } else {
+            g_status.pool_main[n]   = (uint8_t)b;
+            g_status.pool_main_z[n] = (float)acc[b];
+        }
+        n++;
+    }
+    if (euro_pool) g_status.pool_n_euro = (uint8_t)n;
+    else           g_status.pool_n_main = (uint8_t)n;
+}
+
 // `euro_pool` selects the bonus-number pool; it only reaches the Focus panel,
 // which styles a euro candidate differently from a main one.
 /* `keep`/`n_keep` implement "Select more": those numbers are already chosen and
- * are OMITTED from this scoring pass entirely — they keep the measurement that
- * put them in the pool rather than being re-measured, and they occupy the first
- * n_keep slots. Everything else is scored afresh and the best fill what is left.
- * Numbers the operator unchecked are therefore back in contention: this is a new
- * measurement, not a veto list. Pass keep = NULL for the ordinary first pass. */
+ * are OMITTED from scoring — they keep the measurement that put them in the
+ * pool. Pass keep = NULL for the ordinary first pass. */
 static void score_and_build_pool(int max_val, int pool_size, uint8_t *pool,
                                  bool euro_pool,
                                  const uint8_t *keep, const float *keep_z,
                                  int n_keep, float *out_z)
 {
-    double scores[51] = {0};
+    double acc[51] = {0};
     bool   skip[51]   = {false};
-    bool   scored[51] = {false};   // this pass produced a usable z (not void)
-    /* Per-node archive for this scoring span (D69). Function-static: this
-     * is ~1,6 KB and elotto_task's stack is 8 KB. Held to the end because
-     * the key is built like the pass — per-node means, then combine, then mix. */
+    bool   ok_any[51] = {false};
+    /* Per-node archive for ONE scoring pass (D69). Function-static: ~1,6 KB. */
     static float zn[51][MAX_NODES];
     static float h1[51][MAX_NODES];
     static float h2[51][MAX_NODES];
     uint8_t smask[51];
-    for (int i = 0; i < 51; i++) {
-        smask[i] = 0;
-        for (int n = 0; n < MAX_NODES; n++) zn[i][n] = h1[i][n] = h2[i][n] = NAN;
-    }
     if (n_keep > pool_size) n_keep = pool_size;
     for (int i = 0; i < n_keep; i++)
         if (keep[i] >= 1 && keep[i] <= max_val) skip[keep[i]] = true;
 
-    /* ONE run per candidate number (g_status.run_segments), in a fresh
-     * random order — every number exactly once, never twice in a row (onset
-     * is the payload; no back-to-back reps of the same target).
-     *
-     * fast_rng() deliberately, not the camera: measurement order is
-     * administrative randomness, not measured data, and must not spend
-     * rate-limited camera entropy. */
     uint8_t order[51];
     int     n_order = 0;
     for (int i = 1; i <= max_val; i++)
         if (!skip[i]) order[n_order++] = (uint8_t)i;
-    for (int i = n_order - 1; i > 0; i--) {
-        int j = (int)(fast_rng() % (uint32_t)(i + 1));
-        uint8_t t = order[i]; order[i] = order[j]; order[j] = t;
-    }
-    /* scoring_total is NOT touched here. The caller sets it once, up front, to
-     * the whole group's count — 62 for a Eurojackpot loop (50 main + 12 bonus).
-     *
-     * Two earlier versions of this were both wrong in ways the operator sees.
-     * Assigning `n_order` here made the bonus pass reset a full bar to 0/12.
-     * Accumulating fixed the reset but left the TOTAL growing mid-phase: the
-     * bar read 49/50 and then 54/62, so the percentage jumped backwards. A
-     * progress bar whose denominator moves is not a progress bar. */
+    /* scoring_total is set by the caller to SCORE_PASSES × (main+bonus). */
 
-    for (int idx = 0; idx < n_order; idx++) {
-        if (g_status.abort_requested) return;
-        pause_gate();
-        if (g_status.abort_requested) return;
-        int k = order[idx];
-        // On screen before the run starts and until it ends — display and
-        // bits cover the same interval, or the panel is decoration. ONE window
-        // per number (session run_segments): genuine onset, held once.
-        focus_show_number(k, euro_pool);
-        bool ok = false;
-        score_one_run(&ok, zn[k], h1[k], h2[k], &smask[k]);
-        scored[k] = ok;
-        g_status.scoring_done++;
-        g_status.elapsed_ms = elapsed_ms_now();
-        run_gap_ms(gap_for());
+    uint8_t last = 0;
+    for (int pass = 0; pass < SCORE_PASSES; pass++) {
+        g_status.scoring_pass = pass + 1;
+        bool scored[51] = {false};
+        double scores[51] = {0};
+        for (int i = 0; i < 51; i++) {
+            smask[i] = 0;
+            for (int n = 0; n < MAX_NODES; n++)
+                zn[i][n] = h1[i][n] = h2[i][n] = NAN;
+        }
+        for (int i = n_order - 1; i > 0; i--) {
+            int j = (int)(fast_rng() % (uint32_t)(i + 1));
+            uint8_t t = order[i]; order[i] = order[j]; order[j] = t;
+        }
+        if (n_order > 1 && last && order[0] == last) {
+            uint8_t t = order[0]; order[0] = order[1]; order[1] = t;
+        }
+        for (int idx = 0; idx < n_order; idx++) {
+            if (g_status.abort_requested) return;
+            pause_gate();
+            if (g_status.abort_requested) return;
+            int k = order[idx];
+            focus_show_number(k, euro_pool);
+            bool ok = false;
+            score_one_run(&ok, zn[k], h1[k], h2[k], &smask[k]);
+            scored[k] = ok;
+            g_status.scoring_done++;
+            g_status.elapsed_ms = elapsed_ms_now();
+            run_gap_ms(gap_for());
+        }
+        last = n_order ? order[n_order - 1] : 0;
+        score_build_keys(zn, h1, h2, smask, scored, max_val, scores);
+        for (int k = 1; k <= max_val; k++) {
+            if (!scored[k]) continue;
+            acc[k] += scores[k];
+            ok_any[k] = true;
+        }
+        score_publish_live(euro_pool, acc, ok_any, skip, max_val, pool_size);
     }
-    /* Every candidate measured: per-node means exist, build the keys.
-     * Before this point scores[] is empty by construction. */
-    score_build_keys(zn, h1, h2, smask, scored, max_val, scores);
 
-    /* The kept numbers take the first slots, carrying the score that chose them
-     * (they were not re-measured, so there is no new one to carry). */
-    /* A kept number was never measured this pass, so scores[] holds 0 for it.
-     * Put the score it was originally chosen on back in, so one array carries
-     * every pool member's score regardless of which pass produced it. */
     for (int i = 0; i < n_keep; i++)
         if (keep[i] >= 1 && keep[i] <= max_val)
-            scores[keep[i]] = keep_z ? (double)keep_z[i] : 0.0;
+            acc[keep[i]] = keep_z ? (double)keep_z[i] : 0.0;
 
     bool used[51] = {false};
     for (int i = 0; i < n_keep; i++) {
         pool[i] = keep[i];
         if (keep[i] >= 1 && keep[i] <= max_val) used[keep[i]] = true;
     }
-    /* Pick by pre-registered score_dir, on the KEY score_build_keys() just
-     * produced — not on z. HIGH = largest key (historical default); LOW =
-     * smallest; ABS = largest |key|. At ?wpre=0,8 concordance dominates the
-     * mix; the pool is chosen by the same rule the pass is ranked by. Direction is a session parameter
-     * (?score=) so the hypothesis is on the record before the pass.
-     * Void runs (scored[k] == false) are excluded: a void is not a z of 0 and
-     * ranking it as one would steer the pool toward numbers whose runs failed. */
     for (int i = n_keep; i < pool_size; i++) {
-        int b = 0;
-        double bs = 0.0;
-        bool first = true;
-        for (int j = 1; j <= max_val; j++) {
-            if (used[j] || skip[j] || !scored[j]) continue;
-            double s = scores[j], key;
-            switch (g_status.score_dir) {
-            case SCORE_DIR_LOW: key = -s;           break;
-            case SCORE_DIR_ABS: key = fabs(s);      break;
-            default:            key = s;            break;  /* HIGH */
-            }
-            if (first || key > bs) { b = j; bs = key; first = false; }
-        }
-        /* ⚠ Never write a 0 into the pool. `b` stays 0 only when every
-         * remaining candidate voided this pass (scored[] == false). A 0 would
-         * then be enumerated as a drawn number and land in the CSV — silent
-         * data corruption. Same treatment as the full_combos > NUM_RUNS guard
-         * below: abort loudly rather than clamp. */
+        int b = score_pick_best(acc, ok_any, used, skip, max_val);
         if (b == 0) {
             snprintf(g_status.fault, sizeof(g_status.fault),
                      "scoring: only %d of %d candidates produced a usable z "
-                     "this pass — session aborted", i - n_keep, pool_size - n_keep);
+                     "— session aborted", i - n_keep, pool_size - n_keep);
             printf("pass: %s\n", g_status.fault);
             g_status.abort_requested = true;
             return;
@@ -684,7 +688,7 @@ static void score_and_build_pool(int max_val, int pool_size, uint8_t *pool,
     if (out_z)
         for (int i = 0; i < pool_size; i++) {
             int k = pool[i];
-            out_z[i] = (k >= 1 && k <= max_val) ? (float)scores[k] : 0.0f;
+            out_z[i] = (k >= 1 && k <= max_val) ? (float)acc[k] : 0.0f;
         }
 }
 
@@ -2358,6 +2362,8 @@ void elotto_task(void *pvParam)
     g_status.round_start_ms  = 0;
     g_status.round_total     = 0;
     g_status.scoring_done    = 0;
+    g_status.scoring_pass    = 0;
+    g_status.scoring_passes  = SCORE_PASSES;
     g_status.abort_requested = false;
     g_status.elapsed_ms      = 0;
     g_status.slave_connected = false;
@@ -2485,7 +2491,8 @@ void elotto_task(void *pvParam)
     int  nm      = euro ? 5 : 6;
     int  mx      = euro ? 50 : 49;
 
-    g_status.scoring_total = mx + (euro ? 12 : 0);   // one run per number
+    g_status.scoring_total = SCORE_PASSES * (mx + (euro ? 12 : 0));
+    g_status.scoring_passes = SCORE_PASSES;
 
     uint8_t pool_main[POOL_MAIN_49] = {0};   // 15 slots, enough for both modes
     uint8_t pool_euro[POOL_EURO_12] = {0};
@@ -2548,14 +2555,14 @@ void elotto_task(void *pvParam)
             if (g_status.abort_requested) { slave_abort(); goto done; }
         }
 
-        /* ── Phase 0: individual number scoring, once per round ──────────── */
+        /* ── Phase 0: SCORE_PASSES over every number, keys summed (D81) ── */
         g_status.phase = PHASE_SCORING;
-        // The WHOLE group's count, up front: 50 main + 12 bonus = 62 for
-        // Eurojackpot. Both passes fill one bar that counts to 62. Every number is
-        // scored regardless of how many the pool will keep, so this is the same
-        // work in unlimited mode as in a full pass.
-        g_status.scoring_total = mx + (euro ? 12 : 0);
-        g_status.scoring_done  = 0;
+        g_status.scoring_total  = SCORE_PASSES * (mx + (euro ? 12 : 0));
+        g_status.scoring_passes = SCORE_PASSES;
+        g_status.scoring_done   = 0;
+        g_status.scoring_pass   = 0;
+        g_status.pool_need_main = (uint8_t)nm;
+        g_status.pool_need_euro = euro ? 2 : 0;
         /* Unlimited: the pool sizes come from the run cap, and are re-derived every
          * round because the cap is fixed while nothing else here is. */
         if (g_status.unlimited)
@@ -2570,6 +2577,7 @@ void elotto_task(void *pvParam)
         if (euro) score_and_build_pool(12, pool_ne, pool_euro, true,
                                        NULL, NULL, 0, g_status.pool_euro_z);
         if (g_status.abort_requested) goto done;
+        g_status.scoring_pass = 0;
         focus_off();
 
         /* D66/D67: the pool is always the score's proposal — there is no gate

@@ -35,6 +35,10 @@
 #define POOL_MAIN_49    15   // C(15,6) = 5005 combinations
 #define POOL_MAIN_50    12   // C(12,5) =  792 combinations
 #define POOL_EURO_12     5   // C(5,2)  =   10 combinations
+/* Phase-0 scoring: every number this many times, fresh shuffle each pass,
+ * keys summed, then the pool is the top by that sum (D81). Not back-to-back
+ * (D5). */
+#define SCORE_PASSES    10
 // Eurojackpot: C(12,5)·C(5,2) = 7920 — the largest configuration under the
 // ~10000 the user set as the ceiling (13+5 would be 12870). 6-of-49: 5005.
 
@@ -352,19 +356,7 @@ typedef enum { PHASE_SCORING, PHASE_MEASURING,
  * normalization. A recurrence in a later round is a separate row, never an
  * average — which is what leaves the four old rules nothing to differ ABOUT. */
 
-/* ENTROPY IS PHOTONS, AND ONLY PHOTONS (user decision, 2026-07-26).
- *
- * The on-chip TRNG is gone from this firmware — not deselected, removed. Every
- * measured bit comes from OV5647 dark-frame shot noise. The reason is the GCP
- * methodology itself: the claim under test is about a *physical* random source,
- * and a whitened hardware RNG is an opaque digital post-process whose output
- * would be indistinguishable from the real thing in every statistic this
- * project computes. Keeping it available as an A/B option meant the codebase
- * could always, in principle, produce a result nobody could attribute.
- *
- * There is therefore no fallback. A node whose camera stops delivering has
- * stopped being an instrument: it is reported as a fault and REBOOTED, never
- * quietly switched to another source. */
+/* Entropy is photons. A node whose camera stops is reported and rebooted. */
 
 typedef struct {
     int        index;      // combination id (1-based slot in the enumeration)
@@ -778,6 +770,8 @@ typedef struct {
     int64_t          elapsed_ms;
     volatile int     scoring_done;
     int              scoring_total;
+    int              scoring_pass;        // 1..SCORE_PASSES while scoring, else 0
+    int              scoring_passes;      // SCORE_PASSES, published so the UI does not hardcode it
     int              comparisons;         // == VALID items so far (voids excluded)
     /* ── Pass-level health (GCP primary endpoints) ─────────────────────
      * Under H₀ with a working instrument: mean ≈ 0, σ ≈ 1, Σz² ≈ n.

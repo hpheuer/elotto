@@ -41,8 +41,7 @@ run's gain, not the session.
 
 **Entropy is photons, and only photons** (user decision). One camera per node (OV5647 or IMX219), never shared.
 Non-overlapping frame pairs, diff = f[2k+1]−f[2k] per pixel (cancels FPN exactly), LSB packed.
-⛔ LSB bits as measured `[D65]`. ⛔ No on-chip TRNG (covers an LFSR fed from the camera). The Fisher–Yates
-order uses an xorshift32 seeded from the camera; it never enters a z.
+⛔ LSB bits as measured `[D65]`. Fisher–Yates uses an xorshift32 seeded from the camera; it never enters a z.
 
 **The ×√n gain is NOT established** — it assumes node independence. Judge a session on per-block
 combined σ **and** the full pairwise matrix, never on `pair_r` alone: **σ, not correlation, is
@@ -94,9 +93,11 @@ across rounds a combination can recur — identity is **(round, index)**.
 - Pause stops the clock; Abort publishes the measured prefix.
 
 ### Phases
-**Phase 0 — scoring.** Each number 1..N gets **exactly one long run** (the session window) in a
-fresh Fisher–Yates order. Direction pre-registered: `?score=high|low|abs`, default `high` — it only
-picks the pool. **The scoring key is the pass key** — z and concordance at the session's
+**Phase 0 — scoring.** Each number 1..N is measured **`SCORE_PASSES` (10) times**, each pass a
+full session window in a fresh Fisher–Yates order (never the same number back-to-back `[D5]`).
+After each pass the ranking **key** is added to that number's sum; the pool is the top by that
+sum `[D81]`. Direction pre-registered: `?score=high|low|abs`, default `high` — it only
+picks the pool. The UI shows pass k/10 and the current top of the pool with the running sum. **The scoring key is the pass key** — z and concordance at the session's
 `?wpre=` `[D48]``[D65]``[D69]`; `score_build_keys()` is the only place a scoring key is built.
 ⚠ Scoring has no `/loops` block; the scoring span **is** the block. Per-node centre over the
 numbers each camera actually answered, then concordance (loudest **centred** node dropped), then
@@ -295,6 +296,7 @@ separate arm `[D1]`.
 | centred-half concordance 2026-09-02 | post-D77 only — earlier `zc_ctr` is z − \|h1−h2\|/√2, not a sign test. Splits TABLES **and the chosen POOL** at `pre_w` > 0; `z_raw`/`z_ctr` still pool `[D77]` |
 | v3 vs any v2.x | v3 only |
 | camera chip `[D80]` | one of OV5647, IMX219 — `sensor=` in the CSV |
+| scoring 10-pass sum `[D81]` | post-D81 only — the pool is chosen on the sum of 10 keys |
 
 Unlimited-mode data carries two more: split on `round` before pooling with a single-pass session,
 and decide what to do about combinations that recur across rounds before pooling rounds together.

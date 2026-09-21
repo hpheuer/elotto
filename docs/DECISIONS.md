@@ -488,19 +488,7 @@ splits the pooling table for TABLES.
 - restoring the master to USB power (D31);
 - raising `CAM_BUF_COUNT` (D24 — measured, no effect);
 - the second-core split for extraction (D23 — no headroom left at idle);
-- reintroducing the on-chip TRNG in any form — **including an LFSR fed from the camera bits**
-  (proposed 2026-08-26). An LFSR whose feedback is XORed with the raw stream IS the canonical
-  whitened-hardware-RNG construction, so it falls under this line; it is named separately because the
-  line did not read as covering it.
-  ⛔ What it costs is the instrument: fed a **frozen camera** (every diff zero, every LSB
-  deterministically 0) the LFSR emits bias 0,499993, σ 1,0001, autocorr 0,0004 — **it passes every
-  gate this project has**, where the raw and LSB paths both read bias 0,000000 / σ 0,0000 and are
-  caught instantly. It also has STATE, so it smears a time-localised deviation over the register
-  length and beyond; and it puts a PRNG in the z path, which `fast_rng()` is explicitly kept out of.
-  ⚠ The 2026-08-26 text also priced the LFSR against the adjacent-pixel XOR ("buys nothing XOR does
-  not deliver", "1,22× better") and against the entropy channel `z_h`. **D65 turned that XOR off and
-  D53 deleted `z_h`**, so those comparisons are void — the frozen-camera argument above does not
-  depend on them. Full text: `git show 1e62bca:docs/DECISIONS.md`;
+- any source other than the camera in a z (including an LFSR on the camera bits);
 - NIST runs as a ranking channel (tried and deleted, D55 — underdispersed, orthogonal to Pre);
 - chasing down the window/gap split (D2);
 - **adaptive bias correction** (proposed 2026-08-26): estimate p̂ by EWMA over the raw LSB stream
@@ -1404,3 +1392,15 @@ plugged in.
 
 **Pooling:** IMX219 vs OV5647 is a hardware change — do not pool the two. Same
 `sensor=` only.
+
+### D81 — Scoring is 10 shuffled passes, keys summed (2026-09-22)
+**Entscheidung:** Phase 0 measures every number `SCORE_PASSES` (10) times. Each pass is one
+session-length window per number, new Fisher–Yates order, never the same number twice in a row
+(D5 onset). After each pass `score_build_keys()` builds that pass's keys (own centre and σ);
+the keys are **added**. The pool is the top by that sum, same `?score=` direction. `/status`
+`scoring_pass` / `scoring_passes` and the live pool (sum as `z`) update after each pass.
+
+**Warum:** one draw of 50 unit-noise keys is noisy (D5). Ten independent keys, summed, keep
+one onset per window.
+
+**Pooling:** splits the chosen pool from pre-D81 sessions. Pass `z_raw`/`z_ctr` unchanged.

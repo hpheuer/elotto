@@ -33,11 +33,8 @@
  * further down is the other caller. */
 static void note_first_drop(int node);
 
-/* Camera failure policy — REPORT AND REBOOT, never substitute.
- *
- * There is no second source in this firmware, so "degrade gracefully" is not on
- * the menu and that is deliberate (see sensor.h). A node whose camera stops
- * delivering has stopped being an instrument, so it is:
+/* Camera failure policy — report and reboot, never substitute.
+ * A node whose camera stops delivering is:
  *   1. named in g_status.fault, where the operator can actually see it,
  *   2. dropped from the combine, and
  *   3. rebooted — the camera is brought up in app_main, so a restart is the one
@@ -595,10 +592,6 @@ void slave_abort(void)
  *   "Z:<float>[,<H_norm>]"  the run completed on camera bits
  *   "E:<reason>" the camera stopped delivering — the node is faulted and
  *                rebooted, not silently omitted
- *
- * The old ",<C|T>" source tag is gone with the TRNG: there is only one source
- * now, so a completed run cannot have come from anywhere else, and a run that
- * could not complete says so explicitly instead of reporting a substituted z.
  *
  * ⚠ Trailing fields optional. Z:<z>[,h1,h2][,wsig=] (D65). First comma
  * pair is the half-window split of the SAME bits. Absent ≠ 0. */

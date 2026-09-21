@@ -298,7 +298,8 @@ static const char HTML[] =
 "height:100%;border-radius:20px;width:0%;transition:width .5s'></div></div>"
 "<div style='color:#6ab0e8;font-size:.9em;text-align:center;margin-top:4px'>"
 "<span id='sScoreDone'>0</span> / <span id='sScoreTotal'>-</span> Runs "
-"(<span id='sScoreReps'>-</span>&times; per number, random order)</div>"
+"(<span id='sScoreReps'>-</span>&times; per number"
+" · pass <span id='sScorePass'>-</span>/<span id='sScorePasses'>-</span>)</div>"
 /* The numbers scoring actually picked — directly under the bar that picked
    them. In unlimited mode this is the one thing that changes from round to
    round, and without it the Focus panel's draws come from a pool nobody saw
@@ -390,8 +391,11 @@ NODE_NAMES_JS
 "function setScoreTotal(d){"
 "document.getElementById('sScoreTotal').textContent=d.scoring_total||0;"
 "var nn=(d.mode==='euro')?62:49;"
-"document.getElementById('sScoreReps').textContent="
-"d.scoring_total>0?Math.round(d.scoring_total/nn):'-';"
+"var passes=d.scoring_passes||" EL_STR(SCORE_PASSES) ";"
+"document.getElementById('sScoreReps').textContent=passes;"
+"document.getElementById('sScorePass').textContent="
+"(d.scoring_pass>0)?d.scoring_pass:'-';"
+"document.getElementById('sScorePasses').textContent=passes;"
 "}"
 /* Unlimited mode: show what a given run budget actually buys, in both modes, as
    the number is typed. The rule is sensor.c's unlimited_pool_sizes() — maximise
@@ -443,7 +447,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "var ins=" EL_STR(CAL_BUDGET_DEFAULT_MS) ";"
 /* Exactly one sweep per round since D76 — the round boundary is the only
    trigger, so the count is 1 and not a function of elapsed time. */
-"return (euro?62:49)*cyc+meas+ins;}"
+"return (euro?62:49)*" EL_STR(SCORE_PASSES) "*cyc+meas+ins;}"
 "function unlimHint(){"
 "var c=parseInt(document.getElementById('numUnlimRuns').value)||0;"
 "var h=document.getElementById('unlimHint');"
@@ -574,9 +578,14 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "var cc=d.round_total||0;"
 "var h=\"<span style='color:#6ab0e8'>\""
 "+nn+' numbers'+(cc?(', '+cc+' combos'):'')+\":</span> \";"
-"d.pool_main.forEach(function(x){h+=\"<span class='num'>\"+x.n+\"</span>\";});"
+"d.pool_main.forEach(function(x){"
+"h+=\"<span class='num'>\"+x.n+\"</span>\";"
+"if(x.z!=null)h+=\"<span style='font-size:.72em;margin:0 6px 0 2px;opacity:.85'>\"+"
+"x.z.toFixed(2)+\"</span>\";});"
 "if(d.pool_euro)d.pool_euro.forEach(function(x){"
-"h+=\"<span class='num euro'>\"+x.n+\"</span>\";});"
+"h+=\"<span class='num euro'>\"+x.n+\"</span>\";"
+"if(x.z!=null)h+=\"<span style='font-size:.72em;margin:0 6px 0 2px;opacity:.85'>\"+"
+"x.z.toFixed(2)+\"</span>\";});"
 "pb.innerHTML=h;"
 "}"
 "function doStart(mode){"
@@ -1400,6 +1409,7 @@ static esp_err_t status_handler(httpd_req_t *req)
         "\"off_first\":%.4f,\"off_last\":%.4f,"
         "\"sigma_lo\":%.4f,\"sigma_hi\":%.4f,"
         "\"scoring_done\":%d,\"scoring_total\":%d,"
+        "\"scoring_pass\":%d,\"scoring_passes\":%d,"
         "\"completed\":%d,\"total\":%d,\"elapsed_ms\":%lld,\"compacted\":%d,"
         /* `completed` is session-wide (the results[] prefix); `total` is the
          * CURRENT round's combination space. In an ordinary session there is
@@ -1452,6 +1462,7 @@ static esp_err_t status_handler(httpd_req_t *req)
         g_status.off_first, g_status.off_last,
         g_status.sigma_lo, g_status.sigma_hi,
         g_status.scoring_done, g_status.scoring_total,
+        g_status.scoring_pass, g_status.scoring_passes,
         /* PROGRESS is items_done, never runs_completed: after a compaction the
          * latter is the rows still held and would step backwards. */
         g_status.items_done, g_status.runs_total,
@@ -2592,11 +2603,6 @@ static esp_err_t pool_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* ── /diag GET – the camera, which is the only source there is ──────
- *
- * ⛔ The TRNG is not reported here and must not be added back. A diagnostic
- * that measures a source the firmware cannot use only invites comparisons
- * against a number this instrument is not allowed to produce. */
 /* GET /diag — the four-camera health page.
  *
  * One row per node, live. Built because per-node optical faults are the thing

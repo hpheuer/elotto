@@ -115,7 +115,7 @@ typedef struct {
     uint32_t consumer_waits;      // times a read had to wait for the producer (normal
                                   // backpressure -- the GCP task outruns the sensor)
     uint32_t stalls;              // reads that gave up: the node is faulted and
-                                  // rebooted, since there is no second source
+                                  // rebooted
     /* Wall-time accounting for ONE frame pair, in milliseconds, averaged over
      * the current window. ms_pair is measured boundary to boundary and is the
      * ground truth; the other three are its parts, and what they do not add up
