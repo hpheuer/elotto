@@ -63,7 +63,13 @@ across rounds a combination can recur — identity is **(round, index)**.
 - **No loops, no Runs cap, no ranking modes.** `/start` is a **whitelist** `[D79]`: an unknown
   key answers **400**. Deleted keys (`loops`, `runs`, `rank`, `focus`, `went`, `wruns`,
   `baseline`, `calint`, `unlimited=0`) keep a specific 400. Allowed: `mode`, `run`, `gap`,
-  `score`, `wpre`, `maxruns`, `confirm`, `cal`, `unlimited`. 100 % of the progress bar is the
+  `score`, `wpre`, `maxruns`, `confirm`, `cal`, `unlimited`. An empty key (`?=x`), a value over
+  `START_VAL_MAX` 31 characters and a query string over 255 characters each answer **400** as well
+  — a truncated value or query must never read as "key absent" and resolve to the default `[D79]`.
+  ⚠ **A refused /start changes nothing**: parameters are parsed into locals and committed to
+  `g_status` only after every one validates, so a 400 leaves the finished session's `/status` and
+  CSV header — `pre_w` above all — describing that session. A 500 (task create failed) restores
+  the snapshot, including `state`; `prefs_save()` runs only after the task exists `[D79]`. 100 % of the progress bar is the
   full combination space. `NUM_RUNS` 7200 is the hard cap on `results[]`.
   ⚠ **Eurojackpot's 7920 cannot be one round**: `UNLIM_RUNS_MAX` is `NUM_RUNS`, and a
   combination space larger than that **aborts** rather than compacting mid-round.

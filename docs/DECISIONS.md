@@ -1348,6 +1348,42 @@ documented range answer **400**, no fallback — same contract as `?run=` and `?
 `high|low|abs`. `?unlimited=` omitted or `1`; any other value 400. Omitted keys still
 resolve to the compiled-in defaults. `?mode=` is unchanged (`val[0]=='1'` → 6-of-49).
 
+**Three holes in the first implementation, closed 2026-09-21:**
+
+**1. A value longer than the parse buffer fell back to its default instead of answering 400.**
+`httpd_query_key_value()` returns `ESP_ERR_HTTPD_RESULT_TRUNC` when the value does not fit, and the
+`== ESP_OK` tests read that as "key absent" — so `?run=00000000000000005` started a 5 s session
+without a word, which is exactly the silent fall-back this decision exists to remove. Closed once
+for every parameter in the one-pass walker: a raw span longer than `START_VAL_MAX` 31 answers 400,
+and the walker decodes the value itself. There is no second `httpd_query_key_value()` pass. The raw
+span bounds the decoded length because `%xx` only ever shrinks. The same hole existed one level up and
+was worse — a query string over 255 characters made `httpd_req_get_url_query_str()` truncate, the
+`== ESP_OK` test treated it as no query at all, and **every** parameter reverted to its default;
+that now answers 400 too.
+
+**2. An empty key (`?=x`, or `?mode=1&=x`) hung the parser.** `kn == 0` is reachable only with
+`*p == '='`, and the skip assigned `p = eq`, i.e. `p` to itself. The HTTP task spun until the
+watchdog panicked the master, taking `results[]` — unrepeatable measurements — with it, with
+`/status` and `/abort` dead in the meantime. An empty key now answers 400, which is both the D79
+answer and what makes the loop provably terminate: past that branch `kn ≥ 1`, so `p` strictly
+increases every iteration.
+
+**3. A refused start had already overwritten the previous session's parameters.** `g_status` was
+reset to defaults before parsing, so any 400 left `mode`/`run_s`/`gap_s`/`pre_w`/`score` describing
+a session that never ran — in `/status` and in the `/results.csv` header of the FINISHED one still
+in RAM. `pre_w` is the field the pooling table splits on, so a typo mislabelled the archive. The
+handler now parses into locals, validates everything, and writes `g_status` in one commit block
+that nothing can return 400 past. A 500 (session task cannot be created) restores the snapshot of
+every field the commit wrote, including `state` — not a forced IDLE, which would have relabelled a
+DONE/ABORTED session. `prefs_save()` runs only after the task exists, so NVS is not written on 500.
+
+Live keys and deleted keys live in **one table** (`start_keys[]`); a key not in it is unknown.
+First occurrence wins. Adding a live key without a parse callback is caught in the walker.
+
+⚠ Fixed and built; **not tested on hardware** — the array was unreachable on 2026-09-21. Re-check
+these on the next live session: `?=1` → 400 and the master still answers `/status`; a 32-character
+value → 400; a bad `/start` leaves `pre_w` in `/status` untouched.
+
 **Warum:** a silent ignore is the bug class the 409-on-running and the 400 on `loops`/`runs`/`rank`
 existed to prevent — `?wper=0,8` or `?maxruns=5` would run a different experiment than the one
 asked for.

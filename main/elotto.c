@@ -18,7 +18,7 @@
 #include "esp_app_desc.h"   /* the running image's version/sha for the CSV header */
 #include "gcp.h"           /* GCP_SEGMENT_BITS, for the round-length model */
 #include "sensor.h"
-#include "focus.h"      // SCORE_GAP_MS default blank
+#include "focus.h"
 #include "nodes.h"      // slave_probe(), for the UI's node-discovery button
 #include "camera.h"
 #include "elotto_ota.h"
@@ -2147,75 +2147,312 @@ static bool start_key_eq(const char *k, size_t n, const char *lit)
     return strlen(lit) == n && memcmp(k, lit, n) == 0;
 }
 
-/* Whitelist (D79). Unknown key → 400. Deleted keys keep a specific message so
- * a v2 script does not read as a typo. Returns true if the request was refused. */
-static bool start_refuse_unknown_keys(httpd_req_t *req, const char *qry)
+/* Longest value any /start parameter can legally carry. The walker refuses a
+ * longer raw span, so the decoded buffer below cannot overflow: `%xx` only
+ * ever shrinks. A truncated value must never read as "key absent". */
+#define START_VAL_MAX 31
+
+typedef struct {
+    ElottoMode mode;
+    int        runs_cap;
+    int        run_ms;
+    int        gap_ms;      /* <0 = omitted, derive from run_ms after the walk */
+    int        cal_ms;
+    ScoreDir   score_dir;
+    double     pre_w;
+    bool       from_form;
+} StartReq;
+
+/* Parse callbacks: false = already refused (400 sent). */
+static bool start_parse_mode(const char *val, StartReq *r, httpd_req_t *req)
 {
-    static const char *allow[] = {
-        "mode", "run", "gap", "score", "wpre", "maxruns",
-        "confirm", "cal", "unlimited",
-    };
-    static const struct { const char *key; const char *msg; } gone[] = {
-        { "loops",
-          "v3: loops/runs/rank/focus no longer exist -- rounds until "
-          "Abort, always unattended. Cap a round with maxruns=<n>" },
-        { "runs",
-          "v3: loops/runs/rank/focus no longer exist -- rounds until "
-          "Abort, always unattended. Cap a round with maxruns=<n>" },
-        { "rank",
-          "v3: loops/runs/rank/focus no longer exist -- rounds until "
-          "Abort, always unattended. Cap a round with maxruns=<n>" },
-        { "focus",
-          "v3: loops/runs/rank/focus no longer exist -- rounds until "
-          "Abort, always unattended. Cap a round with maxruns=<n>" },
-        { "went",
-          "went= no longer exists -- the spectral-entropy channel was "
-          "removed; ranking is z_ctr and optional ?wpre= only" },
-        { "wruns",
-          "wruns= no longer exists -- the runs ranking channel was "
-          "removed; ranking is z_ctr and optional ?wpre= only" },
-        { "baseline",
-          "baseline= no longer exists -- the baseline phase was deleted; "
-          "block centring is the drift reference" },
-        { "calint",
-          "calint= no longer exists -- one block is one round, so the "
-          "round boundary is the only sweep trigger. Set the block "
-          "length with maxruns=<n>; cal=0 turns the sweep off" },
-    };
+    (void)req;
+    r->mode = (val[0] == '1') ? MODE_LOTTO_649 : MODE_EUROJACKPOT;
+    return true;
+}
+static bool start_parse_run(const char *val, StartReq *r, httpd_req_t *req)
+{
+    double rs;
+    if (!parse_double_all(val, &rs) || !(rs >= RUN_S_MIN && rs <= RUN_S_MAX)) {
+        start_refuse(req, "run= must be between " EL_STR(RUN_S_MIN) " and "
+                     EL_STR(RUN_S_MAX) " seconds");
+        return false;
+    }
+    r->run_ms = (int)(rs * 1000.0 + 0.5);
+    return true;
+}
+static bool start_parse_gap(const char *val, StartReq *r, httpd_req_t *req)
+{
+    double gs;
+    if (!parse_double_all(val, &gs) || !(gs >= GAP_S_MIN && gs <= GAP_S_MAX)) {
+        start_refuse(req, "gap= must be between " EL_STR(GAP_S_MIN) " and "
+                     EL_STR(GAP_S_MAX) " seconds");
+        return false;
+    }
+    r->gap_ms = (int)(gs * 1000.0 + 0.5);
+    return true;
+}
+static bool start_parse_score(const char *val, StartReq *r, httpd_req_t *req)
+{
+    if (val[0] == 'l' || val[0] == 'L')      r->score_dir = SCORE_DIR_LOW;
+    else if (val[0] == 'a' || val[0] == 'A') r->score_dir = SCORE_DIR_ABS;
+    else if (val[0] == 'h' || val[0] == 'H') r->score_dir = SCORE_DIR_HIGH;
+    else {
+        start_refuse(req, "score= must be high, low or abs");
+        return false;
+    }
+    return true;
+}
+static bool start_parse_wpre(const char *val, StartReq *r, httpd_req_t *req)
+{
+    double p;
+    if (!parse_double_all(val, &p) || p < 0.0 || p > 1.0) {
+        start_refuse(req,
+            "wpre= is the concordance weight in the ranking key and must "
+            "be 0..1 (0 = the control arm, ranking unchanged)");
+        return false;
+    }
+    r->pre_w = p;
+    return true;
+}
+static bool start_parse_maxruns(const char *val, StartReq *r, httpd_req_t *req)
+{
+    int m;
+    if (!parse_int_all(val, &m) || m < UNLIM_RUNS_MIN || m > UNLIM_RUNS_MAX) {
+        start_refuse(req, "maxruns= must be between " EL_STR(UNLIM_RUNS_MIN)
+                     " and " EL_STR(NUM_RUNS));
+        return false;
+    }
+    r->runs_cap = m;
+    return true;
+}
+static bool start_parse_confirm(const char *val, StartReq *r, httpd_req_t *req)
+{
+    (void)req;
+    r->from_form = (val[0] == '1');
+    return true;
+}
+static bool start_parse_cal(const char *val, StartReq *r, httpd_req_t *req)
+{
+    int c;
+    if (!parse_int_all(val, &c) || c < 0 || c > CAL_BUDGET_MAX_MS) {
+        start_refuse(req, "cal= must be 0.." EL_STR(CAL_BUDGET_MAX_MS)
+                     " ms (0 = no sweep)");
+        return false;
+    }
+    r->cal_ms = c;
+    return true;
+}
+static bool start_parse_unlimited(const char *val, StartReq *r, httpd_req_t *req)
+{
+    (void)r;
+    if (val[0] == '0') {
+        start_refuse(req,
+            "unlimited=0 no longer exists -- sessions are rounds until Abort");
+        return false;
+    }
+    if (val[0] != '1') {
+        start_refuse(req,
+            "unlimited= must be 1 (sessions are rounds until Abort); omit it");
+        return false;
+    }
+    return true;
+}
+
+static int start_hex(char c)
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+/* Query-string decode into out[cap]. Raw n is already ≤ START_VAL_MAX. */
+static void start_decode(const char *s, size_t n, char *out, size_t cap)
+{
+    size_t o = 0;
+    for (size_t i = 0; i < n && o + 1 < cap; i++) {
+        unsigned char c = (unsigned char)s[i];
+        if (c == '+') c = ' ';
+        else if (c == '%' && i + 2 < n) {
+            int hi = start_hex(s[i + 1]), lo = start_hex(s[i + 2]);
+            if (hi >= 0 && lo >= 0) {
+                c = (unsigned char)((hi << 4) | lo);
+                i += 2;
+            }
+        }
+        out[o++] = (char)c;
+    }
+    out[o] = '\0';
+}
+
+#define START_GONE_V3 \
+    "v3: loops/runs/rank/focus no longer exist -- rounds until " \
+    "Abort, always unattended. Cap a round with maxruns=<n>"
+
+/* One table: gone keys and live parsers. A key not in it is unknown → 400.
+ * Adding a live key without a parse callback is a compile error (NULL parse
+ * with NULL gone is rejected in the walker). */
+typedef struct {
+    const char *key;
+    const char *gone;   /* non-NULL → 400 this message */
+    bool (*parse)(const char *val, StartReq *r, httpd_req_t *req);
+} StartKey;
+
+static const StartKey start_keys[] = {
+    { "loops",     START_GONE_V3, NULL },
+    { "runs",      START_GONE_V3, NULL },
+    { "rank",      START_GONE_V3, NULL },
+    { "focus",     START_GONE_V3, NULL },
+    { "went",
+      "went= no longer exists -- the spectral-entropy channel was "
+      "removed; ranking is z_ctr and optional ?wpre= only", NULL },
+    { "wruns",
+      "wruns= no longer exists -- the runs ranking channel was "
+      "removed; ranking is z_ctr and optional ?wpre= only", NULL },
+    { "baseline",
+      "baseline= no longer exists -- the baseline phase was deleted; "
+      "block centring is the drift reference", NULL },
+    { "calint",
+      "calint= no longer exists -- one block is one round, so the "
+      "round boundary is the only sweep trigger. Set the block "
+      "length with maxruns=<n>; cal=0 turns the sweep off", NULL },
+    { "mode",      NULL, start_parse_mode },
+    { "run",       NULL, start_parse_run },
+    { "gap",       NULL, start_parse_gap },
+    { "score",     NULL, start_parse_score },
+    { "wpre",      NULL, start_parse_wpre },
+    { "maxruns",   NULL, start_parse_maxruns },
+    { "confirm",   NULL, start_parse_confirm },
+    { "cal",       NULL, start_parse_cal },
+    { "unlimited", NULL, start_parse_unlimited },
+};
+_Static_assert(sizeof(start_keys) / sizeof(start_keys[0]) <= 32,
+               "start_parse_query seen-bitmask is uint32_t");
+
+/* One walk. First occurrence wins (same as httpd_query_key_value).
+ * Returns true if a 400 was already sent. */
+static bool start_parse_query(httpd_req_t *req, const char *qry, StartReq *r)
+{
+    uint32_t seen = 0;
     for (const char *p = qry; *p; ) {
         while (*p == '&') p++;
         if (!*p) break;
         const char *eq = p;
         while (*eq && *eq != '=' && *eq != '&') eq++;
         size_t kn = (size_t)(eq - p);
+        /* `?=x` is *p == '='. Refusing it is the D79 answer and the only way
+         * the loop terminates: kn ≥ 1 past this branch, so p strictly grows. */
         if (kn == 0) {
-            p = (*eq == '&') ? eq + 1 : eq;
-            continue;
+            start_refuse(req, "empty start parameter name");
+            return true;
         }
-        bool allowed = false;
-        for (size_t i = 0; i < sizeof(allow) / sizeof(allow[0]); i++) {
-            if (start_key_eq(p, kn, allow[i])) { allowed = true; break; }
-        }
-        if (!allowed) {
-            for (size_t i = 0; i < sizeof(gone) / sizeof(gone[0]); i++) {
-                if (start_key_eq(p, kn, gone[i].key)) {
-                    start_refuse(req, gone[i].msg);
-                    return true;
-                }
+        const char *vs = NULL;
+        size_t vn = 0;
+        if (*eq == '=') {
+            vs = eq + 1;
+            eq = vs;
+            while (*eq && *eq != '&') eq++;
+            vn = (size_t)(eq - vs);
+            if (vn > START_VAL_MAX) {
+                char msg[96];
+                snprintf(msg, sizeof(msg),
+                         "%.*s= value too long (max " EL_STR(START_VAL_MAX)
+                         " characters)", (int)kn, p);
+                start_refuse(req, msg);
+                return true;
             }
+        }
+        const StartKey *spec = NULL;
+        size_t idx = 0;
+        for (size_t i = 0; i < sizeof(start_keys) / sizeof(start_keys[0]); i++) {
+            if (start_key_eq(p, kn, start_keys[i].key)) {
+                spec = &start_keys[i];
+                idx = i;
+                break;
+            }
+        }
+        if (!spec) {
             char msg[96];
             snprintf(msg, sizeof(msg), "unknown start parameter: %.*s",
                      (int)kn, p);
             start_refuse(req, msg);
             return true;
         }
-        if (*eq == '=') {
-            eq++;
-            while (*eq && *eq != '&') eq++;
+        if (spec->gone) {
+            start_refuse(req, spec->gone);
+            return true;
+        }
+        if (!spec->parse) {
+            start_refuse(req, "internal: live start key has no parser");
+            return true;
+        }
+        if ((seen & (1u << idx)) == 0) {
+            seen |= (1u << idx);
+            char val[START_VAL_MAX + 1] = "";
+            if (vs && vn)
+                start_decode(vs, vn, val, sizeof(val));
+            if (!spec->parse(val, r, req))
+                return true;
         }
         p = (*eq == '&') ? eq + 1 : eq;
     }
     return false;
+}
+
+/* Fields /start writes. Restored if the session task cannot be created, so a
+ * 500 cannot relabel the finished session the way a 400 used to. */
+typedef struct {
+    ElottoMode   mode;
+    int          runs_total;
+    bool         unlimited;
+    int          runs_cap;
+    int          run_target_ms;
+    int          gap_ms;
+    int          run_segments;
+    int          cal_budget_ms;
+    bool         focus_mode;
+    ScoreDir     score_dir;
+    uint8_t      pool_auto;
+    double       pre_w;
+    int          pre_n;
+    ElottoState  state;
+} StartSnap;
+
+static void start_snap_save(StartSnap *s)
+{
+    s->mode          = g_status.mode;
+    s->runs_total    = g_status.runs_total;
+    s->unlimited     = g_status.unlimited;
+    s->runs_cap      = g_status.runs_cap;
+    s->run_target_ms = g_status.run_target_ms;
+    s->gap_ms        = g_status.gap_ms;
+    s->run_segments  = g_status.run_segments;
+    s->cal_budget_ms = g_status.cal_budget_ms;
+    s->focus_mode    = g_status.focus_mode;
+    s->score_dir     = g_status.score_dir;
+    s->pool_auto     = g_status.pool_auto;
+    s->pre_w         = g_status.pre_w;
+    s->pre_n         = g_status.pre_n;
+    s->state         = g_status.state;
+}
+
+static void start_snap_restore(const StartSnap *s)
+{
+    g_status.mode          = s->mode;
+    g_status.runs_total    = s->runs_total;
+    g_status.unlimited     = s->unlimited;
+    g_status.runs_cap      = s->runs_cap;
+    g_status.run_target_ms = s->run_target_ms;
+    g_status.gap_ms        = s->gap_ms;
+    g_status.run_segments  = s->run_segments;
+    g_status.cal_budget_ms = s->cal_budget_ms;
+    g_status.focus_mode    = s->focus_mode;
+    g_status.score_dir     = s->score_dir;
+    g_status.pool_auto     = s->pool_auto;
+    g_status.pre_w         = s->pre_w;
+    g_status.pre_n         = s->pre_n;
+    g_status.state         = s->state;
 }
 
 static esp_err_t start_handler(httpd_req_t *req)
@@ -2227,153 +2464,83 @@ static esp_err_t start_handler(httpd_req_t *req)
         return ESP_OK;
     }
     {
-        // read mode from query string (?mode=0 or ?mode=1). Sized for the full
-        // set the UI sends — a truncated query silently drops trailing keys.
+        /* ⚠ NOTHING in g_status is written until every parameter has validated.
+         * Every refusal below is a 400, and a 400 must leave the FINISHED
+         * session alone: /status and the /results.csv header still describe it,
+         * and rewriting `pre_w` there mislabels the archive in the one field the
+         * pooling table splits on. Parse into locals, commit once at the end.
+         * Since D79 made a typo'd key and an out-of-range maxruns/gap/cal/score
+         * all answer 400, this path is reachable by a plain mistake, not only by
+         * a malformed request. */
+        StartReq parsed = {
+            .mode      = MODE_EUROJACKPOT,
+            .runs_cap  = UNLIM_RUNS_DEFAULT,
+            .run_ms    = RUN_S_DEFAULT * 1000,
+            .gap_ms    = -1,
+            .cal_ms    = CAL_BUDGET_DEFAULT_MS,
+            .score_dir = SCORE_DIR_HIGH,
+            .pre_w     = ENT_W_PRE_DEFAULT,
+            .from_form = false,
+        };
+
         char qry[256] = "";
-        g_status.mode           = MODE_EUROJACKPOT;
-        g_status.runs_total     = 0;   // computed in elotto_task from combinatorics
-        /* D67: rounds until Abort is the only session. */
-        g_status.unlimited      = true;
-        g_status.runs_cap       = UNLIM_RUNS_DEFAULT;
-        // Window / blank: defaults match the UI field; ?run= / ?gap= override.
-        // Segment count is derived from run_target_ms (live cal RUN_SEGS_REF).
-        g_status.run_target_ms  = RUN_S_DEFAULT * 1000;
-        g_status.gap_ms         = SCORE_GAP_MS;
-        g_status.run_segments   = 0;   // filled below after parsing
-        // No ?src= any more: the camera is the only source this firmware has
-        // (sensor.h). A session that cannot run on photons does not run.
-        /* Camera calibration sweep budget. Default 10 s, split over the
-         * exposure ladder. 5 s was too short in warm/long runs (no rung
-         * certified). ?cal=0 disables; ?cal=<ms> overrides. */
-        g_status.cal_budget_ms  = CAL_BUDGET_DEFAULT_MS;
-        g_status.focus_mode     = false;   /* D66: always unattended */
-        g_status.score_dir      = SCORE_DIR_HIGH;
-        g_status.pool_auto      = 0;
-        /* "this start came from the web form" — a local, not session state:
-         * its only job is to authorise prefs_save() at the end of this
-         * handler. The pool-confirmation gate it used to arm is gone (D66). */
-        bool from_form = false;
-        /* Concordance weight. SESSION PARAMETER recorded in the CSV header.
-         * ?wpre=0 is the control arm — pure-z ranking. */
-        g_status.pre_w          = ENT_W_PRE_DEFAULT;
-        g_status.pre_n = 0;
-        if (httpd_req_get_url_query_str(req, qry, sizeof(qry)) == ESP_OK) {
-            char val[16] = "";
-            if (start_refuse_unknown_keys(req, qry))
-                return ESP_OK;
-            /* D67: a single pass is gone. Omitted unlimited= is on. */
-            if (httpd_query_key_value(qry, "unlimited", val, sizeof(val)) == ESP_OK) {
-                if (val[0] == '0')
-                    return start_refuse(req,
-                        "unlimited=0 no longer exists -- sessions are rounds until Abort");
-                if (val[0] != '1')
-                    return start_refuse(req,
-                        "unlimited= must be 1 (sessions are rounds until Abort); omit it");
-            }
-            if (httpd_query_key_value(qry, "maxruns", val, sizeof(val)) == ESP_OK) {
-                int m;
-                if (!parse_int_all(val, &m) ||
-                    m < UNLIM_RUNS_MIN || m > UNLIM_RUNS_MAX)
-                    return start_refuse(req,
-                        "maxruns= must be between " EL_STR(UNLIM_RUNS_MIN) " and "
-                        EL_STR(NUM_RUNS));
-                g_status.runs_cap = m;
-            }
-            if (httpd_query_key_value(qry, "mode", val, sizeof(val)) == ESP_OK)
-                g_status.mode = (val[0] == '1') ? MODE_LOTTO_649 : MODE_EUROJACKPOT;
-            // ?run=<seconds> — continuous window per item (default 5).
-            // Wall time is measured as focus_win_ms; long values may stretch.
-            if (httpd_query_key_value(qry, "run", val, sizeof(val)) == ESP_OK) {
-                double rs;
-                if (!parse_double_all(val, &rs) ||
-                    !(rs >= RUN_S_MIN && rs <= RUN_S_MAX))
-                    return start_refuse(req,
-                        "run= must be between " EL_STR(RUN_S_MIN) " and "
-                        EL_STR(RUN_S_MAX) " seconds");
-                g_status.run_target_ms = (int)(rs * 1000.0 + 0.5);
-            }
-            // ?gap=<seconds> — intentional blank. Absent: 40 % of ?run=.
-            if (httpd_query_key_value(qry, "gap", val, sizeof(val)) == ESP_OK) {
-                double gs;
-                if (!parse_double_all(val, &gs) ||
-                    !(gs >= GAP_S_MIN && gs <= GAP_S_MAX))
-                    return start_refuse(req,
-                        "gap= must be between " EL_STR(GAP_S_MIN) " and "
-                        EL_STR(GAP_S_MAX) " seconds");
-                g_status.gap_ms = (int)(gs * 1000.0 + 0.5);
-            } else {
-                int auto_gap = (int)(g_status.run_target_ms * 0.4 + 0.5);
-                if (auto_gap < 500) auto_gap = 500;
-                if (auto_gap > 10000) auto_gap = 10000;
-                g_status.gap_ms = auto_gap;
-            }
-            // ?score=high|low|abs — pre-registered Phase-0 pool selection.
-            // Default high (historical). Does not touch Phase-2 statistics.
-            if (httpd_query_key_value(qry, "score", val, sizeof(val)) == ESP_OK) {
-                if (val[0] == 'l' || val[0] == 'L')
-                    g_status.score_dir = SCORE_DIR_LOW;
-                else if (val[0] == 'a' || val[0] == 'A')
-                    g_status.score_dir = SCORE_DIR_ABS;
-                else if (val[0] == 'h' || val[0] == 'H')
-                    g_status.score_dir = SCORE_DIR_HIGH;
-                else
-                    return start_refuse(req, "score= must be high, low or abs");
-            }
-            // ?cal=<ms> -> sweep budget per round boundary; 0 = do not calibrate.
-            if (httpd_query_key_value(qry, "cal", val, sizeof(val)) == ESP_OK) {
-                int c;
-                if (!parse_int_all(val, &c) || c < 0 || c > CAL_BUDGET_MAX_MS)
-                    return start_refuse(req,
-                        "cal= must be 0.." EL_STR(CAL_BUDGET_MAX_MS)
-                        " ms (0 = no sweep)");
-                g_status.cal_budget_ms = c;
-            }
-            // ?confirm=1 -> "this start came from the web form", nothing more:
-            // it authorises prefs_save() below so a curl start cannot overwrite
-            // the operator's saved form values with API defaults.
-            if (httpd_query_key_value(qry, "confirm", val, sizeof(val)) == ESP_OK)
-                from_form = (val[0] == '1');
-            /* ?wpre= — concordance weight in the ranking key (D65). Default 0. */
-            if (httpd_query_key_value(qry, "wpre", val, sizeof(val)) == ESP_OK) {
-                double p;
-                if (!parse_double_all(val, &p) || p < 0.0 || p > 1.0)
-                    return start_refuse(req,
-                        "wpre= is the concordance weight in the ranking key and must "
-                        "be 0..1 (0 = the control arm, ranking unchanged)");
-                g_status.pre_w = p;
-            }
+        esp_err_t qe = httpd_req_get_url_query_str(req, qry, sizeof(qry));
+        /* ⚠ A query longer than the buffer must NOT read as "no query at all". */
+        if (qe == ESP_ERR_HTTPD_RESULT_TRUNC)
+            return start_refuse(req,
+                "query string too long -- /start takes at most 255 characters");
+        if (qe == ESP_OK && start_parse_query(req, qry, &parsed))
+            return ESP_OK;
+
+        /* ?gap= omitted → 40 % of the resolved window, floor GAP_S_MIN. */
+        if (parsed.gap_ms < 0) {
+            parsed.gap_ms = (int)(parsed.run_ms * 0.4 + 0.5);
+            if (parsed.gap_ms < (int)(GAP_S_MIN * 1000))
+                parsed.gap_ms = (int)(GAP_S_MIN * 1000);
+            if (parsed.gap_ms > (int)(GAP_S_MAX * 1000))
+                parsed.gap_ms = (int)(GAP_S_MAX * 1000);
         }
-        /* Segment count from the resolved window (same cal as sensor.c). Done
-         * after parsing so ?run= is already applied; gap may have been auto. */
+        int segments;
         {
-            int run_ms = g_status.run_target_ms;
-            if (run_ms < 100) run_ms = 100;
-            long long n = ((long long)run_ms * RUN_SEGS_REF + RUN_MS_REF / 2) / RUN_MS_REF;
+            int ms = parsed.run_ms < 100 ? 100 : parsed.run_ms;
+            long long n = ((long long)ms * RUN_SEGS_REF + RUN_MS_REF / 2) / RUN_MS_REF;
             if (n < 500) n = 500;
             if (n > EL_SEG_MAX) n = EL_SEG_MAX;
-            g_status.run_segments = (int)n;
+            segments = (int)n;
         }
-        /* UI-only: persist the form. Curl never sends confirm=1, so a scripted
-         * start cannot overwrite the operator's last weights with API defaults. */
-        if (from_form)
-            prefs_save();
-        /* Claim the RUNNING state synchronously, BEFORE the task exists, so a
-         * second /start in the window between this handler and elotto_task's own
-         * state assignment hits the 409 above instead of spawning a second
-         * session over the same g_status/results[]. elotto_task re-asserts it
-         * (harmlessly) after its reset block. */
-        g_status.state = ELOTTO_RUNNING;
-        /* PINNED to the core the extraction task is NOT on. Created fresh on
-         * every /start, so an unpinned create re-rolled the placement each
-         * session and landed on cam_task's core about one time in three,
-         * halving both. See ELOTTO_CAM_TASK_CORE in camera.h. */
+
+        /* ── COMMIT. No 400 past here. A 500 restores the snapshot so /status
+         * and the CSV header of the finished session stay labelled. RUNNING is
+         * claimed BEFORE the task exists so a second /start hits 409. */
+        StartSnap snap;
+        start_snap_save(&snap);
+        g_status.mode           = parsed.mode;
+        g_status.runs_total     = 0;
+        g_status.unlimited      = true;
+        g_status.runs_cap       = parsed.runs_cap;
+        g_status.run_target_ms  = parsed.run_ms;
+        g_status.gap_ms         = parsed.gap_ms;
+        g_status.run_segments   = segments;
+        g_status.cal_budget_ms  = parsed.cal_ms;
+        g_status.focus_mode     = false;
+        g_status.score_dir      = parsed.score_dir;
+        g_status.pool_auto      = 0;
+        g_status.pre_w          = parsed.pre_w;
+        g_status.pre_n          = 0;
+        g_status.state          = ELOTTO_RUNNING;
+        /* PINNED to the core the extraction task is NOT on. See
+         * ELOTTO_CAM_CONSUMER_CORE in camera.h. */
         if (xTaskCreatePinnedToCore(elotto_task, "elotto", 8192, NULL, 5, NULL,
                                     ELOTTO_CAM_CONSUMER_CORE) != pdPASS) {
-            g_status.state = ELOTTO_IDLE;
+            start_snap_restore(&snap);
             httpd_resp_set_status(req, "500 Internal Server Error");
             httpd_resp_sendstr(req, "no heap for the session task");
             return ESP_OK;
         }
+        /* After the task exists, because prefs_save() reads g_status and a
+         * 500 must not have written NVS. */
+        if (parsed.from_form)
+            prefs_save();
     }
     httpd_resp_sendstr(req, "ok");
     return ESP_OK;
