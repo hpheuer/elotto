@@ -414,14 +414,19 @@ NODE_NAMES_JS
 "if(t>cap)continue;"
 "if(t>bc||(t===bc&&(q>bq||(q===bq&&p>bp)))){bc=t;bp=p;bq=q;}}}"
 "return {p:bp,q:bq,c:bc};}"
-/* Wall time of ONE round at the parameters currently in the form. The operator
-   sets a run BUDGET, not a duration, and 100 runs is ~20 min at run=5 but over
-   an hour at run=15 — and in this mode there is no session end to discover that
-   from later. Model in sensor.h (CYCLE_LOAD_MBIT_X100); once a session is live the ETA
-   comes from the device's measured pace instead. A round is: the scoring sweep
-   (49 or 62 runs), the pool's combinations, and one camera sweep at the round
-   boundary. A round is exactly one block (D76), so this is also the block
-   length — which is why the >30 min warning below matters. */
+/* Wall time of ONE round at the parameters currently in the form, split into
+   its parts. The operator sets a run BUDGET, not a duration, and the model in
+   sensor.h (CYCLE_LOAD_MBIT_X100) is all there is before a session is live;
+   after that the ETA comes from the device's measured pace instead.
+
+   A round is: SCORE_PASSES passes over every number (49 or 62 runs each), the
+   pool's combinations once, and TWO camera sweeps — the round boundary and the
+   one before the pass (D85).
+
+   ⚠ The split is printed because the parts are wildly unequal: at 20 passes the
+   scoring is 1240 of a Eurojackpot round's ~1340 cycles, so `Runs per round`
+   barely moves the total and `?run=` sets it. That is why the old >30 min
+   warning is gone (D85) — it sat under a field that could not clear it. */
 /* One measurement cycle, in ms. Model in sensor.h: the bits a run needs over
    the rate the SLOWEST node produces them at, plus the fixed per-run overhead
    and the requested gap. `mbit` is the live minimum from /status when there is
@@ -436,33 +441,33 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "var m=0;if(!d||!d.nodes)return 0;"
 "for(var i=0;i<d.nodes.length;i++){var r=d.nodes[i].cam_mbit;"
 "if(r>0&&(m===0||r<m))m=r;}return m;}"
-"function roundMs(euro,combos){"
+"function roundParts(euro,combos){"
 "var runS=parseFloat(document.getElementById('numRunS').value);"
 "if(!(runS>=" EL_STR(RUN_S_MIN) "))runS=" EL_STR(RUN_S_DEFAULT) ";"
 "if(runS>" EL_STR(RUN_S_MAX) ")runS=" EL_STR(RUN_S_MAX) ";"
 "var gapS=Math.round(runS*0.4*10)/10;"
 "if(gapS<0.5)gapS=0.5;if(gapS>10)gapS=10;"
 "var cyc=cycleMs(segsFor(runS),gapS,lastSlowMbit);"
-"var meas=combos*cyc;"
-"var ins=" EL_STR(CAL_BUDGET_DEFAULT_MS) ";"
-/* Exactly one sweep per round since D76 — the round boundary is the only
-   trigger, so the count is 1 and not a function of elapsed time. */
-"return (euro?62:49)*" EL_STR(SCORE_PASSES) "*cyc+meas+ins;}"
+/* Sweeps per round: the round boundary, one mid-scoring per scoring run (D86 —
+   two of them in Eurojackpot, main numbers and euro numbers), and one before
+   the pass (D85). None is a function of elapsed time; there is still no time
+   trigger. */
+"var ins=(euro?4:3)*" EL_STR(CAL_BUDGET_DEFAULT_MS) ";"
+"return {s:(euro?62:49)*" EL_STR(SCORE_PASSES) "*cyc,m:combos*cyc,i:ins};}"
 "function unlimHint(){"
 "var c=parseInt(document.getElementById('numUnlimRuns').value)||0;"
 "var h=document.getElementById('unlimHint');"
 "if(!(c>=1)){h.innerHTML='';return;}"
 "var e=unlimPool(true,c),l=unlimPool(false,c);"
-/* A round IS a block (D76), so this preview is also the block length. Warn
-   past ROUND_WARN_MS and leave it at that: it is the operator's call. */
-"var te=roundMs(true,e.c),tl=roundMs(false,l.c);"
-"var w=(te>" EL_STR(ROUND_WARN_MS) "||tl>" EL_STR(ROUND_WARN_MS) ")"
-"?'<br><b style=\"color:#d08770\">⚠ over 30 min per round.</b> A round is one '"
-"+'block: every item in it is centred on one mean and scaled by one σ, and '"
-"+'the cameras are re-swept only at the boundary.':'';"
-"h.innerHTML='Euro '+e.p+'+'+e.q+' = '+e.c+' runs · ≈ '"
-"+fmt(te)+'/round<br>6of49 '+l.p+' = '+l.c"
-"+' runs · ≈ '+fmt(tl)+'/round'+w;}"
+/* A round IS a block (D76), so this preview is also the block length. No
+   warning (D85): every legal value of THIS field predicts a round dominated by
+   the scoring, so the split is the honest thing to show and the length stays
+   the operator's call. */
+"var pe=roundParts(true,e.c),pl=roundParts(false,l.c);"
+"function rl(lbl,p,q){return lbl+' = '+q+' runs · ≈ '+fmt(p.s+p.m+p.i)"
+"+'/round ('+fmt(p.s)+' scoring + '+fmtEta(p.m)+' pass)';}"
+"h.innerHTML=rl('Euro '+e.p+'+'+e.q,pe,e.c)+'<br>'"
+"+rl('6of49 '+l.p,pl,l.c);}"
 "function setMode(mode){"
 "document.getElementById('subtitle').textContent="
 "mode===0?'Eurojackpot • 5 of 50 + 2 bonus numbers':'6 of 49 Lotto';}"

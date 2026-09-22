@@ -37,8 +37,14 @@
 #define POOL_EURO_12     5   // C(5,2)  =   10 combinations
 /* Phase-0 scoring: every number this many times, fresh shuffle each pass,
  * keys summed, then the pool is the top by that sum (D81). Not back-to-back
- * (D5). */
-#define SCORE_PASSES    10
+ * (D5).
+ * ⚠ 20 since `[D86]`, and a camera sweep runs after pass SCORE_PASSES/2 of
+ * EVERY scoring run — which in Eurojackpot is two runs, the main numbers and
+ * the euro numbers. Each pass is centred and scaled on its own (score_build_keys
+ * runs per pass), so the sweep lands on a centring boundary, not inside one.
+ * ⚠ It doubles the scoring, which already dominates the round: 20 passes put a
+ * Eurojackpot round near 2,5 h at ?run=5. That is the operator's call `[D76]`. */
+#define SCORE_PASSES    20
 // Eurojackpot: C(12,5)·C(5,2) = 7920 — the largest configuration under the
 // ~10000 the user set as the ceiling (13+5 would be 12870). 6-of-49: 5005.
 
@@ -56,18 +62,24 @@
  *
  * ⚠ Defaults only. Every one is overridable per session on /start, so
  * changing a default here does NOT retroactively describe an archived run. */
-/* The form warns above this predicted ROUND length, and does nothing else about
- * it — a long round is a legitimate choice `[D76]`. It matters because a round
- * is a block: all of that round's items are centred on one mean and scaled by
- * one σ, and the camera is re-swept only at the boundary, so a very long round
- * puts a lot of measurement behind one operating point. Purely a UI hint. */
-#define ROUND_WARN_MS      1800000
+/* ⛔ No round-length warning `[D85]`. It used to fire above 30 min, but since
+ * `SCORE_PASSES` 20 the scoring is 1240 of a Eurojackpot round's ~1340 cycles, so
+ * the shortest legal round (`UNLIM_RUNS_MIN` 10) exceeds any 30-minute bar at
+ * the default `?run=`: the warning sat under "Runs per round" and no value of
+ * that field could clear it. The form prints the scoring/pass split instead —
+ * which names `?run=`, the parameter that actually sets the length. */
 #define CAL_BUDGET_DEFAULT_MS 10000      // exposure-sweep CAP, split over 9 rungs
 #define CAL_BUDGET_MAX_MS   120000
 /* ⛔ ONE BLOCK IS ONE ROUND, and there is no time trigger `[D76]`. The round
  * boundary parks the pass, closes the block and runs the camera sweep; the block
  * is the unit that carries the drift point, the pairwise close and the /loops
  * row. `?cal=0` turns the sweep off; nothing else changes the boundary.
+ *
+ * ⚠ The sweep runs TWICE per round since `[D85]` — at the boundary and again
+ * between the scoring and the pass — but the BLOCK boundary is still only the
+ * round boundary. The second sweep sits between two spans that are already
+ * separate blocks (the scoring span and the pass), so it moves no operating
+ * point underneath a centring and leaves n untouched.
  *
  * Why: `rank_key()` divides by the block's own σ, and the largest value a block
  * can produce is (n-1)/√n with n its item count. A wall-clock trigger made n

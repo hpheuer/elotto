@@ -29,9 +29,13 @@ that key; the pass **ranks** items on the same key; the UI shows Z*, Z, Conc.
 picks the exposure with the lowest **`raw_sigma`** among rungs that still look like noise (autocorr,
 dark / zero_diff) `[D83]` — dispersion is what `rank_key()` divides by and what soft-down trips on;
 the bias is subtracted by the centring and costs nothing. If a node's block σ is too loud against its peers, **soft-down**
-takes it out of the combine. The next sweep — at the next round boundary —
-recalibrates every node including that one. It returns after four
+takes it out of the combine. The next sweep — **three times a round in 6-of-49, four in Eurojackpot:
+at the boundary, halfway through each scoring run `[D86]`, and between the scoring and the pass
+`[D85]`** — recalibrates every node including that one. It returns after four
 clean blocks. ⚠ `?cal=0` turns every sweep off; a trip then waits until the next session.
+⚠ **A rung change is not free**: after one, this rig's cameras need ~1 min to settle (px still
+climbing, bit bias moving by ~0,002), and the items measured in that minute sit far enough from the
+block mean to trip soft-down on their own `[D86]`. Nothing discards them yet.
 
 ## Concept
 Four-node ESP32-P4 array. The master scores lottery numbers via GCP methodology; up to three slaves
@@ -88,17 +92,25 @@ across rounds a combination can recur — identity is **(round, index)**.
   only block boundary: the pass parks there → `/loops` row, drift point, pairwise close, block
   centring, then the camera sweep before the next round scores. ⛔ There is no wall-clock trigger and
   `?calint=` answers **400**; `?cal=0` is the no-sweep control.
+  ⚠ **A sweep is not a block boundary.** There are **three sweeps per round** (four in Eurojackpot)
+  — the boundary, one halfway through each scoring run `[D86]`, and one between the scoring and the
+  pass `[D85]` — but still exactly one block per round. Each extra sweep sits on a centring
+  boundary: every scoring PASS is its own centring span (`score_build_keys()` runs per pass), and
+  the pass block is its own. No operating point ever moves underneath a mean being subtracted.
   ⚠ **The block length is `?maxruns=`**, so every round holds the same item count and its `Z*`
   values compare — the largest key a block can produce is `(n−1)/√n` in that block's n. The form
-  warns past 30 min per round and does nothing else: it is the operator's call.
+  predicts the round length and **no longer warns** `[D85]`: with `SCORE_PASSES` 20 the scoring is
+  1240 of a Eurojackpot round's ~1340 cycles, so no legal `?maxruns=` could clear a 30-minute bar.
+  It prints the scoring/pass split instead, which names `?run=` — the parameter that sets the
+  length. A long round stays the operator's call.
 - Pause stops the clock; Abort publishes the measured prefix.
 
 ### Phases
-**Phase 0 — scoring.** Each number 1..N is measured **`SCORE_PASSES` (10) times**, each pass a
+**Phase 0 — scoring.** Each number 1..N is measured **`SCORE_PASSES` (20) times** `[D86]`, each pass a
 full session window in a fresh Fisher–Yates order (never the same number back-to-back `[D5]`).
 After each pass the ranking **key** is added to that number's sum; the pool is the top by that
 sum `[D81]`. Direction pre-registered: `?score=high|low|abs`, default `high` — it only
-picks the pool. The UI shows pass k/10 and the current top of the pool with the running sum. **The scoring key is the pass key** — z and concordance at the session's
+picks the pool. The UI shows pass k/20 and the current top of the pool with the running sum. **The scoring key is the pass key** — z and concordance at the session's
 `?wpre=` `[D48]``[D65]``[D69]`; `score_build_keys()` is the only place a scoring key is built.
 ⚠ Scoring has no `/loops` block; the scoring span **is** the block. Per-node centre over the
 numbers each camera actually answered, then concordance (loudest **centred** node dropped), then
@@ -138,7 +150,9 @@ as backstop for a compaction that cannot allocate.
   never compute a distribution from them.
 - **Every round closes its own block, and only the round boundary does** `[D76]`, so centring never
   mixes items from either side of a re-scoring and every block has the same item count. Rounds after
-  the first re-run the sweep **before** scoring.
+  the first re-run the sweep **before** scoring, **every** scoring run sweeps again at its
+  halfway pass `[D86]`, and **every** round sweeps once more between the scoring and its pass
+  `[D85]`.
 - **No pool-confirmation gate** — the machinery is deleted, not disabled `[D73]`: no
   `PHASE_POOL_CONFIRM`, no `pool_confirm` in `/status`. `pool_auto` stays at 1 as the record.
 - ⚠ Inside a round "measured exactly once" holds; **across rounds a combination can recur**. Each
@@ -153,7 +167,9 @@ as backstop for a compaction that cannot allocate.
   would stand through the insertion and the opening sweep).
 - The **Runs per round** field previews pool size and round length from the rate model in
   `sensor.h`: `cycle_ms ≈ 224·segments/rate + CYCLE_FIXED_MS + gap_ms` `[D39]`; the live ETA uses
-  measured pace.
+  measured pace. ⚠ It prints the length **split into scoring and pass** and warns about nothing
+  `[D85]` — the field moves only the pass, which at `SCORE_PASSES` 20 is under 1 % of a Eurojackpot
+  round `[D86]`.
 
 ---
 
@@ -310,7 +326,8 @@ separate arm `[D1]`.
 | centred-half concordance 2026-09-02 | post-D77 only — earlier `zc_ctr` is z − \|h1−h2\|/√2, not a sign test. Splits TABLES **and the chosen POOL** at `pre_w` > 0; `z_raw`/`z_ctr` still pool `[D77]` |
 | v3 vs any v2.x | v3 only |
 | camera chip `[D80]` | one of OV5647, IMX219 — `sensor=` in the CSV |
-| scoring 10-pass sum `[D81]` | post-D81 only — the pool is chosen on the sum of 10 keys |
+| scoring 10-pass sum `[D81]` | D81..D86 only — the pool was chosen on the sum of 10 keys |
+| scoring 20-pass sum `[D86]` | post-D86 only — 20 keys, and a sweep inside the scoring run |
 
 Unlimited-mode data carries two more: split on `round` before pooling with a single-pass session,
 and decide what to do about combinations that recur across rounds before pooling rounds together.
@@ -326,8 +343,8 @@ are display hints on `/diag` and gate nothing.
 **Soft-down** (`nodes[].soft_down`) takes a node out of the combine after a block with
 σ > `NODE_SOFT_TRIP_K` (1,35) × that block's peer-median σ `[D65]`. Sticky; clears after `NODE_SOFT_CLEAR_BLOCKS` (4) blocks under the
 peer-referenced bar (`clear_sig`, published per block in `/loops`) `[D12]`. It never reboots
-anything. The sweep that follows the block close (the round boundary) is what
-recalibrates it — soft-down itself does not call the ladder.
+anything. The sweeps that follow the block close (the round boundary, then the one before that
+round's pass `[D85]`) are what recalibrate it — soft-down itself does not call the ladder.
 - **σ is the only trip criterion.** |mean| is a flag (`mflag` in `/loops`), never an exclusion —
   centring removes a constant block offset, and the offsets come from the exposure rung `[D11]`.
   ⚠ Replay a threshold change against `/loops` before believing it.
@@ -388,17 +405,26 @@ ladder `[D46]``[D65]`), no stuck frames, `mean_px` ≥ 5,0 `[D18]`,
   fail; the answer is light, not a lower floor.
 - `raw_runs_z` is published per sweep rung and gates nothing. ⚠ 0,0 in a measurement window means
   NOT ARMED, not "perfectly random" (`raw_trans` says which).
-- The budget is a **cap, not a target** (default 10 s, `?cal=<ms>`, 0 = off) `[D21]`. **The trigger
-  is the ROUND BOUNDARY** `[D76]` — which also sets the block size and the drift regression's
-  resolution, so `?maxruns=` is the knob for both.
+- The budget is a **cap, not a target** (default 10 s, `?cal=<ms>`, 0 = off) `[D21]`. **The triggers
+  are the ROUND BOUNDARY** `[D76]` — which also sets the block size and the drift regression's
+  resolution, so `?maxruns=` is the knob for both — **the middle of every scoring run** `[D86]`,
+  after pass `SCORE_PASSES/2`, so an hour-long scoring run does not pick the pool on one rung —
+  **and the end of the scoring** `[D85]`, so the pass does not run on a rung certified a scoring
+  phase (tens of minutes) earlier. Still no time trigger. ⚠ A sweep is skipped when the last one is
+  younger than **twice its own budget** (`calibrate_all()`) — a backstop for a round shorter than
+  its own sweep, never reached at a sane `?run=`.
+  ⚠ A round costs `3 × ?cal=` in wall time, `4 ×` in Eurojackpot (the euro-number run sweeps too) —
+  at the 10 s default 30–40 s against hours, at `?cal=40000` two to three minutes.
 - **Nodes land on different exposures on purpose**; what they must share is the segment count.
 - `GET /calibrate` serves the whole last sweep per rung with the gate each failed plus the raw
   stats, **on every node** — a per-node optical fault is diagnosable. The chosen setting is
   recorded per block in `/loops`.
 - **`/loops` also carries `cam_sig` / `cam_rsig` (stream σ) and `cam_px`** `[D50]`.
   ⚠ **They are cumulative since the last SWEEP, not per block** `[D62]` — `camera_stats_reset()`
-  runs only in the sweep and on `/expose`. Up to three blocks share one accumulation here, and a
-  block right after a sweep has a shorter one and therefore a noisier σ. For anything that has to
+  runs only in the sweep and on `/expose`. Since `[D85]` the sweep before the pass resets them, so a
+  block's row now spans **that block's own pass** rather than the scoring that used to dominate the
+  accumulation — a shorter span and therefore a noisier σ, but one that describes the measured
+  items. ⚠ A `?cal=0` session has no reset at all. For anything that has to
   be located in time use **`GET /camlog` on the node** `[D64]`, or the per-item `w0..w3` in the
   CSV — never these. ⚠ `w0..w3` only survive until the next compaction; `/camlog` is the record
   that does not depend on the master keeping the row.

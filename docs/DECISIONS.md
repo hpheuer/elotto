@@ -1534,3 +1534,77 @@ do not read it as fault.
 against ½ + arcsin(ρ)/π for the session's own measured σ, never against 50 %.
 
 **Pooling:** no split — the reverted build produced no archived data that was kept.
+
+### D85 — A second sweep before the pass; the round-length warning removed (2026-09-22)
+**The pass gets its own camera sweep, and the form stops warning about round length.**
+
+**What was wrong with one sweep per round.** Since `SCORE_PASSES` 10 `[D81]` a Eurojackpot round is
+10 × 62 = 620 scoring cycles plus `?maxruns=` pass cycles — at the form's own preview, 620 of ~630.
+The single sweep sat at the round boundary, i.e. in front of the scoring, so the **pass** — the only
+phase that writes `results[]` — started on an operating point certified the better part of an hour
+earlier. `raw_sigma` is non-stationary per node on a timescale of minutes `[D59]`, and since `[D83]`
+`raw_sigma` is exactly what the rung is chosen on, what `rank_key()` divides by and what soft-down
+trips on. One sweep per round therefore spent its whole value on the phase that only picks the pool.
+
+**The change.** `calibrate_all()` is called a second time, after the scoring and the combination-space
+check, before `round_start_ms` is stamped. Cost: one budget, 10 s by default, against a round of tens
+of minutes. The existing floor in `calibrate_all()` (skip when the last sweep is younger than twice
+its own budget) still applies and never fires at a sane `?run=`.
+
+**Why this is not a block boundary.** The scoring span and the pass are already separate blocks — the
+scoring span is its own block `[D69]`, the pass block closes at the round boundary `[D76]`. The second
+sweep sits between them, so a rung that moves moves between blocks, never underneath a centring, and
+the block item count n — which fixes the `(n−1)/√n` ceiling on `Z*` — is untouched. ⛔ There is still
+no wall-clock trigger; `?calint=` still answers 400.
+
+**A second effect, wanted.** `camera_calibrate()` resets the camera statistics, so `/loops`
+`cam_sig`/`cam_rsig`/`cam_px` are "since the last sweep" `[D62]`. They used to accumulate across the
+whole scoring phase and then a few pass items, i.e. the pass block's row described the scoring. Now
+the row describes that block's pass. The span is shorter and therefore the σ noisier — but it is the
+σ of the items the row is filed under.
+
+**The warning.** The form's `⚠ over 30 min per round` fired above `ROUND_WARN_MS`, and sat under the
+**Runs per round** field. With the scoring at 620 cycles the shortest legal round (`UNLIM_RUNS_MIN` 10)
+is already ~50 min at `?run=5`: **no value of the field it sat under could clear it**, so it was noise,
+not a control. It is deleted together with `ROUND_WARN_MS`. The hint now prints the split —
+`≈ 50 min/round (49 min scoring + 48 s pass)` — which shows where the time actually is and points at
+`?run=`, the parameter that sets it. A long round remains the operator's call `[D76]`.
+
+**Pooling:** no split. The sweep has always been free to choose a different rung per node and per
+sweep `[D83]`; sweeping more often changes nothing about what a z means. ⚠ It does change what the
+`/loops` camera fields span, so do not compare a `cam_rsig` column across this date as if it were the
+same window.
+
+### D86 — 20 scoring passes, and a sweep in the middle of each scoring run (2026-09-23)
+**`SCORE_PASSES` 10 → 20, and `calibrate_all()` after pass `SCORE_PASSES/2` of every scoring run**
+(user decision). In Eurojackpot that is two mid-scoring sweeps, one in the main-number run and one
+in the euro-number run, so a round now carries four sweeps; 6-of-49 carries three. The sweep between
+the scoring and the pass `[D85]` **stays** — the operator chose additive, not a move.
+
+**Why the middle of the run.** At 20 passes a Eurojackpot main-number run is 1000 windows, well over
+an hour at `?run=5`. Choosing the whole pool on one operating point held that long runs against the
+one thing the sweep exists for: `raw_sigma` is non-stationary per node on a timescale of minutes
+`[D59]`, and since `[D83]` `raw_sigma` is what the rung is chosen on.
+
+**Why a pass boundary is a safe place to move a rung.** `score_build_keys()` runs once per pass, so
+every pass is centred per node and scaled by its own σ. A rung that moves between pass 10 and 11
+therefore moves between two complete centring spans — the same property that makes the `[D85]` sweep
+safe. Inside a pass it would shift a node's offset underneath the mean being subtracted from it.
+
+⚠ **This does not fix the settling trip, and the operator knows it.** The first session on `[D85]`
+tripped soft-down on slave0 in exactly the way the new sweep placement invites: the sweep before the
+pass moved slave0 from exposure 64 to 128, `px` went 8,2 → 14,8 and kept climbing for about a minute
+while the bit bias moved by 0,0024 — and the ~10 items measured in that minute pushed the node's
+block σ to 2,87 against peers at 1,14 / 1,17 / 1,48, over the 1,35 × peer-median bar. The camera
+itself was clean throughout (window σ 1,22 against peers 1,22 and 1,29, no stalls, |ac1| ≤ 0,0003).
+Evidence: slave0's `/camlog` shows two 17 s gaps, at windows 69 and 153, exactly 84 windows apart —
+the `maxruns` 84 pass between the two sweeps, with the rung change in the first gap.
+
+**So: every rung change on this rig costs the first ~1 min of whatever span follows it**, and
+mid-scoring that lands in pass 11, where it inflates one pass's σ rather than tripping a node. The
+open fix is to discard a few windows after a sweep that actually changed the rung (`kept` = 0);
+nothing does that yet.
+
+**Pooling:** ⚠ **split.** The pool is now chosen on the sum of 20 keys, not 10 `[D81]`, and a
+scoring run now contains a rung change. Pool selection therefore does not pool with D81..D85
+sessions. `z_raw`/`z_ctr`/`zc_ctr` still pool.

@@ -654,6 +654,32 @@ static void score_and_build_pool(int max_val, int pool_size, uint8_t *pool,
             ok_any[k] = true;
         }
         score_publish_live(euro_pool, acc, ok_any, skip, max_val, pool_size);
+
+        /* ── Mid-scoring sweep `[D86]` ──────────────────────────────────────
+         * Halfway through the passes, so the pool is not chosen on a single
+         * operating point held for the whole scoring run — at SCORE_PASSES 20
+         * that run is over an hour, and `raw_sigma` is non-stationary per node
+         * on a timescale of minutes `[D59]`.
+         *
+         * Why here and not anywhere else in the loop: score_build_keys() has
+         * just run, so this pass is centred and scaled and closed. Every pass
+         * is its own centring span, which makes a pass boundary the only place
+         * a rung may move without shifting a node's offset underneath the mean
+         * that is being subtracted from it — the same argument as the sweep
+         * between the scoring and the pass `[D85]`.
+         *
+         * ⚠ EVERY scoring run does this, so Eurojackpot sweeps twice here: once
+         * in the main-number run, once in the euro-number run. Both are spans
+         * whose pool is chosen on their own keys, so neither gets to run an hour
+         * on one rung while the other is re-tuned.
+         *
+         * ⚠ calibrate_all() leaves g_status.phase at PHASE_CALIBRATE — it is the
+         * caller's job to restore it, and here the scoring is not over. */
+        if (pass + 1 == SCORE_PASSES / 2 && pass + 1 < SCORE_PASSES) {
+            g_status.cal_did_sweep = calibrate_all();
+            if (g_status.abort_requested) return;
+            g_status.phase = PHASE_SCORING;
+        }
     }
 
     for (int i = 0; i < n_keep; i++)
@@ -2619,6 +2645,29 @@ void elotto_task(void *pvParam)
             goto done;
         }
 
+        /* ── The pass's own sweep `[D85]` ──────────────────────────────────
+         * The scoring is 1240 of a Eurojackpot round's ~1340 measurement cycles,
+         * so without this the pass — the only phase that writes results[] —
+         * would start on an operating point certified the better part of an
+         * hour earlier, while `raw_sigma` is non-stationary per node on a
+         * timescale of minutes `[D59]`. The sweep costs its budget (10 s
+         * default) against a round of tens of minutes.
+         *
+         * It is NOT a block boundary: the scoring span and the pass are already
+         * separate blocks, each standardised by its own σ, so a rung that moves
+         * here moves between blocks and never underneath a centring.
+         *
+         * It also makes the /loops camera fields answerable: camera_calibrate()
+         * resets the statistics, so `cam_sig`/`cam_rsig`/`cam_px` on the pass
+         * block's row now describe the pass instead of the scoring that
+         * dominated the accumulation.
+         *
+         * Placed after the combination-space check so an aborting round does
+         * not pay for a sweep, and before round_start_ms is stamped so the
+         * sweep stays out of the measuring clock. */
+        g_status.cal_did_sweep = calibrate_all();
+        if (g_status.abort_requested) { slave_abort(); goto done; }
+
         /* Where this round lands in results[], and how much room is left. The
          * buffer is the hard stop for unlimited mode: a truncated round is still
          * a valid measured prefix, but it is the last one. */
@@ -2641,7 +2690,7 @@ void elotto_task(void *pvParam)
          * mean or sigma, so the D42 sanity check does not catch this. */
         g_status.round_base      = g_status.runs_completed;
         g_status.round_item_base = g_status.items_done;
-        /* Stamped HERE and not at `round++`: the sweep and the scoring pass sit
+        /* Stamped HERE and not at `round++`: both sweeps and the scoring pass sit
          * between the two, and neither measures a combination.
          * Taking the mark at the boundary would put a minute or more of
          * preparation into the round's measuring clock and make the panel's
