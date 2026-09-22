@@ -248,11 +248,12 @@ typedef struct {
     double   bias, sigma, mbit_per_sec;
     double   autocorr_max;      // max |lag 1..4|
     double   mean_pixel_level, zero_diff_frac;
-    /* LSB, for this candidate's window (D43). GATED since 2026-08-27 —
-     * both of them, and the comment this replaces was the reason it took so
-     * long: a naive |raw_sigma-1| <= 0,05 bar WOULD reject rungs the array uses
-     * successfully, so the bar is one-sided and set from the measured gap
-     * instead. See CAL_MAX_RAW_BIAS and CAL_RAW_SIGMA_MAX in camera.c. */
+    /* LSB, for this candidate's window (D43). `raw_sigma` is the SELECTION
+     * KEY — lowest wins `[D83]`; `raw_bias` is measured and published and
+     * gates nothing `[D52]`. ⚠ An absolute |raw_sigma-1| bar would reject
+     * rungs the array uses successfully, which is why the dispersion gate
+     * (CAL_RAW_SIGMA_K in camera.c) is one-sided and RELATIVE to the ladder's
+     * own best. */
     double   raw_bias, raw_sigma;
     double   raw_runs_z;        // LSB runs statistic; measured, NOT gated
     uint64_t raw_bits;          // LSB bits behind raw_bias/raw_runs_z

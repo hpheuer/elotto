@@ -1452,7 +1452,6 @@ static const uint32_t s_cal_ladder[] = { 4, 8, 16, 32, 64, 128, 256, 512 };
  *
  * The LSB bias bar stays the gate: toothless, as the paragraph above says,
  * but bounded, and it cannot blank a node. */
-#define CAL_MAX_RAW_BIAS      6.0e-3   /* retained ONLY as cal_key_se()'s fallback */
 /* Standard errors of the CHALLENGER's own bias measurement that it must beat
  * the incumbent by before the rung is changed. 3 is the same "outside its own
  * noise" convention CAL_BIAS_SE_K uses, and on the master's ladder it is worth
@@ -1538,32 +1537,49 @@ static double cal_bias_bar(uint64_t bits)
 }
 
 /* ── The selection key and its noise ──────────────────────────────────────
- * The key is the monobit distance on the LSB stream, so a smaller key is a
- * better rung. Falls back to the LSB bias only for a node with no parallel
- * raw stream, which keeps a crippled front end selectable rather than
- * unselectable — the same fallback cal_gate() makes, for the same reason.
+ * ⛔ The key is the STREAM DISPERSION `raw_sigma`, not the bias `[D83]`. Lower
+ * is a better rung. The bias is still measured, published per rung and in
+ * `/loops`, and it still gates nothing — it is simply not what the rung is
+ * chosen on any more.
  *
- * cal_key_se() is that key's own standard error: SE(bias) = 0,5/sqrt(bits)
- * over the bits the key was measured on. It is what the hysteresis margin is
- * expressed in, so the rule tightens by itself when a sweep window grows. */
+ * Why: `center_block()` subtracts each node's per-block mean, so the bias costs
+ * the measurement nothing — that is the same argument by which the gain ladder
+ * was rejected `[D74]`. Dispersion costs everything: `rank_key()` divides by
+ * the block σ, soft-down trips on it, and the combined σ is what sets how much
+ * measuring time buys how much evidence. Selecting on the harmless quantity
+ * while merely gating the harmful one optimised the wrong thing.
+ *
+ * cal_key_se() is that key's own standard error. For a sample σ over m
+ * mini-runs it is σ/sqrt(2(m−1)) — so the hysteresis margin scales with the
+ * measurement, exactly as it did for the bias, and a longer sweep window makes
+ * the rule pickier by itself. Worked: σ 1,111 over 2000 mini-runs gives
+ * SE 0,0176, so CAL_KEEP_MARGIN_K 3 asks a challenger to be 0,053 narrower.
+ *
+ * ⚠ What this trades away, and how it would show: a rung with a larger bias
+ * carries a larger per-block offset for the centring to remove, and if that
+ * bias wanders WITHIN a block the residual after centring is larger too. If
+ * block σ gets WORSE after this change rather than better, the bias was doing
+ * work this reasoning does not credit it with — replay against `/loops`. */
 static double cal_key(const camera_cal_step_t *s)
 {
-    return (s->raw_bits > 0) ? fabs(s->raw_bias - 0.5) : fabs(s->bias - 0.5);
+    return (s->raw_bits > 0 && s->raw_sigma > 0.0) ? s->raw_sigma : s->sigma;
 }
 
 static double cal_key_se(const camera_cal_step_t *s)
 {
-    uint64_t bits = (s->raw_bits > 0) ? s->raw_bits : s->bits;
-    return bits ? 0.5 / sqrt((double)bits) : CAL_MAX_RAW_BIAS;
+    double k = cal_key(s);
+    int    m = s->minirun_n;
+    if (!(k > 0.0) || m < 2) return k > 0.0 ? k : 1.0;   /* unmeasurable: never decisive */
+    return k / sqrt(2.0 * (double)(m - 1));
 }
 
 static uint32_t cal_gate(const camera_cal_step_t *s)
 {
     uint32_t f = 0;
     if (s->bits < CAL_MIN_BITS || s->minirun_n < CAL_MIN_MINIRUNS) f |= CAM_CAL_FAIL_BITS;
-    /* LSB bias and CAL_MAX_MEAN_PX are NOT gates (D52, 2026-08-28).
-     * LSB |raw_bias−0,5| selects; σ / autocorr / dark / stuck reject.
-     * cal_bias_bar() / CAL_MAX_MEAN_PX stay for /calibrate readability. */
+    /* ⛔ The bias gates nothing and selects nothing `[D52]``[D83]`. σ selects;
+     * autocorr / dark / zero_diff / stuck / bits reject. cal_bias_bar() and
+     * CAL_MAX_MEAN_PX are computed for /calibrate readability only. */
     if (s->autocorr_max >= CAL_AUTOC_TOL)       f |= CAM_CAL_FAIL_AUTOC;
     /* |σ−1|≤0,05 was the LSB gate (D65). LSB σ is not ~1; RSIG is
      * the dispersion gate, relative to this ladder's own best. */
@@ -1725,67 +1741,31 @@ bool camera_calibrate(int budget_ms, bool (*abort_cb)(void), camera_cal_t *out)
                 out->step[i].fail |= CAM_CAL_FAIL_RSIG;
     }
 
-    /* Selection: only gated candidates are eligible, LOWEST |bias-0.5| wins.
+    /* ── Selection ────────────────────────────────────────────────────────
+     * Only rungs with fail == 0 are eligible; among them the LOWEST
+     * `raw_sigma` wins `[D83]`. See cal_key() above for why dispersion and not
+     * the bias.
      *
-     * This used to select the FASTEST passing candidate, from the assumption
-     * that a shorter exposure means a faster frame rate means more bits per
-     * second. That assumption is dead: §1.10 showed the bit rate is CPU-bound,
-     * not exposure-bound, and a full sweep measures 3.217-3.293 Mbit/s across
-     * exposure 4..512 — a 2.4% spread, i.e. measurement noise. So the tie-break
-     * was comparing eight numbers that are all the same and picking whichever
-     * happened to measure highest: a coin toss across the whole passing range.
+     * The incumbent rung is KEPT unless a challenger beats it by
+     * CAL_KEEP_MARGIN_K standard errors of the challenger's own measurement,
+     * so "decisively better" is measured rather than a fixed fraction. Without
+     * it the sweep hops whenever two rungs sit within noise of each other, and
+     * a hop is not free: the operating point moves underneath the per-block
+     * mean that the drift regression is built from.
+     * The incumbent must still PASS every gate — this is hysteresis, not
+     * tenure; a rung that starts failing is left at once.
      *
-     * What that cost, measured: the master picked exposure 16 (bias -3.7e-4)
-     * over 32 (-2.1e-4) on a 0.7% rate difference, and across one 5-loop
-     * session its choice wandered 128 -> 256 -> 8 -> 128 -> 128, once landing
-     * on a rung a standalone sweep had *failed* at -1.21e-3.
+     * ⚠ The incumbent is the rung the camera is on when the sweep STARTS
+     * (e0/g0), which after a manual /expose is not what the last sweep chose.
+     * Deliberate — the operator's setting is the running program, and /expose
+     * already says it is not sticky past the next sweep. It does mean a
+     * hand-set rung gets one sweep of protection.
      *
-     * Bias is the gate that actually binds and the property that costs sigma,
-     * so select on it directly. It is noisy too (SE ~1.7e-4 per candidate), but
-     * unlike rate it is INFORMATIVE: the real spread across a ladder is
-     * -1.6e-3 to -4.8e-5, ~30x the SE, so this reliably picks the right region
-     * and only ties arbitrarily between rungs that are genuinely equivalent.
-     *
-     * ⛔ There is no dispersion MARGIN on top of the gate. A 2026-07-27 rule
-     * required a rung to clear CAL_SIGMA_TOL by half its tolerance to be
-     * selectable; D65 deleted that gate with the second stream it read, and the
-     * dispersion bar is now CAL_RAW_SIGMA_K, relative to this ladder's own best
-     * (see there). Do not re-add an absolute margin on top of a relative bar —
-     * the bar already moves with the node's level, which is the whole reason it
-     * is relative.
-     *
-     * ── LSB BIAS + HYSTERESIS (2026-08-27) ───────────────────
-     * Two changes, one cause. See CAL_MAX_RAW_BIAS above for the measurement.
-     *
-     * 1. The key is |raw_bias - 0,5|, the monobit distance on the LSB stream.
-     *    Measured AFTER the then-live adjacent-pixel XOR, every certified rung
-     *    sat four times below the window's own sampling error, so the old key
-     *    was comparing three numbers that are all the same — the same defect
-     *    the RATE tie-break had, one layer down. On the un-XORed stream (which
-     *    since D65 is the only one) the ladder is a clean U with ~20x the noise
-     *    between neighbours, and it orders the rungs the way their measured
-     *    per-block offsets do.
-     *
-     * 2. The incumbent rung is KEPT unless a challenger is decisively better.
-     *    The sweep re-decides from scratch every 15 minutes, so even a good key
-     *    makes it hop whenever two rungs are within noise of each other — and
-     *    a hop is not free: the master's offset jumped from -0,06 to -0,90 the
-     *    block it moved from 64 to 16, and the drift regression, which is the
-     *    per-block mean of exactly this node, flagged the pass null broken in
-     *    17 of 50 blocks that session. Nothing was wrong with the instrument;
-     *    the operating point moved underneath it.
-     *
-     *    The bar for displacing the incumbent is CAL_KEEP_MARGIN_K standard
-     *    errors of the challenger's own bias measurement, so "decisively" is
-     *    measured, not a fixed fraction — a longer sweep window naturally makes
-     *    the rule pickier. The incumbent must still PASS every gate: this is
-     *    hysteresis, not tenure. A rung that starts failing is left at once.
-     *
-     *    ⚠ The incumbent is the rung the camera is on when the sweep STARTS
-     *    (e0/g0), which after a manual /expose is not what the last sweep
-     *    chose. That is deliberate — the operator's setting is the running
-     *    program, and /expose already says it is not sticky past the next
-     *    sweep. It does mean a hand-set rung gets one sweep of protection. */
+     * ⚠ CAL_RAW_SIGMA_K, the relative dispersion gate applied just above, can
+     * no longer reject the rung this picks: the gate's reference IS the
+     * ladder's lowest raw_sigma, which is exactly what the key now selects. It
+     * still marks the rest of the ladder, so /calibrate keeps saying which
+     * rungs were wide. Redundant here, not wrong. */
     int pick = -1;
     for (int i = 0; i < n; i++) {
         if (out->step[i].fail) continue;

@@ -86,3 +86,18 @@ CONFIG_HTTPD_MAX_URI_LEN=512
 # Source quality is unaffected by the flag, as it must be.
 # Assertions stay ENABLED: they are a correctness net, not a speed knob.
 CONFIG_COMPILER_OPTIMIZATION_PERF=y
+
+# ── HTTP server capacity ───────────────────────────────────────────────
+# esp_http_server reserves 3 of the lwIP sockets for its own working, so
+# `max_open_sockets` can never exceed CONFIG_LWIP_MAX_SOCKETS - 3. At the old
+# default of 10 that ceiling was exactly the httpd default of 7, and the master
+# runs out: one open UI page holds several keep-alive connections (Chrome opens
+# up to 6 per origin, and two windows share that pool), which fills the table.
+# With `lru_purge_enable` on, a NEW connection is then served by evicting the
+# least recently used session — and a just-accepted, still-silent client is
+# always that victim, so an external `curl` is dropped before its request is
+# read. Symptom: TCP connect succeeds, then an immediate close, reproducibly,
+# while the page itself keeps updating on its existing sockets.
+# 16 gives httpd 13 against Chrome's 6, so the table no longer fills and the
+# CSV / camlog pulls the operator is told to make mid-session can get through.
+CONFIG_LWIP_MAX_SOCKETS=16

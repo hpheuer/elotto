@@ -3081,6 +3081,19 @@ static void start_webserver(void)
     cfg.recv_wait_timeout = 20;   /* /update streams a ~700 KB body */
     cfg.send_wait_timeout = 20;
     cfg.lru_purge_enable  = true;
+    /* ⚠ The UI must not be able to lock an external client out of the master.
+     * httpd reserves 3 lwIP sockets for itself, so this can never exceed
+     * CONFIG_LWIP_MAX_SOCKETS - 3 (16 - 3 = 13); at the old socket default of 10
+     * the ceiling WAS the httpd default of 7. One open page holds several
+     * keep-alive connections — Chrome allows 6 per origin and two windows share
+     * that pool — which fills a 7-slot table. `lru_purge_enable` above then
+     * serves each new connection by evicting the least recently used session,
+     * and a just-accepted client that has not sent its request yet is always
+     * the victim. The observed symptom is a successful TCP connect followed by
+     * an immediate close, every time, while the page keeps updating on its own
+     * existing sockets. That matters because pulling `/camlog` and
+     * `/results.csv` mid-session is the documented procedure. `[D82]` */
+    cfg.max_open_sockets  = 13;
     httpd_handle_t srv = NULL;
     ESP_ERROR_CHECK(httpd_start(&srv, &cfg));
     static const httpd_uri_t uris[] = {

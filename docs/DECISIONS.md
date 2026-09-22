@@ -191,6 +191,8 @@ exclusions were mostly D12, not condition.
 ## Calibration
 
 ### D16 — Rung selection: lowest |bias−0,5| among candidates that clear every gate
+**Superseded as a rule by D83** (the key is `raw_sigma`). The reasoning below for why the RATE
+tie-break had to go still stands, and the hysteresis it introduced is unchanged in form.
 Selection used to take the FASTEST passing candidate, on the assumption that a shorter exposure means
 a faster frame rate means more bits. That assumption is dead: the bit rate is CPU-bound, and a full
 sweep measures 3,217–3,293 Mbit/s across exposure 4..512 — a 2,4 % spread, i.e. noise. The tie-break
@@ -624,7 +626,8 @@ and old CSV comparability; bit values stay defined as legacy.
 **Entscheidung:** Gone. Sweep still publishes `raw_runs_z` per rung, not a gate (D46). Underdispersed and orthogonal to the z outliers.
 
 ### D56 — Half-window concordance; compact 100 extremes (2026-08-29)
-**Entscheidung:** Concordance = leave-one-out Stouffer of per-node half-window z. Split at nseg/2;
+**Entscheidung:** Concordance = leave-one-out Stouffer of per-node half-window z.
+⚠ **The split is INTERLEAVED since D84**, not at nseg/2 as written here. Historic text:
 same sign → `√2·min(|h1|,|h2|)`; else 0; drop the loudest node. Unlimited rounds compact every
 boundary to the 100 most extreme `|rank_key|` (both tails). Live as of D65: z + concordance.
 
@@ -1404,3 +1407,130 @@ the keys are **added**. The pool is the top by that sum, same `?score=` directio
 one onset per window.
 
 **Pooling:** splits the chosen pool from pre-D81 sessions. Pass `z_raw`/`z_ctr` unchanged.
+
+### D82 — The UI must not lock an external client out of the master (2026-09-22)
+**Entscheidung:** `CONFIG_LWIP_MAX_SOCKETS` 10 → **16**, `cfg.max_open_sockets` **13**.
+
+**Symptom, measured 2026-09-22 mid-session:** every request from `curl` and from Python to the
+master returned nothing — TCP connect SUCCEEDED, then the peer closed immediately, reproducibly
+over 20 attempts spread across 20 s, with and without browser-like `Origin`/`Referer`/`User-Agent`
+headers. The identical plain request to a slave answered 200. Meanwhile the operator's page kept
+updating normally, and a freshly opened second browser window loaded fine.
+
+**Cause:** `esp_http_server` reserves 3 lwIP sockets for its own working, so `max_open_sockets`
+can never exceed `CONFIG_LWIP_MAX_SOCKETS - 3`. At the socket default of 10 that ceiling was
+exactly the httpd default of 7 — the server was at its limit with no headroom and nothing said so.
+One open UI page holds several keep-alive connections (Chrome allows 6 per origin, and two windows
+share that pool), which fills a 7-slot table. With `lru_purge_enable` on, httpd then serves each
+new connection by evicting the least recently used session — and a client that has just been
+accepted but has not yet sent its request is always the least recently used one. So the eviction is
+deterministic, not a race: an external client loses every time while the page holds the table hot.
+
+**Why it matters and is not cosmetic:** pulling `GET /camlog` per node and
+`GET /results.csv?all=1` **during** a session is the documented procedure — `/camlog` is a 512-deep
+ring that is the only place a disturbance can be located in time, and `results[]` is RAM-only. A
+firmware where opening the UI silently blocks exactly those reads defeats both.
+
+⚠ It also produced a false alarm worth recording: the same evidence — immediate close on every
+endpoint including `/otainfo`, which is a separate handler set — reads exactly like a dead HTTP
+task, and was reported as one. The master was healthy throughout and the session never stopped.
+**The check that settles it is a second browser window**: if that loads, the accept path is fine
+and the problem is the caller's, not the board's.
+
+⚠ Two further misreadings in that same false alarm, both worth knowing:
+`GET /camlog` returns the ring under **`win`**, not `entries` — reading the wrong key gives an
+empty list beside a non-zero `dropped`, which looks like a stalled node. And `measuring` on a
+slave's `/diag` is the NARROW ~2 s measuring-window flag, so a single sample of it reads `False`
+most of the time; it is not a session-running flag. To prove the array is still measuring, watch a
+slave's `/camlog` `tag` advance.
+
+⚠ **Raising the socket count fixes the LOCK-OUT, not the LOAD — and polling the master during a
+measuring pass costs measurement.** The master's HTTP task shares `ELOTTO_CAM_CONSUMER_CORE` with
+the consumer, which is why the page's `/extremes` poll is throttled to 5 s `[D78b]`. Evicted
+requests are cheap; served ones are not, so more sockets can cost MORE CPU, not less. Measured the
+same day: repeated probing of the master while it measured coincided with a soft-down of the master
+alone in block 11 — its z σ went 1,009 → **2,748** → 1,064 while its camera stayed on the same rung
+with `cam_rsig` 1,304 and `cam_px` 17,27, both mid-range for the session, and all three slaves stayed
+normal (1,019 / 1,237 / 1,135). Clean bits, inflated per-item z: the signature of a starved consumer,
+not of a camera. Circumstantial — the per-window `/camlog` evidence had already rolled out of the
+512-entry ring (~38 min deep) by the time it was looked for. **Pull `/camlog` promptly, and read the
+SLAVES when you want to watch a running session.**
+
+**Pooling:** no split. Nothing measured, ranked or archived changes.
+
+### D83 — The sweep selects on DISPERSION, not on bias (2026-09-22)
+⛔ **`cal_key()` is `raw_sigma`.** Lowest wins among rungs that clear every gate. The bias is still
+measured, still published per rung and in `/loops`, and still gates nothing — it is simply not what
+the rung is chosen on.
+
+**Why.** `center_block()` subtracts each node's per-block mean, so a bias costs the measurement
+nothing; that is the same argument that rejected the gain ladder `[D74]`. Dispersion costs
+everything: `rank_key()` divides by the block σ, soft-down trips on it, and the combined σ sets how
+much evidence a given measuring time buys. Selecting on the harmless quantity while merely gating
+the harmful one optimised the wrong thing.
+
+**What it was worth, measured on the three slaves' live ladders before the change:** slave0 sat on
+exp 128 at σ 1,232 while exp 64 passed every gate at 1,111 — **9,8 % narrower**; slave1 sat on exp 64
+at 1,206 against exp 32 at 1,175 (2,6 %); slave2's bias-minimum and σ-minimum were the same rung.
+Sensitivity goes as 1/σ, so ~4 % narrower across the array is ~8 % less measuring time for the same
+evidence.
+
+**Hysteresis is unchanged in form, only in units.** `cal_key_se()` is now the sample σ's own standard
+error, σ/√(2(m−1)) over m mini-runs, and `CAL_KEEP_MARGIN_K` 3 still asks a challenger to beat the
+incumbent by 3 of those. Worked: σ 0,9947 over 2000 mini-runs gives SE 0,0157, so the bar is 0,047 —
+a 4,7 % improvement.
+
+**First sweep after the change, all four nodes:** slave0 moved 16 → 128 (1,1097 → 0,9798) and slave2
+16 → 128 (1,3318 → 1,0206), both decisively. Master (1,0278 vs 0,9947) and slave1 (1,0558 vs 1,0214)
+declined at 3,3 % against the 4,7 % bar and kept the boot rung. That is the rule working, not
+failing.
+
+⚠ **The σ key is COARSER than the bias key was, by about 3-4×.** On the master's ladder the passing
+σ spread is 0,101 against a 3 SE bar of 0,047 — a ratio of 2,1; the bias spread on the same ladder
+is 5,6e-3 against 6,3e-4, a ratio of 9,0. So differences under ~5 % will not move a rung at the 10 s
+default budget. The lever is `?cal=`: SE goes as 1/√budget, so 40 s halves the bar to ~2,4 %.
+
+⚠ **`CAL_RAW_SIGMA_K` can no longer reject the rung the key picks** — that gate's reference IS the
+ladder's lowest `raw_sigma`, which is now exactly what is selected. It still marks the rest of the
+ladder for `/calibrate`. Redundant there, not wrong.
+
+⚠ **What this trades away, and how it would show.** A rung with a larger bias carries a larger
+per-block offset for the centring to remove, and if that bias wanders WITHIN a block the residual
+after centring is larger too. If block σ gets WORSE rather than better, the bias was doing work this
+reasoning does not credit it with — replay against `/loops` before believing either way.
+
+**Pooling:** no split. The sweep has always been free to choose a different rung per node and per
+sweep; nothing about what a z MEANS changes.
+
+### D84 — How the window is split does NOT matter; the 50 % null was wrong (2026-09-22)
+⛔ **The halves stay split at `nseg/2`.** An interleaved split — even segments against odd — was
+built, flashed and measured, and **reverted**: it changed nothing, and a pooling split has to buy
+something.
+
+**The idea under test.** The concordance channel counts a node only when both halves of its window
+lean the same way, which is evidence only if they could have disagreed. The 2026-09-22 session had
+them agreeing on 1850 of 2648 items — 69,9 % against a documented null of 50 %. The suspected cause
+was that a camera's deviation persists across a window, so a front/back split cannot let the halves
+disagree; interleaving would put both halves over the same span of time and remove it.
+
+**Measured, one 210-item block on the interleaved build: 158/210 = 75,2 %.** Against the front/back
+69,9 % that is 1,7 σ — no change, and if anything the wrong way. Against 50 % it is 7,3 σ. The
+prediction is refuted: the halves are not correlated by time-ordered drift, because destroying the
+time ordering does not touch the number.
+
+**What the 70-75 % actually is, mostly.** ⚠ **The 50 % null assumes unit-variance nodes, and this
+array has never had them.** Write h1 = c + e1, h2 = c + e2, with c the item-level component the
+block centring leaves behind and e the per-half binomial noise; then the full-window z has variance
+2·var(c) + var(e), the half-to-half correlation is ρ = var(c)/(var(c)+var(e)), and the agreement
+rate is ½ + arcsin(ρ)/π. Worked at the measured per-node block σ of 1,18: var(c) = 0,39,
+var(e) = 0,61, ρ = 0,39, **expected agreement ≈ 63 %** — not 50. At σ = 1,00 it does fall to 50 %,
+which is the sanity check.
+
+So most of the "anomaly" was a null that does not apply. A residual of roughly 12 points above the
+σ-corrected expectation remains, about 4 σ, and is **not explained**. Do not read it as signal and
+do not read it as fault.
+
+⚠ **`pre_n`/`ranked` is therefore a restatement of the node σ, not an independent check.** Judge it
+against ½ + arcsin(ρ)/π for the session's own measured σ, never against 50 %.
+
+**Pooling:** no split — the reverted build produced no archived data that was kept.

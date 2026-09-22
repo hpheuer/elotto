@@ -26,8 +26,9 @@ Two channels, one key `[D65]`:
 that key; the pass **ranks** items on the same key; the UI shows Z*, Z, Conc.
 
 **How the cameras stay usable.** One OV5647 **or** IMX219 per node — `esp_video` probes both (OV at I2C 0x36, IMX at 0x10) and binds whichever chip answers `[D80]`. Frame-pair LSB — z is the camera bits. IMX219 streams packed RAW10; the extractor takes the 10-bit LSB. `/status` `cam_sensor` names the bound chip. ⚠ IMX219 sessions do not pool with OV5647. The **sweep**
-picks the exposure with the lowest |bias−0,5| among rungs that still look like noise (autocorr,
-relative σ, dark / zero_diff). If a node's block σ is too loud against its peers, **soft-down**
+picks the exposure with the lowest **`raw_sigma`** among rungs that still look like noise (autocorr,
+dark / zero_diff) `[D83]` — dispersion is what `rank_key()` divides by and what soft-down trips on;
+the bias is subtracted by the centring and costs nothing. If a node's block σ is too loud against its peers, **soft-down**
 takes it out of the combine. The next sweep — at the next round boundary —
 recalibrates every node including that one. It returns after four
 clean blocks. ⚠ `?cal=0` turns every sweep off; a trip then waits until the next session.
@@ -176,15 +177,28 @@ the last round of a session is short because Abort cut it.
 UI: **Z\*** is the key itself (block-σ units), **Z**, **Conc**.
 
 **Concordance (D56, D77).** Per node, split the window at nseg/2 and **centre each half on that
-node's own per-half block mean** (scoring: span mean). Same sign → `√2 · min(|h1|,|h2|)` with that
+node's own per-half block mean** (scoring: span mean).
+⛔ How the window is split does not matter `[D84]`: an interleaved split was built, flashed and
+measured at 75,2 % agreement against front/back's 69,9 % — 1,7 σ, i.e. nothing — and reverted. Same sign → `√2 · min(|h1|,|h2|)` with that
 sign (equals z_ctr when the bias is stable). Opposite sign or a zero half → 0. Then drop the loudest
 node and Stouffer-combine the rest. k < 2 after the drop → 0.
 ⚠ **The sign test is on CENTRED halves, and only there does it test anything** `[D77]`: a raw half
 carries the node's LSB offset at 11..76 σ, so raw halves always agree and the value degenerates to
 z − |h1−h2|/√2 — z plus noise. That is what every session before 2026-09-02 ranked on. The
 provisional `zc` in `measure_window()` is still raw and is replaced at centring.
-⚠ Under H₀ centred halves agree in sign half the time, so **Conc = 0 on roughly half of all items
-is the expected picture**, and `pre_n` ≈ half of `ranked` is not a fault.
+⚠ **The 50 % null applies only to UNIT-VARIANCE nodes, and this array has never had them** `[D84]`.
+With h = c + e (c = the item-level part the centring leaves in, e = per-half binomial noise), the
+agreement rate is `½ + arcsin(ρ)/π` with `ρ = var(c)/(var(c)+var(e))`, and the full-window z has
+variance `2·var(c) + var(e)`. Worked at the measured per-node block σ 1,18: ρ = 0,39, so **expect
+≈ 63 %**, not 50 %. At σ = 1,00 it does fall to 50 %.
+⚠ So `pre_n`/`ranked` is a restatement of the node σ, not an independent check — judge it against
+that formula for the session's own σ. Measured 69,9 % and 75,2 % on two builds, i.e. ~12 points
+above the σ-corrected expectation; that residual is real (~4 σ) and **unexplained**. Not signal,
+not fault.
+
+⚠ Both keys are standardised by their own measured block σ, so a correlated pair of channels
+**cannot manufacture a false positive** — the scale stays right. What it costs is diversification,
+i.e. sensitivity, which is the harm that matters when the effect being hunted is small.
 
 Wire: `Z:<z>[,<h1>,<h2>][,wsig=<σ>]` `[D65]`. `,wsig=` TAGGED. Every node measures the commanded `nseg`.
 
@@ -351,15 +365,18 @@ with old unattended, never with `focus=on`.
 
 ## Camera calibration (per BLOCK)
 At every insertion the master broadcasts `K<budget_ms>,<segs>`, sweeps its own ladder in parallel,
-and waits for every node's `OK:`. Each node keeps the rung with the **lowest
-|bias − 0,5| among candidates that clear the gates**, falling back to the bare gate
-if none qualify `[D16]``[D46]`.
+and waits for every node's `OK:`. Each node keeps the rung with the **lowest `raw_sigma` among
+candidates that clear the gates** `[D83]`, falling back to the bare gate if none qualify.
 
-⛔ **The key is |bias−0,5| and it is never a gate** `[D46]`. Bias is non-stationary per
-node on a timescale of minutes; only the SHAPE across a ladder is stable — it selects, it does not
-certify. ⛔ Do not fit an absolute bias bar — one certified-empty a healthy node.
+⛔ **The bias gates nothing and selects nothing** `[D46]``[D83]`. It is non-stationary per node on a
+timescale of minutes, only the SHAPE across a ladder is stable, and the centring subtracts it
+anyway. It stays measured and published. ⛔ Do not fit an absolute bias bar — one certified-empty a
+healthy node.
 ⚠ **The incumbent rung is KEPT** unless a challenger beats it by `CAL_KEEP_MARGIN_K` 3 SE of its
-own measurement (`kept` in `/calibrate`). The incumbent is what runs when the sweep STARTS, so a
+own measurement (`kept` in `/calibrate`); for σ that SE is σ/√(2(m−1)) over m mini-runs.
+⚠ **The σ key is coarse**: at the 10 s default budget 3 SE is ~5 %, so a smaller gain will not move
+a rung — two of four nodes correctly declined on the first sweep after `[D83]`. SE goes as
+1/√budget, so `?cal=40000` halves the bar to ~2,4 %. The incumbent is what runs when the sweep STARTS, so a
 manual `/expose` gets one sweep of protection — deliberate.
 
 Gates a rung must clear: autocorr < `CAL_AUTOC_TOL` 0,03 (⚠ never subsample — it gates),
@@ -460,6 +477,15 @@ The enclosure is **LIT, not dark** `[D28]`.
   `/expose` `/diag` `/diagjson` `/camtest` `/camlog` `/linearity`, +5 from elotto_ota.
   ⚠ The URI-handler cap fails silently (404, return value unchecked) — the count lives at
   `start_webserver()`; prefer `?all=1` on an existing endpoint over a new handler.
+  ⚠ **`max_open_sockets` 13 (lwIP 16 minus the 3 httpd reserves) exists so the UI cannot lock an
+  external client out** `[D82]`. At the old 7 one open page filled the table, and `lru_purge_enable`
+  then evicted each newly accepted, still-silent client before its request was read — `curl` saw a
+  successful TCP connect followed by an immediate close, every time, while the page kept updating.
+  ⚠ That failure looks exactly like a dead HTTP task. **Open a second browser window**: if it
+  loads, the board is fine and the caller is being evicted.
+  ⛔ It fixes the lock-out, **not the load**: the HTTP task shares the consumer core, so polling the
+  master during a measuring pass costs measurement — a soft-down of the master alone followed exactly
+  such probing, with its camera unchanged `[D82]`. Watch a running session on the SLAVES.
   **`GET /diagjson?all=1` is the COLLECTOR**: the whole array's front-end health in one request,
   discovery order, IP per row `[D43]`. 409 while measuring. ⚠ `cal_*` is what the last SWEEP chose;
   `exposure`/`gain` are LIVE — they differ after a manual `/expose` or an uncertified sweep.
@@ -593,6 +619,10 @@ put back on a known-good image without USB.
   aborting or flashing. Do not silently abort a live measurement to push firmware.
 - ⚠ **After every OTA, poll `fw_sha` in `/status` until it CHANGES** `[D27]`.
 - ⚠ **A node that pings but refuses port 80 is not dead** — check `/otainfo` before USB `[D40]`.
+  ⚠ An *immediate* close on every endpoint (connect succeeds, no response) is socket-table
+  eviction, not a crash `[D82]`. To prove the array is still measuring, watch a slave's `/camlog`
+  `tag` advance — the ring is under **`win`**, and `measuring` on `/diag` is the ~2 s window flag,
+  not a session flag.
 - **USB is only for** a fresh board or a node whose recovery updater is gone:
   `.\build.ps1 -C ota_firmware -p COMx erase-flash`, then `... -p COMx flash`.
 
