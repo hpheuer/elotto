@@ -27,7 +27,7 @@
 // Extraction: non-overlapping frame pairs, diff = f[2k+1] - f[2k] per pixel
 // (cancels fixed-pattern noise exactly), LSB of each diff packed into a
 // ring buffer AS MEASURED -- the adjacent-pixel XOR was removed by D65, so a
-// word is 32 pixels. camera_read_word_raw() feeds gcp_zscore_pre() in
+// word is 32 pixels. camera_read_words() feeds gcp_zscore_pre() in
 // the shared elotto_gcp component, which is where a z is defined.
 // SHARED between the master and slave repos -- a change here affects both nodes.
 
@@ -101,9 +101,10 @@ static camera_stats_t    s_stats = { 0 };
 
 // Producer-only running state (camera_task is the sole writer; publish_stats()
 // copies a snapshot into s_stats under s_mutex for readers).
-/* Word ring in internal RAM [D91]: the consumer loads one word at a time, and
- * that load set the session rate while the ring was in PSRAM. 64 KB.
- * s_ring_raw stays in PSRAM — camera_read_word() does not touch it. */
+/* Word ring in internal RAM [D91], 64 KB. Where it lives does NOT set the
+ * session rate: moved out of PSRAM, the reader stayed at 6,2 Mbit/s. What did
+ * was the per-word overhead of the reader itself [D92].
+ * s_ring_raw stays in PSRAM — camera_read_words() does not touch it. */
 static uint32_t *s_ring;
 // Single-producer (camera_task) / single-consumer (GCP task) ring. head is
 // written only by the producer, tail only by the consumer, so no lock is
@@ -1241,26 +1242,32 @@ bool camera_is_ready(void)
     return ready;
 }
 
-/* camera_read_word() plus the LSB ones count of the very pixels that word
- * came from, consumed as one unit so the and raw z describe the SAME
- * window (2026-08-26).
+/* The one implementation of the tail protocol: n words, in ring order, plus
+ * (if out_raw) the LSB ones count of the very pixels each word came from, so
+ * the word and its count stay one unit (2026-08-26).
+ *
+ * Block-wise `[D92]`: the readiness check (a take and give of s_mutex) runs
+ * once per call, and the fences once per contiguous run of the ring, not once
+ * per word. Word by word the reader paid both for every 32 bits and ran at
+ * ~1870 cycles per word against a producer 40 % faster. The words, their order
+ * and the stall/flush semantics are unchanged.
  *
  * ⚠ *out_raw is 0 and the return still true when the parallel ring is missing
  * — the node measures, it just has no LSB channel. Callers must treat a
  * missing channel as absent, never as a raw ones count of zero, so the flag
  * says which: camera_raw_stream_ok().
- * ⚠ Do NOT mix this with camera_read_word() inside one window. Both advance the
+ * ⚠ Do NOT mix the raw and plain readers inside one window. Both advance the
  * same tail; interleaving them silently splits the raw count across two
  * accumulators and the LSB z ends up over a shorter window than the
  * LSB one. */
-bool camera_read_word_raw(uint32_t *out, uint32_t *out_raw)
+static bool read_words(uint32_t *out, uint32_t *out_raw, uint32_t n)
 {
     if (!s_ring || !camera_is_ready()) return false;
 
     TickType_t waited = 0;
     const TickType_t limit = pdMS_TO_TICKS(CAM_STALL_TIMEOUT_MS);
 
-    for (;;) {
+    while (n > 0) {
         while (s_ring_tail == s_ring_head) {
             if (waited == 0) s_consumer_waits++;
             if (waited >= limit) {
@@ -1276,24 +1283,48 @@ bool camera_read_word_raw(uint32_t *out, uint32_t *out_raw)
          * waits for the bump. See the note on s_consumer_active above. */
         s_consumer_active = true;
         __sync_synchronize();
-        if (s_ring_tail == s_ring_head) {   // a reset landed in the gap
+        /* ONE read of each volatile index, into locals. Both rings are then
+         * indexed with the same value, so a word and its LSB count cannot
+         * come from different slots. Only the producer moves head, and only
+         * forward, so every slot in [t, h) is published. */
+        uint32_t t = s_ring_tail;
+        uint32_t h = s_ring_head;
+        if (t == h) {                       // a reset landed in the gap
             s_consumer_active = false;
             __sync_synchronize();
             continue;                       // honour the flush, wait again
         }
 
-        /* ONE read of the volatile tail, into a local. Both rings are then
-         * indexed with the same value, so the word and its LSB count
-         * cannot come from different slots. */
-        uint32_t t = s_ring_tail;
-        *out = s_ring[t];
-        if (out_raw) *out_raw = s_ring_raw ? s_ring_raw[t] : 0u;
+        /* The contiguous stretch from t: up to head, or to the array's end
+         * when head has wrapped (the next pass starts at slot 0). */
+        uint32_t k = (h > t ? h : RING_WORDS) - t;
+        if (k > n) k = n;
+        memcpy(out, &s_ring[t], k * sizeof(uint32_t));
+        if (out_raw) {
+            for (uint32_t i = 0; i < k; i++)
+                out_raw[i] = s_ring_raw ? s_ring_raw[t + i] : 0u;
+            out_raw += k;
+        }
         __sync_synchronize();
-        s_ring_tail = (t + 1) % RING_WORDS;
+        s_ring_tail = (t + k) % RING_WORDS;
         __sync_synchronize();
         s_consumer_active = false;
-        return true;
+
+        out += k;
+        n   -= k;
+        waited = 0;             // the stall limit is per wait, as it was per word
     }
+    return true;
+}
+
+bool camera_read_words(uint32_t *out, uint32_t n)
+{
+    return read_words(out, NULL, n);
+}
+
+bool camera_read_word_raw(uint32_t *out, uint32_t *out_raw)
+{
+    return read_words(out, out_raw, 1);
 }
 
 /* Bits/us is Mbit/s exactly (1e6 cancels), so no scaling is needed at either
@@ -1310,14 +1341,14 @@ void camera_note_consumed(uint64_t bits, int64_t us)
     xSemaphoreGive(s_mutex);
 }
 
-/* The word-only reader is the raw one with the side value thrown away.
- * Written as a forwarder rather than a second copy of the sequence above: the
- * tail protocol is subtle enough that two hand-kept copies is how one of them
- * ends up a fix behind — which is precisely what happened to the flag ordering
- * this pair used to share. NULL costs one branch that predicts perfectly. */
+/* Every reader is read_words() with a count and an optional side array.
+ * Forwarders rather than copies of the sequence above: the tail protocol is
+ * subtle enough that two hand-kept copies is how one of them ends up a fix
+ * behind — which is precisely what happened to the flag ordering the word and
+ * raw readers used to share. */
 bool camera_read_word(uint32_t *out)
 {
-    return camera_read_word_raw(out, NULL);
+    return read_words(out, NULL, 1);
 }
 
 bool camera_raw_stream_ok(void) { return s_ring_raw != NULL; }

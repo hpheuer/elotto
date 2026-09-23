@@ -34,6 +34,11 @@ static double z_from_counts(uint64_t ones, uint64_t words)
     return ((double)ones - n / 2.0) / (sqrt(n) / 2.0);
 }
 
+/* Segments per ring read `[D92]`: 112 words, 448 B of the caller's stack (the
+ * slave's link task has 6 KB). Read word by word, the reader's own overhead —
+ * a mutex take/give and four fences per 32 bits — was the session's clock. */
+#define GCP_READ_SEGS 16
+
 /* One stream, LSB bits as measured (D65). Seven words per segment, all 32 bits.
  * z is the binomial over the window; h1/h2 are the same bits split at nseg/2. */
 gcp_result_t gcp_zscore_pre(int nseg, bool (*on_yield)(void), double *out,
@@ -44,22 +49,36 @@ gcp_result_t gcp_zscore_pre(int nseg, bool (*on_yield)(void), double *out,
     uint64_t ones = 0, mid_ones = 0;
     const int poll = nseg / 4 + 1;
     const int64_t t_read0 = esp_timer_get_time();
+    uint32_t buf[GCP_READ_SEGS * 7];
 
     if (out_h1) *out_h1 = 0.0;
     if (out_h2) *out_h2 = 0.0;
 
-    for (int seg = 0; seg < nseg; seg++) {
-        uint32_t w;
-        for (int i = 0; i < 7; i++) {
-            if (!camera_read_word(&w)) return GCP_CAM_FAULT;
-            ones += (uint64_t)cam_popcount32(w);
-        }
-        if (seg + 1 == n1) mid_ones = ones;
+    for (int seg = 0; seg < nseg; ) {
+        /* A block ends wherever the per-segment loop acted: after the midpoint
+         * segment (n1 - 1) and after every segment with seg % poll == 0. So the
+         * half split and the abort polls fall on the same segments, with the
+         * same counts, as when the words came one at a time. */
+        int end = seg + GCP_READ_SEGS;
+        if (end > nseg) end = nseg;
+        int ys = (seg + poll - 1) / poll * poll;     /* next polling segment */
+        if (ys + 1 < end) end = ys + 1;
+        if (n1 > seg && n1 < end) end = n1;
 
-        if (seg % poll == 0) {
+        uint32_t nw = (uint32_t)(end - seg) * 7u;
+        if (!camera_read_words(buf, nw)) return GCP_CAM_FAULT;
+        uint32_t bo = 0;                             /* <= 112 * 32, no overflow */
+        for (uint32_t i = 0; i < nw; i++) bo += cam_popcount32(buf[i]);
+        ones += bo;
+
+        int last = end - 1;
+        if (last + 1 == n1) mid_ones = ones;
+
+        if (last % poll == 0) {
             vTaskDelay(1);
             if (on_yield && !on_yield()) return GCP_ABORTED;
         }
+        seg = end;
     }
 
     camera_note_consumed((uint64_t)nseg * words_per_seg * 32u,

@@ -602,10 +602,13 @@ floor is load-bearing.
 ### Resources
 - **PSRAM is mandatory**: capture buffers, the LSB-ones side ring (`s_ring_raw`), `loop_hist`,
   per-item per-node archives (`s_node_z` and the half-window copies, sized to `NUM_RUNS`).
-  The word ring `s_ring` (64 KB) is **internal RAM** `[D91]` — the consumer loads one word at a
-  time, and that load was the session rate. `results[]` stays internal too: `NUM_RUNS` 1000 is
-  what leaves room for the ring.
-- ⚠ **Task priority is load-bearing**: any task calling `camera_read_word()` must run **above** the
+  The word ring `s_ring` (64 KB) is **internal RAM** `[D91]`; `results[]` stays internal too:
+  `NUM_RUNS` 1000 is what leaves room for the ring.
+- ⚠ **The measurement path reads the ring in BLOCKS** — `camera_read_words()`, 112 words per call
+  from `gcp_zscore_pre()` `[D92]`. `camera_read_word()` takes `s_mutex` and fences four times per
+  32 bits; read that way, the reader — not PSRAM, not the camera — was the session rate (6,2 Mbit/s
+  consumed against 8,66 produced). Single words are for seeding only.
+- ⚠ **Task priority is load-bearing**: any task calling `camera_read_word[s]()` must run **above** the
   extraction task, or the consumer starves ~10× (see `camera.h`; signature: ring `drops` huge with
   `waits == 0`).
 - ⚠ **Task CORE is load-bearing too, and it is a separate rule.** Every task in the measuring path
@@ -638,11 +641,14 @@ Addresses are informational: the master finds slaves by UDP broadcast.
 ### Extraction — where the rate stands
 Idle production is **~7,4 Mbit/s** post-D65 (adjacent-pixel XOR off, 2× words) on an OV5647, and
 **~8,6 Mbit/s on an IMX219** (1640×1232, `ms_extract` ~214 ms per pair, extraction-bound at ~4 pairs/s
-against 15 on offer) `[D89]`. The LOADED rate has
-not been re-measured since — the pre-D65 figures (5,71 idle, ~3,7 loaded) are a different
-instrument `[D22]``[D25]`.
-- ⛔ Nothing done to the extraction path can raise the **idle** rate `[D23]`; the loaded rate is
-  still open — prove any change with `ms_extract` under load, never at idle `[D25]`.
+against 15 on offer) `[D89]`. On the IMX219 that is also the **loaded** rate: since the block reader
+`[D92]` the consumer outruns production (`waits` > 0), so the RAW10 extractor is the session's clock.
+Its headroom is compute, not memory: PSRAM reads both frames of a pair in ~52 ms (`/camtest`
+`ns_read`), the sensor offers a pair every 66 ms, extraction takes 213 `[D92]`.
+- ⛔ **On an OV5647** nothing done to the extraction path can raise the **idle** rate `[D23]` — that
+  sensor is the ceiling. It does not hold for the IMX219. Prove any extractor change with
+  `ms_extract` under load, never at idle `[D25]`. ⚠ `/camtest` has no RAW10 reference yet:
+  its `equal` and `ms_pair_ext` describe the RAW8 path only.
 - `/diagjson` publishes the per-pair split on every node: `ms_pair` = `ms_wait` + `ms_extract` +
   `ms_rest`.
 - ⚠ **`mbit_s` is PRODUCTION, `consume_mbit_s` is what a measurement READ** `[D60]`. The first

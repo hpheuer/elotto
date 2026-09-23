@@ -1767,7 +1767,9 @@ touch it.
 **Why.** A measurement window ends when `gcp_zscore_pre` has read a fixed number of words. On the
 2026-09-23 Eurojackpot session that read ran at 6,3 Mbit/s while extraction produced 8,6, and the
 empty-ring counter stayed at 0 since boot. The same chip reads the frame bytes sequentially in
-~67 ms; the per-word load from PSRAM was the session's clock. `results[7200]` (48 B/row, 346 KB)
+~67 ms; the per-word load from PSRAM was the session's clock. ⚠ **That cause was wrong (D92):** with
+the ring in internal RAM the reader still ran at 6,16 Mbit/s; its own per-word overhead was the
+clock. The ring stays internal. `results[7200]` (48 B/row, 346 KB)
 had filled the high SRAM (384 KB, 35 KB heap left), so the ring could not sit there. 1000 rows are
 48 KB. Compaction keeps at most 200 (two quotas of `PASS_KEEP_EXTREME` 100). The next round is
 appended before that, so the resident peak is 200 + `?maxruns=`. At 200 runs/round that peak is
@@ -1776,4 +1778,34 @@ session. A combination space above 1000 still aborts. `?maxruns=` is 10..1000.
 
 **Pooling:** no split. The stored z is unchanged. A session that asked for more than 1000 runs per
 round now gets 400.
+
+### D92 — The reader reads in blocks; it was the session's clock (2026-09-24)
+**Before** (firmware 6529c28 = D91, 4× IMX219 dark, 6-of-49, `?run=0.5`, `?cal=0`): production
+`mbit_s` 8,66 on all four nodes, consumption `consume_mbit_s` 6,16 / 6,30 / 6,17 / 6,16, `waits` 0,
+ring `drops` 4,5·10⁸. The reader was the limit — and it had read internal RAM since D91, so D91's
+cause was wrong. 6,16 Mbit/s = 192 500 words/s = ~1870 cycles per word at 360 MHz, of which the
+popcount and add are ~20. Neither memory nor sensor set either rate: `/camtest` on the master gave
+the PSRAM read floor `ns_read` 20,66 ns per byte pair (7,4 cycles), i.e. both RAW10 frames of a
+pair in ~52 ms; the sensor delivers a pair every 66 ms (`fps_raw` 30,3); extraction took 213 ms.
+
+**Change.** `camera_read_word()` paid for every 32-bit word: `camera_is_ready()` (a take and give of
+`s_mutex`), four fences, two calls. `camera_read_words()` pays that once per contiguous block.
+`gcp_zscore_pre()` reads 16 segments (112 words, 448 B of stack) per call, cut at the half split
+and at the abort polls, so both fall on the same segments with the same counts (checked against the
+per-segment loop for every nseg 1..2999 and the live segment counts). One implementation of the
+tail protocol (`read_words()`); the word and raw readers forward to it.
+
+**After** (same parameters, ~2 min, no fault, void or stall): consumption 9,40 / 9,40 / 9,41 / 9,41
+on all four nodes, `waits` ~4000 — the reader now waits on the extractor; production (8,66) is the
+limit. `focus_win_ms` 1329,6 → 937,9 (−29 %). `ms_extract` 216 under load against 213 before.
+⚠ Consumption now reads ABOVE production, correctly: every window opens on a full ring (the flush
+waits for fresh pairs, and one pair overfills the 16 384-word ring), which the reader drains at its
+own speed. How the 1870 cycles split between mutex and fences was not separated; the reader's own
+ceiling is only known to lie above production.
+
+**Next limit:** the RAW10 extractor, 213 ms per pair against the 52 ms PSRAM floor and the 66 ms
+sensor cadence. `/camtest` has no RAW10 reference yet.
+
+**Pooling:** no split. Bits per item, their order and the onset flush are unchanged; a window only
+takes less wall time.
 

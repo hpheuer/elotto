@@ -470,7 +470,7 @@ esp_err_t camera_linearity_handle(void *httpd_req, bool busy);
 #define ELOTTO_CAM_CONSUMER_CORE 0
 
 // IMPORTANT — task priority: the extraction task is CPU-hungry (~7.6M pixel
-// ops/s). The task calling camera_read_word() MUST run ABOVE
+// ops/s). The task calling camera_read_word()/_words() MUST run ABOVE
 // ELOTTO_CAM_TASK_PRIO, or the producer starves the consumer and measurement
 // slows by an order of magnitude while the ring sits permanently full
 // (symptom: drops huge, waits == 0, runs 10x too long).
@@ -494,6 +494,11 @@ esp_err_t camera_linearity_handle(void *httpd_req, bool busy);
 // being an instrument, and the caller must fault it (report + reboot) rather
 // than substitute bits from anywhere else.
 bool camera_read_word(uint32_t *out);
+/* n words in ring order, same semantics as n calls of camera_read_word() —
+ * blocks while the ring is empty, false on a stall — but the readiness check
+ * and the tail fences are paid once per block, not per word `[D92]`. This is
+ * the measurement path; camera_read_word() is for single words (seeding). */
+bool camera_read_words(uint32_t *out, uint32_t n);
 /* Report one completed read span: how many BITS were handed out and how long the
  * reading took. Called ONCE per run by the consumer, not per word -- a timestamp
  * per word would cost more than the read. Feeds consume_mbit_per_sec; cleared by
