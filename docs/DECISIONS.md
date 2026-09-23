@@ -1653,3 +1653,21 @@ read "Settling 60 s", `settle_left_ms` counted down, scoring resumed after "Sett
 
 **Pooling:** ⚠ **split for block σ and soft-down statistics** — post-D87 blocks lack the settling
 items. `z_raw`/`z_ctr`/`zc_ctr` still pool.
+
+### D88 — Compaction keeps quarantined rows too (2026-09-23)
+**`pass_compact()` keeps up to `PASS_KEEP_EXTREME` 100 quarantined rows (measured, `skip_rank`)
+by |rank_key|, as a second quota beside the 100 ranked ones.**
+
+**Why.** The survivor scan only considered ranked rows. A quarantined row is excluded from every
+statistic but is supposed to stay in the CSV so the exclusion can be undone offline `[D14]``[D41]`.
+Session 2026-09-23: slave1 tripped soft-down in block 1, the whole round was quarantined
+(`excl=210`), and the next round boundary merged all 210 rows away (`compacted=210`) — round 1 had
+no row left in `?all=1`. A separate quota, so contaminated items cannot displace ranked extremes.
+The key only picks survivors; nothing ranks on it.
+
+**Effect.** No statistic, ranking or pool changes: quarantined rows were and remain outside all of
+them (`pass_n_excl` counts held and merged ones alike). Up to 200 rows survive a compaction instead
+of 100. Not yet exercised on hardware — needs a session with a quarantined round.
+
+**Pooling:** no split.
+

@@ -143,7 +143,8 @@ as backstop for a compaction that cannot allocate.
 - **Results ACCUMULATE** — `results[]` is never cleared between rounds; every statistic runs on the
   union of all rounds.
 - **Every round compact at the boundary** `[D56]`: the 100 most extreme items by
-  `|rank_key|` stay as rows (both tails). The rest merges into moments — pass mean/σ/χ²
+  `|rank_key|` stay as rows (both tails), and **separately up to 100 quarantined ones** — without
+  that quota a quarantined round lost every row `[D88]`. The rest merges into moments — pass mean/σ/χ²
   stay exact. `n ≤ 100` is a no-op, so a short session keeps every row. The display
   pool (`GET /extremes`, 50) is separate from this archive.
   ⚠ The counter and round-base semantics after a compaction (`completed`/`runs_completed`,

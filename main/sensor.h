@@ -27,8 +27,9 @@
 #define NUM_RUNS      7200
 #define TOP_N            5
 /* ── Round-boundary compaction (D56) ──────────────────────────────────────
- * Unlimited rounds keep the 100 most extreme items by |rank_key| (both tails).
- * Everything else merges into pass moments. Offline re-analysis of the dropped
+ * Unlimited rounds keep the 100 most extreme RANKED items by |rank_key| (both
+ * tails), plus up to 100 most extreme QUARANTINED items as a separate quota
+ * `[D88]`. Everything else merges into pass moments. Offline re-analysis of the dropped
  * rows is not a goal. Since D67 every session is rounds, so every round
  * boundary calls pass_compact() (no-op while n ≤ 100). */
 #define PASS_KEEP_EXTREME 100

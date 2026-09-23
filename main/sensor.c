@@ -1425,19 +1425,30 @@ static void pass_compact(void)
     }
 
     /* Keep the K most extreme by |rank_key|. Linear scan per slot: n is at most
-     * NUM_RUNS and K is 100. Both tails survive. */
-    for (int slot = 0; slot < K; slot++) {
-        int    best = -1;
-        double best_key = 0.0;
-        for (int j = 0; j < n; j++) {
-            if (keep[j]) continue;
-            const RunResult *r = &g_status.results[j];
-            if (!result_ranked(r)) continue;
-            double key = fabs(rank_key(r));
-            if (best < 0 || key > best_key) { best_key = key; best = j; }
+     * NUM_RUNS and K is 100. Both tails survive.
+     *
+     * Two quotas of K: ranked rows, and QUARANTINED rows (measured, k > 0,
+     * skip_rank). Quarantine keeps a row out of every statistic but must leave
+     * it in the CSV so the exclusion can be undone offline `[D14]``[D41]`.
+     * With one quota over ranked rows only, a round whose block was
+     * quarantined lost every row at the next boundary — 210 of 210 on
+     * 2026-09-23 `[D88]`. A separate quota, so contaminated items cannot crowd
+     * the ranked extremes out. Their key is computed like any other; it only
+     * picks which ones survive, it ranks nothing. */
+    for (int quar = 0; quar < 2; quar++) {
+        for (int slot = 0; slot < K; slot++) {
+            int    best = -1;
+            double best_key = 0.0;
+            for (int j = 0; j < n; j++) {
+                if (keep[j]) continue;
+                const RunResult *r = &g_status.results[j];
+                if (quar ? !(r->k > 0 && r->skip_rank) : !result_ranked(r)) continue;
+                double key = fabs(rank_key(r));
+                if (best < 0 || key > best_key) { best_key = key; best = j; }
+            }
+            if (best < 0) break;
+            keep[best] = 1;
         }
-        if (best < 0) break;
-        keep[best] = 1;
     }
 
     /* Merge the losers into the moments, then close the gaps in place. Forward
