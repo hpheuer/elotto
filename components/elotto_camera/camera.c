@@ -53,9 +53,19 @@ static uint32_t s_frame_w = 0, s_frame_h = 0;
 #define CAM_PID_OV5647  0x5647
 #define CAM_PID_IMX219  0x0219
 #define IMX219_GAIN_MAX 232u
+#define IMX219_BLACK_PX 16.0        /* pedestal 64 DN (10-bit) on the 8-bit px scale */
 static uint16_t s_sensor_pid = 0;
 static const char *s_sensor_name = "?";
 static bool     s_packed_raw10 = false;
+static uint32_t s_fourcc = 0;       // V4L2 pixel format the driver was set to
+
+/* Raw-byte dump of one frame pair, for GET /camtest?dump= (format forensics).
+ * The capture task copies CAM_DUMP_N bytes at s_dump_off from both frames of
+ * the next pair it would extract, then raises s_dump_done. */
+#define CAM_DUMP_N 4000             // multiple of 10: whole RAW10 groups and u16s
+static uint8_t          *s_dump_a, *s_dump_b;
+static uint32_t          s_dump_off;
+static volatile bool     s_dump_req, s_dump_done;
 static uint8_t *s_bufs[CAM_BUF_COUNT];
 static uint32_t s_buf_len[CAM_BUF_COUNT];   // mmap length per buffer, for fail-path munmap
 #if CONFIG_ELOTTO_CAM_XCLK_PIN > 0
@@ -515,48 +525,109 @@ static void diff_and_extract(const uint8_t *a, const uint8_t *b, uint32_t n)
     xSemaphoreGive(s_mutex);
 }
 
-/* MIPI RAW10 packed: 4 pixels in 5 bytes. LSB of each 10-bit sample is the
- * entropy bit (same identity LSB(b-a)==LSB(a)^LSB(b)). mean_px uses the high
- * 8 bits so the 0..255 scale matches the OV5647 RAW8 path. */
+/* MIPI RAW10 packed: 4 pixels in 5 bytes — bytes 0..3 are bits 9..2 of pixels
+ * 0..3, byte 4 holds their bits 1..0 (pixel k at bits 2k+1..2k). LSB of each
+ * 10-bit sample is the entropy bit (same identity LSB(b-a)==LSB(a)^LSB(b)), so
+ * the four stream bits of a group are bits 0,2,4,6 of a[4]^b[4]. mean_px uses
+ * the high 8 bits so the 0..255 scale matches the OV5647 RAW8 path.
+ *
+ * Word-wise like cam_extract_fast(), and for the same reason `[D89]`: the
+ * first version updated s_raw's 64-bit counters in memory for EVERY pixel and
+ * cost 420 ms per 1640x1232 pair (4,6 Mbit/s). Here the monitor lives in
+ * locals, four bits move per group through a table, and s_raw is written back
+ * once. Same stream, same order (pixel 0 first, MSB-first packing).
+ * ⚠ The 4-bit steps assume bitacc_n and run_bits are multiples of 4 on entry.
+ * They are on an IMX219 node (only this path runs, every reset zeroes both);
+ * a misaligned entry is walked bit by bit until it is aligned. */
+static uint8_t s_raw10_nib[256];   /* a[4]^b[4] -> the 4 LSB-diff bits, pixel 0 in bit 3 */
+static bool    s_raw10_nib_ok;
+
 static void diff_and_extract_raw10(const uint8_t *a, const uint8_t *b, uint32_t n)
 {
-    uint32_t zeros = 0, any = 0, psum = 0, npix = 0;
-    uint32_t acc = s_pack.bitacc;
+    if (!s_raw10_nib_ok) {
+        for (int x = 0; x < 256; x++)
+            s_raw10_nib[x] = (uint8_t)(((x & 0x01) << 3) | ((x & 0x04) >> 0) |
+                                       ((x & 0x10) >> 3) | ((x & 0x40) >> 6));
+        s_raw10_nib_ok = true;
+    }
+    uint32_t zeros = 0, orx = 0, psum = 0;
+    uint32_t acc  = s_pack.bitacc;
     int      accn = s_pack.bitacc_n;
-    uint32_t rw = 0;
+
+    uint32_t r_word = 0, r_ones = 0;
+    uint32_t r_run_ones = s_raw.run_ones, r_run_bits = s_raw.run_bits, r_mr_n = 0;
+    uint64_t r_mr_sum = 0, r_mr_sumsq = 0;
+    const bool wr = s_raw.want_runs;
+    uint32_t r_trans = 0;
+    uint32_t r_prev  = wr ? s_raw.prev : 0u;
+    uint32_t r_tmask = (wr && s_raw.have_prev) ? 0xFu : 0x7u;
+
     uint32_t groups = n / 5;
     for (uint32_t g = 0; g < groups; g++) {
         const uint8_t *pa = a + g * 5;
         const uint8_t *pb = b + g * 5;
-        uint8_t la = pa[4], lb = pb[4];
-        for (int p = 0; p < 4; p++) {
-            uint16_t va = ((uint16_t)pa[p] << 2) | ((la >> (p * 2)) & 3u);
-            uint16_t vb = ((uint16_t)pb[p] << 2) | ((lb >> (p * 2)) & 3u);
-            psum += pa[p];
-            uint16_t d = (uint16_t)(vb - va);
-            if (d == 0) zeros++;
-            if (d) any = 1;
-            uint32_t bit = d & 1u;
-            s_raw.ones += bit; s_raw.run_ones += bit; rw += bit;
-            s_raw.bits++; s_raw.run_bits++;
-            if (s_raw.run_bits >= CAM_RAW_MINIRUN_BITS) {
-                uint64_t o = s_raw.run_ones;
-                s_raw.mr_sum   += o;
-                s_raw.mr_sumsq += o * o;
-                s_raw.mr_n++;
-                s_raw.run_ones = 0;
-                s_raw.run_bits = 0;
+        uint32_t x  = (uint32_t)(pa[4] ^ pb[4]);
+        uint32_t e0 = (uint32_t)(pa[0] ^ pb[0]), e1 = (uint32_t)(pa[1] ^ pb[1]);
+        uint32_t e2 = (uint32_t)(pa[2] ^ pb[2]), e3 = (uint32_t)(pa[3] ^ pb[3]);
+        orx  |= e0 | e1 | e2 | e3 | x;
+        zeros += (uint32_t)((e0 | (x & 0x03u)) == 0) + (uint32_t)((e1 | (x & 0x0Cu)) == 0)
+               + (uint32_t)((e2 | (x & 0x30u)) == 0) + (uint32_t)((e3 | (x & 0xC0u)) == 0);
+        psum += (uint32_t)pa[0] + pa[1] + pa[2] + pa[3];
+        uint32_t nib = s_raw10_nib[x];
+
+        if (((accn | (int)r_run_bits) & 3) == 0) {
+            uint32_t pop = cam_popcount32(nib);
+            r_word += pop; r_run_ones += pop; r_run_bits += 4;
+            if (r_run_bits >= CAM_RAW_MINIRUN_BITS) {
+                uint64_t o = r_run_ones;
+                r_mr_sum += o; r_mr_sumsq += o * o; r_mr_n++;
+                r_run_ones = 0; r_run_bits = 0;
             }
-            if (s_raw.want_runs) {
-                if (s_raw.have_prev) s_raw.trans += (bit ^ s_raw.prev);
-                s_raw.prev = bit; s_raw.have_prev = true;
+            if (wr) {
+                uint32_t prevs = (r_prev << 3) | (nib >> 1);
+                r_trans += cam_popcount32((nib ^ prevs) & r_tmask);
+                r_prev = nib & 1u; r_tmask = 0xFu;
             }
-            acc = (acc << 1) | bit;
-            if (++accn == 32) { emit_word_cb(acc, rw, NULL); acc = 0; accn = 0; rw = 0; }
-            npix++;
+            acc = (acc << 4) | nib;
+            accn += 4;
+            if (accn == 32) {
+                emit_word_cb(acc, r_word, NULL);
+                r_ones += r_word; r_word = 0; acc = 0; accn = 0;
+            }
+        } else {
+            for (int k = 3; k >= 0; k--) {           /* misaligned entry: bit by bit */
+                uint32_t bit = (nib >> k) & 1u;
+                r_word += bit; r_run_ones += bit; r_run_bits++;
+                if (r_run_bits >= CAM_RAW_MINIRUN_BITS) {
+                    uint64_t o = r_run_ones;
+                    r_mr_sum += o; r_mr_sumsq += o * o; r_mr_n++;
+                    r_run_ones = 0; r_run_bits = 0;
+                }
+                if (wr) { r_trans += (r_tmask >> 3) & (bit ^ r_prev);
+                          r_prev = bit; r_tmask = 0xFu; }
+                acc = (acc << 1) | bit;
+                if (++accn == 32) {
+                    emit_word_cb(acc, r_word, NULL);
+                    r_ones += r_word; r_word = 0; acc = 0; accn = 0;
+                }
+            }
         }
     }
     s_pack.bitacc = acc; s_pack.bitacc_n = accn;
+
+    uint32_t npix = groups * 4;
+    s_raw.ones     += r_ones + r_word;
+    s_raw.bits     += npix;
+    s_raw.run_ones  = r_run_ones;
+    s_raw.run_bits  = r_run_bits;
+    s_raw.mr_n     += r_mr_n;
+    s_raw.mr_sum   += r_mr_sum;
+    s_raw.mr_sumsq += r_mr_sumsq;
+    if (wr) {
+        s_raw.trans    += r_trans;
+        s_raw.prev      = r_prev;
+        s_raw.have_prev = (r_tmask == 0xFu);
+    }
 
     s_zero_diffs += zeros;
     s_diff_n += npix;
@@ -565,7 +636,7 @@ static void diff_and_extract_raw10(const uint8_t *a, const uint8_t *b, uint32_t 
 
     xSemaphoreTake(s_mutex, portMAX_DELAY);
     s_stats.frame_pairs++;
-    if (!any) s_stats.stuck_frame_count++;
+    if (!orx) s_stats.stuck_frame_count++;
     xSemaphoreGive(s_mutex);
 }
 
@@ -575,7 +646,13 @@ static void publish_stats(void)
     double sigma = (s_z_n > 1) ? sqrt(s_z_m2 / (s_z_n - 1)) : 0.0;
     double elapsed_s = (esp_timer_get_time() - s_stream_start_us) / 1e6;
     double mbps = (elapsed_s > 0) ? (s_bits_extracted / 1e6) / elapsed_s : 0.0;
+    /* ABOVE BLACK on the IMX219 `[D89]`: it outputs a pedestal of 64 DN
+     * (10-bit), 16 on this 8-bit scale — measured 15,90 with no light. Left in,
+     * a sensor in total darkness would read px 16 and clear the CAL_MIN_MEAN_PX
+     * dark gate, whose whole point is that photons, not read noise, whiten the
+     * LSB [D18]. The OV5647 path is unchanged. */
     double mean_px = s_pixel_n ? (double)s_pixel_sum / (double)s_pixel_n : 0.0;
+    if (s_sensor_pid == CAM_PID_IMX219 && s_pixel_n) mean_px -= IMX219_BLACK_PX;
 
     /* Cheap: an SAR read, no bus traffic, once per publish and not per frame. */
     if (s_tsens) {
@@ -834,6 +911,14 @@ static void camera_task(void *arg)
             s_flush_dropped = true;
         }
 
+        if (s_dump_req && s_dump_a && s_dump_b &&
+            s_dump_off + CAM_DUMP_N <= s_frame_size) {
+            memcpy(s_dump_a, (const uint8_t *)s_bufs[first.index] + s_dump_off, CAM_DUMP_N);
+            memcpy(s_dump_b, (const uint8_t *)s_bufs[buf.index]   + s_dump_off, CAM_DUMP_N);
+            s_dump_req  = false;
+            s_dump_done = true;
+        }
+
         int64_t t_ext0 = esp_timer_get_time();
         diff_and_extract(s_bufs[first.index], s_bufs[buf.index], s_frame_size);
         int64_t t_ext1 = esp_timer_get_time();
@@ -1001,18 +1086,24 @@ esp_err_t camera_init(void)
         ret = ESP_FAIL;
         goto fail;
     }
-    s_frame_size = fmt.fmt.pix.sizeimage ? fmt.fmt.pix.sizeimage
-                                         : (uint32_t)fmt.fmt.pix.width * fmt.fmt.pix.height;
     s_frame_w = fmt.fmt.pix.width;
     s_frame_h = fmt.fmt.pix.height;
+    s_fourcc  = fmt.fmt.pix.pixelformat;
+    /* The layout follows the FOURCC, not sizeimage `[D89]`. esp_video leaves
+     * sizeimage 0 for the IMX219's BG10, and the old w*h fallback made a packed
+     * RAW10 frame look like RAW8: the byte extractor then ran over MIPI-packed
+     * bytes (4 MSB bytes + 1 LSB byte per 4 pixels) and read only 80 % of the
+     * frame — zero_diff ~0,5, bias 0,36, exposure apparently without effect. */
+    uint32_t pf = fmt.fmt.pix.pixelformat;
+    s_packed_raw10 = (pf == V4L2_PIX_FMT_SBGGR10 || pf == V4L2_PIX_FMT_SGBRG10 ||
+                      pf == V4L2_PIX_FMT_SGRBG10 || pf == V4L2_PIX_FMT_SRGGB10);
+    uint32_t need = s_frame_w * s_frame_h;
+    if (s_packed_raw10) need = need / 4 * 5;
+    s_frame_size = (fmt.fmt.pix.sizeimage >= need) ? fmt.fmt.pix.sizeimage : need;
     ESP_LOGI(TAG_CAM, "format " V4L2_FMT_STR " %ux%u size=%u",
              V4L2_FMT_STR_ARG(fmt.fmt.pix.pixelformat),
              (unsigned)fmt.fmt.pix.width, (unsigned)fmt.fmt.pix.height, (unsigned)s_frame_size);
 
-    /* Packed RAW10 if the buffer is ~10/8 of w*h (IMX219). RAW8 is exactly w*h
-     * (OV5647). The extractor follows this, not the fourcc name. */
-    s_packed_raw10 = (s_frame_w > 0 && s_frame_h > 0 &&
-                      s_frame_size >= (s_frame_w * s_frame_h * 5u) / 4u);
     cam_identify();
 
     uint32_t boot_g = (uint32_t)CONFIG_ELOTTO_CAM_REG_GAIN;
@@ -1051,6 +1142,13 @@ esp_err_t camera_init(void)
             goto fail;
         }
         s_buf_len[i] = buf.length;
+        /* Never read past what the driver mapped: a frame size derived from the
+         * format must fit the buffer it lives in. */
+        if (buf.length < s_frame_size) {
+            ESP_LOGE(TAG_CAM, "buffer %d is %lu B, frame needs %lu -- clamped",
+                     i, (unsigned long)buf.length, (unsigned long)s_frame_size);
+            s_frame_size = s_packed_raw10 ? buf.length / 5 * 5 : buf.length;
+        }
         if (ioctl(s_fd, VIDIOC_QBUF, &buf) != 0) {
             ESP_LOGE(TAG_CAM, "QBUF[%d] failed", i);
             ret = ESP_FAIL;
@@ -1312,6 +1410,14 @@ double camera_fps_probe(int frames, int timeout_ms)
  * sweep at about 5 % of a ~10 min loop. */
 static const uint32_t s_cal_ladder[] = { 4, 8, 16, 32, 64, 128, 256, 512 };
 #define CAL_LADDER_N  (sizeof(s_cal_ladder) / sizeof(s_cal_ladder[0]))
+/* IMX219 `[D89]`: same number of rungs, shifted up. Its 1640x1232 mode runs
+ * VTS 1763 lines at 18,9 us per line (33 ms, 30 fps), so exposure up to ~1759
+ * lines costs no frame rate — and the node extracts ~4 pairs/s against 15 on
+ * offer, so the frame rate is not what limits it anyway. At gain 232 (its
+ * maximum, ~10,7x) it needs the long end: 4 and 8 lines read black. */
+static const uint32_t s_cal_ladder_imx[] = { 16, 32, 64, 128, 256, 512, 1024, 1600 };
+_Static_assert(sizeof(s_cal_ladder_imx) == sizeof(s_cal_ladder),
+               "both ladders split the sweep budget into the same slices");
 
 /* Hard gates, inherited from the original Phase 0 gate these cameras have met
  * before. Quality first; rate is only the tie-break among candidates that pass. */
@@ -1715,8 +1821,9 @@ bool camera_calibrate(int budget_ms, bool (*abort_cb)(void), camera_cal_t *out)
     if (!cal_step(&out->step[n], e0, g0, t0 + slice_us, abort_cb)) goto aborted;
     n++;
 
+    const uint32_t *ladder = (s_sensor_pid == CAM_PID_IMX219) ? s_cal_ladder_imx : s_cal_ladder;
     for (int i = 0; i < (int)CAL_LADDER_N && n < planned; i++) {
-        if (!cal_step(&out->step[n], s_cal_ladder[i], g0,
+        if (!cal_step(&out->step[n], ladder[i], g0,
                       t0 + (int64_t)(n + 1) * slice_us, abort_cb)) goto aborted;
         n++;
     }
@@ -2020,6 +2127,91 @@ esp_err_t camera_expose_handle(void *httpd_req, bool busy)
     return ESP_OK;
 }
 
+/* GET /camtest?dump=<offset> — what the frame buffer actually holds, for a
+ * sensor whose byte layout is in question (IMX219 RAW10 `[D89]`). Copies
+ * CAM_DUMP_N bytes of both frames of one pair and scores them under the two
+ * layouts a 10-bit sample can arrive in:
+ *   packed — MIPI RAW10, 4 pixels in 5 bytes, byte 4 carries the 2-bit LSBs
+ *   u16le  — one sample per little-endian 16-bit word, high byte 0..3
+ * For each: mean sample, share of pixel diffs that are exactly 0, and the
+ * LSB bias of the diff. The right layout reads like shot noise (few zero
+ * diffs, bias ~0,5); the wrong one does not. offset 1 = middle of the frame. */
+static esp_err_t cam_dump_send(httpd_req_t *req, uint32_t off)
+{
+    if (!s_dump_a) s_dump_a = heap_caps_malloc(CAM_DUMP_N, MALLOC_CAP_SPIRAM);
+    if (!s_dump_b) s_dump_b = heap_caps_malloc(CAM_DUMP_N, MALLOC_CAP_SPIRAM);
+    if (!s_dump_a || !s_dump_b || s_frame_size < CAM_DUMP_N) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        return httpd_resp_sendstr(req, "{\"err\":\"no buffer\"}");
+    }
+    if (off == 1) off = s_frame_size / 2;
+    off -= off % 10;
+    if (off + CAM_DUMP_N > s_frame_size) off = (s_frame_size - CAM_DUMP_N) / 10 * 10;
+    s_dump_off  = off;
+    s_dump_done = false;
+    s_dump_req  = true;
+    for (int i = 0; i < 300 && !s_dump_done; i++) vTaskDelay(pdMS_TO_TICKS(10));
+    if (!s_dump_done) {
+        s_dump_req = false;
+        httpd_resp_set_status(req, "504 Gateway Timeout");
+        return httpd_resp_sendstr(req, "{\"err\":\"no frame pair in 3 s\"}");
+    }
+    const uint8_t *a = s_dump_a, *b = s_dump_b;
+
+    /* packed RAW10 */
+    double p_sum = 0; uint32_t p_n = 0, p_zero = 0, p_one = 0;
+    for (uint32_t g = 0; g + 5 <= CAM_DUMP_N; g += 5)
+        for (int k = 0; k < 4; k++) {
+            uint16_t va = ((uint16_t)a[g + k] << 2) | ((a[g + 4] >> (k * 2)) & 3u);
+            uint16_t vb = ((uint16_t)b[g + k] << 2) | ((b[g + 4] >> (k * 2)) & 3u);
+            uint16_t d = (uint16_t)(vb - va);
+            p_sum += va; p_n++;
+            if (d == 0) p_zero++;
+            p_one += d & 1u;
+        }
+    /* one sample per little-endian u16 */
+    double u_sum = 0; uint32_t u_n = 0, u_zero = 0, u_one = 0, u_big = 0;
+    for (uint32_t i = 0; i + 2 <= CAM_DUMP_N; i += 2) {
+        uint16_t va = (uint16_t)(a[i] | (a[i + 1] << 8));
+        uint16_t vb = (uint16_t)(b[i] | (b[i + 1] << 8));
+        uint16_t d = (uint16_t)(vb - va);
+        u_sum += va; u_n++;
+        if (va > 1023) u_big++;
+        if (d == 0) u_zero++;
+        u_one += d & 1u;
+    }
+    /* byte means by position mod 5 and mod 2: packed shows byte 4 apart,
+     * u16le shows every odd byte at 0..3 */
+    double m5[5] = {0}, m2[2] = {0};
+    for (uint32_t i = 0; i < CAM_DUMP_N; i++) { m5[i % 5] += a[i]; m2[i % 2] += a[i]; }
+    for (int k = 0; k < 5; k++) m5[k] /= CAM_DUMP_N / 5;
+    for (int k = 0; k < 2; k++) m2[k] /= CAM_DUMP_N / 2;
+
+    char buf[1100];
+    int len = snprintf(buf, sizeof(buf),
+        "{\"fourcc\":\"%c%c%c%c\",\"w\":%lu,\"h\":%lu,\"size\":%lu,\"packed_raw10\":%s,"
+        "\"buf_len\":%lu,\"off\":%lu,\"n\":%d,"
+        "\"packed\":{\"mean\":%.1f,\"zero_diff\":%.4f,\"lsb_bias\":%.4f},"
+        "\"u16le\":{\"mean\":%.1f,\"zero_diff\":%.4f,\"lsb_bias\":%.4f,\"over_1023\":%.4f},"
+        "\"byte_mean_mod5\":[%.1f,%.1f,%.1f,%.1f,%.1f],\"byte_mean_mod2\":[%.1f,%.1f],"
+        "\"a\":\"",
+        (char)(s_fourcc & 0xFF), (char)((s_fourcc >> 8) & 0xFF),
+        (char)((s_fourcc >> 16) & 0xFF), (char)((s_fourcc >> 24) & 0xFF),
+        (unsigned long)s_frame_w, (unsigned long)s_frame_h, (unsigned long)s_frame_size,
+        s_packed_raw10 ? "true" : "false", (unsigned long)s_buf_len[0],
+        (unsigned long)off, CAM_DUMP_N,
+        p_sum / p_n, (double)p_zero / p_n, (double)p_one / p_n,
+        u_sum / u_n, (double)u_zero / u_n, (double)u_one / u_n, (double)u_big / u_n,
+        m5[0], m5[1], m5[2], m5[3], m5[4], m2[0], m2[1]);
+    for (int i = 0; i < 80 && len < (int)sizeof(buf) - 4; i++)
+        len += snprintf(buf + len, sizeof(buf) - len, "%02x", a[i]);
+    len += snprintf(buf + len, sizeof(buf) - len, "\",\"b\":\"");
+    for (int i = 0; i < 80 && len < (int)sizeof(buf) - 4; i++)
+        len += snprintf(buf + len, sizeof(buf) - len, "%02x", b[i]);
+    snprintf(buf + len, sizeof(buf) - len, "\"}");
+    return httpd_resp_sendstr(req, buf);
+}
+
 esp_err_t camera_selftest_handle(void *httpd_req, bool busy)
 {
     httpd_req_t *req = (httpd_req_t *)httpd_req;
@@ -2030,6 +2222,11 @@ esp_err_t camera_selftest_handle(void *httpd_req, bool busy)
         httpd_resp_sendstr(req, "{\"err\":\"measuring\"}");
         return ESP_OK;
     }
+
+    char qry[48], val[16];
+    if (httpd_req_get_url_query_str(req, qry, sizeof(qry)) == ESP_OK &&
+        httpd_query_key_value(qry, "dump", val, sizeof(val)) == ESP_OK)
+        return cam_dump_send(req, (uint32_t)strtoul(val, NULL, 10));
 
     /* The probe FIRST, while this task is only sleeping: it has to see an idle
      * CPU, or it measures the same contention the live loop already reports. */

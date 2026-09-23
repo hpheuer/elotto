@@ -366,6 +366,7 @@ while the split was intact found master↔slave pairs at +0,023 against slave↔
 single pair on the *isolated* node — and cannot be repeated on this rig.
 
 ### D32 — Do not switch camera hardware on the theory that the OV5647 is the problem
+⚠ **Superseded 2026-09-23 by `[D89]`** — the operator moves the array to IMX219.
 The capture runs at RAW8 800×800, ~13 % of the sensor, because the pipeline is PSRAM-bound at a 640 KB
 diff per frame pair; more megapixels would LOWER the bit rate. If it is ever tried, buy ONE and run a
 matched pair, not four.
@@ -1670,4 +1671,46 @@ them (`pass_n_excl` counts held and merged ones alike). Up to 200 rows survive a
 of 100. Not yet exercised on hardware — needs a session with a quarantined round.
 
 **Pooling:** no split.
+
+### D89 — Move to IMX219; the IMX path fixed and measured on slave1 (2026-09-23)
+**Operator decision (time):** the array moves from OV5647 to IMX219, one node at a time. Supersedes
+D32. slave1 first.
+
+**Why slave1's OV5647 had to go.** `/linearity` on slave1: brightness ×1,69 / ×1,75 / ×1,74 per
+exposure doubling (steady light doubles), `raw_sigma` 1,23 → 1,97 → 3,90 from exposure 64 to 256,
+autocorr 0,016. slave0 on the same supply: ×1,62 / ×1,85 / ×1,97, `raw_sigma` flat 1,26..1,71. The
+LEDs of slave0 and slave1 were swapped: the signature stayed with slave1 (×1,73 / ×1,84 / ×1,71,
+`raw_sigma` up to 4,55), slave0 stayed clean. An IMX219 in slave1's place reads ×2,18 / ×2,07 /
+×2,01 with `raw_sigma` 1,02..1,15 — the light there is steady; the module was the fault. That
+flicker is what made slave1 wander (lag-1 autocorrelation of its item z 0,51 against 0,12..0,24)
+and trip soft-down on 2026-09-22/23.
+
+**The IMX path as built under D80 did not work, and nothing had exercised it.**
+1. *Frame layout.* esp_video leaves `sizeimage` 0 for BG10; `camera_init()` fell back to w×h =
+   2 020 480, which is 80 % of the real packed frame (2 525 600), and the RAW10 test
+   (`size ≥ w·h·5/4`) failed — the RAW8 extractor ran over MIPI-packed bytes. Symptoms: zero_diff
+   0,53, bias 0,36, brightness apparently independent of exposure (the byte mean was
+   (4·16 + 123)/5 ≈ 37 whatever the light). Proven with the new `GET /camtest?dump=<off>`: byte
+   means by position mod 5 read 15,8 / 16,0 / 15,8 / 15,9 / 123,2 — four MSB bytes and one LSB byte.
+   **Fix:** layout from the FOURCC (`SBGGR10`/`SGBRG10`/`SGRBG10`/`SRGGB10` = packed), frame size
+   w·h·5/4, clamped to the mapped buffer (2 525 632). After: bias 0,49999, `raw_sigma` 0,99,
+   autocorr 0,0000.
+2. *Speed.* The RAW10 extractor updated the 64-bit monitor counters in memory for every pixel:
+   420 ms per pair, 4,6 Mbit/s. Rewritten word-wise like `cam_extract_fast()` (counters in locals,
+   four bits per 5-byte group through a table): **214 ms, 8,6 Mbit/s**, same stream and statistics.
+3. *Pedestal.* The IMX219 outputs a black level of 64 DN = 16 on the 8-bit `px` scale (measured
+   15,90 dark). Left in, a sensor in total darkness clears the `CAL_MIN_MEAN_PX` 5 dark gate, whose
+   point is that photons whiten the LSB `[D18]` — and at gain 232 read noise alone already gives
+   `raw_sigma` ≈ 1,0 in the dark. **`px` is now above black on an IMX.**
+4. *Ladder.* 1640×1232 mode: VTS 1763, 18,9 µs per line, so up to ~1759 lines cost no frame rate.
+   IMX ladder 16..1600 (8 rungs, same budget split as the OV's 4..512).
+
+**Measured on slave1 after the fix** (gain 232): 0,0046 px per exposure line, linear. A master-
+triggered sweep: rungs 16..512 fail DARK + ZDIFF, 1024 fails DARK (px 4,7), **1600 passes**
+(px 7,4, zero_diff 0,095, `raw_sigma` 1,14) and is chosen. Its OV5647 read 0,25 px per line at gain
+1023 — per line the IMX gets ~50× less signal here. ⚠ **Light is the constraint of this sensor**: a
+node with half slave1's light has no rung that clears the dark gate. Target px ≥ ~15 at 1600.
+
+**Pooling:** ⚠ split — IMX vs OV (D80), and post-D89 only for IMX data. `sensor=` in the CSV names
+the master's chip only; a mixed array is not labelled, so split mixed sessions by date.
 

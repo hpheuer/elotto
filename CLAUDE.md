@@ -25,7 +25,11 @@ Two channels, one key `[D65]`:
 `?wpre=` is the concordance weight (form 0,8; API 0 = z alone). Scoring **selects** the pool on
 that key; the pass **ranks** items on the same key; the UI shows Z*, Z, Conc.
 
-**How the cameras stay usable.** One OV5647 **or** IMX219 per node — `esp_video` probes both (OV at I2C 0x36, IMX at 0x10) and binds whichever chip answers `[D80]`. Frame-pair LSB — z is the camera bits. IMX219 streams packed RAW10; the extractor takes the 10-bit LSB. `/status` `cam_sensor` names the bound chip. ⚠ IMX219 sessions do not pool with OV5647. The **sweep**
+**How the cameras stay usable.** One OV5647 **or** IMX219 per node — `esp_video` probes both (OV at I2C 0x36, IMX at 0x10) and binds whichever chip answers `[D80]`. Frame-pair LSB — z is the camera bits. IMX219 streams packed RAW10 (4 pixels in 5 bytes); the extractor takes the 10-bit LSB. ⚠ The layout
+comes from the FOURCC (`BG10`), not from `sizeimage` — esp_video leaves that 0, and the old fallback
+read packed bytes as RAW8 `[D89]`. `GET /camtest?dump=1` shows what the buffer really holds.
+⚠ IMX `px` is **above black** (pedestal 16 subtracted), so its dark gate means photons, as on the
+OV `[D89]`. `/status` `cam_sensor` names the bound chip. ⚠ IMX219 sessions do not pool with OV5647. The **sweep**
 picks the exposure with the lowest **`raw_sigma`** among rungs that still look like noise (autocorr,
 dark / zero_diff) `[D83]` — dispersion is what `rank_key()` divides by and what soft-down trips on;
 the bias is subtracted by the centring and costs nothing. If a node's block σ is too loud against its peers, **soft-down**
@@ -330,7 +334,8 @@ separate arm `[D1]`.
 | unbounded key, per-item weights 2026-09-02 | post-D75 only — earlier keys were truncated at 12 and scaled an item down when it had no concordance. Splits TABLES **and the chosen POOL**; `z_raw`/`z_ctr`/`zc_ctr` still pool `[D75]` |
 | centred-half concordance 2026-09-02 | post-D77 only — earlier `zc_ctr` is z − \|h1−h2\|/√2, not a sign test. Splits TABLES **and the chosen POOL** at `pre_w` > 0; `z_raw`/`z_ctr` still pool `[D77]` |
 | v3 vs any v2.x | v3 only |
-| camera chip `[D80]` | one of OV5647, IMX219 — `sensor=` in the CSV |
+| camera chip `[D80]` | one of OV5647, IMX219 — `sensor=` in the CSV. ⚠ `sensor=` names the MASTER's chip only; a mixed array is not labelled — split mixed sessions by date `[D89]` |
+| IMX219 driver fix 2026-09-23 `[D89]` | post-D89 only — before it an IMX node emitted RAW8-parsed packed bytes |
 | scoring 10-pass sum `[D81]` | D81..D86 only — the pool was chosen on the sum of 10 keys |
 | scoring 20-pass sum `[D86]` | post-D86 only — 20 keys, and a sweep inside the scoring run |
 | settle pause after a rung change `[D87]` | one side for block σ / soft-down counts — the settling items are gone. `z_raw`/`z_ctr` still pool |
@@ -401,6 +406,9 @@ own measurement (`kept` in `/calibrate`); for σ that SE is σ/√(2(m−1)) ove
 a rung — two of four nodes correctly declined on the first sweep after `[D83]`. SE goes as
 1/√budget, so `?cal=40000` halves the bar to ~2,4 %. The incumbent is what runs when the sweep STARTS, so a
 manual `/expose` gets one sweep of protection — deliberate.
+
+The IMX219 ladder is 16, 32, 64, 128, 256, 512, 1024, 1600 lines (VTS 1763 at 18,9 µs per line: no
+frame-rate cost), same rung count as the OV's 4..512 `[D89]`.
 
 Gates a rung must clear: autocorr < `CAL_AUTOC_TOL` 0,03 (⚠ never subsample — it gates),
 σ ≤ `CAL_RAW_SIGMA_K` 1,35 × the ladder's own best (**relative, one-sided**, after the whole
@@ -504,7 +512,14 @@ The enclosure is **LIT, not dark** `[D28]`.
   can show the difference. After the fix the same node read ×1,94 / ×2,08 / ×2,09 with
   `raw_sigma` 1,03.
 - ⛔ **All four nodes on PoE, permanently** (user decision) `[D31]`.
-- ⛔ **Do not switch camera hardware** on the theory that the OV5647 is the problem `[D32]`.
+- **The array moves to IMX219** (user decision 2026-09-23, supersedes D32) `[D89]`. The trigger was
+  slave1's OV5647 module: its flicker signature (brightness ×1,74 per doubling, `raw_sigma` 1,2 → 4,6
+  with exposure) stayed with the module across an LED swap, and an IMX219 in the same place reads
+  ×2,01..2,18, `raw_sigma` 1,02..1,15.
+- ⚠ **An IMX219 needs far more light than an OV5647**: slave1 reads 0,0046 px per exposure line at
+  gain 232 (its maximum) where its OV5647 read 0,25 at gain 1023. At the top rung (1600 lines) that
+  is px 7,4 above black — the only rung clearing the dark gate (`CAL_MIN_MEAN_PX` 5). A node with
+  half slave1's light fails every rung. Give each IMX node enough light for px ≥ ~15 at 1600.
 
 ---
 
@@ -605,7 +620,9 @@ working node.
 Addresses are informational: the master finds slaves by UDP broadcast.
 
 ### Extraction — where the rate stands
-Idle production is **~7,4 Mbit/s** post-D65 (adjacent-pixel XOR off, 2× words). The LOADED rate has
+Idle production is **~7,4 Mbit/s** post-D65 (adjacent-pixel XOR off, 2× words) on an OV5647, and
+**~8,6 Mbit/s on an IMX219** (1640×1232, `ms_extract` ~214 ms per pair, extraction-bound at ~4 pairs/s
+against 15 on offer) `[D89]`. The LOADED rate has
 not been re-measured since — the pre-D65 figures (5,71 idle, ~3,7 loaded) are a different
 instrument `[D22]``[D25]`.
 - ⛔ Nothing done to the extraction path can raise the **idle** rate `[D23]`; the loaded rate is
