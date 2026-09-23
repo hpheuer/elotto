@@ -1,5 +1,5 @@
 import sys, math, statistics as st
-names = {"192.168.178.145": "slave1 IMX dunkel", "192.168.178.103": "slave0 OV Licht",
+names = {"192.168.178.145": "slave1", "192.168.178.103": "slave0",
          "192.168.178.155": "slave2", "192.168.178.100": "master"}
 rows = [l.rstrip("\n").split(";") for l in open(sys.argv[1]) if not l.startswith("i;")]
 by = {}
@@ -55,3 +55,28 @@ for ip, d in by.items():
         print(f"   halves: corr {r12:+.3f}  same sign {same:.3f}")
     if w:
         print(f"   wsig mean {st.mean(w):.4f} sd {st.stdev(w):.4f}")
+
+# ── Pairwise: the same window measured by two nodes. Independent nodes give
+# r ~ 0 with SE 1/sqrt(n); a shared disturbance shows here and nowhere else.
+zi = {}
+for r in rows:
+    if r[3] != "":
+        zi.setdefault(r[2], {})[int(r[0])] = float(r[3])
+ips = sorted(zi)
+if len(ips) >= 2:
+    print("== pairwise correlation of window z (same trigger)")
+    for a in range(len(ips)):
+        for b in range(a + 1, len(ips)):
+            common = sorted(set(zi[ips[a]]) & set(zi[ips[b]]))
+            x = [zi[ips[a]][i] for i in common]; y = [zi[ips[b]][i] for i in common]
+            mx, my = st.mean(x), st.mean(y)
+            num = sum((p - mx) * (q - my) for p, q in zip(x, y))
+            den = math.sqrt(sum((p - mx) ** 2 for p in x) * sum((q - my) ** 2 for q in y))
+            r_ = num / den
+            print(f"   {names.get(ips[a], ips[a])} x {names.get(ips[b], ips[b])}: "
+                  f"r {r_:+.3f}  (n {len(common)}, |r|*sqrt(n) {abs(r_)*math.sqrt(len(common)):.2f})")
+    # combined z over all nodes, as the master would form it: sum / sqrt(k)
+    common = sorted(set.intersection(*[set(zi[i]) for i in ips]))
+    comb = [sum(zi[i][w] for i in ips) / math.sqrt(len(ips)) for w in common]
+    print(f"   combined z over {len(ips)} nodes: mean {st.mean(comb):+.3f}  sigma {st.stdev(comb):.3f} "
+          f"± {st.stdev(comb)/math.sqrt(2*(len(comb)-1)):.3f}  (ideal 1,00)")
