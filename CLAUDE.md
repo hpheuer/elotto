@@ -52,7 +52,10 @@ discovered by broadcast at every session start — no IP table, no node count co
 z = **Σ z_node / √k** over the k nodes that answered *that* run, so a missing reply costs that
 run's gain, not the session.
 
-**Entropy is photons, and only photons** (user decision). One camera per node (OV5647 or IMX219), never shared.
+**Entropy source by chip** (user decision): an OV5647 runs LIT and its entropy is photons; an
+**IMX219 runs in total DARKNESS** and its entropy is the sensor's own readout noise — pixel
+transistor thermal and trap noise, column/ADC chain — at maximum analog gain `[D90]`. The old rule
+"photons, and only photons" holds for the OV5647 only. One camera per node, never shared.
 Non-overlapping frame pairs, diff = f[2k+1]−f[2k] per pixel (cancels FPN exactly), LSB packed.
 ⛔ LSB bits as measured `[D65]`. Fisher–Yates uses an xorshift32 seeded from the camera; it never enters a z.
 
@@ -336,6 +339,7 @@ separate arm `[D1]`.
 | v3 vs any v2.x | v3 only |
 | camera chip `[D80]` | one of OV5647, IMX219 — `sensor=` in the CSV. ⚠ `sensor=` names the MASTER's chip only; a mixed array is not labelled — split mixed sessions by date `[D89]` |
 | IMX219 driver fix 2026-09-23 `[D89]` | post-D89 only — before it an IMX node emitted RAW8-parsed packed bytes |
+| IMX219 dark operation `[D90]` | post-D90 only — the entropy source is readout noise, not photons. Never pool with any lit session |
 | scoring 10-pass sum `[D81]` | D81..D86 only — the pool was chosen on the sum of 10 keys |
 | scoring 20-pass sum `[D86]` | post-D86 only — 20 keys, and a sweep inside the scoring run |
 | settle pause after a rung change `[D87]` | one side for block σ / soft-down counts — the settling items are gone. `z_raw`/`z_ctr` still pool |
@@ -407,16 +411,21 @@ a rung — two of four nodes correctly declined on the first sweep after `[D83]`
 1/√budget, so `?cal=40000` halves the bar to ~2,4 %. The incumbent is what runs when the sweep STARTS, so a
 manual `/expose` gets one sweep of protection — deliberate.
 
-The IMX219 ladder is 16, 32, 64, 128, 256, 512, 1024, 1600 lines (VTS 1763 at 18,9 µs per line: no
-frame-rate cost), same rung count as the OV's 4..512 `[D89]`.
+**An IMX219 does not ladder: dark operation** `[D90]` (`CAM_IMX_DARK` 1 in camera.c). Exposure fixed
+at `IMX_DARK_EXPOSURE` 1600 lines (the longest the 30 fps frame allows, so leaking light is as
+visible as possible), from boot. The sweep measures the entry setting and that rung — a health check,
+never a choice — so it never moves the rung and the settle pause never fires. Its gates: autocorr,
+stuck, bits, relative σ, and **LEAK** instead of DARK/ZDIFF: `px` above black ≤ `CAL_DARK_MAX_PX` 1,0.
+An uncertified node keeps measuring on 1600 and the Log names it ("NO certified setting").
+(`CAM_IMX_DARK` 0 restores the lit ladder 16..1600 of `[D89]`.)
 
 Gates a rung must clear: autocorr < `CAL_AUTOC_TOL` 0,03 (⚠ never subsample — it gates),
 σ ≤ `CAL_RAW_SIGMA_K` 1,35 × the ladder's own best (**relative, one-sided**, after the whole
 ladder `[D46]``[D65]`), no stuck frames, `mean_px` ≥ 5,0 `[D18]`,
 `zero_diff` ≤ `CAL_MAX_ZERO_DIFF` 0,125. ⛔ `CAL_MAX_MEAN_PX` 100 is publish-only `[D52]`.
 
-- **The dark end is gated because photons do the whitening** `[D18]`. Dim the lamp and more rungs
-  fail; the answer is light, not a lower floor.
+- **The dark end is gated because photons do the whitening** `[D18]` — OV5647 only. Dim the lamp and
+  more rungs fail; the answer is light, not a lower floor. An IMX219 is gated the other way `[D90]`.
 - `raw_runs_z` is published per sweep rung and gates nothing. ⚠ 0,0 in a measurement window means
   NOT ARMED, not "perfectly random" (`raw_trans` says which).
 - The budget is a **cap, not a target** (default 10 s, `?cal=<ms>`, 0 = off) `[D21]`. **The triggers
@@ -499,7 +508,9 @@ releases it — ⚠ `SESSION_IDLE_MS` must stay above the 60 s settle pause, whi
   someone rebooted it. (The pool-confirmation park that motivated it is gone `[D66]``[D73]`.)
 
 ## Illumination — standing rules
-The enclosure is **LIT, not dark** `[D28]`.
+An OV5647 enclosure is **LIT, not dark** `[D28]`. An IMX219 enclosure is **totally dark, LEDs off** `[D90]`
+— slave1's lighting installation injected electrical interference into its sensor (`raw_sigma`
+1,76 already at 16 lines, where almost no light arrives; 1,00 with the LED off).
 - ⛔ **Never power illumination from a node's VSYS pin** `[D29]`.
 - ⚠ **After physical work, let the light settle ~30 min** before a long run `[D30]`.
 - ⚠ **Do not judge the light by one `mean_px` reading** — sweep, or take a time series.
@@ -519,7 +530,8 @@ The enclosure is **LIT, not dark** `[D28]`.
 - ⚠ **An IMX219 needs far more light than an OV5647**: slave1 reads 0,0046 px per exposure line at
   gain 232 (its maximum) where its OV5647 read 0,25 at gain 1023. At the top rung (1600 lines) that
   is px 7,4 above black — the only rung clearing the dark gate (`CAL_MIN_MEAN_PX` 5). A node with
-  half slave1's light fails every rung. Give each IMX node enough light for px ≥ ~15 at 1600.
+  half slave1's light fails every rung. Superseded for operation by dark mode `[D90]`; it holds only
+  with `CAM_IMX_DARK` 0.
 
 ---
 

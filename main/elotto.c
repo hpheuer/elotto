@@ -401,7 +401,7 @@ NODE_NAMES_JS
 "for(var ip in NODE_NAMES)t=t.split(ip).join(NODE_NAMES[ip]);"
 "t=t.replace(/&/g,'&amp;').replace(/</g,'&lt;');"
 "var dt=new Date(Date.now()-(up-e.t_ms));"
-"var col=/SOFT-DOWN|aborted/.test(t)?'#e8a0a0':/Settl/.test(t)?'#f0c040'"
+"var col=/SOFT-DOWN|aborted|NO certified/.test(t)?'#e8a0a0':/Settl/.test(t)?'#f0c040'"
 ":/Session/.test(t)?'#6ab0e8':/back in/.test(t)?'#90ee90':'#cfe8cf';"
 "h+='<div title=\"'+dt.toLocaleString()+'\"><span style=\"color:#7a9a7a\">'"
 "+z(dt.getHours())+':'+z(dt.getMinutes())+':'+z(dt.getSeconds())"

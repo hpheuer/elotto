@@ -597,6 +597,19 @@ bool calibrate_all(const char *why)
                        (unsigned long)s_cal_e0[i], (unsigned long)now_e);
         if (w > 0 && mpos + w < (int)sizeof(moved)) mpos += w;
     }
+    /* A node whose sweep certified nothing keeps measuring — nothing gates on
+     * it — but the operator must see it: in dark operation that is a light
+     * leak or a failing sensor `[D90]`. */
+    char unc[EVLOG_TXT] = "";
+    int  upos = 0;
+    for (int i = 0; i < g_status.node_count && i < MAX_NODES; i++) {
+        if (!g_status.nodes[i].ok || g_status.nodes[i].cam_cal_ok) continue;
+        int w = snprintf(unc + upos, sizeof(unc) - upos, "%s%s",
+                         upos ? ", " : "", node_label(i));
+        if (w > 0 && upos + w < (int)sizeof(unc)) upos += w;
+    }
+    if (upos) evlog("Sweep: NO certified setting on %s - see its /calibrate", unc);
+
     if (n_moved == 0) {
         evlog("Sweep done in %.1f s - every node kept its exposure, no settle",
               g_status.cal_ms / 1000.0);

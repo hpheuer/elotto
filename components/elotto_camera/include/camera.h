@@ -235,6 +235,7 @@ double camera_fps_probe(int frames, int timeout_ms);
 #define CAM_CAL_FAIL_DARK    0x80   // mean pixel level below the shot-noise floor
 #define CAM_CAL_FAIL_ZDIFF  0x100   // too many zero pixel differences
 #define CAM_CAL_FAIL_RSIG   0x200   // LSB per-mini-run sigma above the bar
+#define CAM_CAL_FAIL_LEAK   0x400   // dark operation: light reaches the sensor [D90]
 
 #define CAM_CAL_MAX_STEPS   12
 

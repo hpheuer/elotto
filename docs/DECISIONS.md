@@ -1714,3 +1714,48 @@ node with half slave1's light has no rung that clears the dark gate. Target px �
 **Pooling:** ⚠ split — IMX vs OV (D80), and post-D89 only for IMX data. `sensor=` in the CSV names
 the master's chip only; a mixed array is not labelled, so split mixed sessions by date.
 
+### D90 — IMX219 runs in total darkness; readout noise is the entropy source (2026-09-23)
+**Operator decision:** the array is rebuilt as 4× IMX219 without light. The OV5647 rule "entropy is
+photons, and only photons" no longer applies to an IMX219 node.
+
+**Why.** slave1's new lighting disturbed the sensor electrically: with the LED on, `raw_sigma` was
+1,76 already at 16 lines (0,3 ms, ~0,3 px of light expected) and rose to 2,96 at 1600, with the
+brightness ratio per doubling at ×1,63..1,77 and a +2,8 px offset at 16 lines that light cannot
+produce. Rerouting the LED cable changed nothing. With the LED **off**, every rung 16..1600:
+`raw_sigma` 0,98..1,02, autocorrelation ≈ 0, px −0,45 flat (dark current over 33 ms ≈ 0).
+Window test, slave1 dark, 300 windows of 52 174 segments triggered directly over the wire
+(reference slave0, OV5647 lit, same triggers):
+
+| | ideal | slave1 IMX dark | slave0 OV lit |
+|---|---|---|---|
+| z mean | 0 | +0,006 ± 0,06 | −87,4 |
+| z σ over windows | 1,00 | 1,03 ± 0,04 | 1,23 per quarter, 1,89 overall |
+| drift over 10 min | 0 | t −1,65 | t +1,86 |
+| window autocorrelation lag 1..5 | 0 | −0,05..+0,02 (SE 0,06) | 0,51 at lag 1 |
+| half-window correlation | 0 | +0,05 | +0,91 |
+
+Accumulated over the run on slave1 (5,5·10⁹ bits): bias 0,499995 (0,7 SE), `raw_sigma` 1,0004
+(SE 0,0005), bit autocorrelation lag 1..4 0,0000.
+
+**What the noise is.** The frame difference removes everything the two readouts share (per-pixel
+offsets, column/row pattern, black level). What remains is the readout: thermal (Johnson–Nyquist)
+noise in each pixel's source follower, trap noise (1/f, RTS: single-electron capture/release in the
+gate oxide), the column/ADC chain, and whatever couples in from supply and environment. At gain 232
+that is ~1,4 DN per frame, ~2 DN in the difference (~20 % of diffs exactly 0). The LSB stays fair and
+independent while each pixel keeps ≥ ~1 DN of its own noise, because a common shift of a whole row
+only flips that row's bits together. ⚠ The residual risk is coupled-in interference, which is
+deterministic: shared by nodes (PoE, supply) or tied to the node's own activity. One node's
+statistics cannot separate it from noise — the pairwise matrix and drift can.
+
+**Implementation** (`CAM_IMX_DARK` 1): exposure fixed at 1600 lines from boot; the sweep measures
+entry setting + that rung and never chooses (no rung change, so no settle pause `[D87]`); gates
+autocorr/stuck/bits/relative σ plus LEAK (px above black > `CAL_DARK_MAX_PX` 1,0 fails) in place of
+DARK/ZDIFF; an uncertified node stays on 1600 and the Log names it. The extraction is unchanged —
+LSB(b − a) per pixel, one bit per pixel; the XOR in the code computes that bit, it mixes nothing.
+
+**Open, to verify on the 4× dark array:** `/linearity` per node (px ≈ −0,4 flat, `raw_sigma` ≈ 1,0),
+the window test on all four at once (pairwise correlation — the test for shared interference), then a
+long session (per-block σ, drift).
+
+**Pooling:** ⚠ new instrument — never pool with any lit session.
+

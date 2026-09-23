@@ -54,7 +54,31 @@ static uint32_t s_frame_w = 0, s_frame_h = 0;
 #define CAM_PID_IMX219  0x0219
 #define IMX219_GAIN_MAX 232u
 #define IMX219_BLACK_PX 16.0        /* pedestal 64 DN (10-bit) on the 8-bit px scale */
+
+/* ── Dark operation `[D90]` ──────────────────────────────────────────────────
+ * An IMX219 node runs in TOTAL DARKNESS: its entropy is the sensor's own
+ * readout noise (pixel source-follower thermal and trap noise, column/ADC
+ * chain) at maximum analog gain, not photon shot noise. Measured on slave1,
+ * LED off, 300 windows: z mean +0,006, z sigma 1,03 ± 0,04, window
+ * autocorrelation within noise; 5,5e9 bits: bias 0,499995, raw_sigma 1,0004.
+ *
+ * What changes against the lit OV5647 path, and only for the IMX219:
+ *  - exposure is FIXED at IMX_DARK_EXPOSURE — the longest integration the
+ *    30 fps frame allows, so any light that leaks in is as visible as it can
+ *    be (dark current over 33 ms is ~0: px moved 0,005 from 16 to 1600 lines);
+ *  - the sweep measures the entry setting and that one rung: a health check
+ *    (autocorr, stuck, bits, dispersion), no longer a choice. The rung never
+ *    moves, so the settle pause `[D87]` never fires;
+ *  - DARK and ZDIFF are not gated (both exist to demand photons: in the dark
+ *    px is 0 and ~20 % of diffs are 0 by construction). In their place LEAK:
+ *    px above black must stay <= CAL_DARK_MAX_PX, or the rung is uncertified.
+ * CAM_IMX_DARK 0 restores the lit IMX ladder `[D89]`. */
+#define CAM_IMX_DARK        1
+#define IMX_DARK_EXPOSURE   1600u
+#define CAL_DARK_MAX_PX     1.0     /* black drifts ±0,4 px; slave1's weakest LED read 7,4 */
+
 static uint16_t s_sensor_pid = 0;
+static bool cam_dark(void) { return CAM_IMX_DARK && s_sensor_pid == CAM_PID_IMX219; }
 static const char *s_sensor_name = "?";
 static bool     s_packed_raw10 = false;
 static uint32_t s_fourcc = 0;       // V4L2 pixel format the driver was set to
@@ -1108,7 +1132,11 @@ esp_err_t camera_init(void)
 
     uint32_t boot_g = (uint32_t)CONFIG_ELOTTO_CAM_REG_GAIN;
     if (boot_g > cam_gain_max()) boot_g = cam_gain_max();
-    if (!camera_set_exposure((uint32_t)CONFIG_ELOTTO_CAM_REG_EXPOSURE, boot_g))
+    /* Dark operation boots ON its fixed rung, so the first sweep of a session
+     * finds nothing to change and owes no settle pause `[D90]`. */
+    uint32_t boot_e = cam_dark() ? IMX_DARK_EXPOSURE
+                                 : (uint32_t)CONFIG_ELOTTO_CAM_REG_EXPOSURE;
+    if (!camera_set_exposure(boot_e, boot_g))
         ESP_LOGW(TAG_CAM, "boot exposure/gain did not latch");
     cam_verify_regs("after-write");
 
@@ -1701,8 +1729,13 @@ static uint32_t cal_gate(const camera_cal_step_t *s)
      * a candidate that never got frames already fails BITS, and adding DARK to
      * it would report a light level that was never sampled. */
     if (s->bits >= CAL_MIN_BITS) {
-        if (s->mean_pixel_level < CAL_MIN_MEAN_PX) f |= CAM_CAL_FAIL_DARK;
-        if (s->zero_diff_frac > CAL_MAX_ZERO_DIFF) f |= CAM_CAL_FAIL_ZDIFF;
+        if (cam_dark()) {
+            /* Dark operation `[D90]`: light is the fault, not its absence. */
+            if (s->mean_pixel_level > CAL_DARK_MAX_PX) f |= CAM_CAL_FAIL_LEAK;
+        } else {
+            if (s->mean_pixel_level < CAL_MIN_MEAN_PX) f |= CAM_CAL_FAIL_DARK;
+            if (s->zero_diff_frac > CAL_MAX_ZERO_DIFF) f |= CAM_CAL_FAIL_ZDIFF;
+        }
     }
     return f;
 }
@@ -1806,7 +1839,12 @@ bool camera_calibrate(int budget_ms, bool (*abort_cb)(void), camera_cal_t *out)
 
     if (budget_ms < 2000) budget_ms = 2000;
     // Steps: the entry setting, then the ladder. No XOR trial — see below.
-    int planned = 1 + (int)CAL_LADDER_N;
+    /* Dark operation measures one rung after the entry setting `[D90]`. */
+    static const uint32_t dark_ladder[] = { IMX_DARK_EXPOSURE };
+    const uint32_t *ladder = cam_dark() ? dark_ladder
+                           : (s_sensor_pid == CAM_PID_IMX219) ? s_cal_ladder_imx : s_cal_ladder;
+    int ladder_n = cam_dark() ? 1 : (int)CAL_LADDER_N;
+    int planned = 1 + ladder_n;
     if (planned > CAM_CAL_MAX_STEPS) planned = CAM_CAL_MAX_STEPS;
     int64_t slice_us = (int64_t)budget_ms * 1000 / planned;
 
@@ -1821,8 +1859,7 @@ bool camera_calibrate(int budget_ms, bool (*abort_cb)(void), camera_cal_t *out)
     if (!cal_step(&out->step[n], e0, g0, t0 + slice_us, abort_cb)) goto aborted;
     n++;
 
-    const uint32_t *ladder = (s_sensor_pid == CAM_PID_IMX219) ? s_cal_ladder_imx : s_cal_ladder;
-    for (int i = 0; i < (int)CAL_LADDER_N && n < planned; i++) {
+    for (int i = 0; i < ladder_n && n < planned; i++) {
         if (!cal_step(&out->step[n], ladder[i], g0,
                       t0 + (int64_t)(n + 1) * slice_us, abort_cb)) goto aborted;
         n++;
@@ -1883,6 +1920,9 @@ bool camera_calibrate(int budget_ms, bool (*abort_cb)(void), camera_cal_t *out)
     int pick = -1;
     for (int i = 0; i < n; i++) {
         if (out->step[i].fail) continue;
+        /* Dark operation never chooses: only the fixed rung is eligible, so an
+         * entry setting left by /expose or /linearity is replaced, not kept. */
+        if (cam_dark() && out->step[i].exposure != IMX_DARK_EXPOSURE) continue;
         if (pick < 0 || cal_key(&out->step[i]) < cal_key(&out->step[pick]))
             pick = i;
     }
@@ -1894,6 +1934,7 @@ bool camera_calibrate(int budget_ms, bool (*abort_cb)(void), camera_cal_t *out)
         int inc = -1;
         for (int i = 0; i < n; i++) {
             if (out->step[i].fail) continue;
+            if (cam_dark() && out->step[i].exposure != IMX_DARK_EXPOSURE) continue;
             if (out->step[i].exposure == e0 && out->step[i].gain == g0) { inc = i; break; }
         }
         if (inc >= 0 && inc != pick) {
@@ -1912,7 +1953,11 @@ bool camera_calibrate(int budget_ms, bool (*abort_cb)(void), camera_cal_t *out)
         }
     }
 
-    uint32_t use_e   = (pick >= 0) ? out->step[pick].exposure : e0;
+    /* Dark operation stays on its rung even uncertified: the fallback to the
+     * entry setting exists to keep a working LIT rung, and in the dark there is
+     * no other rung to keep `[D90]`. The failure is reported, not hidden. */
+    uint32_t use_e   = (pick >= 0) ? out->step[pick].exposure
+                     : cam_dark()  ? IMX_DARK_EXPOSURE : e0;
     uint32_t use_g   = (pick >= 0) ? out->step[pick].gain     : g0;
 
     bool applied = camera_set_exposure(use_e, use_g);
