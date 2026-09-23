@@ -640,15 +640,21 @@ Addresses are informational: the master finds slaves by UDP broadcast.
 
 ### Extraction — where the rate stands
 Idle production is **~7,4 Mbit/s** post-D65 (adjacent-pixel XOR off, 2× words) on an OV5647, and
-**~8,6 Mbit/s on an IMX219** (1640×1232, `ms_extract` ~214 ms per pair, extraction-bound at ~4 pairs/s
-against 15 on offer) `[D89]`. On the IMX219 that is also the **loaded** rate: since the block reader
-`[D92]` the consumer outruns production (`waits` > 0), so the RAW10 extractor is the session's clock.
-Its headroom is compute, not memory: PSRAM reads both frames of a pair in ~52 ms (`/camtest`
-`ns_read`), the sensor offers a pair every 66 ms, extraction takes 213 `[D92]`.
+**~15 Mbit/s on an IMX219** (1640×1232, `ms_extract` ~126 ms per pair idle, ~128 loaded, a pair
+every ~134 ms against 66 on offer) `[D93]`. On the IMX219 that is also the **loaded** rate: since the
+block reader `[D92]` the consumer outruns production (`waits` > 0), so the RAW10 extractor is the
+session's clock. Its remaining headroom is compute: PSRAM reads both frames of a pair in ~54 ms
+(`/camtest` `ms_pair_read`), the sensor offers a pair every 66 ms.
 - ⛔ **On an OV5647** nothing done to the extraction path can raise the **idle** rate `[D23]` — that
   sensor is the ceiling. It does not hold for the IMX219. Prove any extractor change with
-  `ms_extract` under load, never at idle `[D25]`. ⚠ `/camtest` has no RAW10 reference yet:
-  its `equal` and `ms_pair_ext` describe the RAW8 path only.
+  `ms_extract` under load, never at idle `[D25]`.
+- **The live RAW10 extractor is `cam_extract_raw10_fast()`; the D89 loop is its reference**
+  (`cam_extract_raw10_ref()`). `/camtest` reports the RAW10 pair as `r10_*` / `ns10_*` /
+  `ms_pair_r10_*`; `equal` and `ms_pair_ext` stay the RAW8 path. ⛔ Same rule as RAW8: never change
+  the live extractor without `r10_equal` true on the target `[D93]`.
+- ⚠ **Per-word statistics run in batches of 64** (`process_words()`), flushed at the end of every
+  pair `[D93]`. Anything that resets the ring or the statistics must stay at a pair boundary, where
+  the batch is empty.
 - `/diagjson` publishes the per-pair split on every node: `ms_pair` = `ms_wait` + `ms_extract` +
   `ms_rest`.
 - ⚠ **`mbit_s` is PRODUCTION, `consume_mbit_s` is what a measurement READ** `[D60]`. The first

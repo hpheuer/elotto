@@ -1809,3 +1809,52 @@ sensor cadence. `/camtest` has no RAW10 reference yet.
 **Pooling:** no split. Bits per item, their order and the onset flush are unchanged; a window only
 takes less wall time.
 
+### D93 — Word-wise RAW10 extractor and batched per-word statistics (2026-09-24)
+**Why.** After D92 the IMX219 extractor was the session's clock: 213 ms per pair against a PSRAM
+floor of ~54 ms (`/camtest` `ns_read` × frame bytes) and a sensor pair every 66 ms. Compute, not
+memory.
+
+**Reference first.** The D89 loop moved verbatim into `extract.c` as `cam_extract_raw10_ref()` — it is
+what every IMX stream came out of. `/camtest` now runs 7 RAW10 cases against it (`r10_equal`):
+live shape with remainder and tail, identical frames, one flipped bit, a 3-group tail, frames
+misaligned against each other (whole call group by group), a mini-run 10 bits from closing with a
+carried runs bit (splits at every 200th step), a half-packed word plus a one-byte offset (prologue →
+steps → tail). Compared: words, per-word raw-ones (new `what` 10), zeros, stuck verdict, pixel sum,
+monitor sums, runs channel, packer state. **7/7 bit-identical on the master.**
+
+**Fast path** (`cam_extract_raw10_fast()`): 4 groups = 20 bytes = 5 aligned words per frame, and
+group k's LSB byte sits in word k+1, lane k. One XOR per word; the four LSB bytes index four 256-entry
+tables whose entries add to the 16 stream bits plus their ones count; zeros exactly via realigned
+high bytes OR a spread-LSB table and the borrow-free zero-lane test; psum in two 16-bit lanes; `any`
+is `zeros < pixels`, not accumulated. Tables in internal RAM (5,25 KB) — flash rodata goes through the
+L2 cache the frame stream flushes.
+
+**Per-word statistics batched.** `process_word()` did a dozen 64-bit read-modify-writes of globals
+per 32 bits. `process_words()` runs the ring push and the statistics over 64 words with every counter
+in a local, head published once per batch, tail re-read before any drop; flushed at the end of every
+pair. Integer sums and the mini-run z sequence are unchanged. Live check: `sigma` (process_words)
+and `raw_sigma` (the extractor's monitor) — the same quantity from two computations — agree to four
+decimals on every node.
+
+| per pair, 1640×1232 | before | fast extractor | + batched stats |
+|---|---|---|---|
+| `/camtest`, extraction only | 158 ms (ref) | 97 ms | — |
+| `ms_extract` live, master idle | 213 | 146,9 | **125,4** |
+| `ms_pair` live, master idle | 233 | 166,6 | **134,2** |
+| production `mbit_s` | 8,66 | ~12,1 | **15,0** |
+
+`ms_wait` fell 16,6 → 5,7 with it (not understood; the driver holds two filled buffers).
+**Under load** (6-of-49, `?run=0.5`, `?cal=0`, all four on it): slaves `ms_extract` 127,7, production
+14,7, consumption 15,3–15,8 with `waits` > 0 (the reader keeps up), `focus_win_ms` 937,9 → **579,8**.
+No fault, void, flush timeout or stall. At `?run=2` (the form's value): `focus_win_ms` 1762 + gap 871
+→ **2,63 s per item** (43 items in 112 s) against ~3,8 s modelled for the D92 build. A round of 20
+scoring passes plus 200 pass items: Eurojackpot (1440 windows) ~63 min instead of ~92, 6-of-49
+(1180) ~52 instead of ~76. All four nodes: production 14,6–14,9, consumption 14,9–15,3.
+
+**Pooling: the operator's call, open.** Bits per item and their definition are unchanged (the
+self-test proves the stream bit-identical). What changes is which frames feed an item: the
+extractor now takes about every second pair the sensor offers instead of every 3,5th, so an item's
+bits come from pairs ~134 ms apart instead of ~233 ms, over less wall time. D90's independence
+evidence (bit autocorrelation, window test, pairwise) was taken at the old spacing; the bit
+autocorrelation reads 0,0000 at the new one, the window-level tests are not redone.
+

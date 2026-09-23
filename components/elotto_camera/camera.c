@@ -407,8 +407,6 @@ static void cam_verify_regs(const char *when)
              (unsigned long)gain, CONFIG_ELOTTO_CAM_REG_GAIN);
 }
 
-// Pack one LSB-diff word: update ring buffer, bias, per-mini-run sigma and
-// lag-1..4 bit autocorrelation across the word stream (see PLAN Phase 0 gate).
 /* Welford over the mini-run z of ONE measurement window (D62). Separate from
  * s_z_* above, which is cumulative since the last camera_stats_reset() and so
  * spans whole sweep intervals. Owned by the capture task exactly like s_z_*:
@@ -423,59 +421,96 @@ static double   s_win_z_mean, s_win_z_m2;
  * A 0,5 s window (the shortest ?run= allows) still yields ~800. */
 #define WIN_SIGMA_MIN_N   200u
 
-static void process_word(uint32_t w, uint32_t ro)
+/* Words of the current pair, handed on in batches `[D93]`. The extractor
+ * emits one word per 32 pixels through a callback; appending it here is a
+ * store, and process_words() then runs the ring and the statistics over the
+ * batch with every counter in a LOCAL — word by word they were a dozen 64-bit
+ * read-modify-writes of globals per 32 bits, about a third of the pair.
+ * ⚠ Flushed at the end of EVERY pair (diff_and_extract), so no word outlives
+ * its pair: the onset flush and the stats resets act at pair boundaries and
+ * find the batch empty. */
+#define WORD_BATCH 64
+static uint32_t s_wb[WORD_BATCH];
+static uint8_t  s_wb_raw[WORD_BATCH];
+static uint32_t s_wb_n;
+
+/* Ring push, bias, per-mini-run sigma and lag-1..4 bit autocorrelation across
+ * the word stream (see PLAN Phase 0 gate), for the batch in s_wb. Every sum is
+ * an integer and the mini-run z sequence is the same, so the published numbers
+ * are identical to the word-by-word version it replaces. */
+static void process_words(void)
 {
+    const uint32_t n = s_wb_n;
+    if (n == 0) return;
+    s_wb_n = 0;
+
     // Publish to the consumer first. Never overwrite an unread slot: dropping
     // fresh bits when the consumer is behind is fine (excess entropy), reusing
-    // or clobbering them is not.
-    /* `ro` is the LSB ones for exactly the pixels that produced this
-     * word, handed over by the extractor. It used to be read back out of
-     * s_raw.ones as a delta against the previous emit — correct, but it forced
-     * the whole monitor to be memory-live inside the bulk loop, which is what
-     * made it expensive (see the locals note in cam_extract_fast). */
-    if (ro > 255) ro = 255;                  /* cannot happen: max 64 */
-
-    uint32_t next = (s_ring_head + 1) % RING_WORDS;
-    if (next == s_ring_tail) {
-        s_ring_drops++;
-    } else {
-        s_ring[s_ring_head] = w;
-        if (s_ring_raw) s_ring_raw[s_ring_head] = (uint8_t)ro;
-        s_ring_head = next;
+    // or clobbering them is not. The tail is re-read before any drop, since
+    // the consumer only ever moves it forward; head is published once, after
+    // the slots it covers.
+    uint32_t head = s_ring_head, tail = s_ring_tail, drops = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        uint32_t next = (head + 1) % RING_WORDS;
+        if (next == tail) {
+            tail = s_ring_tail;
+            if (next == tail) { drops++; continue; }
+        }
+        s_ring[head] = s_wb[i];
+        /* The LSB ones of the pixels behind this word, from the extractor.
+         * It used to be read back out of s_raw.ones as a delta against the
+         * previous emit — correct, but it forced the whole monitor to be
+         * memory-live inside the bulk loop (see cam_extract_fast). */
+        if (s_ring_raw) s_ring_raw[head] = s_wb_raw[i];
+        head = next;
     }
+    __sync_synchronize();
+    s_ring_head = head;
+    s_ring_drops += drops;
 
     // Statistics cover every extracted word, including dropped ones: /diag must
     // characterise the source itself, not whichever subset got consumed.
-    int ones = (int)cam_popcount32(w);
-    s_bits_extracted += 32;
-    s_ones_count += ones;
-
-    s_run_ones += ones;
-    s_run_bits += 32;
-    if (s_run_bits >= MINIRUN_BITS) {
-        double z = (s_run_ones - MINIRUN_BITS / 2.0) / sqrt(MINIRUN_BITS * 0.25);
-        s_z_n++;
-        double delta = z - s_z_mean;
-        s_z_mean += delta / s_z_n;
-        s_z_m2 += delta * (z - s_z_mean);
-        /* Same z, second accumulator, window-scoped (D62). Once per mini-run,
-         * i.e. once per 100 words -- not in the per-word path. */
-        s_win_z_n++;
-        double wd = z - s_win_z_mean;
-        s_win_z_mean += wd / s_win_z_n;
-        s_win_z_m2   += wd * (z - s_win_z_mean);
-        s_run_ones = 0;
-        s_run_bits = 0;
+    // Locals are bounded: ones <= 64*32, run_bits < MINIRUN_BITS.
+    uint32_t ones = 0, ac1 = 0, ac2 = 0, ac3 = 0, ac4 = 0;
+    uint32_t run_ones = (uint32_t)s_run_ones, run_bits = (uint32_t)s_run_bits;
+    for (uint32_t i = 0; i < n; i++) {
+        uint32_t w = s_wb[i];
+        uint32_t o = cam_popcount32(w);
+        ones += o;
+        run_ones += o;
+        run_bits += 32;
+        if (run_bits >= MINIRUN_BITS) {
+            double z = (run_ones - MINIRUN_BITS / 2.0) / sqrt(MINIRUN_BITS * 0.25);
+            s_z_n++;
+            double delta = z - s_z_mean;
+            s_z_mean += delta / s_z_n;
+            s_z_m2 += delta * (z - s_z_mean);
+            /* Same z, second accumulator, window-scoped (D62). Once per mini-run,
+             * i.e. once per 100 words -- not in the per-word path. */
+            s_win_z_n++;
+            double wd = z - s_win_z_mean;
+            s_win_z_mean += wd / s_win_z_n;
+            s_win_z_m2   += wd * (z - s_win_z_mean);
+            run_ones = 0;
+            run_bits = 0;
+        }
+        // Bits are packed MSB-first, so a bit L positions later in the stream sits
+        // L positions lower in the word; (w << L) aligns it. Pairs spanning a word
+        // boundary are skipped -- that drops 4 of every 32 pairs but keeps the
+        // estimator unbiased and the hot loop cheap.
+        ac1 += cam_popcount32(w & (w << 1));
+        ac2 += cam_popcount32(w & (w << 2));
+        ac3 += cam_popcount32(w & (w << 3));
+        ac4 += cam_popcount32(w & (w << 4));
     }
-
-    // Bits are packed MSB-first, so a bit L positions later in the stream sits
-    // L positions lower in the word; (w << L) aligns it. Pairs spanning a word
-    // boundary are skipped -- that drops 4 of every 32 pairs but keeps the
-    // estimator unbiased and the hot loop cheap.
-    for (int L = 1; L <= 4; L++) {
-        s_autocorr_both1[L - 1] += (uint64_t)cam_popcount32(w & (w << L));
-        s_autocorr_pairs[L - 1] += (uint64_t)(32 - L);
-    }
+    s_bits_extracted += 32u * (uint64_t)n;
+    s_ones_count     += ones;
+    s_run_ones = run_ones;
+    s_run_bits = run_bits;
+    s_autocorr_both1[0] += ac1; s_autocorr_pairs[0] += 31u * (uint64_t)n;
+    s_autocorr_both1[1] += ac2; s_autocorr_pairs[1] += 30u * (uint64_t)n;
+    s_autocorr_both1[2] += ac3; s_autocorr_pairs[2] += 29u * (uint64_t)n;
+    s_autocorr_both1[3] += ac4; s_autocorr_pairs[3] += 28u * (uint64_t)n;
 }
 
 /* accumulate_pixel_level() is GONE. It walked the first frame of every pair
@@ -500,9 +535,12 @@ static cam_pack_t s_pack;
 static volatile int s_settle_pairs = 0;
 
 static void emit_word_cb(uint32_t w, uint32_t ro, void *ctx)
-{ (void)ctx; process_word(w, ro); }
-
-static void diff_and_extract_raw10(const uint8_t *a, const uint8_t *b, uint32_t n);
+{
+    (void)ctx;
+    s_wb[s_wb_n] = w;
+    s_wb_raw[s_wb_n] = (uint8_t)(ro > 255 ? 255 : ro);   /* cannot exceed 32 */
+    if (++s_wb_n == WORD_BATCH) process_words();
+}
 
 /* One frame pair. The extraction itself lives in extract.c as two
  * implementations the on-target self-test holds against each other; this picks
@@ -533,127 +571,21 @@ static void diff_and_extract(const uint8_t *a, const uint8_t *b, uint32_t n)
      * was an idle reading against a loaded one. What DOES move ms_extract is
      * which core this task runs on -- see ELOTTO_CAM_TASK_CORE in camera.h and
      * D61. Compare ms_extract only between nodes in the same LOAD state. */
+    /* An IMX219 frame is MIPI RAW10, 4 pixels in 5 bytes `[D89]`: the
+     * word-wise RAW10 path `[D93]`, held by /camtest against the D89 loop
+     * (cam_extract_raw10_ref), which is the definition of every IMX stream.
+     * mean_px is the high 8 bits, so it shares the OV5647's 0..255 scale. */
+    uint32_t npix;
     if (s_packed_raw10) {
-        diff_and_extract_raw10(a, b, n);
-        return;
+        cam_extract_raw10_fast(a, b, n, &s_pack, emit_word_cb, NULL,
+                               &zeros, &any, &psum, &s_raw);
+        npix = n / 5 * 4;
+    } else {
+        cam_extract_fast(a, b, n, &s_pack, emit_word_cb, NULL, &zeros, &any, &psum,
+                         &s_raw);
+        npix = n;
     }
-    cam_extract_fast(a, b, n, &s_pack, emit_word_cb, NULL, &zeros, &any, &psum,
-                     &s_raw);
-
-    s_zero_diffs += zeros;
-    s_diff_n += n;
-    s_pixel_sum += psum;
-    s_pixel_n   += n;
-
-    xSemaphoreTake(s_mutex, portMAX_DELAY);
-    s_stats.frame_pairs++;
-    if (!any) s_stats.stuck_frame_count++;
-    xSemaphoreGive(s_mutex);
-}
-
-/* MIPI RAW10 packed: 4 pixels in 5 bytes — bytes 0..3 are bits 9..2 of pixels
- * 0..3, byte 4 holds their bits 1..0 (pixel k at bits 2k+1..2k). LSB of each
- * 10-bit sample is the entropy bit (same identity LSB(b-a)==LSB(a)^LSB(b)), so
- * the four stream bits of a group are bits 0,2,4,6 of a[4]^b[4]. mean_px uses
- * the high 8 bits so the 0..255 scale matches the OV5647 RAW8 path.
- *
- * Word-wise like cam_extract_fast(), and for the same reason `[D89]`: the
- * first version updated s_raw's 64-bit counters in memory for EVERY pixel and
- * cost 420 ms per 1640x1232 pair (4,6 Mbit/s). Here the monitor lives in
- * locals, four bits move per group through a table, and s_raw is written back
- * once. Same stream, same order (pixel 0 first, MSB-first packing).
- * ⚠ The 4-bit steps assume bitacc_n and run_bits are multiples of 4 on entry.
- * They are on an IMX219 node (only this path runs, every reset zeroes both);
- * a misaligned entry is walked bit by bit until it is aligned. */
-static uint8_t s_raw10_nib[256];   /* a[4]^b[4] -> the 4 LSB-diff bits, pixel 0 in bit 3 */
-static bool    s_raw10_nib_ok;
-
-static void diff_and_extract_raw10(const uint8_t *a, const uint8_t *b, uint32_t n)
-{
-    if (!s_raw10_nib_ok) {
-        for (int x = 0; x < 256; x++)
-            s_raw10_nib[x] = (uint8_t)(((x & 0x01) << 3) | ((x & 0x04) >> 0) |
-                                       ((x & 0x10) >> 3) | ((x & 0x40) >> 6));
-        s_raw10_nib_ok = true;
-    }
-    uint32_t zeros = 0, orx = 0, psum = 0;
-    uint32_t acc  = s_pack.bitacc;
-    int      accn = s_pack.bitacc_n;
-
-    uint32_t r_word = 0, r_ones = 0;
-    uint32_t r_run_ones = s_raw.run_ones, r_run_bits = s_raw.run_bits, r_mr_n = 0;
-    uint64_t r_mr_sum = 0, r_mr_sumsq = 0;
-    const bool wr = s_raw.want_runs;
-    uint32_t r_trans = 0;
-    uint32_t r_prev  = wr ? s_raw.prev : 0u;
-    uint32_t r_tmask = (wr && s_raw.have_prev) ? 0xFu : 0x7u;
-
-    uint32_t groups = n / 5;
-    for (uint32_t g = 0; g < groups; g++) {
-        const uint8_t *pa = a + g * 5;
-        const uint8_t *pb = b + g * 5;
-        uint32_t x  = (uint32_t)(pa[4] ^ pb[4]);
-        uint32_t e0 = (uint32_t)(pa[0] ^ pb[0]), e1 = (uint32_t)(pa[1] ^ pb[1]);
-        uint32_t e2 = (uint32_t)(pa[2] ^ pb[2]), e3 = (uint32_t)(pa[3] ^ pb[3]);
-        orx  |= e0 | e1 | e2 | e3 | x;
-        zeros += (uint32_t)((e0 | (x & 0x03u)) == 0) + (uint32_t)((e1 | (x & 0x0Cu)) == 0)
-               + (uint32_t)((e2 | (x & 0x30u)) == 0) + (uint32_t)((e3 | (x & 0xC0u)) == 0);
-        psum += (uint32_t)pa[0] + pa[1] + pa[2] + pa[3];
-        uint32_t nib = s_raw10_nib[x];
-
-        if (((accn | (int)r_run_bits) & 3) == 0) {
-            uint32_t pop = cam_popcount32(nib);
-            r_word += pop; r_run_ones += pop; r_run_bits += 4;
-            if (r_run_bits >= CAM_RAW_MINIRUN_BITS) {
-                uint64_t o = r_run_ones;
-                r_mr_sum += o; r_mr_sumsq += o * o; r_mr_n++;
-                r_run_ones = 0; r_run_bits = 0;
-            }
-            if (wr) {
-                uint32_t prevs = (r_prev << 3) | (nib >> 1);
-                r_trans += cam_popcount32((nib ^ prevs) & r_tmask);
-                r_prev = nib & 1u; r_tmask = 0xFu;
-            }
-            acc = (acc << 4) | nib;
-            accn += 4;
-            if (accn == 32) {
-                emit_word_cb(acc, r_word, NULL);
-                r_ones += r_word; r_word = 0; acc = 0; accn = 0;
-            }
-        } else {
-            for (int k = 3; k >= 0; k--) {           /* misaligned entry: bit by bit */
-                uint32_t bit = (nib >> k) & 1u;
-                r_word += bit; r_run_ones += bit; r_run_bits++;
-                if (r_run_bits >= CAM_RAW_MINIRUN_BITS) {
-                    uint64_t o = r_run_ones;
-                    r_mr_sum += o; r_mr_sumsq += o * o; r_mr_n++;
-                    r_run_ones = 0; r_run_bits = 0;
-                }
-                if (wr) { r_trans += (r_tmask >> 3) & (bit ^ r_prev);
-                          r_prev = bit; r_tmask = 0xFu; }
-                acc = (acc << 1) | bit;
-                if (++accn == 32) {
-                    emit_word_cb(acc, r_word, NULL);
-                    r_ones += r_word; r_word = 0; acc = 0; accn = 0;
-                }
-            }
-        }
-    }
-    s_pack.bitacc = acc; s_pack.bitacc_n = accn;
-
-    uint32_t npix = groups * 4;
-    s_raw.ones     += r_ones + r_word;
-    s_raw.bits     += npix;
-    s_raw.run_ones  = r_run_ones;
-    s_raw.run_bits  = r_run_bits;
-    s_raw.mr_n     += r_mr_n;
-    s_raw.mr_sum   += r_mr_sum;
-    s_raw.mr_sumsq += r_mr_sumsq;
-    if (wr) {
-        s_raw.trans    += r_trans;
-        s_raw.prev      = r_prev;
-        s_raw.have_prev = (r_tmask == 0xFu);
-    }
+    process_words();        /* the pair's last partial batch; see WORD_BATCH */
 
     s_zero_diffs += zeros;
     s_diff_n += npix;
@@ -662,7 +594,7 @@ static void diff_and_extract_raw10(const uint8_t *a, const uint8_t *b, uint32_t 
 
     xSemaphoreTake(s_mutex, portMAX_DELAY);
     s_stats.frame_pairs++;
-    if (!orx) s_stats.stuck_frame_count++;
+    if (!any) s_stats.stuck_frame_count++;
     xSemaphoreGive(s_mutex);
 }
 
@@ -2310,7 +2242,7 @@ esp_err_t camera_selftest_handle(void *httpd_req, bool busy)
     double fps_raw = camera_fps_probe(60, 6000);
 
     cam_selftest_t t;
-    char buf[560];
+    char buf[900];
     /* THE LIVE FRAME SIZE, not a convenient one. See extract.h. */
     if (!cam_extract_selftest(&t, s_frame_size)) {
         httpd_resp_set_status(req, "500 Internal Server Error");
@@ -2333,7 +2265,14 @@ esp_err_t camera_selftest_handle(void *httpd_req, bool busy)
         "\"fps_raw\":%.2f,\"ms_pair_raw\":%.1f,"
         "\"popcount_ok\":%s,\"popcount_n\":%lu,\"popcount_bad\":\"%08lx\","
         "\"what\":%d,\"bad_at\":%lu,\"ref_w\":\"%08lx\",\"fast_w\":\"%08lx\","
-        "\"ref_z\":%lu,\"fast_z\":%lu}",
+        "\"ref_z\":%lu,\"fast_z\":%lu,"
+        /* The RAW10 pair `[D93]`, per BYTE. `equal` above stays the RAW8
+         * verdict; an IMX219 node runs these. */
+        "\"r10_equal\":%s,\"r10_cases\":%d,\"r10_failed_case\":%d,\"r10_what\":%d,"
+        "\"r10_bad_at\":%lu,\"r10_ref_w\":\"%08lx\",\"r10_fast_w\":\"%08lx\","
+        "\"ns10_ref\":%.3f,\"ns10_fast\":%.3f,\"ns10_stats\":%.3f,"
+        "\"ms_pair_r10_ref\":%.1f,\"ms_pair_r10_fast\":%.1f,\"ms_pair_r10_stats\":%.1f,"
+        "\"ms_pair_read\":%.1f}",
         t.equal ? "true" : "false", t.cases, t.failed_case, (unsigned long)t.words,
         t.ns_read, t.ns_ref, t.ns_fast, t.ns_stats, t.ns_raw,
         t.ns_read * mhz / 1000.0, t.ns_ref * mhz / 1000.0,
@@ -2352,7 +2291,16 @@ esp_err_t camera_selftest_handle(void *httpd_req, bool busy)
         (unsigned long)t.popcount_bad,
         t.what, (unsigned long)t.bad_at,
         (unsigned long)t.ref_w, (unsigned long)t.fast_w,
-        (unsigned long)t.ref_z, (unsigned long)t.fast_z);
+        (unsigned long)t.ref_z, (unsigned long)t.fast_z,
+        t.r10_equal ? "true" : "false", t.r10_cases, t.r10_failed_case, t.r10_what,
+        (unsigned long)t.r10_bad_at, (unsigned long)t.r10_ref_w,
+        (unsigned long)t.r10_fast_w,
+        t.ns10_ref, t.ns10_fast, t.ns10_stats,
+        t.ns10_ref   * (double)s_frame_size / 1e6,
+        t.ns10_fast  * (double)s_frame_size / 1e6,
+        t.ns10_stats * (double)s_frame_size / 1e6,
+        /* Both frames of one pair read and nothing else: the memory floor. */
+        t.ns_read * (double)s_frame_size / 1e6);
     httpd_resp_sendstr(req, buf);
     return ESP_OK;
 }

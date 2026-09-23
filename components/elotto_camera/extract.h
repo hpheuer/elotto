@@ -108,6 +108,30 @@ void cam_extract_fast(const uint8_t *a, const uint8_t *b, uint32_t n,
                       uint32_t *out_zeros, uint32_t *out_any, uint32_t *out_psum,
                       cam_raw_t *raw);
 
+/* ── RAW10 (IMX219): MIPI packed, 4 pixels in 5 bytes `[D89]` ──────────────
+ * Bytes 0..3 of a group are bits 9..2 of pixels 0..3, byte 4 holds their bits
+ * 1..0 (pixel k at bits 2k+1..2k). The stream bit of a pixel is the LSB of its
+ * 10-bit diff, i.e. bit 2k of a[4]^b[4] — the same identity as above. Same
+ * contract as the RAW8 pair, per PIXEL: n is bytes, n/5 groups are consumed
+ * (a remainder is ignored), `*out_zeros` counts pixels whose full 10-bit diff
+ * is 0, `*out_psum` sums the high 8 bits of frame `a` (bytes 0..3 of each
+ * group, the 0..255 scale of the RAW8 path), `raw->bits` grows by 4 per group.
+ * ⚠ Unlike the RAW8 pair the LSB monitor always runs: a NULL `raw` is
+ * replaced by a scratch one, so `raw_ones` handed to emit is always the real
+ * count. The live path always passes one.
+ *
+ * `cam_extract_raw10_ref()` is the D89 loop moved verbatim — the definition of
+ * every IMX219 stream recorded so far. `cam_extract_raw10_fast()` is the
+ * word-wise version `[D93]`; /camtest holds the two against each other. */
+void cam_extract_raw10_ref (const uint8_t *a, const uint8_t *b, uint32_t n,
+                            cam_pack_t *st, cam_emit_fn emit, void *ctx,
+                            uint32_t *out_zeros, uint32_t *out_any, uint32_t *out_psum,
+                            cam_raw_t *raw);
+void cam_extract_raw10_fast(const uint8_t *a, const uint8_t *b, uint32_t n,
+                            cam_pack_t *st, cam_emit_fn emit, void *ctx,
+                            uint32_t *out_zeros, uint32_t *out_any, uint32_t *out_psum,
+                            cam_raw_t *raw);
+
 /* Result of the on-target self-test + micro-benchmark. Times are nanoseconds
  * PER PIXEL, which is the unit that compares against the 2,78 ns budget one
  * cycle costs at 360 MHz. */
@@ -139,6 +163,18 @@ typedef struct {
     bool     popcount_ok;
     uint32_t popcount_n;     // values checked
     uint32_t popcount_bad;   // first value that disagreed, if any
+    /* RAW10 pair `[D93]`, same cases and the same `what` codes as above (10 =
+     * the per-word raw-ones count handed to emit). Kept apart from `equal`, which
+     * stays the RAW8 verdict it always was. Times are per BYTE of a frame, the
+     * unit of ns_read, so ns10_* × frame bytes is the cost of one pair. */
+    bool     r10_equal;
+    int      r10_cases;
+    int      r10_failed_case;
+    int      r10_what;
+    uint32_t r10_bad_at, r10_ref_w, r10_fast_w;
+    float    ns10_ref;       // D89 loop, monitor on (as live)
+    float    ns10_fast;      // word-wise, monitor on (as live)
+    float    ns10_stats;     // word-wise + the process_word stand-in
 } cam_selftest_t;
 
 /* `bytes` is the FRAME SIZE to benchmark, and the caller passes the live one.
@@ -153,7 +189,8 @@ typedef struct {
  * Buffers are 64-byte aligned, like the DMA capture buffers, so alignment is
  * not a difference between the two either.
  *
- * Allocates 2*bytes + 2*(bytes/8) of PSRAM for the duration (~1,4 MB at the
- * real frame size). Safe to call while idle only: it is pure computation on its
- * own buffers and touches no camera state. */
+ * Allocates 3*bytes + 2*(bytes/8) of PSRAM for the duration (~6,8 MB at the
+ * 2 MB cap an IMX219 frame hits); the third buffer saves `b` across the RAW10
+ * cases. Safe to call while idle only: it is pure computation on its own
+ * buffers and touches no camera state. */
 bool cam_extract_selftest(cam_selftest_t *out, uint32_t bytes);
