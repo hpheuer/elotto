@@ -84,7 +84,9 @@ bool node_take_z(int k, double *out_z,
 // each node's chosen setting. Nodes land on different exposures on purpose.
 // Returns true if a sweep actually ran, false if it was skipped (budget 0, no
 // nodes, or the round was shorter than twice the sweep budget).
-bool calibrate_all(void);
+// If any node's exposure changed, blocks CAL_SETTLE_AFTER_MS more before
+// returning — the settle pause `[D87]`. `why` names the trigger in the event log.
+bool calibrate_all(const char *why);
 
 // Forget when the last sweep happened, so the next calibrate_all() sweeps
 // unconditionally. Called at session start: a new session must never inherit

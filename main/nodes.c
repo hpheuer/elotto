@@ -25,6 +25,7 @@
 
 #include "sensor.h"
 #include "nodes.h"
+#include "focus.h"
 #include "camera.h"
 #include "gcp.h"
 #include "elotto_link.h"
@@ -420,28 +421,38 @@ static void slave_calibrate_start(int budget_ms, int segments)
     nodes_send(cmd);
 }
 
-/* Record what one node reported: "OK:<exp>,<gain>,<bias>,<mbit_s>,<G|U>".
- * The tag is appended AFTER the numbers so it cannot disturb a field-order
- * parse. It says whether the node actually adopted a GATED setting or fell
- * back to its previous one. */
+/* Exposure each node was running on when the sweep STARTED, 0 = unknown (no
+ * reply, or a slave image older than the `,e0=` field). Compared against the
+ * chosen exposure to decide whether the settle pause is owed `[D87]`. Taken
+ * from the node itself rather than from the previous sweep's cam_exp, because
+ * discovery zeroes nodes[] at every session start. */
+static uint32_t s_cal_e0[MAX_NODES];
+
+/* Record what one node reported: "OK:<exp>,<gain>,<bias>,<mbit_s>,<G|U>[,e0=<exp>]".
+ * The tag is the fifth field. It says whether the node actually adopted a
+ * GATED setting or fell back to its previous one. `,e0=` is the exposure in
+ * force when the sweep began, tagged so an older master ignores it. */
 static void node_take_cal(int k)
 {
     NodeStatus *N = &g_status.nodes[k + 1];
     N->cam_exp = 0;
     N->cam_cal_ok = 0;
+    s_cal_e0[k + 1] = 0;
     if (!s_link[k].replied) return;
     const char *resp = s_link[k].reply;
     if (resp[0] != 'O' || resp[1] != 'K' || resp[2] != ':') return;
 
     unsigned long e = 0, g = 0;
     float bias = 0.0f, mb = 0.0f;
-    if (sscanf(resp + 3, "%lu,%lu,%f,%f", &e, &g, &bias, &mb) < 4) return;
-    const char *tag = strrchr(resp, ',');
+    char tag = 0;
+    if (sscanf(resp + 3, "%lu,%lu,%f,%f,%c", &e, &g, &bias, &mb, &tag) < 4) return;
+    const char *e0s = strstr(resp, ",e0=");
+    if (e0s) s_cal_e0[k + 1] = (uint32_t)strtoul(e0s + 4, NULL, 10);
     N->cam_exp      = (uint32_t)e;
     N->cam_gain     = (uint16_t)g;
     N->cam_bias     = bias;
     N->cam_cal_mbit = mb;
-    N->cam_cal_ok   = (tag && tag[1] == 'G') ? 1 : 0;
+    N->cam_cal_ok   = (tag == 'G') ? 1 : 0;
     printf("node %d (%s): cal exposure=%lu gain=%lu bias=%.6f %.2f Mbit/s %s\n",
            k + 1, N->ip, e, g, bias, mb,
            N->cam_cal_ok ? "" : "(no gated setting -- kept previous)");
@@ -483,6 +494,8 @@ static void calibrate_master(int budget_ms)
 
     camera_cal_set_z_scale(gcp_z_per_bias(g_status.run_segments));
     bool ok = camera_calibrate(budget_ms, cal_abort_cb, s_cal);
+    /* Step 0 re-measures the setting in force at entry without changing it. */
+    s_cal_e0[0]     = s_cal->nsteps > 0 ? s_cal->step[0].exposure : 0;
     N->cam_exp      = s_cal->exposure;
     N->cam_gain     = (uint16_t)s_cal->gain;
     N->cam_bias     = (float)s_cal->bias;
@@ -516,7 +529,22 @@ void calibrate_forget(void) { s_cal_last_us = 0; }
  * ⚠ camera_calibrate() resets the camera statistics, so `mbit_s`/`bias` in
  * /status and /loops are "since the last sweep" — on a skipped loop they now
  * span several loops rather than one. */
-bool calibrate_all(void)
+/* The settle pause after a sweep that moved any node's exposure `[D87]`. After a
+ * rung change this rig's cameras keep drifting for about a minute (px still
+ * climbing, bit bias moving by ~0,002) while the dispersion stays normal — so
+ * the sweep's choice is sound, but the items measured in that minute sit off
+ * the block mean and can trip soft-down on their own `[D86]`. The whole array
+ * waits, because every window is measured by all nodes together. Nothing is
+ * measured and nothing is discarded; the time is session wall time like the
+ * sweep itself, not a pause (elapsed_ms keeps running). CAL_SETTLE_AFTER_MS
+ * lives in sensor.h. */
+
+static const char *node_label(int i)
+{
+    return i == 0 ? "master" : g_status.nodes[i].ip;
+}
+
+bool calibrate_all(const char *why)
 {
     if (g_status.cal_budget_ms <= 0) return false;
     if (g_status.node_ok == 0) return false;
@@ -528,11 +556,14 @@ bool calibrate_all(void)
             printf("calibration: skipped, last sweep %d s ago (floor %d s -- "
                    "round shorter than twice the sweep budget)\n",
                    (int)(age_ms / 1000), (int)(floor_ms / 1000));
+            evlog("Sweep skipped (%s) - last one %d s ago", why, (int)(age_ms / 1000));
             return false;
         }
     }
 
     g_status.phase = PHASE_CALIBRATE;
+    evlog("Sweep started (%s), budget %d s", why, g_status.cal_budget_ms / 1000);
+    memset(s_cal_e0, 0, sizeof(s_cal_e0));
     int64_t t0 = esp_timer_get_time();
     g_status.cal_start_us = t0;          // publishes the live bar; cleared below
     slave_calibrate_start(g_status.cal_budget_ms, g_status.run_segments);  // trigger first, then measure
@@ -545,6 +576,41 @@ bool calibrate_all(void)
     // the gap to the next one.
     s_cal_last_us = esp_timer_get_time();
     printf("calibration: %d ms for %d node(s)\n", g_status.cal_ms, g_status.node_ok);
+    if (g_status.abort_requested) { evlog("Sweep aborted"); return true; }
+
+    /* Which nodes moved. A node that did not answer (cam_exp 0) is not a
+     * change — it has no new rung to settle on. An unknown entry exposure
+     * (e0 0: a slave image without `,e0=`) counts as a change: waiting a
+     * minute too often is cheap, measuring on a drifting sensor is not. */
+    char moved[EVLOG_TXT] = "";
+    int  mpos = 0, n_moved = 0;
+    for (int i = 0; i < g_status.node_count && i < MAX_NODES; i++) {
+        uint32_t now_e = g_status.nodes[i].cam_exp;
+        if (!g_status.nodes[i].ok || now_e == 0) continue;
+        if (s_cal_e0[i] == now_e) continue;
+        n_moved++;
+        int w = (s_cal_e0[i] == 0)
+            ? snprintf(moved + mpos, sizeof(moved) - mpos, "%s%s ?->%lu",
+                       mpos ? ", " : "", node_label(i), (unsigned long)now_e)
+            : snprintf(moved + mpos, sizeof(moved) - mpos, "%s%s %lu->%lu",
+                       mpos ? ", " : "", node_label(i),
+                       (unsigned long)s_cal_e0[i], (unsigned long)now_e);
+        if (w > 0 && mpos + w < (int)sizeof(moved)) mpos += w;
+    }
+    if (n_moved == 0) {
+        evlog("Sweep done in %.1f s - every node kept its exposure, no settle",
+              g_status.cal_ms / 1000.0);
+        return true;
+    }
+    evlog("Sweep done in %.1f s - exposure changed: %s", g_status.cal_ms / 1000.0, moved);
+
+    evlog("Settling %d s - whole array waits, nothing measured", CAL_SETTLE_AFTER_MS / 1000);
+    int64_t end = esp_timer_get_time() + (int64_t)CAL_SETTLE_AFTER_MS * 1000;
+    g_status.settle_end_us = end;
+    while (esp_timer_get_time() < end && !g_status.abort_requested)
+        vTaskDelay(pdMS_TO_TICKS(100));
+    g_status.settle_end_us = 0;
+    evlog(g_status.abort_requested ? "Settle aborted" : "Settle done - measuring resumes");
     return true;
 }
 

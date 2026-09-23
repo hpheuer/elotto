@@ -70,6 +70,10 @@
  * which names `?run=`, the parameter that actually sets the length. */
 #define CAL_BUDGET_DEFAULT_MS 10000      // exposure-sweep CAP, split over 9 rungs
 #define CAL_BUDGET_MAX_MS   120000
+/* The settle pause after a sweep that moved any node's exposure `[D87]`: the
+ * whole array waits this long before the next window. calibrate_all() owns it;
+ * here so the page's countdown bar reads the same number. */
+#define CAL_SETTLE_AFTER_MS  60000
 /* ⛔ ONE BLOCK IS ONE ROUND, and there is no time trigger `[D76]`. The round
  * boundary parks the pass, closes the block and runs the camera sweep; the block
  * is the unit that carries the drift point, the pairwise close and the /loops
@@ -954,7 +958,10 @@ typedef struct {
                                           // reads as a crash otherwise. cal_ms is
                                           // only written when the sweep ENDS, so it
                                           // cannot drive progress while one runs
-    volatile bool    noise_stalled;       // the array lost too many cameras to carry
+    volatile int64_t settle_end_us;       // the post-sweep settle pause ends here,
+                                          // 0 when none is running `[D87]`.
+                                          // Published as settle_left_ms
+    volatile bool    noise_stalled;      // the array lost too many cameras to carry
                                           // on. There is no substitute source to fall
                                           // back to by design, so at n >= 3 a failed
                                           // node is dropped and rebooted and the rest

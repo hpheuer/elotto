@@ -35,7 +35,11 @@ at the boundary, halfway through each scoring run `[D86]`, and between the scori
 clean blocks. ⚠ `?cal=0` turns every sweep off; a trip then waits until the next session.
 ⚠ **A rung change is not free**: after one, this rig's cameras need ~1 min to settle (px still
 climbing, bit bias moving by ~0,002), and the items measured in that minute sit far enough from the
-block mean to trip soft-down on their own `[D86]`. Nothing discards them yet.
+block mean to trip soft-down on their own `[D86]`. So **any sweep that moves any node's exposure is
+followed by a 60 s settle pause of the whole array** (`CAL_SETTLE_AFTER_MS`), nothing measured; a
+sweep where every node kept its rung pauses nothing `[D87]`. It fixes only the trips that follow a
+change — half of them on the 2026-09-22 session. The page's **Log** card shows every sweep, change,
+pause and soft-down with wall time (`GET /loops?ev=1`).
 
 ## Concept
 Four-node ESP32-P4 array. The master scores lottery numbers via GCP methodology; up to three slaves
@@ -328,6 +332,7 @@ separate arm `[D1]`.
 | camera chip `[D80]` | one of OV5647, IMX219 — `sensor=` in the CSV |
 | scoring 10-pass sum `[D81]` | D81..D86 only — the pool was chosen on the sum of 10 keys |
 | scoring 20-pass sum `[D86]` | post-D86 only — 20 keys, and a sweep inside the scoring run |
+| settle pause after a rung change `[D87]` | one side for block σ / soft-down counts — the settling items are gone. `z_raw`/`z_ctr` still pool |
 
 Unlimited-mode data carries two more: split on `round` before pooling with a single-pass session,
 and decide what to do about combinations that recur across rounds before pooling rounds together.
@@ -415,7 +420,11 @@ ladder `[D46]``[D65]`), no stuck frames, `mean_px` ≥ 5,0 `[D18]`,
   its own sweep, never reached at a sane `?run=`.
   ⚠ A round costs `3 × ?cal=` in wall time, `4 ×` in Eurojackpot (the euro-number run sweeps too) —
   at the 10 s default 30–40 s against hours, at `?cal=40000` two to three minutes.
+  Plus 60 s settle for each of those sweeps that moved an exposure `[D87]`.
 - **Nodes land on different exposures on purpose**; what they must share is the segment count.
+- Between rungs the sweep discards `CAL_STEP_SETTLE_PAIRS` 8 frame pairs (~0,44 s) before scoring
+  the rung — driver queue plus margin `[D87]`. The ~1 min drift is not waited out per rung: it moves
+  the bias, which selects nothing, and 9 × 60 s would cost a third of a round.
 - `GET /calibrate` serves the whole last sweep per rung with the gate each failed plus the raw
   stats, **on every node** — a per-node optical fault is diagnosable. The chosen setting is
   recorded per block in `/loops`.
@@ -472,7 +481,8 @@ place a disturbance can still be located in time.
 ## ⚠ A session LOCKS every node's sensor `[D64]`
 `/expose`, `/linearity` and `/camtest` answer **409 for the whole session**, on slaves as well as
 the master. The slave has no session state of its own and derives one from the master's traffic:
-`M`/`K` latch it, `A` releases it, 60 s of silence releases it.
+`M`/`K` latch it (and the end of a sweep re-stamps it), `A` releases it, 120 s of silence
+releases it — ⚠ `SESSION_IDLE_MS` must stay above the 60 s settle pause, which sends nothing `[D87]`.
 - ⚠ **OTA keeps the NARROW predicate** (`g_measuring`, the ~2 s window) — "abort, then flash" is
   unchanged and `/update` is not blocked for a whole session.
 - ⚠ **The idle release is a deliberate hole**: a long parked phase leaves the latch to expire
@@ -524,6 +534,7 @@ The enclosure is **LIT, not dark** `[D28]`.
 - **main/nodes.c/h** – the array: UDP link, discovery, calibration handshake, per-node health,
   drop/reboot policy. sensor.c reaches other boards only through `nodes.h`.
 - **main/focus.c** – current-item card, pause, run gap, session clock — one file because they share state.
+  Also the event log ring (`evlog()`, 48 entries, PSRAM) behind the Log card `[D87]`.
 - **tools/tune.html** – live per-node exposure/health board (`/linearity` + last sweep). Open in a
   browser on the operator PC; 409 while a session runs. Not served by the master.
 - **ota_firmware/** – the network updater, its own IDF project. Ethernet + HTTP + esp_ota only.

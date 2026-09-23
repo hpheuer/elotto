@@ -336,6 +336,14 @@ static const char HTML[] =
 "<div id='focusBox'></div>"
 "<div id='focusInfo' style='color:#a0c0a0;font-size:.78em;margin-top:10px'></div>"
 "</div>"
+/* The event log [D87]: what the array is doing and when -- sweeps, exposure
+   changes, the settle pause after them, soft-down. Newest on top. Kept across
+   sessions on the master (ring of 48), so a reload still shows the history. */
+"<div class='card' id='evCard' style='display:none'>"
+"<div style='color:#f0c040;font-size:.88em;margin-bottom:6px'>&#128220; Log</div>"
+"<div id='evBody' style='font-size:.8em;line-height:1.55;max-height:260px;"
+"overflow-y:auto;font-family:monospace'></div>"
+"</div>"
 "<div class='card' id='resCard' style='display:none'>"
 "<h3 id='resTitle' style='color:#6ab0e8;margin-bottom:4px'></h3>"
 "<div id='sigLine' style='color:#a0c0a0;font-size:.82em;margin-bottom:4px'></div>"
@@ -374,7 +382,31 @@ NODE_NAMES_JS
 "var timer=null,curMode=0,calShown=false,nodeHealthAt=0,nodeHealth={};"
 "var ftimer=null,lastSeq=-1,winSeen=0,winMissed=0,paused=false,pausePendUntil=0;"
 // Set by the /status poll; read by pollFocus at 10 Hz. True while calibrating.
-"var preparing=false;"
+"var preparing=false,settleLeft=0,evSeen=-1;"
+/* Event log: fetched only when /status ev_seq moved, so the 1 Hz poll costs
+   nothing extra on the master's HTTP task [D82]. */
+"function evPoll(d){"
+"if(d.ev_seq===undefined||d.ev_seq===evSeen)return;"
+"evSeen=d.ev_seq;var up=d.uptime_ms;"
+"fetch('/loops?ev=1').then(function(r){return r.json();})"
+".then(function(j){showEv(j,up);}).catch(function(){evSeen=-1;});}"
+"function showEv(j,up){"
+"var c=document.getElementById('evCard');"
+"if(!j.ev||!j.ev.length){c.style.display='none';return;}"
+"c.style.display='block';"
+"function z(n){return (n<10?'0':'')+n;}"
+"var h='';"
+"for(var i=j.ev.length-1;i>=0;i--){"
+"var e=j.ev[i],t=e.txt;"
+"for(var ip in NODE_NAMES)t=t.split(ip).join(NODE_NAMES[ip]);"
+"t=t.replace(/&/g,'&amp;').replace(/</g,'&lt;');"
+"var dt=new Date(Date.now()-(up-e.t_ms));"
+"var col=/SOFT-DOWN|aborted/.test(t)?'#e8a0a0':/Settl/.test(t)?'#f0c040'"
+":/Session/.test(t)?'#6ab0e8':/back in/.test(t)?'#90ee90':'#cfe8cf';"
+"h+='<div title=\"'+dt.toLocaleString()+'\"><span style=\"color:#7a9a7a\">'"
+"+z(dt.getHours())+':'+z(dt.getMinutes())+':'+z(dt.getSeconds())"
+"+'</span> <span style=\"color:'+col+'\">'+t+'</span></div>';}"
+"document.getElementById('evBody').innerHTML=h;}"
 /* Slowest node rate seen in a /status poll, for the round estimate. 0 until
    the first poll carries one, which is what the cold-start constant is for. */
 "var lastSlowMbit=0;"
@@ -473,6 +505,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "mode===0?'Eurojackpot • 5 of 50 + 2 bonus numbers':'6 of 49 Lotto';}"
 "window.onload=function(){"
 "fetch('/status').then(function(r){return r.json();}).then(function(d){"
+"evPoll(d);"
 "if(d.state==='running'){"
 "curMode=d.mode==='euro'?0:1;setMode(curMode);"
 "document.getElementById('runsRow').style.display='none';"
@@ -708,7 +741,11 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "applyPaused(false);"
 /* Empty panel during a sweep reads as a crash. Say what is happening.
    `preparing` is set by the 1 Hz /status poll — /focus does not know the phase. */
-"if(!f.on){box.innerHTML=preparing"
+"if(!f.on){box.innerHTML=(preparing&&settleLeft>0)"
+"?\"<span style='color:#f0c040;font-size:1.15em'>Cameras settling after exposure change"
+"<br><span style='color:#8fae8f;font-size:.85em'>\"+Math.ceil(settleLeft/1000)"
+"+\" s \\u2014 nothing is measured</span></span>\""
+":preparing"
 "?\"<span style='color:#90ee90;font-size:1.15em'>Preparing the system"
 "<br><span style='color:#8fae8f;font-size:.85em'>please wait\\u2026</span></span>\""
 ":'';return;}"
@@ -726,13 +763,18 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "lastSlowMbit=slowMbit(d)||lastSlowMbit;"
 "updatePoolBadge(d);updateParamBadge(d);"
 "updateFocusInfo(d);"
+"evPoll(d);"
 "preparing=(d.state==='running'&&d.phase==='calibrating');"
+"settleLeft=d.settle_left_ms||0;"
 // Calibration is the first thing a loop does and nothing is on screen for it.
 // Say so, or a 30 s pause at the top of every loop looks like a stall.
 // Only on the transition, so it cannot wipe 'Aborting...'.
-"var calNow=(d.phase==='calibrating');"
+"var calNow=(d.phase==='calibrating')?(settleLeft>0?'s':'c'):'';"
 "if(calNow!==calShown){calShown=calNow;"
-"document.getElementById('msg').textContent=calNow"
+"document.getElementById('msg').textContent=calNow==='s'"
+"?'\\u23f3 Cameras settling after an exposure change \\u2014 '"
+"+Math.round(" EL_STR(CAL_SETTLE_AFTER_MS) "/1000)+' s, nothing is measured'"
+":calNow==='c'"
 "?'\\uD83D\\uDD27 Calibrating cameras \\u2014 exposure sweep, '"
 "+Math.round((d.cal_budget_ms||0)/1000)+' s':'';}"
 "var stDone=d.state==='done'||d.state==='aborted';"
@@ -747,7 +789,14 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
    not the budget: the budget is a cap while a sweep actually finishes sooner,
    so a budget-based bar would visibly stall. Falls back to the budget on the
    first loop. Idle between sweeps: bar at 100% once a sweep has completed. */
-"if(d.phase==='calibrating'){"
+"if(d.phase==='calibrating'&&settleLeft>0){"
+"var tot=" EL_STR(CAL_SETTLE_AFTER_MS) ";"
+"document.getElementById('calTitle').innerHTML='\\u23f3 Settling after exposure change \\u2014 whole array waits';"
+"document.getElementById('pfCal').style.width="
+"Math.max(0,Math.min(100,Math.round((tot-settleLeft)*100/tot)))+'%';"
+"document.getElementById('calCount').textContent=Math.ceil(settleLeft/1000)+' s left';"
+"document.getElementById('calCheck').innerHTML='';"
+"}else if(d.phase==='calibrating'){"
 "var est=(d.cal_ms>0?d.cal_ms:(d.cal_budget_ms||" EL_STR(CAL_BUDGET_DEFAULT_MS) "));"
 "var el=d.cal_elapsed_ms||0;"
 "var left=Math.max(0,Math.round((est-el)/1000));"
@@ -1409,7 +1458,7 @@ static esp_err_t status_handler(httpd_req_t *req)
         "\"focus_win_ms\":%.1f,\"focus_gap_ms\":%.1f,"
         "\"run_s\":%.2f,\"gap_s\":%.2f,\"run_segs\":%d,"
         "\"cal_budget_ms\":%d,\"cal_ms\":%d,\"cal_elapsed_ms\":%d,"
-        "\"cal_did_sweep\":%d,"
+        "\"cal_did_sweep\":%d,\"settle_left_ms\":%d,\"ev_seq\":%lu,"
         "\"loops_done\":%d,\"drift_slope\":%.5f,\"drift_t\":%.2f,"
         "\"off_first\":%.4f,\"off_last\":%.4f,"
         "\"sigma_lo\":%.4f,\"sigma_hi\":%.4f,"
@@ -1463,6 +1512,11 @@ static esp_err_t status_handler(httpd_req_t *req)
         g_status.cal_start_us
             ? (int)((esp_timer_get_time() - g_status.cal_start_us) / 1000) : 0,
         g_status.cal_did_sweep ? 1 : 0,
+        /* The post-sweep settle pause [D87], counting down; 0 when none runs. */
+        g_status.settle_end_us > esp_timer_get_time()
+            ? (int)((g_status.settle_end_us - esp_timer_get_time()) / 1000) : 0,
+        /* Moves when an event is logged; the page then fetches /loops?ev=1. */
+        (unsigned long)evlog_seq(),
         g_status.loops_done, g_status.drift_slope, g_status.drift_t,
         g_status.off_first, g_status.off_last,
         g_status.sigma_lo, g_status.sigma_hi,
@@ -1683,11 +1737,43 @@ static void send_chunk(httpd_req_t *req, const char *buf, int len, size_t cap)
  * health at that moment. Chunked — the table outgrows any sane single buffer.
  * `raw_m` is the master's own per-run mean of the block — v3 subtracts
  * nothing, so that IS the raw offset the drift regression runs on. */
+/* GET /loops?ev=1 — the event log instead of the blocks `[D87]`. On an existing
+ * handler because the URI-handler cap fails silently. Streamed, oldest first;
+ * the page asks only when /status `ev_seq` moved, so it costs nothing at 1 Hz. */
+static esp_err_t evlog_send(httpd_req_t *req)
+{
+    /* PSRAM, not .bss: 6 KB of internal RAM would fail the link. httpd
+     * serialises handlers, so one shared buffer. */
+    static EvEntry *ev;
+    if (!ev) ev = heap_caps_malloc(EVLOG_N * sizeof(EvEntry), MALLOC_CAP_SPIRAM);
+    int n = ev ? evlog_copy(ev, EVLOG_N) : 0;
+    char buf[EVLOG_TXT + 64];
+    int len = snprintf(buf, sizeof(buf), "{\"ev_seq\":%lu,\"ev\":[",
+                       (unsigned long)evlog_seq());
+    send_chunk(req, buf, len, sizeof(buf));
+    for (int i = 0; i < n; i++) {
+        for (char *c = ev[i].txt; *c; c++)          /* JSON-safe: no escapes needed */
+            if (*c == '"' || *c == '\\' || (unsigned char)*c < 0x20) *c = '\'';
+        len = snprintf(buf, sizeof(buf), "%s{\"seq\":%lu,\"t_ms\":%lu,\"txt\":\"%s\"}",
+                       i ? "," : "", (unsigned long)ev[i].seq,
+                       (unsigned long)ev[i].t_ms, ev[i].txt);
+        send_chunk(req, buf, len, sizeof(buf));
+    }
+    httpd_resp_send_chunk(req, "]}", 2);
+    httpd_resp_send_chunk(req, NULL, 0);
+    return ESP_OK;
+}
+
 static esp_err_t loops_handler(httpd_req_t *req)
 {
     char buf[384];
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+
+    char qry[32], val[8];
+    if (httpd_req_get_url_query_str(req, qry, sizeof(qry)) == ESP_OK &&
+        httpd_query_key_value(qry, "ev", val, sizeof(val)) == ESP_OK && val[0] == '1')
+        return evlog_send(req);
 
     int n = g_status.loop_hist ? g_status.loop_hist_n : 0;
     if (n > LOOP_HIST) n = LOOP_HIST;

@@ -1511,6 +1511,13 @@ static const uint32_t s_cal_ladder[] = { 4, 8, 16, 32, 64, 128, 256, 512 };
  * than written out, because raising one and forgetting the other would let a
  * candidate be scored on its predecessor's frames. */
 #define CAL_SETTLE_PAIRS    (CAM_BUF_COUNT / 2 + 2)
+/* Between two rungs of the sweep: 4 more pairs on top (~0,22 s at 36 fps),
+ * as margin for the sensor to apply the new exposure before the rung is scored
+ * `[D87]`. Costs rung measuring time — the step deadline is fixed — so at the
+ * 10 s default each rung scores ~0,7 s instead of ~0,9 s. Not the ~1 min drift
+ * after a rung change: that moves the bias, not the dispersion the sweep
+ * selects on, and is handled by the settle pause after the sweep. */
+#define CAL_STEP_SETTLE_PAIRS (CAL_SETTLE_PAIRS + 4)
 #define CAL_SETTLE_TIMEOUT_MS 4000
 
 /* z per unit of bias for the session's run length; 0 = legacy fixed bar. */
@@ -1610,7 +1617,7 @@ static bool cal_step(camera_cal_step_t *st, uint32_t exposure, uint32_t gain,
     // Settle and flush BEFORE the window opens, or the score is a blend of two
     // settings: the driver still holds frames captured under the previous one
     // and the ring still holds words extracted from them.
-    camera_stats_reset(CAL_SETTLE_PAIRS);
+    camera_stats_reset(CAL_STEP_SETTLE_PAIRS);
     int64_t settle_limit = esp_timer_get_time() + CAL_SETTLE_TIMEOUT_MS * 1000LL;
     while (!camera_stats_settled()) {
         if (abort_cb && abort_cb()) return false;

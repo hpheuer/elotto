@@ -4,11 +4,13 @@
  * Moved out of sensor.c on 2026-07-27 with no functional change: the block had
  * zero function calls into the GCP statistics around it, and every static it
  * owns is used only by the functions here. */
+#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "esp_heap_caps.h"
 #include "esp_timer.h"
 
 #include "sensor.h"
@@ -218,4 +220,50 @@ void pause_gate(void)
     // The gap timer would otherwise charge the whole break to the inter-run gap
     // and make focus_gap_ms meaningless.
     s_focus_off_us = esp_timer_get_time();
+}
+
+/* ── Event log ───────────────────────────────────────────────────────────
+ * PSRAM, because internal RAM is full with results[] and 48 × 128 B of .bss
+ * would fail the link. Written by the session task, read by the HTTP task:
+ * the line is formatted OUTSIDE the lock and only the copy is guarded. */
+static EvEntry     *s_ev;
+static uint32_t     s_ev_seq;          // entries ever written; slot = seq % N
+static portMUX_TYPE s_ev_mux = portMUX_INITIALIZER_UNLOCKED;
+
+void evlog(const char *fmt, ...)
+{
+    if (!s_ev) {
+        s_ev = heap_caps_calloc(EVLOG_N, sizeof(EvEntry), MALLOC_CAP_SPIRAM);
+        if (!s_ev) return;
+    }
+    char txt[EVLOG_TXT];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(txt, sizeof(txt), fmt, ap);
+    va_end(ap);
+    uint32_t t_ms = (uint32_t)(esp_timer_get_time() / 1000);
+    printf("event: %s\n", txt);
+
+    taskENTER_CRITICAL(&s_ev_mux);
+    EvEntry *e = &s_ev[s_ev_seq % EVLOG_N];
+    e->seq  = s_ev_seq + 1;
+    e->t_ms = t_ms;
+    memcpy(e->txt, txt, sizeof(txt));
+    s_ev_seq++;
+    taskEXIT_CRITICAL(&s_ev_mux);
+}
+
+uint32_t evlog_seq(void) { return s_ev_seq; }
+
+int evlog_copy(EvEntry *dst, int max)
+{
+    if (!s_ev || max <= 0) return 0;
+    taskENTER_CRITICAL(&s_ev_mux);
+    uint32_t end   = s_ev_seq;
+    uint32_t have  = end < EVLOG_N ? end : EVLOG_N;
+    if (have > (uint32_t)max) have = (uint32_t)max;
+    for (uint32_t i = 0; i < have; i++)
+        dst[i] = s_ev[(end - have + i) % EVLOG_N];
+    taskEXIT_CRITICAL(&s_ev_mux);
+    return (int)have;
 }

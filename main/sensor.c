@@ -676,7 +676,8 @@ static void score_and_build_pool(int max_val, int pool_size, uint8_t *pool,
          * ⚠ calibrate_all() leaves g_status.phase at PHASE_CALIBRATE — it is the
          * caller's job to restore it, and here the scoring is not over. */
         if (pass + 1 == SCORE_PASSES / 2 && pass + 1 < SCORE_PASSES) {
-            g_status.cal_did_sweep = calibrate_all();
+            g_status.cal_did_sweep = calibrate_all(euro_pool
+                ? "mid-scoring, euro numbers" : "mid-scoring");
             if (g_status.abort_requested) return;
             g_status.phase = PHASE_SCORING;
         }
@@ -2123,6 +2124,11 @@ static void record_loop(double loop_mean, int loop_idx)
              * the block's own rows still exist (D63). */
             trip_record(loop_idx, i, mean_i[i], sig_i[i]);
             trip_mask |= (uint8_t)(1u << i);
+            evlog("Block %d: %s %s (sigma %.2f, bar %.2f)%s", loop_idx + 1,
+                  i == 0 ? "master" : g_status.nodes[i].ip,
+                  g_status.nodes[i].soft_down ? "still soft-down" : "SOFT-DOWN",
+                  sig_i[i], trip_bar,
+                  contaminated ? ", block quarantined" : "");
             g_status.nodes[i].soft_down = 1;
             s_soft_clean[i] = 0;
         } else if (g_status.nodes[i].soft_down && have_stats[i]) {
@@ -2137,6 +2143,9 @@ static void record_loop(double loop_mean, int loop_idx)
                            i, (int)s_soft_clean[i], mean_i[i], sig_i[i]);
                     g_status.nodes[i].soft_down = 0;
                     s_soft_clean[i] = 0;
+                    evlog("Block %d: %s back in the combine after %d clean blocks",
+                          loop_idx + 1, i == 0 ? "master" : g_status.nodes[i].ip,
+                          NODE_SOFT_CLEAR_BLOCKS);
                 } else {
                     printf("node %d: soft-down clean %d/%d (mean=%.3f σ=%.3f)\n",
                            i, (int)s_soft_clean[i], NODE_SOFT_CLEAR_BLOCKS,
@@ -2537,6 +2546,10 @@ void elotto_task(void *pvParam)
     // Pairwise independence check across all nodes (per-block centered)
     pairs_reset();
     session_clock_start();
+    evlog("Session started - %s, run %.1f s, %d runs/round, sweep %s",
+          euro ? "Eurojackpot" : "6 of 49", g_status.run_target_ms / 1000.0,
+          g_status.runs_cap,
+          g_status.cal_budget_ms > 0 ? "on" : "off");
 
     /* Block index of the pass. Declared HERE, before the first goto done, so
      * the abort path can centre the open block (see done:). */
@@ -2545,7 +2558,7 @@ void elotto_task(void *pvParam)
     /* ── Opening insertion: the camera sweep ───────────────────────────
      * Before anything is displayed, so every node has its operating point
      * before the first bit that counts. */
-    g_status.cal_did_sweep = calibrate_all();
+    g_status.cal_did_sweep = calibrate_all("session start");
     if (g_status.abort_requested) { slave_abort(); goto done; }
 
     /* ── Rounds ────────────────────────────────────────────────────────
@@ -2577,7 +2590,7 @@ void elotto_task(void *pvParam)
          * they should not be the ones measured on a stale sweep. This is now the
          * ONLY sweep trigger `[D76]`; `?cal=0` is the no-calibration control. */
         if (round > 1) {
-            g_status.cal_did_sweep = calibrate_all();
+            g_status.cal_did_sweep = calibrate_all("round boundary");
             if (g_status.abort_requested) { slave_abort(); goto done; }
         }
 
@@ -2665,7 +2678,7 @@ void elotto_task(void *pvParam)
          * Placed after the combination-space check so an aborting round does
          * not pay for a sweep, and before round_start_ms is stamped so the
          * sweep stays out of the measuring clock. */
-        g_status.cal_did_sweep = calibrate_all();
+        g_status.cal_did_sweep = calibrate_all("before the pass");
         if (g_status.abort_requested) { slave_abort(); goto done; }
 
         /* Where this round lands in results[], and how much room is left. The
@@ -2888,5 +2901,7 @@ finalize:
     g_status.paused     = false;
     g_status.elapsed_ms = elapsed_ms_now();
     g_status.state = g_status.abort_requested ? ELOTTO_ABORTED : ELOTTO_DONE;
+    evlog("Session %s after %d items", g_status.abort_requested ? "aborted" : "done",
+          g_status.items_done);
     vTaskDelete(NULL);
 }

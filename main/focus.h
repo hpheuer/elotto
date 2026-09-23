@@ -51,3 +51,23 @@ void focus_timing_take(float *win_ms, float *gap_ms);
 
 /* Blocks while paused. Held BETWEEN runs only -- state stays `running`. */
 void pause_gate(void);
+
+/* ── Event log ─────────────────────────────────────────────────────────
+ * What the session is DOING, one line per event (session start/end, sweep,
+ * exposure changes, the settle pause after them, soft-down), for the page's
+ * log card. A ring in PSRAM, kept across sessions; `seq` is monotonic so the
+ * page fetches `GET /loops?ev=1` only when /status `ev_seq` moved.
+ * `t_ms` is master uptime — the page converts it the way it converts trip
+ * times, now − (uptime_ms − t_ms). */
+#define EVLOG_N    48
+#define EVLOG_TXT  120
+typedef struct {
+    uint32_t seq;
+    uint32_t t_ms;
+    char     txt[EVLOG_TXT];
+} EvEntry;
+
+void     evlog(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+uint32_t evlog_seq(void);
+// Oldest first. Returns the number copied (≤ max).
+int      evlog_copy(EvEntry *dst, int max);

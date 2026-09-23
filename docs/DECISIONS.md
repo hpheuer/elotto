@@ -1603,8 +1603,53 @@ the `maxruns` 84 pass between the two sweeps, with the rung change in the first 
 **So: every rung change on this rig costs the first ~1 min of whatever span follows it**, and
 mid-scoring that lands in pass 11, where it inflates one pass's σ rather than tripping a node. The
 open fix is to discard a few windows after a sweep that actually changed the rung (`kept` = 0);
-nothing does that yet.
+`[D87]` answers it with a pause rather than a discard.
 
 **Pooling:** ⚠ **split.** The pool is now chosen on the sum of 20 keys, not 10 `[D81]`, and a
 scoring run now contains a rung change. Pool selection therefore does not pool with D81..D85
 sessions. `z_raw`/`z_ctr`/`zc_ctr` still pool.
+
+### D87 — Settle pause after a sweep that moved an exposure; event log (2026-09-23)
+**After any sweep in which at least one node's exposure changed, the whole array waits
+`CAL_SETTLE_AFTER_MS` 60 s before the next window** (user decision). A sweep in which every node
+kept its rung costs nothing extra.
+
+**Why.** A rung change leaves this rig's sensors drifting for about a minute: `px` still climbing,
+bit bias moving by ~0,002, dispersion normal `[D86]`. The sweep selects on dispersion, so its choice
+is sound; the damage is to the items measured in that minute, whose z sits off the block mean
+because the centring subtracts only a constant. Session 2026-09-22/23 (13 blocks): 14 rung changes
+visible at block level, 4 soft-down trips — 2 directly after a change (slave0 64→128 in block 2,
+three items at −4,3..−4,6 σ; master 64→256 in block 13, whole block wide), 2 without one (slave1
+block 8, σ 8,5; slave0 block 12, one item ~30 z out). The pause addresses the first kind only.
+
+**Why the whole array.** Every window is measured by all nodes at once, so one settling node holds
+up everyone. **Why a pause, not a discard.** Nothing is measured, so `results[]`, the Fisher–Yates
+order and the round's item count stay untouched. The wait is session wall time like the sweep
+(`elapsed_ms` runs on), not an operator pause.
+
+**How a change is detected.** Entry exposure against chosen exposure, per node: the master reads
+its own sweep's step 0 (which re-measures the entry setting unchanged); a slave appends `,e0=<exp>`
+to its `OK:` reply. An unknown entry (older slave image) counts as a change. After a reboot every
+camera enters on the power-on 16, so the first sweep of a session almost always pauses.
+
+**Slave latch.** `SESSION_IDLE_MS` 60 → 120 s, and the slave re-stamps the latch when its sweep
+ends: no `M`/`K` arrives during the pause, and 60 s of silence would have released the session lock
+`[D64]` in the middle of it.
+
+**Sweep, per rung.** `CAL_STEP_SETTLE_PAIRS` = `CAL_SETTLE_PAIRS` + 4: after each rung switch the
+sweep discards 8 frame pairs (~0,44 s at 36 fps) instead of 4 before scoring the rung (user
+decision, margin). The step deadline is fixed, so each rung now scores ~0,7 s instead of ~0,9 s at
+the 10 s default. The one-minute drift is NOT waited out per rung — 9 rungs × 60 s would cost a
+third of a round, and it moves the bias the sweep does not select on.
+
+**Event log.** A 48-entry ring on the master (PSRAM, kept across sessions): session start/end, every
+sweep with its trigger, exposure changes per node, settle start/end, soft-down trip and return.
+`GET /loops?ev=1` streams it; `/status` carries only `ev_seq` and `settle_left_ms`, so the page
+fetches the log only when something happened `[D82]`. The page shows it as the **Log** card, newest
+on top, wall time as now − (uptime − t_ms); the calibration bar counts the pause down.
+
+Verified on hardware 2026-09-23: session-start sweep moved slave2 16→64 and slave0 16→128, the log
+read "Settling 60 s", `settle_left_ms` counted down, scoring resumed after "Settle done".
+
+**Pooling:** ⚠ **split for block σ and soft-down statistics** — post-D87 blocks lack the settling
+items. `z_raw`/`z_ctr`/`zc_ctr` still pool.
