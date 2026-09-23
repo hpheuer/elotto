@@ -2459,7 +2459,7 @@ void elotto_task(void *pvParam)
     memset(&s_drift, 0, sizeof(s_drift));
     s_blk_sum = s_blk_sumsq = 0.0;  s_blk_n = 0;
     s_pass_sum = s_pass_sumsq = 0.0; s_pass_n = 0;
-    /* Per-node z archive in PSRAM (results[] is full of internal RAM). */
+    /* Per-node z archive in PSRAM. results[] stays internal; this does not. */
     if (!s_node_z)
         s_node_z = heap_caps_malloc((size_t)NUM_RUNS * MAX_NODES * sizeof(float),
                                     MALLOC_CAP_SPIRAM);
@@ -2500,9 +2500,8 @@ void elotto_task(void *pvParam)
     g_status.wsig_sd = 0.0; g_status.wsig_sd_n = 0;
     g_status.focus_mode = false;   // D66: always unattended
     focus_reset();
-    // Block history lives in PSRAM: results[] already fills internal RAM. Kept
-    // for the lifetime of the app (allocated once, never freed) so the table
-    // of a finished session survives for inspection.
+    // Block history in PSRAM, for the life of the app (allocated once), so a
+    // finished session's table stays readable.
     if (!g_status.loop_hist)
         g_status.loop_hist = heap_caps_calloc(LOOP_HIST, sizeof(LoopStat), MALLOC_CAP_SPIRAM);
     g_status.pair_r_max      = 0.0;
@@ -2653,12 +2652,10 @@ void elotto_task(void *pvParam)
         int main_combos = comb(pool_nm, nm);
         int euro_combos = euro ? comb(pool_ne, 2) : 1;
         int full_combos = main_combos * euro_combos;
-        /* s_perm is NUM_RUNS wide and the shuffle below now indexes the WHOLE
-         * space, so the space must fit it. NUM_RUNS is 7200; Euro 12+5 = 7920
-         * does not. A pool that exceeds it is an inflated proposal, so this is
-         * a hard stop, NOT a silent clamp: truncating would measure a subset
-         * and publish it as complete — the mislabelling this instrument
-         * refuses to do. */
+        /* s_perm is NUM_RUNS wide and the shuffle below indexes the WHOLE
+         * space, so the space must fit it. A pool above that is a hard stop,
+         * not a silent clamp: truncating would measure a subset and publish
+         * it as complete. */
         if (full_combos > NUM_RUNS) {
             snprintf(g_status.fault, sizeof(g_status.fault),
                      "combination space %d exceeds NUM_RUNS %d — pool grew past "

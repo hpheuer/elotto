@@ -1742,8 +1742,7 @@ static void send_chunk(httpd_req_t *req, const char *buf, int len, size_t cap)
  * the page asks only when /status `ev_seq` moved, so it costs nothing at 1 Hz. */
 static esp_err_t evlog_send(httpd_req_t *req)
 {
-    /* PSRAM, not .bss: 6 KB of internal RAM would fail the link. httpd
-     * serialises handlers, so one shared buffer. */
+    /* PSRAM. httpd serialises handlers, so one shared buffer. */
     static EvEntry *ev;
     if (!ev) ev = heap_caps_malloc(EVLOG_N * sizeof(EvEntry), MALLOC_CAP_SPIRAM);
     int n = ev ? evlog_copy(ev, EVLOG_N) : 0;
@@ -1840,9 +1839,8 @@ static esp_err_t loops_handler(httpd_req_t *req)
  * once a second by everything — this is pulled only while the results table
  * is on screen. Live: results_extremes() rebuilds the set from the current
  * prefix on every call, so a newly measured item enters it by |Z*| exactly as
- * the compaction survivors do. The scratch lives in PSRAM (internal RAM is
- * full — a few KB of .bss fails the link); on a PSRAM shortfall it answers
- * an empty set rather than a fault. */
+ * the compaction survivors do. The scratch lives in PSRAM; on a shortfall
+ * it answers an empty set rather than a fault. */
 #define EXTREMES_MAX 50   /* display pool for the Top-10 table (D78b: 100 -> 50,
                              halves the per-poll scan/serialize on the master).
                              The compaction archive (PASS_KEEP_EXTREME) is

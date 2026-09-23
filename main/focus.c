@@ -223,8 +223,7 @@ void pause_gate(void)
 }
 
 /* ── Event log ───────────────────────────────────────────────────────────
- * PSRAM, because internal RAM is full with results[] and 48 × 128 B of .bss
- * would fail the link. Written by the session task, read by the HTTP task:
+ * PSRAM. Written by the session task, read by the HTTP task:
  * the line is formatted OUTSIDE the lock and only the copy is guarded. */
 static EvEntry     *s_ev;
 static uint32_t     s_ev_seq;          // entries ever written; slot = seq % N

@@ -7,24 +7,12 @@
 /* v3 (D67): rounds until Abort. Inside a round every combination is measured
  * exactly ONCE; results[] holds it in MEASUREMENT order and ACCUMULATES across
  * rounds, so NUM_RUNS is the hard cap on the buffer, not on the session.
- * 7200 because results[] lives in internal RAM, which is full — a few KB more
- * of .bss fails the LINK, not the run. */
-/* ⚠ 8000 -> 7200 on 2026-08-26, and the reason is the LINKER, not statistics.
- * results[] lives in INTERNAL RAM (see the resources note) and the LSB
- * channel added a float to RunResult. The double in the record forces 8-byte
- * alignment, so 4 more bytes cost 8 per item — 64 KB at 8000 — and the image
- * stopped linking with 4913 bytes of discarded sections. 7200 gives it back
- * with margin.
- *
- * The cost is close to nothing: since round-boundary compaction (D42) the
- * buffer merges instead of filling, so this cap is the BACKSTOP for a
- * compaction that cannot allocate, not the normal end of a session. In
- * practice only Abort ends an unlimited run.
- * ⚠ It IS still the cap on one ROUND's uncompacted rows, and the largest space
- * this instrument measures is Eurojackpot's 7920 — which does not fit. A full
- * Euro round compacts once near the end instead of stopping. Verify that on the
- * next full Euro run rather than assuming it. */
-#define NUM_RUNS      7200
+ * 1000 rows [D91]. A row is 48 B (the double in RunResult forces 8-byte
+ * alignment). Compaction keeps at most 2*PASS_KEEP_EXTREME rows (200); the
+ * next round is appended before that compaction, so a round longer than
+ * NUM_RUNS-200 is truncated and that round ends the session. A combination
+ * space larger than NUM_RUNS aborts — the shuffle buffer is this wide. */
+#define NUM_RUNS      1000
 #define TOP_N            5
 /* ── Round-boundary compaction (D56) ──────────────────────────────────────
  * Unlimited rounds keep the 100 most extreme RANKED items by |rank_key| (both
@@ -448,6 +436,7 @@ typedef struct {
      * excludes or reorders on it. */
     float      node_sd;
 } RunResult;
+_Static_assert(sizeof(RunResult) == 48, "results[] row is the internal-RAM budget");
 
 // Current-item display: what is on screen right now, for exactly the window
 // its bits are collected in. The session is unattended `[D66]`; the one
@@ -997,9 +986,8 @@ typedef struct {
                                           // proposal, and that fact belongs in the
                                           // record
     LoopStat        *loop_hist;           // per-block health table (LOOP_HIST entries,
-                                          // PSRAM — internal RAM is full with results[];
-                                          // NULL if the allocation failed, in which case
-                                          // only the drift/σ aggregates are available)
+                                          // PSRAM; NULL if the allocation failed, in
+                                          // which case only the drift/σ aggregates exist)
     /* The pass, in MEASUREMENT order: results[j] is the j-th item measured
      * (its combination id is results[j].index). Compact by construction, so
      * the prefix [0 .. runs_completed) is always the complete record — an

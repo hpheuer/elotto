@@ -101,8 +101,9 @@ static camera_stats_t    s_stats = { 0 };
 
 // Producer-only running state (camera_task is the sole writer; publish_stats()
 // copies a snapshot into s_stats under s_mutex for readers).
-// s_ring lives in PSRAM: 64 KB of static internal DRAM would not fit alongside
-// the existing sensor.c tables (g_status.results[], s_zsum[]) on this P4.
+/* Word ring in internal RAM [D91]: the consumer loads one word at a time, and
+ * that load set the session rate while the ring was in PSRAM. 64 KB.
+ * s_ring_raw stays in PSRAM — camera_read_word() does not touch it. */
 static uint32_t *s_ring;
 // Single-producer (camera_task) / single-consumer (GCP task) ring. head is
 // written only by the producer, tail only by the consumer, so no lock is
@@ -1020,14 +1021,14 @@ esp_err_t camera_init(void)
     s_mutex = xSemaphoreCreateMutex();
     if (!s_mutex) return ESP_ERR_NO_MEM;
 
-    s_ring = heap_caps_malloc(RING_WORDS * sizeof(uint32_t), MALLOC_CAP_SPIRAM);
-    /* 16 KB beside the 64 KB word ring. If THIS one fails the node still
-     * measures — camera_read_word() is unaffected and only the LSB z goes
-     * away, exactly as entropy does when its buffers fail. Never a
-     * precondition for a measurement. */
+    s_ring = heap_caps_malloc(RING_WORDS * sizeof(uint32_t),
+                              MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    /* 16 KB beside the word ring, PSRAM. If THIS one fails the node still
+     * measures — camera_read_word() is unaffected and only the LSB-ones
+     * side channel goes away. Never a precondition for a measurement. */
     s_ring_raw = heap_caps_malloc(RING_WORDS, MALLOC_CAP_SPIRAM);
     if (!s_ring) {
-        ESP_LOGE(TAG_CAM, "ring buffer alloc failed (%u bytes, needs PSRAM)",
+        ESP_LOGE(TAG_CAM, "word ring alloc failed (%u bytes, needs internal RAM)",
                  (unsigned)(RING_WORDS * sizeof(uint32_t)));
         ret = ESP_ERR_NO_MEM;
         goto fail;

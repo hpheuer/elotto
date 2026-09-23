@@ -85,13 +85,15 @@ across rounds a combination can recur — identity is **(round, index)**.
   `g_status` only after every one validates, so a 400 leaves the finished session's `/status` and
   CSV header — `pre_w` above all — describing that session. A 500 (task create failed) restores
   the snapshot, including `state`; `prefs_save()` runs only after the task exists `[D79]`. 100 % of the progress bar is the
-  full combination space. `NUM_RUNS` 7200 is the hard cap on `results[]`.
-  ⚠ **Eurojackpot's 7920 cannot be one round**: `UNLIM_RUNS_MAX` is `NUM_RUNS`, and a
-  combination space larger than that **aborts** rather than compacting mid-round.
+  full combination space. `NUM_RUNS` 1000 is the hard cap on `results[]` `[D91]`.
+  ⚠ **A combination space larger than `NUM_RUNS` aborts** rather than compacting mid-round.
+  Eurojackpot's 7920 and 6-of-49's 5005 are both over it; the pool is sized down to `?maxruns=`.
+  ⚠ Compaction keeps at most 200 rows (100 extremes + 100 quarantined). The next round is
+  appended first, so `?maxruns=` above 800 truncates that round and ends the session `[D91]`.
 - **Measuring time is a session parameter.** `?run=<s>` is **0,5–5 s, default 5**; out of range
   answers **400**, no fallback. `?gap=<s>` if present must be 0,5–10 s, else **400**; omitted →
   40 % of run (floor `GAP_S_MIN` 0,5). `?cal=` 0..`CAL_BUDGET_MAX_MS` (0 = no sweep),
-  `?maxruns=` 10..7200; out of range **400**, no fallback `[D79]`. Segment count follows from
+  `?maxruns=` 10..1000; out of range **400**, no fallback `[D79]` `[D91]`. Segment count follows from
   `RUN_SEGS_REF`/`RUN_MS_REF` in `sensor.h`. ⚠ The requested window is
   not the wall time you get — actual is `focus_win_ms`, set by the **slowest** node's bit rate
   `[D2]``[D51]`.
@@ -598,9 +600,11 @@ floor is load-bearing.
 `LINK_MEAS_MS_FOR(nseg)` scales with the run and is deliberately generous `[D7]`.
 
 ### Resources
-- **PSRAM is mandatory**: capture buffers, extraction ring, `loop_hist`, per-item per-node archives
-  (`s_node_z` ~128 KB). Internal RAM is full with `results[]` — a few KB more of .bss fails the
-  *link*, not the run.
+- **PSRAM is mandatory**: capture buffers, the LSB-ones side ring (`s_ring_raw`), `loop_hist`,
+  per-item per-node archives (`s_node_z` and the half-window copies, sized to `NUM_RUNS`).
+  The word ring `s_ring` (64 KB) is **internal RAM** `[D91]` — the consumer loads one word at a
+  time, and that load was the session rate. `results[]` stays internal too: `NUM_RUNS` 1000 is
+  what leaves room for the ring.
 - ⚠ **Task priority is load-bearing**: any task calling `camera_read_word()` must run **above** the
   extraction task, or the consumer starves ~10× (see `camera.h`; signature: ring `drops` huge with
   `waits == 0`).

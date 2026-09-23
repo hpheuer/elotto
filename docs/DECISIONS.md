@@ -1336,7 +1336,7 @@ intermediate-results view.
 **Entscheidung:** Unknown `POST /start` keys answer **400**. Deleted keys keep their specific
 messages so a v2 script is not misread as a typo. `?gap=`, `?cal=`, `?maxruns=` outside their
 documented range answer **400**, no fallback — same contract as `?run=` and `?wpre=`.
-`maxruns` range is `UNLIM_RUNS_MIN`..`UNLIM_RUNS_MAX` (10..7200). `?score=` must be
+`maxruns` range is `UNLIM_RUNS_MIN`..`UNLIM_RUNS_MAX` (10..7200; upper bound is 1000 since D91). `?score=` must be
 `high|low|abs`. `?unlimited=` omitted or `1`; any other value 400. Omitted keys still
 resolve to the compiled-in defaults. `?mode=` is unchanged (`val[0]=='1'` → 6-of-49).
 
@@ -1758,4 +1758,22 @@ the window test on all four at once (pairwise correlation — the test for share
 long session (per-block σ, drift).
 
 **Pooling:** ⚠ new instrument — never pool with any lit session.
+
+### D91 — NUM_RUNS 1000; the word ring is internal RAM (2026-09-23)
+**Operator decision:** `NUM_RUNS` is 1000. The 64 KB word ring (`s_ring`, 16384 × uint32) is
+allocated with `MALLOC_CAP_INTERNAL`. `s_ring_raw` stays in PSRAM; `camera_read_word()` does not
+touch it.
+
+**Why.** A measurement window ends when `gcp_zscore_pre` has read a fixed number of words. On the
+2026-09-23 Eurojackpot session that read ran at 6,3 Mbit/s while extraction produced 8,6, and the
+empty-ring counter stayed at 0 since boot. The same chip reads the frame bytes sequentially in
+~67 ms; the per-word load from PSRAM was the session's clock. `results[7200]` (48 B/row, 346 KB)
+had filled the high SRAM (384 KB, 35 KB heap left), so the ring could not sit there. 1000 rows are
+48 KB. Compaction keeps at most 200 (two quotas of `PASS_KEEP_EXTREME` 100). The next round is
+appended before that, so the resident peak is 200 + `?maxruns=`. At 200 runs/round that peak is
+400. `?maxruns=` above 800 fills the buffer on the following round, truncates it and ends the
+session. A combination space above 1000 still aborts. `?maxruns=` is 10..1000.
+
+**Pooling:** no split. The stored z is unchanged. A session that asked for more than 1000 runs per
+round now gets 400.
 
