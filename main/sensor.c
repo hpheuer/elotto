@@ -296,19 +296,14 @@ static void score_build_keys(const float zn[][MAX_NODES],
                              const bool *scored, int max_val, double *scores);
 static void   center_block(int block_idx);  // forward: publish_valid centres the OPEN block
 
-/* Per-item node-z archive (PSRAM). results[j] stays lean; re-analysis needs
- * the per-node series to recombine, drop a soft-failed node, or recompute r. */
+/* Per-item node-z archive (PSRAM). results[j] stays lean; centring needs the
+ * per-node series to recombine, drop a soft-failed node, or recompute r. */
 static float *s_node_z;   // [NUM_RUNS * MAX_NODES], NaN = did not contribute
 /* Per-node RAW half-window z (D56), both halves, NaN = none. Two arrays and
  * not the combined √2·min: the sign test has to run on CENTRED halves, and
  * the centre is not known until the block closes (D77). */
 static float *s_node_h1;
 static float *s_node_h2;
-/* Per-node CAMERA sigma of each item's own window (D62), NaN = not reported.
- * ⚠ Not a z and not comparable with the three arrays above: it is the
- * instrument's own noise while that item was measured, the covariate that
- * says whether the z beside it can be trusted at all. */
-static float *s_node_wsig;
 
 /* The previous window sigma each node reported, for the jump (D62). NaN
  * until a node has reported once. Reset with the session, not per round:
@@ -320,8 +315,8 @@ static float s_prev_wsig[MAX_NODES];
 static double s_wsig_jsq;
 static int    s_wsig_jn;
 
-/* Serialises pass_compact() (elotto_task) against the archive readers on the
- * HTTP task (results_row_z, results_node_z, the CSV stream).
+/* Serialises pass_compact() (elotto_task) against the archive reader on the
+ * HTTP task (results_extremes, behind /extremes).
  *
  * A MUTEX, not a spinlock. A reader walks up to NUM_RUNS rows with soft-float
  * arithmetic, i.e. it can hold the lock for milliseconds,
@@ -382,14 +377,6 @@ static void node_h_store(int j, const double *h1, const double *h2,
     }
 }
 
-static void node_wsig_store(int j, const float *wsig)
-{
-    if (!s_node_wsig || j < 0 || j >= NUM_RUNS) return;
-    float *row = s_node_wsig + (size_t)j * MAX_NODES;
-    for (int i = 0; i < MAX_NODES; i++)
-        row[i] = wsig ? wsig[i] : NAN;   /* already NaN when unreported */
-}
-
 /* Move one archive row, for pass_compact(). The source is left as it was: the
  * caller only ever moves DOWN (w < j) and overwrites what it passes on the way,
  * so a stale tail can never be read -- runs_completed is lowered to the new
@@ -404,8 +391,8 @@ static void node_z_move(int from, int to)
                MAX_NODES * sizeof(float));
     /* ⚠ Every per-node archive moves WITH the z archive, in the same call.
      * Separate move loops would be separate chances to compact one and forget
-     * another, and the result — an item's z paired with a neighbour's halves
-     * or camera σ — looks entirely plausible. */
+     * another, and the result — an item's z paired with a neighbour's halves —
+     * looks entirely plausible. */
     if (s_node_h1)
         memcpy(s_node_h1 + (size_t)to   * MAX_NODES,
                s_node_h1 + (size_t)from * MAX_NODES,
@@ -414,42 +401,6 @@ static void node_z_move(int from, int to)
         memcpy(s_node_h2 + (size_t)to   * MAX_NODES,
                s_node_h2 + (size_t)from * MAX_NODES,
                MAX_NODES * sizeof(float));
-    if (s_node_wsig)
-        memcpy(s_node_wsig + (size_t)to   * MAX_NODES,
-               s_node_wsig + (size_t)from * MAX_NODES,
-               MAX_NODES * sizeof(float));
-}
-
-/* Snapshot one measured item — its RunResult row AND its per-node z — under a
- * single lock. The CSV ?all=1 stream needs both, and reading the row unlocked
- * while pass_compact() rewrites results[] in place could pair a row from the
- * old layout with z-values from the new one. One locked read closes that.
- *
- * Returns false if the archive is missing or j is out of range. out_z gets NaN
- * for nodes that did not contribute that run. Lives in PSRAM so results[]
- * itself stays lean. */
-bool results_row_z(int j, RunResult *out_row, float out_z[MAX_NODES],
-                   float out_w[MAX_NODES])
-{
-    if (!out_row || !out_z || !s_node_z) return false;
-    archive_lock();
-    if (j < 0 || j >= g_status.runs_completed || j >= NUM_RUNS) {
-        archive_unlock();
-        return false;
-    }
-    *out_row = g_status.results[j];
-    const float *row = s_node_z + (size_t)j * MAX_NODES;
-    for (int i = 0; i < MAX_NODES; i++) out_z[i] = row[i];
-    /* The camera sigma of this item's own window (D62), in the SAME locked
-     * read: a compaction between two separate reads would pair one item's z
-     * with a neighbour's instrument noise, which is exactly the covariate a
-     * reader would then trust. */
-    if (out_w) {
-        const float *wrow = s_node_wsig ? s_node_wsig + (size_t)j * MAX_NODES : NULL;
-        for (int i = 0; i < MAX_NODES; i++) out_w[i] = wrow ? wrow[i] : NAN;
-    }
-    archive_unlock();
-    return true;
 }
 
 /* Running pass sums over RANKED items only (k > 0, !skip_rank). Ranking and
@@ -822,7 +773,7 @@ static int gather_and_combine(double z_master, bool master_ok,
      * the second stayed in and published its offset -- the 08-13 pass is the
      * proof, where slave1 was excluded and the master's block means to -6,33
      * were kept. Up to three of four may now drop out and a SOLO combine is
-     * possible; `k` is in the CSV per item so it stays visible afterwards.
+     * possible; `k` is kept per item in results[].
      * A bad arm costs more than a small k (user decision). */
     int n_soft = 0;
     for (int i = 0; i < g_status.node_count && i < MAX_NODES; i++) {
@@ -1075,7 +1026,7 @@ static double compute_v_eff(void)
 }
 
 /* True if this row enters pass mean/σ and the ranking tables. Void and quarantined
- * trigger-block rows stay in results[] / CSV but not in the ranking. */
+ * trigger-block rows stay in results[] but not in the ranking. */
 /* The value every pass statistic and every ranking runs on: the block-centred
  * combine, not the raw z. One accessor so the choice is made in exactly one
  * place — mixing the two silently would be indistinguishable from a result. */
@@ -1296,7 +1247,7 @@ static void recompute_pass_ranks(void)
      * i.e. after close_block(), so everything it in was centred.
      * ⚠ VOID and EXCLUDED are counted over EVERYTHING. They are archive facts,
      * not statistics, and hiding a void run until its block closes would make
-     * the CSV and the live counter disagree. */
+     * results[] and the live counter disagree. */
     double sum = s_drop_sum, sumsq = s_drop_sumsq;
     int    nv  = s_drop_n, nvoid = s_drop_void, nexcl = s_drop_excl, nopen = 0;
     for (int j = 0; j < ntot; j++) {
@@ -1352,8 +1303,8 @@ static void recompute_pass_ranks(void)
     }
     g_status.pre_n        = pre_n;
 
-    /* Built into LOCAL lists and published at the end: /status and
-     * /results.csv read top[]/low[] from the HTTP task, and zeroing the counts
+    /* Built into LOCAL lists and published at the end: /status reads
+     * top[]/low[] from the HTTP task, and zeroing the counts
      * before refilling them let a poll land on an empty or half-built table.
      * The counts still move last, so a racing reader sees either the old list
      * or the new one, never a partial one. */
@@ -1428,8 +1379,8 @@ static void pass_compact(void)
      * NUM_RUNS and K is 100. Both tails survive.
      *
      * Two quotas of K: ranked rows, and QUARANTINED rows (measured, k > 0,
-     * skip_rank). Quarantine keeps a row out of every statistic but must leave
-     * it in the CSV so the exclusion can be undone offline `[D14]``[D41]`.
+     * skip_rank). Quarantine keeps a row out of every statistic `[D14]`; the
+     * quota existed so the CSV kept those rows `[D88]`, and the CSV is gone `[D94]`.
      * With one quota over ranked rows only, a round whose block was
      * quarantined lost every row at the next boundary — 210 of 210 on
      * 2026-09-23 `[D88]`. A separate quota, so contaminated items cannot crowd
@@ -1457,7 +1408,7 @@ static void pass_compact(void)
      *
      * This whole phase is the critical section: it rewrites results[] and
      * s_node_z in place and then lowers runs_completed, and an HTTP reader
-     * (results_row_z / results_node_z) may be walking either array right
+     * (results_extremes) may be walking either array right
      * now. The selection above only reads, so it needs no lock. */
     archive_lock();
     int w = 0, dropped = 0;
@@ -1642,8 +1593,8 @@ static void trip_record(int block_idx, int node, double mean, double sigma)
     }
 }
 
-/* Quarantine every measured item in `block_idx` from pass ranking. CSV keeps
- * the rows (skip_rank=1). Called when that block *triggered* a soft-down. */
+/* Quarantine every measured item in `block_idx` from pass ranking. results[]
+ * keeps the rows (skip_rank=1). Called when that block *triggered* a soft-down. */
 static void quarantine_block(int block_idx)
 {
     int ntot = g_status.runs_completed;
@@ -1986,7 +1937,7 @@ static void record_loop(double loop_mean, int loop_idx)
      * Floor: never soft-exclude so many that fewer than NODE_SOFT_MIN_COMBINE
      * ok nodes remain eligible; keep the least-bad among candidates.
      * Quarantine: the block that *triggered* a new soft-down is excluded from
-     * pass mean/σ/Top-Bottom (CSV still holds every row). Never reboots. */
+     * pass mean/σ/Top-Bottom (results[] still holds every row). Never reboots. */
     bool   want[MAX_NODES] = {false};
     double score[MAX_NODES] = {0};   /* higher = worse; for triage when floor binds */
     bool   have_stats[MAX_NODES] = {false};
@@ -2379,8 +2330,8 @@ static void close_block(int block_idx)
  *
  * results[] fills in MEASUREMENT order (results[j] = j-th item measured, its
  * combination id in .index) and ACCUMULATES across rounds, so the prefix
- * [0..runs_completed) is always the complete record: publishing, /results.csv
- * and an abort all read it directly. ⚠ pass_compact() runs at every round
+ * [0..runs_completed) is always the complete record: publishing and an abort
+ * both read it directly. ⚠ pass_compact() runs at every round
  * boundary (D56), after which the prefix is the extremes plus survivors plus
  * s_drop_* moments, not every row measured (D42). */
 void elotto_task(void *pvParam)
@@ -2426,8 +2377,8 @@ void elotto_task(void *pvParam)
     g_status.pass_n_void     = 0;
     g_status.pass_n_excl     = 0;
     g_status.v_eff           = 1.0;
-    /* ⚠ Per SESSION, like every counter around it. It is published in /status
-     * and in the CSV header, so a single timeout left over from a previous run
+    /* ⚠ Per SESSION, like every counter around it. It is published in /status,
+     * so a single timeout left over from a previous run
      * would be attributed to this one -- for every session that followed, since
      * nothing else ever clears it. The other health counters that are
      * deliberately cumulative (ring_drops, consumer_waits, stalls) live in the
@@ -2479,16 +2430,6 @@ void elotto_task(void *pvParam)
         for (size_t i = 0; i < (size_t)NUM_RUNS * MAX_NODES; i++)
             s_node_h1[i] = s_node_h2[i] = NAN;
     }
-    /* The camera-sigma archive (D62), same shape and the same NaN convention.
-     * A failed allocation costs the CSV columns and the jump board, never a
-     * measurement. */
-    if (!s_node_wsig)
-        s_node_wsig = heap_caps_malloc((size_t)NUM_RUNS * MAX_NODES * sizeof(float),
-                                       MALLOC_CAP_SPIRAM);
-    if (s_node_wsig) {
-        for (size_t i = 0; i < (size_t)NUM_RUNS * MAX_NODES; i++)
-            s_node_wsig[i] = NAN;
-    }
     /* The board and the per-node history behind it start empty every session:
      * a jump across a reboot or a parameter change is not an event. */
     memset(g_status.trip_hist, 0, sizeof(g_status.trip_hist));
@@ -2498,7 +2439,6 @@ void elotto_task(void *pvParam)
     for (int i = 0; i < MAX_NODES; i++) s_prev_wsig[i] = NAN;
     s_wsig_jsq = 0.0; s_wsig_jn = 0;
     g_status.wsig_sd = 0.0; g_status.wsig_sd_n = 0;
-    g_status.focus_mode = false;   // D66: always unattended
     focus_reset();
     // Block history in PSRAM, for the life of the app (allocated once), so a
     // finished session's table stays readable.
@@ -2628,10 +2568,6 @@ void elotto_task(void *pvParam)
         if (g_status.abort_requested) goto done;
         g_status.scoring_pass = 0;
         focus_off();
-
-        /* D66/D67: the pool is always the score's proposal — there is no gate
-         * left to answer. Recorded as pool_auto=1 so the CSV still says so. */
-        g_status.pool_auto = 1;
 
         /* Publish the pool that is actually about to be measured — EVERY path,
          * not just the confirmation gate. It used to be written only while the
@@ -2805,7 +2741,6 @@ void elotto_task(void *pvParam)
              * holds one window and the next 'M' overwrites it. */
             float wsig[MAX_NODES];
             wsig_collect(wsig);
-            node_wsig_store(slot, wsig);
             /* The same window into this node's own ring (D64), tagged with the
              * combination id so /camlog lines up against results[] — which
              * compaction will have eaten by the next round boundary. */
@@ -2844,7 +2779,7 @@ void elotto_task(void *pvParam)
             }
 
             g_status.runs_completed = slot + 1;  // AFTER the row is complete: readers
-                                                 // (/status, /results.csv) trust the rows
+                                                 // (/status, /extremes) trust the rows
             g_status.items_done++;               // session progress; compaction never lowers it
             if (k > 0) publish_valid(r);      // top/low + pass health
             g_status.elapsed_ms     = elapsed_ms_now();
@@ -2862,7 +2797,7 @@ void elotto_task(void *pvParam)
         if (space_full || g_status.runs_completed >= NUM_RUNS) {
             snprintf(g_status.fault, sizeof(g_status.fault),
                      "unlimited: results buffer full (%d items) after round %d "
-                     "— session ended, pull /results.csv?all=1",
+                     "— session ended",
                      g_status.items_done, round);
             printf("%s\n", g_status.fault);
             break;

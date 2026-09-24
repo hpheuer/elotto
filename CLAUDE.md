@@ -29,7 +29,7 @@ that key; the pass **ranks** items on the same key; the UI shows Z*, Z, Conc.
 comes from the FOURCC (`BG10`), not from `sizeimage` — esp_video leaves that 0, and the old fallback
 read packed bytes as RAW8 `[D89]`. `GET /camtest?dump=1` shows what the buffer really holds.
 ⚠ IMX `px` is **above black** (pedestal 16 subtracted), so its dark gate means photons, as on the
-OV `[D89]`. `/status` `cam_sensor` names the bound chip. ⚠ IMX219 sessions do not pool with OV5647. The **sweep**
+OV `[D89]`. `/status` `cam_sensor` names the bound chip. The **sweep**
 picks the exposure with the lowest **`raw_sigma`** among rungs that still look like noise (autocorr,
 dark / zero_diff) `[D83]` — dispersion is what `rank_key()` divides by and what soft-down trips on;
 the bias is subtracted by the centring and costs nothing. If a node's block σ is too loud against its peers, **soft-down**
@@ -82,8 +82,8 @@ across rounds a combination can recur — identity is **(round, index)**.
   `START_VAL_MAX` 31 characters and a query string over 255 characters each answer **400** as well
   — a truncated value or query must never read as "key absent" and resolve to the default `[D79]`.
   ⚠ **A refused /start changes nothing**: parameters are parsed into locals and committed to
-  `g_status` only after every one validates, so a 400 leaves the finished session's `/status` and
-  CSV header — `pre_w` above all — describing that session. A 500 (task create failed) restores
+  `g_status` only after every one validates, so a 400 leaves the finished session's `/status` —
+  `pre_w` above all — describing that session. A 500 (task create failed) restores
   the snapshot, including `state`; `prefs_save()` runs only after the task exists `[D79]`. 100 % of the progress bar is the
   full combination space. `NUM_RUNS` 1000 is the hard cap on `results[]` `[D91]`.
   ⚠ **A combination space larger than `NUM_RUNS` aborts** rather than compacting mid-round.
@@ -98,9 +98,8 @@ across rounds a combination can recur — identity is **(round, index)**.
   not the wall time you get — actual is `focus_win_ms`, set by the **slowest** node's bit rate
   `[D2]``[D51]`.
 - **`results[]` is in MEASUREMENT order** (`.index` = combination id, `.block` stamped), so the
-  prefix is always complete: aborts need no compaction, `GET /results.csv?all=1` streams live
-  mid-session. ⚠ RAM only — a master reboot loses unrepeatable measurements. ⚠ Bare
-  `/results.csv` is the 10-row summary (Top-5 + Bottom-5 by `rank_key`), **not** the record.
+  prefix is always complete: aborts need no compaction. ⚠ RAM only — a master reboot ends the
+  session and loses it; nothing is exported `[D94]`.
 - **Blocks are the statistics unit, and ONE BLOCK IS ONE ROUND** `[D76]`. The round boundary is the
   only block boundary: the pass parks there → `/loops` row, drift point, pairwise close, block
   centring, then the camera sweep before the next round scores. ⛔ There is no wall-clock trigger and
@@ -160,8 +159,9 @@ as backstop for a compaction that cannot allocate.
   `round_base`/`round_item_base`) are subtle and documented at their definitions in `sensor.h` —
   read them before touching anything that counts or indexes items; getting them wrong is what broke
   the first compaction on hardware `[D42]`.
-  ⚠ `compacted=` non-zero in the CSV header: the rows are extremes plus survivors, not a sample —
-  never compute a distribution from them.
+  ⚠ `compacted` non-zero in `/status`: `results[]` holds extremes plus survivors, not a sample —
+  never compute a distribution from its rows. The quarantine quota served the CSV `[D88]` and has
+  no consumer since `[D94]`.
 - **Every round closes its own block, and only the round boundary does** `[D76]`, so centring never
   mixes items from either side of a re-scoring and every block has the same item count. Rounds after
   the first re-run the sweep **before** scoring, **every** scoring run sweeps again at its
@@ -202,8 +202,7 @@ whatever σ comes out. A quiet block cannot manufacture a large key.
 ⚠ **That ceiling moves with n**, so it is `?maxruns=` that fixes the scale: every round is one block
 `[D76]`, so within a session n is constant and Z\* compares. 6,9 for a scoring span's ≤50 numbers,
 14,4 at n=208, 23,1 at 535. Pure chance over 38000 items reaches about 4.
-⚠ Across SESSIONS with different `?maxruns=` the ceiling differs — that is a pooling question, and
-the last round of a session is short because Abort cut it.
+⚠ The last round of a session is short because Abort cut it.
 UI: **Z\*** is the key itself (block-σ units), **Z**, **Conc**.
 
 **Concordance (D56, D77).** Per node, split the window at nseg/2 and **centre each half on that
@@ -233,8 +232,8 @@ i.e. sensitivity, which is the harm that matters when the effect being hunted is
 Wire: `Z:<z>[,<h1>,<h2>][,wsig=<σ>]` `[D65]`. `,wsig=` TAGGED. Every node measures the commanded `nseg`.
 
 ## Stored z is RAW; ranking is block-centred
-- **`z_score` is the raw combined Stouffer z and is never rewritten.** It is the archive;
-  `/results.csv` carries it forever beside the per-node `z0..z3`.
+- **`z_score` is the raw combined Stouffer z and is never rewritten.** It stays beside `z_ctr` in
+  `results[]` for the session.
 - **`z_ctr` is what every statistic and ranking runs on.** At block close `center_block()` subtracts
   each node's block mean and recombines over the same nodes (`have_mask`, k unchanged). Single
   accessor `rank_z()`. Until a block closes, `z_ctr` holds the provisional raw value. `[D8]`
@@ -251,7 +250,7 @@ what remains visible is an effect varying **between items inside a block**.
   figure (Items, Progress, Time/ETA), bottom row session-relative (Round, Total Measured,
   Total Time). ⚠ The bottom row is shown only while a session runs — every session is rounds
   `[D67]`.
-- **One sortable table of ten**: Top-10, item counter + block badge, Save CSV. Columns: `Z*` (key
+- **One sortable table of ten**: Top-10, item counter + block badge. Columns: `Z*` (key
   in that item's block-σ units `[D68]`), `Z`, `Conc`, `Δn`.
   ⚠ **The table is the leading 10 of the ~50 most extreme items by `|Z*|`, sorted by whichever
   column header was clicked** `[D78]``[D78b]`. `GET /extremes` (streamed JSON, `emit_run` row shape,
@@ -291,7 +290,6 @@ what remains visible is an effect varying **between items inside a block**.
   ordinary. Read the SHAPE — one item far out is an excursion, three close together mean the
   block was simply wide.
   ⚠ The block number shown is 1-based like `/loops`; `results[].block` is 0-based.
-- CSV is **German**: `;` separator, `,` decimal — a decimal point makes Excel read text.
 - **The start form remembers its last values** (NVS, survives reboot and OTA): measuring time,
   runs per round, direction, concordance weight. `/` serves them as a script chunk
   appended to the page `[D49]`. ⚠ **Only a start carrying `confirm=1` writes them** — i.e. only the
@@ -299,55 +297,14 @@ what remains visible is an effect varying **between items inside a block**.
   API default. ⚠ It changes **no** API default: an omitted parameter still resolves to the
   compiled-in value. Mode is not remembered — it is which button was pressed, not a field.
 
-### CSV header
-`# elotto v3 mode= sensor= focus= score= items=<measured>/<planned> ranked= excl= void= blocks= paused_ms=
-pass_* v_eff= open= flush_timeouts= drift_t= unlimited= runs_cap= rounds= run_s= run_segs=
-gap_s= compacted= pre_w= pre_n=
-fw=<version>/<elf sha>`, then `# nodes=<ip list, discovery order>` and
-`# fw_nodes=<sha per node, same order>` (`?` = never answered).
-`?all=1` appends a **`round` column last**, then `key;zc_ctr;w0..w3`, so older parsers still line
-up on the columns before `round`. `w0..w3` are the per-node CAMERA σ of that item's own window
-`[D62]` — empty = not reported; a quiet window reads 1,0, never 0. `zc_ctr` is concordance `[D56]`.
-⚠ **`pre_n` counts items the CONCORDANCE term could rank** (`zc_ctr` ≠ 0) `[D73]`. In a
-pre-2026-09-02 file the same field counted the second LSB channel and read ≈ `ranked` —
-never compare the two across that date.
-⚠ The window travels in BOTH units: `run_s` alone cannot separate instrument generations `[D1]`.
-⚠ "All four run the same code" is a policy, not a fact — check `fw_nodes`.
-
 ---
 
-## ⚠ Pooling — the complete list
-Two sessions may be pooled only when every line below holds. Each is a separate instrument or a
-separate arm `[D1]`.
-
-| split on | pool only within |
-|---|---|
-| hardware change 2026-07-29 | after it |
-| block centring 2026-08-13 | one side, or recompute both the same way |
-| extraction speed-up 2026-08-18 | one side — same `?run=`, 1,85× the bits per item |
-| onset flush 2026-08-19 | one side — the bit-to-item mapping changed |
-| `focus=on` vs `off` | old attended vs unattended — never mix. Post-D66 is always `off` `[D66]` |
-| `pre_w` (2026-08-26) | one weight — for the TABLES. `z_raw`/`z_ctr` pool across weights `[D45]` |
-| scoring key 2026-08-28 | one side — a pool chosen before it was chosen on a different key `[D48]` |
-| scoring per-node centre 2026-08-31 | post-D69 only — pool chosen like the pass `[D69]` |
-| spectral channel deleted 2026-08-28 | post-D53 only — no `ent_w` / z_h `[D53]` |
-| runs ranking deleted 2026-08-29 | post-D55 only — no `wruns` / zr `[D55]` |
-| concordance / half-window ranking 2026-08-29 | post-D56 only — tables use `zc_ctr` `[D56]` |
-| both LSB channels rank 2026-08-29 | post-D58 only — D56 sessions ranked on `zc_ctr` ALONE `[D58]` |
-| LSB-as-is 2026-08-31 | post-D65 only — LSB z, no prior archive `[D65]` |
-| block-σ ranking 2026-08-31 | post-D68 only — tables in block-σ units `[D68]`. `z_raw`/`z_ctr` still pool |
-| unbounded key, per-item weights 2026-09-02 | post-D75 only — earlier keys were truncated at 12 and scaled an item down when it had no concordance. Splits TABLES **and the chosen POOL**; `z_raw`/`z_ctr`/`zc_ctr` still pool `[D75]` |
-| centred-half concordance 2026-09-02 | post-D77 only — earlier `zc_ctr` is z − \|h1−h2\|/√2, not a sign test. Splits TABLES **and the chosen POOL** at `pre_w` > 0; `z_raw`/`z_ctr` still pool `[D77]` |
-| v3 vs any v2.x | v3 only |
-| camera chip `[D80]` | one of OV5647, IMX219 — `sensor=` in the CSV. ⚠ `sensor=` names the MASTER's chip only; a mixed array is not labelled — split mixed sessions by date `[D89]` |
-| IMX219 driver fix 2026-09-23 `[D89]` | post-D89 only — before it an IMX node emitted RAW8-parsed packed bytes |
-| IMX219 dark operation `[D90]` | post-D90 only — the entropy source is readout noise, not photons. Never pool with any lit session |
-| scoring 10-pass sum `[D81]` | D81..D86 only — the pool was chosen on the sum of 10 keys |
-| scoring 20-pass sum `[D86]` | post-D86 only — 20 keys, and a sweep inside the scoring run |
-| settle pause after a rung change `[D87]` | one side for block σ / soft-down counts — the settling items are gone. `z_raw`/`z_ctr` still pool |
-
-Unlimited-mode data carries two more: split on `round` before pooling with a single-pass session,
-and decide what to do about combinations that recur across rounds before pooling rounds together.
+## ⛔ A session is a closed unit `[D94]`
+Everything is judged **inside one session**: its blocks, its pairwise matrix, its tables. Sessions
+are never compared, pooled or merged, and nothing is exported — there is no CSV and no session
+archive. A session ends with its data (RAM only). Parameters, firmware and instrument may change
+freely between sessions for exactly that reason; what must hold is that they do not change
+**within** one.
 
 ---
 
@@ -365,11 +322,11 @@ round's pass `[D85]`) are what recalibrate it — soft-down itself does not call
 - **σ is the only trip criterion.** |mean| is a flag (`mflag` in `/loops`), never an exclusion —
   centring removes a constant block offset, and the offsets come from the exposure rung `[D11]`.
   ⚠ Replay a threshold change against `/loops` before believing it.
-- `NODE_SOFT_MIN_COMBINE` is **1** — a solo combine is possible `[D13]`; `k` is in the CSV per item.
+- `NODE_SOFT_MIN_COMBINE` is **1** — a solo combine is possible `[D13]`; `k` is kept per item.
 - **Quarantine**: a block a tripping node could have contaminated is excluded from ranking
-  (`skip_rank=1`) but stays in the CSV. Fires on every trip, but only when that node was in the
+  (`skip_rank=1`) but stays in `results[]`. Fires on every trip, but only when that node was in the
   block's combine `[D14]`.
-- A soft-down arm still writes its z to the archive, so any exclusion can be undone offline `[D41]`.
+- A soft-down arm still records its per-node z (`s_node_z`) `[D41]`.
 
 **A node whose camera stalls is REPORTED, DROPPED and REBOOTED** — nothing to fall back to by
 design. It replies `E:<reason>`; the master names it in `fault`, drops it, bumps `nodes[].reboots`,
@@ -384,8 +341,7 @@ A run that dies part-way produces **no z at all** (`gcp_zscore_raw()` returns fa
 
 ## Current-item display
 A "Now:" card shows the number being scored or the combination being measured, in large type.
-The session is always unattended `[D66]`. CSV still writes `# focus=off` so new sessions pool
-with old unattended, never with `focus=on`.
+The session is always unattended `[D66]`.
 - The card updates ~70 ms **before** the bits start ⛔ `[D33]`.
 - `GET /focus` (~60 B) polled at 10 Hz, separate from the 2,5 KB `/status`; `seq` is monotonic per
   window, so the UI counts *missed* windows — a skipped window names the wrong numbers.
@@ -454,9 +410,8 @@ ladder `[D46]``[D65]`), no stuck frames, `mean_px` ≥ 5,0 `[D18]`,
   block's row now spans **that block's own pass** rather than the scoring that used to dominate the
   accumulation — a shorter span and therefore a noisier σ, but one that describes the measured
   items. ⚠ A `?cal=0` session has no reset at all. For anything that has to
-  be located in time use **`GET /camlog` on the node** `[D64]`, or the per-item `w0..w3` in the
-  CSV — never these. ⚠ `w0..w3` only survive until the next compaction; `/camlog` is the record
-  that does not depend on the master keeping the row.
+  be located in time use **`GET /camlog` on the node** `[D64]` — never these. `/camlog` is the
+  record that does not depend on the master keeping the row.
   ⚠ `cam_px` 0 = the node did not report it, **not** a dark frame.
   ⚠ Every other `cam_*` field is what the last SWEEP found: two blocks on one setting carry an
   identical `cam_bias` and describe neither. That is why a σ 6,94 block was unattributable.
@@ -539,7 +494,7 @@ An OV5647 enclosure is **LIT, not dark** `[D28]`. An IMX219 enclosure is **total
 
 ## Project structure
 - **main/elotto.c** – app_main, Ethernet, webserver, HTML/JS UI. Endpoints: `/` `/status` `/start`
-  `/abort` `/loops` `/extremes` `/results.csv` `/focus` `/pause` `/calibrate` `/pool` (400) `/probe`
+  `/abort` `/loops` `/extremes` `/focus` `/pause` `/calibrate` `/pool` (400) `/probe`
   `/expose` `/diag` `/diagjson` `/camtest` `/camlog` `/linearity`, +5 from elotto_ota.
   ⚠ The URI-handler cap fails silently (404, return value unchecked) — the count lives at
   `start_webserver()`; prefer `?all=1` on an existing endpoint over a new handler.
@@ -558,7 +513,7 @@ An OV5647 enclosure is **LIT, not dark** `[D28]`. An IMX219 enclosure is **total
   `POST /expose?exp=<lines>[&gain=<g>]` sets one node's live operating point (tuning the physical
   LIGHT against a live reading; resets camera stats so `mean_px` answers in ~2 s). Not sticky —
   the next sweep overwrites it, correctly. 409 while measuring.
-- **main/sensor.c/h** – GCP analysis, scoring/pooling, the pass, blocks, centring, drift,
+- **main/sensor.c/h** – GCP analysis, scoring and the pool, the pass, blocks, centring, drift,
   soft-down, publishing. ⚠ Counter and round-base semantics are commented at the definitions in
   `sensor.h`.
 - **main/nodes.c/h** – the array: UDP link, discovery, calibration handshake, per-node health,
@@ -632,8 +587,8 @@ floor is load-bearing.
 | slave2 | 192.168.178.155 | e8:f6:0a:e0:c7:a1 | — | factory = updater, ota_0 = slave app |
 
 **Say master/slave0/slave1/slave2, never the IP ending.**
-⚠ **Column order in a results CSV is DISCOVERY order**, not the slave number, and changes between
-sessions — the IP list in the header is what makes `z0..z3` decodable; never map by position.
+⚠ **Node order is DISCOVERY order**, not the slave number, and changes between sessions — the IP
+per row (`/status` `nodes[]`, `/diagjson?all=1`) is what names a board; never map by position.
 ⚠ **COM ports are not stable** — list the ports before an `erase-flash`; a wrong port wipes a
 working node.
 Addresses are informational: the master finds slaves by UDP broadcast.
@@ -701,6 +656,8 @@ put back on a known-good image without USB.
   Check `/status` `state` — if `running` (or not clearly idle/done/aborted), **ask** before
   aborting or flashing. Do not silently abort a live measurement to push firmware.
 - ⚠ **After every OTA, poll `fw_sha` in `/status` until it CHANGES** `[D27]`.
+  ⚠ "All four run the same code" is a policy, not a fact — `fw_sha` per node is in
+  `/diagjson?all=1`.
 - ⚠ **A node that pings but refuses port 80 is not dead** — check `/otainfo` before USB `[D40]`.
   ⚠ An *immediate* close on every endpoint (connect succeeds, no response) is socket-table
   eviction, not a crash `[D82]`. To prove the array is still measuring, watch a slave's `/camlog`

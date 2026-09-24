@@ -50,7 +50,7 @@
  * now changes the form field, the clamp and the validator together.
  *
  * ⚠ Defaults only. Every one is overridable per session on /start, so
- * changing a default here does NOT retroactively describe an archived run. */
+ * changing a default here does not describe a session that overrode it. */
 /* ⛔ No round-length warning `[D85]`. It used to fire above 30 min, but since
  * `SCORE_PASSES` 20 the scoring is 1240 of a Eurojackpot round's ~1340 cycles, so
  * the shortest legal round (`UNLIM_RUNS_MIN` 10) exceeds any 30-minute bar at
@@ -187,9 +187,7 @@ _Static_assert(((long long)RUN_S_MAX * 1000 * RUN_SEGS_REF) / RUN_MS_REF <= EL_S
  * round's scoring may pick overlapping numbers. Each recurrence is a separate
  * measurement and gets its own row — nothing is averaged or overwritten — so
  * `round` is part of a row's identity and `index` (the combination id) is only
- * meaningful WITHIN a round: the pool it enumerates changes every round.
- * ⚠ Never pool this with a PRE-D67 single-pass archive without splitting on the
- * `round` column first. */
+ * meaningful WITHIN a round: the pool it enumerates changes every round. */
 #define UNLIM_RUNS_DEFAULT     100   // measurement runs per round
 #define UNLIM_RUNS_MIN          10
 #define UNLIM_RUNS_MAX    NUM_RUNS
@@ -329,7 +327,7 @@ _Static_assert(((long long)RUN_S_MAX * 1000 * RUN_SEGS_REF) / RUN_MS_REF <= EL_S
 #define NODE_SOFT_MIN_COMBINE  1     // never soft-exclude below this many live nodes
 /* Concordance weight of the ranking key (D65), ?wpre=<0..1>.
  * DEFAULT 0: z alone. The form pre-fills 0,8. Curl must not silently pick a
- * weight; the page does, and pre_w= in the CSV says which arm ran. */
+ * weight; the page does, and /status `pre_w` says which one ran. */
 #define ENT_W_PRE_DEFAULT    0.0
 #define ENT_W_PRE_FORM       0.8
 
@@ -379,12 +377,11 @@ typedef struct {
      * ⚠ It also removes any real effect that is CONSTANT across a whole block,
      * which is a pre-registration decision, not a detail: what this instrument
      * can still see is an effect that varies BETWEEN items inside a block.
-     * z_score stays raw and untouched, so the uncentred view survives in the
-     * CSV forever. Provisional (= z_score) until the block closes. */
+     * z_score stays raw and untouched, so the uncentred view survives beside
+     * it. Provisional (= z_score) until the block closes. */
     float      z_ctr;
     uint16_t   block;      // which block this item was measured in (v3)
-    /* Which ROUND measured it, 1-based (a pre-D67 single-pass archive reads 1
-     * throughout). The pool is re-scored every round, so `index` enumerates a
+    /* Which ROUND measured it, 1-based. The pool is re-scored every round, so `index` enumerates a
      * DIFFERENT combination space per round — the pair (round, index) is the
      * identity, and nums[]/euro[] are what a reader should actually key on. */
     uint16_t   round;
@@ -395,8 +392,7 @@ typedef struct {
     uint8_t    euro[2];
     /* ⛔ `zp_ctr`, the second LSB channel of D45, was DELETED on 2026-09-02:
      * D65 left one stream, so it had become a bit-for-bit alias of z_ctr and
-     * its per-node archive a copy of z0..z3. Nothing is lost — recover it
-     * offline as z_ctr. Pre-D65 archives keep their own column.
+     * its per-node archive a copy of the per-node z. Nothing was lost.
      * ⚠ `raw_sigma` in /diag is a DIFFERENT number: the per-mini-run sigma of
      * one node's stream, 1,06..1,28 across the four nodes on certified rungs
      * (2026-08-27) and degrading hard outside them — 1,69 at mean_px 5, above
@@ -538,10 +534,10 @@ typedef struct {
      * /status publishes as fw_sha, so the two are directly comparable. From the
      * node's 'D' reply.
      * Empty for the master (its own identity comes from esp_app_get_description)
-     * and for a node whose firmware predates the field. It is in the CSV header
-     * because "all four run the same code" is a policy, not a fact: on
-     * 2026-08-19 the master ran a -dirty build from 10:57 and the slaves one
-     * from 09:59, and the archive of that session records neither. */
+     * and for a node whose firmware predates the field. /diagjson?all=1 shows
+     * it per node because "all four run the same code" is a policy, not a
+     * fact: on 2026-08-19 the master ran a -dirty build from 10:57 and the
+     * slaves one from 09:59. */
     char     fw_sha[17];
 } NodeStatus;
 
@@ -736,21 +732,20 @@ typedef struct {
     volatile int     runs_completed;
     /* Items measured this session, across every round. Monotone: a compaction
      * never lowers it, because the measurement happened. This is what /status
-     * publishes as `completed`, what round_item_base is taken from, and what
-     * the CSV header counts in `items=`. */
+     * publishes as `completed` and what round_item_base is taken from. */
     volatile int     items_done;
     /* Items dropped by compaction, i.e. measured and merged into the pass
-     * statistics but no longer individually in results[] or the CSV. 0 for any
-     * session that never filled the buffer, which is most of them.
-     * ⚠ Published so an archive can say what it is NOT: a CSV with
-     * `compacted=` non-zero holds the extremes plus whatever else survived, and
-     * is not a sample of the session. Never compute a distribution from it. */
+     * statistics but no longer individually in results[]. 0 for any session
+     * that never filled the buffer, which is most of them.
+     * ⚠ Non-zero means results[] holds the extremes plus whatever else
+     * survived, not a sample of the session. Never compute a distribution
+     * from its rows. */
     int              compacted;
     int              runs_total;       // combinations in the CURRENT round
     /* ── Unlimited mode (see the block near the top of this file) ──────
      * `unlimited` and `runs_cap` are session parameters written by /start and
      * NOT reset by elotto_task — they are the session's tag.
-     * The rest is per-round bookkeeping the UI and the CSV read. */
+     * The rest is per-round bookkeeping the UI reads. */
     bool             unlimited;        // rounds repeat until Abort / results full
     int              runs_cap;         // measurement runs a round may spend
     int              round;            // 1-based; 0 before the first round starts
@@ -863,9 +858,6 @@ typedef struct {
     RunResult        low[TOP_N];          // lowest rank_key so far, asc
     volatile bool    abort_requested;
     // ── Current-item display (always on; session is unattended, D66) ──
-    bool             focus_mode;          // always false; CSV `focus=off` so new
-                                          // sessions pool with old unattended, never
-                                          // with `focus=on` `[D1]`
     volatile bool    paused;              // hold BETWEEN runs (never inside one)
     int64_t          paused_ms;           // total time held, excluded from elapsed_ms
                                           // so a session with a 40-min break is not
@@ -877,7 +869,7 @@ typedef struct {
     int              run_target_ms;       // requested window (from ?run=), for status
     int              gap_ms;              // intentional blank between runs (?gap=)
     /* Runs voided because the pre-window ring flush did not finish in
-     * ONSET_SETTLE_MS. Published in /status and the CSV header: a silent
+     * ONSET_SETTLE_MS. Published in /status: a silent
      * safeguard that fires is indistinguishable from one that never had to. */
     uint32_t         flush_timeouts;   /* per SESSION -- cleared at session start */
     int              run_segments;        // segment count derived for this session
@@ -982,16 +974,13 @@ typedef struct {
     uint8_t          pool_n_euro;
     uint8_t          pool_need_main;      // a draw needs this many (5 or 6)
     uint8_t          pool_need_euro;      // 2 for Eurojackpot, 0 for 6-of-49
-    uint8_t          pool_auto;           // always 1 since D66: no human confirms the
-                                          // proposal, and that fact belongs in the
-                                          // record
     LoopStat        *loop_hist;           // per-block health table (LOOP_HIST entries,
                                           // PSRAM; NULL if the allocation failed, in
                                           // which case only the drift/σ aggregates exist)
     /* The pass, in MEASUREMENT order: results[j] is the j-th item measured
      * (its combination id is results[j].index). Compact by construction, so
      * the prefix [0 .. runs_completed) is always the complete record — an
-     * abort needs no compaction and /results.csv streams it directly. */
+     * abort needs no compaction. */
     RunResult        results[NUM_RUNS];
 } ElottoStatus;
 
@@ -1012,19 +1001,11 @@ uint32_t fast_rng(void);
 const camera_cal_t *elotto_last_calibration(void);
 
 /* Create the archive mutex that serialises pass_compact() against the archive
- * readers (results_row_z). Called once from app_main before
+ * reader on the HTTP task (results_extremes). Called once from app_main before
  * any HTTP reader can run. Eager, not lazy: a heap failure here is a loud
  * startup error instead of a silent return to unlocked behaviour on the first
  * poll. Idempotent. */
 void results_archive_init(void);
-
-/* Per-node raw z for measured item j (measurement order), together with the
- * item's RunResult row, read under one lock so a concurrent round-boundary
- * compaction cannot pair a row from the old layout with z-values from the new
- * one. Returns false if the archive is missing or j is out of range.
- * out_z[MAX_NODES] gets NaN for nodes that did not contribute that run. */
-bool results_row_z(int j, RunResult *out_row, float out_z[MAX_NODES],
-                   float out_w[MAX_NODES]);
 
 /* The combined ranking key of one row, in units of that item's own block σ
  * (D68): block-centred z and concordance, weighted by pre_w. The ONE accessor

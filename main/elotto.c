@@ -15,7 +15,7 @@
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "esp_timer.h"
-#include "esp_app_desc.h"   /* the running image's version/sha for the CSV header */
+#include "esp_app_desc.h"   /* the running image's version/sha for /status and /diagjson */
 #include "gcp.h"           /* GCP_SEGMENT_BITS, for the round-length model */
 #include "sensor.h"
 #include "focus.h"
@@ -266,8 +266,8 @@ static const char HTML[] =
 "<div id='progArea' style='display:none'>"
 /* The parameters this session is actually running on. The form is hidden while a
    session runs, and a session started by curl never showed one — so without this
-   the operator can see the bars move but not what produced them, and an archived
-   screenshot cannot be matched to its CSV. Read from /status (the DEVICE's
+   the operator can see the bars move but not what produced them. Read from
+   /status (the DEVICE's
    numbers), so a curl-started run labels itself correctly too. */
 "<div id='paramBadge' style='display:none;font-size:.8em;line-height:1.9;"
 "text-align:center;margin-bottom:12px;padding:8px 10px;"
@@ -349,12 +349,6 @@ static const char HTML[] =
 "<div id='sigLine' style='color:#a0c0a0;font-size:.82em;margin-bottom:4px'></div>"
 "<table><thead id='resHead'></thead>"
 "<tbody id='resBody'></tbody></table>"
-"<div style='text-align:center;margin-top:14px'>"
-/* Full pass is the archival record (never re-measured). Summary is secondary. */
-"<button id='btnSave' class='btn' onclick='doSave()' style='display:none;background:#2e7d32;color:#fff;padding:10px 28px'>&#128190; Save full pass CSV</button>"
-"<div id='saveAll' style='display:none;margin-top:8px;font-size:.8em'>"
-"<a href='/results.csv' style='color:#90ee90'>summary only (10 rows) &#8594; /results.csv</a></div>"
-"</div>"
 "</div>"
 /* Bottom card removed (D78): one sortable Top-10 replaces Top-5 + Bottom-5;
    the low end is a header click away (direction flip). */
@@ -670,8 +664,6 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 // setter see the real transition.
 "pausePendUntil=0;setPauseBtn(false);"
 "startFocus();"
-"document.getElementById('btnSave').style.display='none';"
-"document.getElementById('saveAll').style.display='none';"
 "document.getElementById('resCard').style.display='none';"
 "document.getElementById('resCardWsig').style.display='none';"
 "document.getElementById('resCardTrip').style.display='none';"
@@ -1053,8 +1045,6 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "document.getElementById('resHead').innerHTML='';"
 "document.getElementById('resBody').innerHTML="
 "'<tr><td style=\"color:#d0b0b0;padding:10px\">No items measured yet.</td></tr>';"
-"document.getElementById('btnSave').style.display='none';"
-"document.getElementById('saveAll').style.display='none';"
 "document.getElementById('resCardWsig').style.display='none';"
 "document.getElementById('resCardTrip').style.display='none';"
 "return;}"
@@ -1064,8 +1054,6 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 // can be re-sorted by column (D78); d.top is the fallback until the first
 // /extremes lands.
 "LD=d;"
-"document.getElementById('btnSave').style.display='';"
-"document.getElementById('saveAll').style.display='';"
 "fetchExtremes();"
 "showWsig(d);"
 "showTrip(d);"
@@ -1148,7 +1136,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "+'<th style=\"cursor:pointer\" title=\"leave-one-out half-window concordance. Click to sort the 50\" onclick=\"sortBy(\\'zc\\')\">Conc'+exArrow('zc')+'</th>'"
 /* Plain-language tooltip: the operator is the only reader of this cell, and the
    column is worthless if its meaning has to be looked up. English like the rest
-   of the page (the CSV is the only German artefact). \\n inside a title
+   of the page. \\n inside a title
    attribute wraps the tooltip -- same trick the per-row `det` title uses. */
 "+'<th title=\"Did the four cameras agree?\\n"
 "Each camera measures this item on its own. \\u0394n is how far apart those four "
@@ -1311,7 +1299,6 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "document.getElementById('resCardWsig').style.display='block';"
 "}"
 /* Full pass is the record (never re-measured). Summary is a secondary link. */
-"function doSave(){window.location='/results.csv?all=1';}"
 "</script></body></html>";
 
 /* Serialize one RunResult as a JSON object; returns chars written. */
@@ -1355,7 +1342,7 @@ static int emit_run(char *buf, int cap, const RunResult *r, bool euro)
  * snprintf returns the length it WOULD have written, not the length it did.
  * Feeding that back into `buf + pos` with `sizeof(buf) - pos` underflows the
  * size once `pos` reaches the cap and writes past the buffer — the bug class
- * send_chunk() below already fixes for the CSV path. These two helpers apply
+ * send_chunk() below already fixes for the streamed handlers. These two helpers apply
  * the same clamp to the JSON handlers that accumulate into a fixed buffer. */
 
 /* Remaining room in a fixed buffer, but never less than 1, so a producer that
@@ -1454,7 +1441,7 @@ static esp_err_t status_handler(httpd_req_t *req)
         "\"eth_last_down_ms\":%lld,\"eth_last_up_ms\":%lld,"
         "\"drop_node\":%d,\"drop_uptime_ms\":%lld,"
         "\"drop_eth_up\":%s,\"drop_eth_downs\":%lu,"
-        "\"focus\":%s,\"paused\":%s,\"paused_ms\":%lld,"
+        "\"paused\":%s,\"paused_ms\":%lld,"
         "\"focus_win_ms\":%.1f,\"focus_gap_ms\":%.1f,"
         "\"run_s\":%.2f,\"gap_s\":%.2f,\"run_segs\":%d,"
         "\"cal_budget_ms\":%d,\"cal_ms\":%d,\"cal_elapsed_ms\":%d,"
@@ -1472,7 +1459,6 @@ static esp_err_t status_handler(httpd_req_t *req)
         "\"unlimited\":%s,\"runs_cap\":%d,\"round\":%d,"
         "\"round_base\":%d,\"round_done\":%d,\"round_total\":%d,"
         "\"round_start_ms\":%lu,"
-        "\"pool_auto\":%d,"
         "\"pool_need_main\":%d,\"pool_need_euro\":%d,",
         state_str, mode_str, phase_str,
         g_status.slave_connected ? "true" : "false",
@@ -1501,7 +1487,6 @@ static esp_err_t status_handler(httpd_req_t *req)
         g_status.drop_node, (long long)g_status.drop_uptime_ms,
         g_status.drop_eth_up ? "true" : "false",
         (unsigned long)g_status.drop_eth_downs,
-        g_status.focus_mode ? "true" : "false",
         g_status.paused ? "true" : "false", (long long)g_status.paused_ms,
         g_status.focus_win_ms, g_status.focus_gap_ms,
         g_status.run_target_ms / 1000.0, g_status.gap_ms / 1000.0,
@@ -1535,7 +1520,6 @@ static esp_err_t status_handler(httpd_req_t *req)
             ? g_status.items_done - g_status.round_item_base : 0,
         g_status.round_total,
         (unsigned long)g_status.round_start_ms,
-        g_status.pool_auto,
         g_status.pool_need_main, g_status.pool_need_euro);
 
     /* The proposed pool, and only while it is actually being asked about: it is
@@ -1721,9 +1705,9 @@ static esp_err_t status_handler(httpd_req_t *req)
 
 /* snprintf returns the length it WOULD have written, not the length it did.
  * Feeding that straight to httpd_resp_send_chunk() sends whatever follows the
- * buffer in memory: the CSV header overran its 224 bytes, so every archived
- * file carries a truncated header followed by a slice of adjacent memory.
- * Clamp once, here, rather than at eleven call sites. */
+ * buffer in memory — a streamed header once overran its buffer and shipped a
+ * slice of adjacent memory with it. Clamp once, here, rather than at every
+ * call site. */
 static void send_chunk(httpd_req_t *req, const char *buf, int len, size_t cap)
 {
     if (len < 0) return;
@@ -1867,256 +1851,6 @@ static esp_err_t extremes_handler(httpd_req_t *req)
         send_chunk(req, buf, len, sizeof(buf));
     }
     httpd_resp_send_chunk(req, "]}", 2);
-    httpd_resp_send_chunk(req, NULL, 0);
-    return ESP_OK;
-}
-
-/* One double in German notation. The ';' separator is only half the decision —
- * a decimal point in the cell makes Excel read the whole column as text, which
- * is exactly the failure the separator was changed to avoid. */
-static const char *de_num(char *dst, size_t cap, double v, int prec)
-{
-    snprintf(dst, cap, "%.*f", prec, v);
-    for (char *p = dst; *p; p++) if (*p == '.') { *p = ','; break; }
-    return dst;
-}
-
-/* One summary row: which group it belongs to, its rank inside that group, and
- * both views of its z. `z_std` is rank_key() (block-σ units, D68) — the
- * selection key, so a reader can check the choice without the live UI. */
-static int csv_row(char *buf, size_t cap, const char *group, int rank,
-                   const RunResult *r)
-{
-    char zb[32], sb[32], ab[32], kb[32];
-    /* Z* = rank_key() (block-σ units, D68) — already standardised on the
-     * item's own block, so nothing rescales it here (D71). */
-    double zs = rank_key(r);
-    return snprintf(buf, cap,
-        "%s;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%s;%s;%s;%d;%d;%s\n",
-        group, rank, r->index,
-        r->nums[0], r->nums[1], r->nums[2],
-        r->nums[3], r->nums[4], r->nums[5],
-        r->euro[0], r->euro[1],
-        de_num(zb, sizeof(zb), r->z_score, 6),
-        de_num(sb, sizeof(sb), zs, 4),
-        de_num(ab, sizeof(ab), (double)r->z_ctr, 4),
-        (int)r->block, (int)r->k,
-        de_num(kb, sizeof(kb), zs, 4));
-}
-
-/* ── /results.csv GET – Top-5 + Bottom-5 by rank_key(); ?all=1 for everything
- * Default is the 10-row SUMMARY (`group` = high/low). `GET /results.csv?all=1`
- * streams the full pass: one row per measured item, RAW z, in measurement
- * order, live at any moment and still there after an abort. The prefix
- * [0..runs_completed) is complete by construction — runs_completed is bumped
- * only after a row is fully written.
- *
- * ⚠ RAM only, and ⚠ the summary is not the record. Ten rows cannot be
- * re-derived into a pass, no item is ever re-measured, and a master reboot
- * loses everything: on a long session pull `?all=1`. The Save button fetches
- * `?all=1`; the summary link is the secondary act.
- *
- * German CSV throughout (user decision): ';' separator, ',' decimal. Fixed
- * columns for both modes (n6 = 0, e1 = e2 = 0 where not applicable) so a
- * parser never has to sniff the mode from the width. `z_raw` is exactly
- * results[].z_score; `z_std` / `key` are rank_key() in that item's block-σ
- * units (D68). pass_mean/pass_sigma in the header remain the session z
- * health numbers and do not reconstruct Z*. */
-static esp_err_t results_csv_handler(httpd_req_t *req)
-{
-    /* 768: the header line alone runs past 470 characters with the German
-     * six-decimal pass statistics, the unlimited-mode fields and the LSB
-     * fields; it was 512, and before that 224.
-     * ⚠ snprintf TRUNCATES rather than overflowing, so an undersized buffer
-     * here does not crash — it silently shortens the archive's own provenance
-     * line, which is the field nobody re-reads until they need it. Recount when
-     * adding a header field. */
-    char buf[1024], qry[64], val[8];
-    bool all = false;
-    if (httpd_req_get_url_query_str(req, qry, sizeof(qry)) == ESP_OK &&
-        httpd_query_key_value(qry, "all", val, sizeof(val)) == ESP_OK)
-        all = (val[0] != '0');
-
-    httpd_resp_set_type(req, "text/csv");
-    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-
-    int n = g_status.runs_completed;
-    if (n > NUM_RUNS) n = NUM_RUNS;
-
-    char mb[32], sb[32], cb[32], vb[32], stb[32], rb[32], gb[32];
-    char pw[16];
-    /* The master's own image. The slaves' come from their 'D' replies and are
-     * emitted on the fw_nodes line below; a node that never answered one, or
-     * runs firmware older than the field, shows "?" rather than nothing, or the
-     * line would silently shorten and look like a different node count. */
-    const esp_app_desc_t *fw_desc = esp_app_get_description();
-    char master_sha[17] = {0};
-    for (int i = 0; i < 8; i++)
-        snprintf(master_sha + i * 2, 3, "%02x", fw_desc->app_elf_sha256[i]);
-    const char *score_str =
-        g_status.score_dir == SCORE_DIR_LOW ? "low" :
-        g_status.score_dir == SCORE_DIR_ABS ? "abs" : "high";
-    /* Node identity in the header: discovery order is not stable across
-     * sessions, so map columns z0..z3 through this IP list. */
-    /* items=<measured>/<planned>. In unlimited mode "planned" is the end of the
-     * CURRENT round — there is no session total by construction — so it stays
-     * monotone instead of reading 1234/84. */
-    int planned = g_status.unlimited
-                ? g_status.round_item_base + g_status.round_total
-                : g_status.runs_total;
-    int nlen = snprintf(buf, sizeof(buf),
-        "# elotto v3 mode=%s sensor=%s focus=%s score=%s items=%d/%d ranked=%d excl=%d void=%d "
-        "blocks=%d paused_ms=%lld pass_mean=%s pass_sigma=%s pass_chi2=%s "
-        "pass_stouffer=%s v_eff=%s open=%d flush_timeouts=%lu drift_t=%.2f "
-        "unlimited=%s runs_cap=%d rounds=%d "
-        /* ⚠ The window in BOTH units. Seconds alone are not enough: the
-         * segs<->ms calibration is a MEASUREMENT and was re-measured on
-         * 2026-08-18, so the same run_s=5 means 70513 segments before it and
-         * 130435 after — 1,85x the bits per item. Without run_segs an archived
-         * pass cannot be told apart from one taken on the other instrument. */
-        /* ⚠ WHICH INSTRUMENT. This file is the archive, and the project's whole
-         * data policy is "never pool across instrument boundaries" — pre/post
-         * the extraction speed-up, pre/post the onset flush, pre/post centring.
-         * Until 2026-08-19 the firmware identity lived only in /status, i.e.
-         * only while the master stayed up, and a 6,6 h session that ran on a
-         * `-dirty` build recorded nothing at all about it. Version first
-         * (readable), elf sha second (exact, and the only field that separates
-         * two builds of the same commit). */
-        /* `compacted=` is what this file is NOT. Non-zero means the rows below
-         * are the |rank_key| extremes plus whatever else survived, not a
-         * sample of the session — the pass statistics in this header still
-         * describe every item measured, but a distribution computed from the
-         * rows will not. Zero for any session that never filled the buffer. */
-        /* ── Concordance weight ───────────────────────────────────────
-         * ⚠ `pre_w` SPLITS THE POOLING TABLE for the ranking tables.
-         * z_raw/z_ctr still pool across weights. */
-        "run_s=%s run_segs=%d gap_s=%s compacted=%d "
-        "pre_w=%s pre_n=%d "
-        "fw=%s/%s\n"
-        "# nodes=",
-        g_status.mode == MODE_EUROJACKPOT ? "euro" : "649",
-        camera_sensor_name(),
-        g_status.focus_mode ? "on" : "off", score_str,
-        n, planned, g_status.pass_n_valid, g_status.pass_n_excl,
-        g_status.pass_n_void,
-        g_status.loops_done, (long long)g_status.paused_ms,
-        de_num(mb, sizeof(mb), g_status.pass_mean, 6),
-        de_num(sb, sizeof(sb), g_status.pass_sigma, 6),
-        de_num(cb, sizeof(cb), g_status.pass_chi2, 4),
-        de_num(stb, sizeof(stb), g_status.pass_stouffer, 4),
-        de_num(vb, sizeof(vb), g_status.v_eff, 4),
-        g_status.pass_n_open,
-        (unsigned long)g_status.flush_timeouts,
-        g_status.drift_t,
-        g_status.unlimited ? "on" : "off", g_status.runs_cap, g_status.round,
-        de_num(rb, sizeof(rb), g_status.run_target_ms / 1000.0, 2),
-        g_status.run_segments,
-        de_num(gb, sizeof(gb), g_status.gap_ms / 1000.0, 2),
-        g_status.compacted,
-        de_num(pw, sizeof(pw), g_status.pre_w, 3),
-        g_status.pre_n,
-        fw_desc->version, master_sha);
-    send_chunk(req, buf, nlen, sizeof(buf));
-    for (int i = 0; i < g_status.node_count && i < MAX_NODES; i++) {
-        nlen = snprintf(buf, sizeof(buf), "%s%s",
-                        i ? "," : "",
-                        i ? g_status.nodes[i].ip : "master");
-        send_chunk(req, buf, nlen, sizeof(buf));
-    }
-    httpd_resp_send_chunk(req, "\n", 1);
-
-    /* Per-node image, in the SAME order as the nodes line above — a separate
-     * line rather than fields on that one, because the node list is what maps
-     * z0..z3 to a board and every existing parser reads it as it stands. All
-     * three analysis scripts skip '#' lines, so an added one costs nothing. */
-    nlen = snprintf(buf, sizeof(buf), "# fw_nodes=");
-    send_chunk(req, buf, nlen, sizeof(buf));
-    for (int i = 0; i < g_status.node_count && i < MAX_NODES; i++) {
-        const char *sha = i ? g_status.nodes[i].fw_sha : master_sha;
-        nlen = snprintf(buf, sizeof(buf), "%s%s", i ? "," : "",
-                        sha[0] ? sha : "?");
-        send_chunk(req, buf, nlen, sizeof(buf));
-    }
-    httpd_resp_send_chunk(req, "\n", 1);
-
-    if (all) {
-        /* `round` is APPENDED, not inserted: the existing columns keep their
-         * positions so an analysis script written against an older file still
-         * parses. ⚠ `item` is the combination id WITHIN its round — the pool is
-         * re-scored every round in unlimited mode, so the same id names a
-         * different draw in a different round. Key on (round, item), or simply
-         * on n1..n6/e1;e2, which are unambiguous either way. */
-        /* ⚠ `key`, `zc_ctr` and `w0..w3` are APPENDED after `round` so every
-         * column an existing script knows keeps its position (zh/h* went with
-         * the spectral channel D53; zp_ctr/p0..p3 with the second LSB channel
-         * on 2026-09-02 — since D65 they were a copy of z_ctr and z0..z3).
-         * w0..w3 are the per-node camera σ of that item's own window (D62).
-         * Empty = no report, not zero. */
-        int len = snprintf(buf, sizeof(buf),
-            "order;item;n1;n2;n3;n4;n5;n6;e1;e2;z_raw;z_ctr;block;k;skip_rank;"
-            "z0;z1;z2;z3;round;key;zc_ctr;w0;w1;w2;w3\n");
-        send_chunk(req, buf, len, sizeof(buf));
-        for (int j = 0; j < n; j++) {
-            char zb[32], ab[32], kb[32], cbz[32];
-            char nz[MAX_NODES][32], nw[MAX_NODES][32];
-            /* Row and per-node z in one locked snapshot, PER ROW. The lock is
-             * released before send_chunk, so a round-boundary compaction can
-             * still run BETWEEN two rows of this stream — the guarantee is that
-             * no single row mixes an old-layout RunResult with new-layout
-             * z-values, not that the file is a self-consistent sample. The
-             * compacted= header field already says the latter. */
-            RunResult row;
-            float nodez[MAX_NODES], nodew[MAX_NODES];
-            if (!results_row_z(j, &row, nodez, nodew)) {
-                for (int i = 0; i < MAX_NODES; i++)
-                    nodez[i] = nodew[i] = NAN;
-            }
-            for (int i = 0; i < MAX_NODES; i++) {
-                if (isnan((double)nodez[i]))
-                    nz[i][0] = '\0';
-                else
-                    de_num(nz[i], sizeof(nz[i]), (double)nodez[i], 6);
-                if (isnan((double)nodew[i]))
-                    nw[i][0] = '\0';
-                else
-                    de_num(nw[i], sizeof(nw[i]), (double)nodew[i], 4);
-            }
-            len = snprintf(buf, sizeof(buf),
-                "%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%s;%s;%d;%d;%d;%s;%s;%s;%s;%d;"
-                "%s;%s;%s;%s;%s;%s\n",
-                j + 1, row.index,
-                row.nums[0], row.nums[1], row.nums[2],
-                row.nums[3], row.nums[4], row.nums[5],
-                row.euro[0], row.euro[1],
-                de_num(zb, sizeof(zb), row.z_score, 6),
-                de_num(ab, sizeof(ab), (double)row.z_ctr, 4),
-                (int)row.block, (int)row.k, (int)row.skip_rank,
-                nz[0], nz[1], nz[2], nz[3], (int)row.round,
-                de_num(kb, sizeof(kb), rank_key(&row), 4),
-                de_num(cbz, sizeof(cbz), (double)row.zc_ctr, 4),
-                nw[0], nw[1], nw[2], nw[3]);
-            send_chunk(req, buf, len, sizeof(buf));
-        }
-        httpd_resp_send_chunk(req, NULL, 0);
-        return ESP_OK;
-    }
-
-    int len = snprintf(buf, sizeof(buf),
-        "group;rank;item;n1;n2;n3;n4;n5;n6;e1;e2;z_raw;z_std;z_ctr;block;k;"
-        "key\n");
-    send_chunk(req, buf, len, sizeof(buf));
-    /* z_std in this file is rank_key() (block-σ units, D68). */
-    int tn = g_status.result_count; if (tn > TOP_N) tn = TOP_N;
-    for (int i = 0; i < tn; i++) {
-        len = csv_row(buf, sizeof(buf), "high", i + 1, &g_status.top[i]);
-        send_chunk(req, buf, len, sizeof(buf));
-    }
-    int ln = g_status.low_count; if (ln > TOP_N) ln = TOP_N;
-    for (int i = 0; i < ln; i++) {
-        len = csv_row(buf, sizeof(buf), "low", i + 1, &g_status.low[i]);
-        send_chunk(req, buf, len, sizeof(buf));
-    }
-
     httpd_resp_send_chunk(req, NULL, 0);
     return ESP_OK;
 }
@@ -2513,9 +2247,7 @@ typedef struct {
     int          gap_ms;
     int          run_segments;
     int          cal_budget_ms;
-    bool         focus_mode;
     ScoreDir     score_dir;
-    uint8_t      pool_auto;
     double       pre_w;
     int          pre_n;
     ElottoState  state;
@@ -2531,9 +2263,7 @@ static void start_snap_save(StartSnap *s)
     s->gap_ms        = g_status.gap_ms;
     s->run_segments  = g_status.run_segments;
     s->cal_budget_ms = g_status.cal_budget_ms;
-    s->focus_mode    = g_status.focus_mode;
     s->score_dir     = g_status.score_dir;
-    s->pool_auto     = g_status.pool_auto;
     s->pre_w         = g_status.pre_w;
     s->pre_n         = g_status.pre_n;
     s->state         = g_status.state;
@@ -2549,9 +2279,7 @@ static void start_snap_restore(const StartSnap *s)
     g_status.gap_ms        = s->gap_ms;
     g_status.run_segments  = s->run_segments;
     g_status.cal_budget_ms = s->cal_budget_ms;
-    g_status.focus_mode    = s->focus_mode;
     g_status.score_dir     = s->score_dir;
-    g_status.pool_auto     = s->pool_auto;
     g_status.pre_w         = s->pre_w;
     g_status.pre_n         = s->pre_n;
     g_status.state         = s->state;
@@ -2568,9 +2296,9 @@ static esp_err_t start_handler(httpd_req_t *req)
     {
         /* ⚠ NOTHING in g_status is written until every parameter has validated.
          * Every refusal below is a 400, and a 400 must leave the FINISHED
-         * session alone: /status and the /results.csv header still describe it,
-         * and rewriting `pre_w` there mislabels the archive in the one field the
-         * pooling table splits on. Parse into locals, commit once at the end.
+         * session alone: /status still describes it, and rewriting `pre_w` there
+         * would relabel what the page shows about it. Parse into locals, commit
+         * once at the end.
          * Since D79 made a typo'd key and an out-of-range maxruns/gap/cal/score
          * all answer 400, this path is reachable by a plain mistake, not only by
          * a malformed request. */
@@ -2612,7 +2340,7 @@ static esp_err_t start_handler(httpd_req_t *req)
         }
 
         /* ── COMMIT. No 400 past here. A 500 restores the snapshot so /status
-         * and the CSV header of the finished session stay labelled. RUNNING is
+         * of the finished session stays labelled. RUNNING is
          * claimed BEFORE the task exists so a second /start hits 409. */
         StartSnap snap;
         start_snap_save(&snap);
@@ -2624,9 +2352,7 @@ static esp_err_t start_handler(httpd_req_t *req)
         g_status.gap_ms         = parsed.gap_ms;
         g_status.run_segments   = segments;
         g_status.cal_budget_ms  = parsed.cal_ms;
-        g_status.focus_mode     = false;
         g_status.score_dir      = parsed.score_dir;
-        g_status.pool_auto      = 0;
         g_status.pre_w          = parsed.pre_w;
         g_status.pre_n          = 0;
         g_status.state          = ELOTTO_RUNNING;
@@ -2957,7 +2683,7 @@ static esp_err_t diagjson_handler(httpd_req_t *req)
 
     if (all) {
         /* The master's own image id, the same 16 characters its /status calls
-         * fw_sha and the CSV's fw_nodes puts first. "All four run the same
+         * fw_sha. "All four run the same
          * code" is a policy, not a fact — this view has to make it checkable. */
         char master_sha[17] = {0};
         const esp_app_desc_t *fwd = esp_app_get_description();
@@ -3161,11 +2887,11 @@ static bool origin_ok(httpd_req_t *req)
 static void start_webserver(void)
 {
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
-    /* 18 here + 5 registered by elotto_ota = 23 against a cap of 25. Keep
+    /* 17 here + 5 registered by elotto_ota = 22 against a cap of 25. Keep
      * headroom: registration past this limit fails, and the return value is not
      * checked at either call site, so an endpoint would simply 404 with nothing
      * logged. Count them when adding one, and raise the cap before it bites. */
-    cfg.max_uri_handlers  = 25;   /* 18 here + 5 from elotto_ota = 23 */
+    cfg.max_uri_handlers  = 25;   /* 17 here + 5 from elotto_ota = 22 */
     cfg.stack_size        = 8192;
     cfg.recv_wait_timeout = 20;   /* /update streams a ~700 KB body */
     cfg.send_wait_timeout = 20;
@@ -3180,8 +2906,8 @@ static void start_webserver(void)
      * and a just-accepted client that has not sent its request yet is always
      * the victim. The observed symptom is a successful TCP connect followed by
      * an immediate close, every time, while the page keeps updating on its own
-     * existing sockets. That matters because pulling `/camlog` and
-     * `/results.csv` mid-session is the documented procedure. `[D82]` */
+     * existing sockets. That matters because pulling `/camlog` mid-session
+     * is the documented procedure. `[D82]` */
     cfg.max_open_sockets  = 13;
     httpd_handle_t srv = NULL;
     ESP_ERROR_CHECK(httpd_start(&srv, &cfg));
@@ -3194,7 +2920,6 @@ static void start_webserver(void)
         {"/diagjson", HTTP_GET, diagjson_handler, NULL},
         {"/loops",  HTTP_GET,  loops_handler,  NULL},
         {"/extremes", HTTP_GET, extremes_handler, NULL},
-        {"/results.csv", HTTP_GET, results_csv_handler, NULL},
         {"/focus",  HTTP_GET,  focus_handler,  NULL},
         {"/pause",  HTTP_POST, pause_handler,  NULL},
         {"/calibrate", HTTP_GET, calibrate_handler, NULL},

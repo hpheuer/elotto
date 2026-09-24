@@ -19,6 +19,9 @@ Earlier ranking-key formulae are evidence, not the current key.
 ## Instrument generations
 
 ### D1 — What splits the archive, and when
+⛔ **Superseded by D94** (2026-09-24): sessions are never pooled at all, so there is no archive to
+split. Kept as the history of what changed when.
+
 Sessions from different generations must never be pooled. The boundaries so far:
 
 | date | what changed | effect on the data |
@@ -1851,10 +1854,32 @@ No fault, void, flush timeout or stall. At `?run=2` (the form's value): `focus_w
 scoring passes plus 200 pass items: Eurojackpot (1440 windows) ~63 min instead of ~92, 6-of-49
 (1180) ~52 instead of ~76. All four nodes: production 14,6–14,9, consumption 14,9–15,3.
 
-**Pooling: the operator's call, open.** Bits per item and their definition are unchanged (the
+**Frame spacing** (the pooling question this raised is moot since D94). Bits per item and their definition are unchanged (the
 self-test proves the stream bit-identical). What changes is which frames feed an item: the
 extractor now takes about every second pair the sensor offers instead of every 3,5th, so an item's
 bits come from pairs ~134 ms apart instead of ~233 ms, over less wall time. D90's independence
 evidence (bit autocorrelation, window test, pairwise) was taken at the old spacing; the bit
 autocorrelation reads 0,0000 at the new one, the window-level tests are not redone.
 
+### D94 — A session is a closed unit: no pooling, no export (2026-09-24)
+**Operator decision.** Sessions are never compared, pooled or merged. Everything is judged inside
+one session; the focus stays there. The code that existed to carry a session out of the master goes
+with it.
+
+**Removed.** `GET /results.csv` (the 10-row summary and the `?all=1` full pass with its provenance
+header: instrument labels, firmware per node, node list), the page's Save button and summary link,
+the per-item camera-sigma archive `s_node_wsig` (it fed only the CSV's `w0..w3`; the jump board reads
+the live window σ and is unchanged), `results_row_z()`, and the two /status labels that existed only
+to tag an archive: `focus` (always false since D66, `focus=off` so new sessions pooled with old
+unattended ones) and `pool_auto` (always 1 since D66). `docs/data/` is gone. The pooling table and
+the CSV-header section are out of CLAUDE.md; D1 is superseded.
+
+**What stays.** `results[]`, the per-node z archive `s_node_z` and its halves (centring, concordance
+and the pairwise matrix need them), compaction, `/extremes`, `/loops`, `/camlog`, `/diagjson`
+(which keeps `fw_sha` per node, so "all four run the same code" stays checkable during a session).
+⚠ The compaction still keeps up to 100 quarantined rows (D88); that quota existed for the CSV and
+now has no reader.
+
+**Consequence.** A master reboot ends the session and its data; nothing survives it. Changing
+parameters, firmware or the instrument between sessions needs no bookkeeping, because no two
+sessions are ever read together — what must hold is that nothing changes WITHIN a session.

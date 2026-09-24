@@ -35,7 +35,8 @@ do not pool with old `focus=on` archives.
 - **Blocks:** one round = one block (`?maxruns=`, default 100). Sweep, centre, drift, pairwise,
   soft-down at the round boundary.
 - **UI:** parameter line from `/status`, one sortable Top-10 (Z*, Z, Conc, Δn), jump board,
-  GCP health line (`pass_σ`, `v_eff`, `|r|√n`), German CSV (`?all=1` = archive).
+  GCP health line (`pass_σ`, `v_eff`, `|r|√n`). A session is a closed unit: no export, no
+  comparison across sessions `[D94]`.
 - **Illumination:** `tools/tune.html` — live per-node linearity/sweep board (idle only).
 
 ## Screenshots
