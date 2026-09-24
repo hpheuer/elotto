@@ -119,7 +119,8 @@ across rounds a combination can recur — identity is **(round, index)**.
 - Pause stops the clock; Abort publishes the measured prefix.
 
 ### Phases
-**Phase 0 — scoring.** Each number 1..N is measured **`SCORE_PASSES` (20) times** `[D86]`, each pass a
+**Phase 0 — scoring.** It starts 2 s after the sweep before it (`SCORE_START_PAUSE_MS`, a visible
+break for the operator `[D101]`). Each number 1..N is measured **`SCORE_PASSES` (20) times** `[D86]`, each pass a
 full session window in a fresh Fisher–Yates order (never the same number back-to-back `[D5]`).
 After each pass the ranking **key** is added to that number's sum; the pool is the top by that
 sum `[D81]`. Direction pre-registered: `?score=high|low|abs`, default `high` — it only

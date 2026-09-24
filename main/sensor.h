@@ -34,6 +34,7 @@
  * ⚠ It doubles the scoring, which already dominates the round: 20 passes put a
  * Eurojackpot round near 2,5 h at ?run=5. That is the operator's call `[D76]`. */
 #define SCORE_PASSES    20
+#define SCORE_START_PAUSE_MS 2000   // idle break before each round's scoring [D101]
 // Eurojackpot: C(12,5)·C(5,2) = 7920 — the largest configuration under the
 // ~10000 the user set as the ceiling (13+5 would be 12870). 6-of-49: 5005.
 

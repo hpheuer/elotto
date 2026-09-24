@@ -2048,3 +2048,11 @@ is out of every statistic (D14), block σ and soft-down origins are taken at the
 (≤ `?maxruns=`) ≤ 500, so no round is truncated any more and the combination space (≤ `?maxruns=`)
 never reaches the `s_perm` abort. Supersedes D99's numbers; internal RAM against D91's 1000 rows:
 500 × 48 B + 500 × 2 B = 25 KB freed.
+
+### D101 — Finished sweep shown idle; 2 s break before the scoring (2026-09-24)
+**Operator decision.** The calibration bar kept its colour, 100 % and ✔ after a sweep, so beside the
+moving scoring bar it read as if both ran at once. After a sweep the card is now greyed out
+("Camera calibration — idle", "last sweep done (x s)"); full colour only while `phase` is
+`calibrating`. And each round's scoring starts after a 2 s break (`SCORE_START_PAUSE_MS`) so the
+hand-over from sweep to scoring is visible. Nothing is measured in it; `scoring_start_ms` is taken
+after it, so the scoring ETA does not include it.

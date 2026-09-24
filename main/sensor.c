@@ -2715,8 +2715,14 @@ void elotto_task(void *pvParam)
         g_status.scoring_passes = SCORE_PASSES;
         g_status.scoring_done   = 0;
         g_status.scoring_pass   = 0;
-        g_status.scoring_start_ms = (uint32_t)elapsed_ms_now();
         score_rows_begin(mx, euro);
+        /* A visible break between the sweep and the scoring, for the operator
+         * `[D101]`: the page shows the calibration bar finished and the
+         * scoring bar at 0 before the first number appears. Nothing is
+         * measured; every window flushes the ring first anyway (D34). */
+        vTaskDelay(pdMS_TO_TICKS(SCORE_START_PAUSE_MS));
+        if (g_status.abort_requested) { slave_abort(); goto done; }
+        g_status.scoring_start_ms = (uint32_t)elapsed_ms_now();
         g_status.pool_need_main = (uint8_t)nm;
         g_status.pool_need_euro = euro ? 2 : 0;
         /* Unlimited: the pool sizes come from the run cap, and are re-derived every
