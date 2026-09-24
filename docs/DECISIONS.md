@@ -2139,3 +2139,12 @@ scoring lowest Δn" — pool size (main + bonus), the `?score=` direction and th
 picked it (D104). `/status` `pool_used_n`, `pool_used_sum`, `pool_used_round`, set at the pick and
 kept until the next one (unlike `pool_main`/`pool_euro`, which the next scoring replaces live).
 Items of earlier rounds came from their own pools; the line names the latest.
+
+### D109 — Node table Mbit/s is the used rate (2026-09-24)
+**Operator decision.** The node table's Mbit/s cell shows the bits that actually entered the node's
+z per second of session time: `z_n` (windows answered, scoring and pass) × `run_segs` × 224 bits /
+`elapsed_ms`. Measured on the running session (Eurojackpot, `?run=0,5`, gap 0,5 s): 5,84 Mbit per
+window over a ~1,08 s cycle ≈ 5,4 Mbit/s per node, against 18,7 Mbit/s extraction and 21,4 Mbit/s
+reading rate — the rest is produced during gaps and flushes and dropped. The reading
+(`consume_mbit_s`) and extraction (`mbit_s`) rates move to the cell's hover text. Page only; the
+per-node `/diag` poll no longer overwrites the cell.

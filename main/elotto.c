@@ -1006,7 +1006,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "nodeHealth[i]=nodeHealth[i]||{};"
 "if(c.consume_mbit_s>0)nodeHealth[i].cons=c.consume_mbit_s;"
 "if(c.mbit_s>0)nodeHealth[i].prod=c.mbit_s;"
-"if(mb)mb.textContent=mbitTxt(nodeHealth[i],{});"
+"if(mb)mb.title=mbitTitle(nodeHealth[i],N,d);"
 "}).catch(function(){});})(d.nodes[i],i);}"
 "}"
 // Per-node row: session mean Z + p, camera sigma, rate, stalls, lost. The
@@ -1020,7 +1020,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "+'<th align=left title=\"board and discovery address. Column order is DISCOVERY order and changes between sessions\">node</th>'"
 "+'<th align=left title=\"session mean of this node\\u2019s RAW per-run z. Uncentred \\u2014 a constant offset is normal, from the exposure rung. Not a result\">Z</th>'"
 "+'<th align=left title=\"per-mini-run camera \\u03c3 this block. Soft-down trips on this vs the peers\">cam \\u03c3</th>'"
-"+'<th align=left title=\"bits a measurement CONSUMED per second of reading (gaps excluded). Not the extraction rate — that counts words the ring discarded. The SLOWEST node sets the window for all four\">Mbit/s</th>'"
+"+'<th align=left title=\"bits that actually entered this node\\u2019s z, per second of session time: windows answered \\u00d7 segments \\u00d7 " EL_STR(GCP_SEGMENT_BITS) " bits / elapsed. Gaps, flushes, sweeps and scoring overhead all count as time. Hover a cell for the reading and extraction rates\">Mbit/s</th>'"
 "+'<th align=left title=\"exposure this block\\u2019s sweep chose. ! = nothing certified, previous setting kept. Different rungs per node are normal\">exp</th>'"
 "+'<th align=left title=\"frame pairs the sensor failed to deliver. Non-zero = check the hardware\">stalls</th>'"
 "+'<th align=left title=\"runs this node missed. Each costs that run\\u2019s share of the combine, not the session\">lost</th>'"
@@ -1065,8 +1065,8 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
    device performance. cam_cons_mbit is bits a measurement actually READ per
    second of reading. Parenthesised production rate only when a node is too old
    to report the new field. */
-"+'<td id=\"nodeMbit'+i+'\" title=\"'+mbitTitle(H,N)+'\">'"
-"+mbitTxt(H,N)+'</td>'"
+"+'<td id=\"nodeMbit'+i+'\" title=\"'+mbitTitle(H,N,d)+'\">'"
+"+mbitTxt(H,N,d)+'</td>'"
 "+'<td title=\"exposure chosen by this loop\\u2019s calibration\">'+ex+'</td>'"
 "+'<td>'+(N.cam_stalls>0?'\\u26a0 '+N.cam_stalls:'0')+'</td>'"
 "+'<td>'+(N.lost>0?'\\u26a0 '+N.lost:'0')+'</td>'"
@@ -1149,17 +1149,23 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
    Consumption prints bare, production in brackets: a node too old to report
    consumption still shows something, and it stays visibly a different
    quantity (D60). */
-"function mbitTxt(H,N){"
+/* D109: the cell is the USED rate — bits that entered this node's z per
+   second of session time (z_n windows × run_segs × 224 bits / elapsed_ms). The
+   reading rate (consumption while a window reads) and the extraction rate
+   (everything the sensor produced, most of it dropped in the gaps) move to the
+   hover text. */
+"function usedMbit(N,d){"
+"var n=(N&&N.z_n)||0;if(!d||!(n>0)||!(d.elapsed_ms>0)||!(d.run_segs>0))return 0;"
+"return n*d.run_segs*" EL_STR(GCP_SEGMENT_BITS) "/(d.elapsed_ms/1000)/1e6;}"
+"function mbitTxt(H,N,d){"
+"var u=usedMbit(N,d);return u>0?u.toFixed(2):'\\u2013';}"
+"function mbitTitle(H,N,d){"
 "H=H||{};N=N||{};"
 "var c=(H.cons>0)?H.cons:(N.cam_cons_mbit>0?N.cam_cons_mbit:0);"
-"if(c>0)return c.toFixed(2);"
 "var p=(H.prod>0)?H.prod:(N.cam_mbit>0?N.cam_mbit:0);"
-"return p>0?'('+p.toFixed(2)+')':'\\u2013';}"
-"function mbitTitle(H,N){"
-"H=H||{};N=N||{};"
-"var c=(H.cons>0)?H.cons:(N.cam_cons_mbit>0?N.cam_cons_mbit:0);"
-"return c>0?'bits consumed per second of reading'"
-":'no consumption rate reported — extraction rate shown in brackets';}"
+"return 'used: bits entering z per second of session time'"
+"+(c>0?' \\u00b7 reading '+c.toFixed(2)+' Mbit/s while a window reads':'')"
+"+(p>0?' \\u00b7 extraction '+p.toFixed(2)+' Mbit/s (sensor output, mostly dropped in the gaps)':'');}"
 /* ── Sortable Top-10 over the extremes set (D78, D78a, D78b) ──────────────
    The table is the leading 10 of the /extremes set (the ~50 most extreme
    items by |Z*|). A click on a stat header sorts that set by the column; a

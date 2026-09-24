@@ -638,8 +638,11 @@ frame end. A faster extractor pays only when it crosses a frame boundary (3 → 
   `ms_rest`.
 - ⚠ **`mbit_s` is PRODUCTION, `consume_mbit_s` is what a measurement READ** `[D60]`. The first
   counts words the ring then discarded — it read 5,71 on the master against 3,34 on the slaves
-  purely because the master's consumer was slower and its ring overflowed. The node table and
-  `/diag` show the second; use the first only for the sensor ceiling `[D23]` and `/camtest`.
+  purely because the master's consumer was slower and its ring overflowed. `/diag` shows the
+  second; use the first only for the sensor ceiling `[D23]` and `/camtest`. The node table's
+  Mbit/s is a THIRD figure, the **used** rate: bits that entered the node's z per second of session
+  time (`z_n` × `run_segs` × 224 / `elapsed_ms`) — ~5,4 against 18,7 produced at `?run=0,5`; the
+  other two are in its hover text `[D109]`.
 - ⚠ **If `focus_win_ms` ever doubles** (~5,13 s → ~10,2 s at identical parameters), suspect an
   unpinned task in the measuring path, not the camera `[D61]` — signature: consumption halves
   exactly on that node alone. The rule is under **Resources**; this is how it surfaces here.
