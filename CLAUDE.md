@@ -122,7 +122,10 @@ across rounds a combination can recur — identity is **(round, index)**.
 full session window in a fresh Fisher–Yates order (never the same number back-to-back `[D5]`).
 After each pass the ranking **key** is added to that number's sum; the pool is the top by that
 sum `[D81]`. Direction pre-registered: `?score=high|low|abs`, default `high` — it only
-picks the pool. The UI shows pass k/20 and the current top of the pool with the running sum. **The scoring key is the pass key** — z and concordance at the session's
+picks the pool. The UI shows pass k/20 and the current top of the pool with the running sum, and
+**everything the pass shows** `[D98]`: a Top-10 of the numbers (Σ, Z\*, Z, Conc, Δn, AC — `GET
+/extremes?score=1`, display only, the pool is picked from the sum in `score_and_build_pool()`),
+a scoring health line (last closed pass's own σ), stat cards, node table and boards. **The scoring key is the pass key** — z and concordance at the session's
 `?wpre=` `[D48]``[D65]``[D69]`; `score_build_keys()` is the only place a scoring key is built.
 ⚠ Scoring has no `/loops` block; the scoring span **is** the block. Per-node centre over the
 numbers each camera actually answered, then concordance (loudest **centred** node dropped), then
@@ -249,7 +252,7 @@ what remains visible is an effect varying **between items inside a block**.
 - **Two rows of three stat cards; the split is load-bearing**: top row round-relative in every
   figure (Items, Progress, Time/ETA), bottom row session-relative (Round, Total Measured,
   Total Time). ⚠ The bottom row is shown only while a session runs — every session is rounds
-  `[D67]`.
+  `[D67]`. The scoring has its own round-relative row (Numbers, Progress, Time/ETA) `[D98]`.
 - **One sortable table of ten**: Top-10, item counter + block badge. Columns: `Z*` (key
   in that item's block-σ units `[D68]`), `Z`, `Conc`, `Δn`, `AC`.
   ⚠ **The table is the leading 10 of the ~50 most extreme items by `|Z*|`, sorted by whichever
@@ -286,7 +289,8 @@ what remains visible is an effect varying **between items inside a block**.
   measured jump noise (~0,016 on this rig). There is deliberately **no minimum jump** — on a
   quiet session the board holds five rows at 2..3 σ and says so, and the card is shown even
   when empty `[D62]`.
-  ⚠ It is filled from the MEASURING pass only; a scoring run has no item to name.
+  ⚠ Scoring windows enter it too `[D98]`, named `scoring <pass>/<round>` with the number in the
+  Numbers column — not an item identity.
 - **A fourth table, Soft-down origins** `[D63]`: when a block trips a node, the three
   measurements of that block whose z sat furthest from the block mean, captured at block close
   because compaction takes the rows one round later. Hidden when nothing tripped.

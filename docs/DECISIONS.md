@@ -2000,3 +2000,24 @@ does not distort z. So AC is a sensor early-warning figure: it ranks, selects an
 ⚠ The column sorts only the ~50 extremes by |Z*| (D78). Under the null |AC| > 3 happens in ~0,27 %
 of items, about 3 in a 1000-item session.
 
+
+### D98 — Number scoring shows what the pass shows (2026-09-24)
+**User decision:** the scoring keeps its place and its logic (every number `SCORE_PASSES` times,
+pool on the summed pass keys), but the page shows during it everything the measuring pass shows.
+
+**Built.**
+- `ScoreRow` per number of the round's scoring (PSRAM, 62 rows, cleared per round): latest
+  measurement's raw z, provisional concordance and `AC`; at the pass close `score_build_keys()` fills
+  the span-centred z, concordance, key (`Z*`) and `Δn` — formed as `center_block()` forms it, each
+  node in its own σ over that pass span — and the running Σ. `GET /extremes?score=1` streams the rows.
+  ⛔ Display only: the pool is still picked from `score_and_build_pool()`'s own `acc`.
+- The page, while `scoring_pass` > 0: a sortable Top-10 of the numbers (Σ, Z*, Z, Conc, Δn, AC;
+  opens on Σ, own sort state), a scoring health line (the last closed pass's own channel σ,
+  `score_sig_z`/`score_sig_c`, numbers and concordance coverage), the node table, link and drift
+  lines, jump board and soft-down origins. A row of three stat cards under the scoring bar
+  (Numbers / Progress / Time·ETA, pace since `scoring_start_ms`); the session row (Round, Total
+  Measured, Total Time) stands through the scoring as well.
+- The camera-σ jump board now sees scoring windows too (`spass` = pass, number in `nums[0]`/`euro[0]`),
+  so `wsig_sd` is taken over every window of the session.
+- The node table's `Z` (session mean raw z per node) includes scoring runs. The pairwise matrix and
+  the block accumulators stay pass-only — a scoring run is not an item.

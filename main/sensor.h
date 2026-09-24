@@ -715,10 +715,41 @@ typedef struct {
     uint8_t  counted;    // 1 = this node was in that item's combine
     uint8_t  nums[6];
     uint8_t  euro[2];
+    /* 0 = an item of the pass; 1..SCORE_PASSES = a scoring run in that pass,
+     * `index` is then the scored number (in nums[0], or euro[0] for a bonus
+     * number) and (round, index) is NOT an item identity. */
+    uint8_t  spass;
     float    prev;       // that node's window sigma on its previous item
     float    now;        // and on this one
     float    jump;       // now - prev; the board ranks |jump|
 } WsigEvent;
+
+/* One number's row in the scoring table — the scoring's twin of a results[]
+ * row, so the page shows the same columns while numbers are scored as while
+ * items are measured. Holds the LATEST measurement of that number plus the
+ * running sum the pool is picked on.
+ * ⚠ Like an item in an open block: while the pass holding the latest
+ * measurement is still running, `z` is the RAW combined z and z_ctr / key /
+ * nsd are NaN — the span's centre and σ do not exist until score_build_keys()
+ * closes the pass. `zc` then holds the provisional raw-half value.
+ * ⛔ Display only. The pool is picked from score_and_build_pool()'s own `acc`,
+ * never from these rows. Written by the sensor task, read unlocked by the HTTP
+ * task: a torn row shows mixed values for one poll, nothing else. */
+typedef struct {
+    uint8_t  num;        // 1..50 main / 1..12 bonus
+    uint8_t  euro;       // 1 = bonus-number scoring run
+    uint8_t  k;          // nodes in the latest combine, 0 = void / not yet measured
+    uint8_t  passes;     // passes summed into `sum`
+    float    z;          // raw combined z, latest measurement
+    float    z_ctr;      // span-centred combined z (NaN while its pass is open)
+    float    zc;         // concordance (NaN = none)
+    float    key;        // Z*: the pass key in span-σ units (NaN while open)
+    float    nsd;        // Δn over the span (NaN while open / < 2 nodes)
+    float    ac;         // window autocorrelation (D97), NaN = not reported
+    float    sum;        // Σ key over the closed passes — what picks the pool
+} ScoreRow;
+
+#define SCORE_ROWS_MAX 62   // 50 main + 12 bonus (Eurojackpot)
 
 #define WSIG_TOP_N 5
 /* ⚠ There is deliberately NO minimum jump. A floor of 0,05 stood here and was
@@ -785,6 +816,18 @@ typedef struct {
     int              scoring_total;
     int              scoring_pass;        // 1..SCORE_PASSES while scoring, else 0
     int              scoring_passes;      // SCORE_PASSES, published so the UI does not hardcode it
+    uint32_t         scoring_start_ms;    // elapsed_ms when this round's scoring began,
+                                          // for the scoring's own Time / ETA card
+    /* The scoring table (see ScoreRow): one row per number of this round's
+     * scoring, cleared at every round start. score_sig_z / score_sig_c are the
+     * last closed scoring pass's own channel σ (the span σ its keys divide by),
+     * score_span_n the numbers in that pass — the scoring's health line. */
+    ScoreRow        *score_rows;          // SCORE_ROWS_MAX, PSRAM (internal RAM is the
+                                          // ring's [D91]); NULL = allocation failed
+    int              score_rows_n;
+    double           score_sig_z, score_sig_c;
+    int              score_span_n;
+    int              score_conc_n;        // numbers of that pass carrying a concordance
     int              comparisons;         // == VALID items so far (voids excluded)
     /* ── Pass-level health (GCP primary endpoints) ─────────────────────
      * Under H₀ with a working instrument: mean ≈ 0, σ ≈ 1, Σz² ≈ n.

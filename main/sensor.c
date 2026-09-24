@@ -286,13 +286,18 @@ static void nth_combination(const uint8_t *pool, int n, int r, int k, uint8_t *o
 // random passes; it must NOT go back to repeats in place (onset is the payload).
 static void score_one_run(bool *ok, float znode[MAX_NODES],
                           float h1[MAX_NODES], float h2[MAX_NODES],
-                          uint8_t *mask);
+                          uint8_t *mask, ScoreRow *row, float wsig[MAX_NODES]);
 static void score_build_keys(const float zn[][MAX_NODES],
                              const float h1[][MAX_NODES],
                              const float h2[][MAX_NODES],
                              const uint8_t *mask,
-                             const bool *scored, int max_val, double *scores);
+                             const bool *scored, int max_val, double *scores,
+                             double *zc_out, double *conc_out, double *nsd_out);
 static void   center_block(int block_idx);  // forward: publish_valid centres the OPEN block
+static void   wsig_collect(float out[MAX_NODES]);
+static float  acz_collect(uint8_t mask);
+static void   wsig_note(const RunResult *r, const float *wsig, uint8_t mask,
+                        uint8_t spass);
 
 /* Per-item node-z archive (PSRAM). results[j] stays lean; centring needs the
  * per-node series to recombine, drop a soft-failed node, or recompute r. */
@@ -537,6 +542,40 @@ static void score_publish_live(bool euro_pool, const double *acc, const bool *ok
     else           g_status.pool_n_main = (uint8_t)n;
 }
 
+/* ── The scoring table (ScoreRow) ─────────────────────────────────────────
+ * Main numbers first, bonus numbers after them — `s_score_main_n` is where the
+ * bonus rows start. Display only: nothing here feeds the pool. */
+static int s_score_main_n;
+
+static void score_rows_begin(int main_max, bool euro)
+{
+    s_score_main_n = main_max;
+    ScoreRow *R = g_status.score_rows;
+    if (!R) { g_status.score_rows_n = 0; return; }
+    int n = main_max + (euro ? 12 : 0);
+    if (n > SCORE_ROWS_MAX) n = SCORE_ROWS_MAX;
+    for (int i = 0; i < n; i++) {
+        ScoreRow *s = &R[i];
+        bool e = (i >= main_max);
+        s->num    = (uint8_t)(e ? i - main_max + 1 : i + 1);
+        s->euro   = e ? 1 : 0;
+        s->k      = 0;
+        s->passes = 0;
+        s->z = s->z_ctr = s->zc = s->key = s->nsd = s->ac = NAN;
+        s->sum    = 0.0f;
+    }
+    g_status.score_sig_z = g_status.score_sig_c = 0.0;
+    g_status.score_span_n = g_status.score_conc_n = 0;
+    g_status.score_rows_n = n;
+}
+
+static ScoreRow *score_row(bool euro_pool, int k)
+{
+    int i = euro_pool ? s_score_main_n + k - 1 : k - 1;
+    if (!g_status.score_rows || i < 0 || i >= g_status.score_rows_n) return NULL;
+    return &g_status.score_rows[i];
+}
+
 // `euro_pool` selects the bonus-number pool; it only reaches the Focus panel,
 // which styles a euro candidate differently from a main one.
 /* `keep`/`n_keep` implement "Select more": those numbers are already chosen and
@@ -555,6 +594,10 @@ static void score_and_build_pool(int max_val, int pool_size, uint8_t *pool,
     static float h1[51][MAX_NODES];
     static float h2[51][MAX_NODES];
     uint8_t smask[51];
+    /* The health line describes THIS scoring run's closed passes only — the
+     * euro-number run must not show the main run's last span as its own. */
+    g_status.score_sig_z = g_status.score_sig_c = 0.0;
+    g_status.score_span_n = g_status.score_conc_n = 0;
     if (n_keep > pool_size) n_keep = pool_size;
     for (int i = 0; i < n_keep; i++)
         if (keep[i] >= 1 && keep[i] <= max_val) skip[keep[i]] = true;
@@ -589,18 +632,42 @@ static void score_and_build_pool(int max_val, int pool_size, uint8_t *pool,
             int k = order[idx];
             focus_show_number(k, euro_pool);
             bool ok = false;
-            score_one_run(&ok, zn[k], h1[k], h2[k], &smask[k]);
+            float wsig[MAX_NODES];
+            score_one_run(&ok, zn[k], h1[k], h2[k], &smask[k],
+                          score_row(euro_pool, k), wsig);
+            /* The jump board sees every window, scoring included: a camera
+             * that moves during the hour of scoring is the same camera that
+             * then measures the pass. Named by number and pass, not item. */
+            {
+                RunResult id;
+                memset(&id, 0, sizeof(id));
+                id.round = (uint16_t)g_status.round;
+                id.index = (uint16_t)k;
+                if (euro_pool) id.euro[0] = (uint8_t)k;
+                else           id.nums[0] = (uint8_t)k;
+                wsig_note(&id, wsig, smask[k], (uint8_t)(pass + 1));
+            }
             scored[k] = ok;
             g_status.scoring_done++;
             g_status.elapsed_ms = elapsed_ms_now();
             run_gap_ms(gap_for());
         }
         last = n_order ? order[n_order - 1] : 0;
-        score_build_keys(zn, h1, h2, smask, scored, max_val, scores);
+        double zc_ctr[51], conc[51], nsd[51];
+        score_build_keys(zn, h1, h2, smask, scored, max_val, scores,
+                         zc_ctr, conc, nsd);
         for (int k = 1; k <= max_val; k++) {
             if (!scored[k]) continue;
             acc[k] += scores[k];
             ok_any[k] = true;
+            ScoreRow *row = score_row(euro_pool, k);
+            if (!row) continue;
+            row->z_ctr  = (float)zc_ctr[k];
+            row->zc     = (float)conc[k];
+            row->key    = (float)scores[k];
+            row->nsd    = (float)nsd[k];
+            row->sum    = (float)acc[k];
+            row->passes++;
         }
         score_publish_live(euro_pool, acc, ok_any, skip, max_val, pool_size);
 
@@ -867,10 +934,30 @@ static int measure_window(WindowMeas *w)
  * candidates from selection instead. */
 static void score_one_run(bool *ok, float znode[MAX_NODES],
                           float h1[MAX_NODES], float h2[MAX_NODES],
-                          uint8_t *mask)
+                          uint8_t *mask, ScoreRow *row, float wsig[MAX_NODES])
 {
     WindowMeas m;
     int k = measure_window(&m);
+    /* Before the next 'M' overwrites them — same rule as the pass. */
+    wsig_collect(wsig);
+    if (row) {
+        /* The number's latest measurement, open until its pass closes:
+         * raw z and provisional concordance, no key yet (see ScoreRow). */
+        row->k     = (uint8_t)k;
+        row->z     = (k > 0) ? (float)m.z  : NAN;
+        row->zc    = (k > 0) ? (float)m.zc : NAN;
+        row->ac    = (k > 0) ? acz_collect(m.mask) : NAN;
+        row->z_ctr = row->key = row->nsd = NAN;
+    }
+    /* The node table's Z column is the session mean of every raw per-run z,
+     * scoring included. Only that display mean: the pairwise matrix and the
+     * block accumulators stay pass-only (a scoring run is not an item). */
+    for (int i = 0; i < g_status.node_count && i < MAX_NODES; i++) {
+        if (!m.have[i]) continue;
+        NodeStatus *N = &g_status.nodes[i];
+        N->z_n++;
+        N->z_mean += (m.znode[i] - N->z_mean) / (double)N->z_n;
+    }
     /* This node's own window log (D64), tag 0 = a scoring run: it has no item
      * to be filed under, and leaving scoring out would put an unexplained gap
      * of ~60 windows at every round boundary in the one time series that is
@@ -898,7 +985,8 @@ static void score_build_keys(const float zn[][MAX_NODES],
                              const float h1[][MAX_NODES],
                              const float h2[][MAX_NODES],
                              const uint8_t *mask,
-                             const bool *scored, int max_val, double *scores)
+                             const bool *scored, int max_val, double *scores,
+                             double *zc_out, double *conc_out, double *nsd_out)
 {
     /* Per-node means over the span: full z, and EACH HALF on its own (D77).
      * The halves are centred before the sign test, or the node's offset
@@ -921,6 +1009,27 @@ static void score_build_keys(const float zn[][MAX_NODES],
         if (nz[i] >= 2) { mz[i] /= (double)nz[i]; okz[i] = true; }
         if (nh[i] >= 2) { mh1[i] /= (double)nh[i]; mh2[i] /= (double)nh[i]; }
         else            { mh1[i] = mh2[i] = 0.0; }   /* no centre: raw, like z */
+    }
+    /* Per-node σ over the span, for Δn only. n >= 3 for the same reason as in
+     * center_block(): at 2 the σ is built from the two values it scales. */
+    double sdz[MAX_NODES] = {0};
+    bool   sdok[MAX_NODES] = {false};
+    if (nsd_out) {
+        double vs[MAX_NODES] = {0};
+        for (int k = 1; k <= max_val; k++) {
+            if (!scored[k]) continue;
+            for (int i = 0; i < MAX_NODES && i < g_status.node_count; i++)
+                if (okz[i] && !isnan((double)zn[k][i])) {
+                    double d = (double)zn[k][i] - mz[i];
+                    vs[i] += d * d;
+                }
+        }
+        for (int i = 0; i < MAX_NODES; i++) {
+            if (!okz[i] || nz[i] < 3) continue;
+            double v = vs[i] / (double)(nz[i] - 1);
+            if (v > 0.0) { sdz[i] = sqrt(v); sdok[i] = true; }
+        }
+        for (int k = 0; k <= max_val && k < 51; k++) nsd_out[k] = NAN;
     }
 
     double zc[51], zcc[51];
@@ -948,7 +1057,31 @@ static void score_build_keys(const float zn[][MAX_NODES],
         zc[k]  = (kk > 0) ? sum / sqrt((double)kk) : NAN;
         zcc[k] = conc_halves(hv1, hv2, mh1, mh2, hwh, MAX_NODES);
         if (zcc[k] == 0.0) zcc[k] = NAN;   /* k<2 or all halves disagreed: no conc */
+        if (nsd_out) {
+            /* Δn, as center_block() forms it for an item: each node's centred z
+             * in that node's own σ over this span, sample σ across the nodes. */
+            double u[MAX_NODES];
+            int    ku = 0;
+            for (int i = 0; i < MAX_NODES; i++) {
+                if (!(mask[k] & (1u << i)) || !sdok[i]) continue;
+                if (isnan((double)zn[k][i])) continue;
+                u[ku++] = ((double)zn[k][i] - mz[i]) / sdz[i];
+            }
+            double v = NAN;
+            if (ku >= 2) {
+                double um = 0.0;
+                for (int t = 0; t < ku; t++) um += u[t];
+                um /= (double)ku;
+                double vv = 0.0;
+                for (int t = 0; t < ku; t++) vv += (u[t] - um) * (u[t] - um);
+                vv /= (double)(ku - 1);
+                v = vv > 0.0 ? sqrt(vv) : 0.0;
+            }
+            nsd_out[k] = v;
+        }
     }
+    if (zc_out)   for (int k = 0; k <= max_val && k < 51; k++) zc_out[k]   = zc[k];
+    if (conc_out) for (int k = 0; k <= max_val && k < 51; k++) conc_out[k] = zcc[k];
 
     /* p = concordance weight, 1-p = z. Same mix as rank_key() (D65/D68).
      * σ is this scoring span's own, analogue of block σ. */
@@ -957,6 +1090,7 @@ static void score_build_keys(const float zn[][MAX_NODES],
     if (p > 1.0) p = 1.0;
 
     double s[2] = {1.0, 1.0};
+    int    sn[2] = {0, 0};
     const double *srcs[2] = { zc, zcc };
     for (int ch = 0; ch < 2; ch++) {
         double sum = 0.0, sq = 0.0;
@@ -965,11 +1099,19 @@ static void score_build_keys(const float zn[][MAX_NODES],
             if (!scored[k] || isnan(srcs[ch][k])) continue;
             sum += srcs[ch][k]; sq += srcs[ch][k] * srcs[ch][k]; n++;
         }
+        sn[ch] = n;
         if (n < 2) continue;
         double mean = sum / n;
         double v = (sq - n * mean * mean) / (n - 1);
         if (v > 1e-9) s[ch] = sqrt(v);
     }
+    /* The scoring's health line: this span's own channel σ, the analogue of
+     * the pass health the page shows while items are measured. Published only,
+     * never read back. */
+    g_status.score_sig_z  = sn[0] >= 2 ? s[0] : 0.0;
+    g_status.score_sig_c  = sn[1] >= 2 ? s[1] : 0.0;
+    g_status.score_span_n = sn[0];
+    g_status.score_conc_n = sn[1];
 
     /* ⚠ The weights are PER NUMBER, not per pass `[D75]`. `zcc[k]` is NaN
      * whenever the concordance channel could not rank that number — its halves
@@ -1495,7 +1637,8 @@ static float acz_collect(uint8_t mask)
  * nodes jumping on the SAME item is a change in the light, one node jumping
  * alone is that camera. Collapsing them to one row per item would erase the
  * distinction that matters most. */
-static void wsig_note(const RunResult *r, const float *wsig, uint8_t mask)
+static void wsig_note(const RunResult *r, const float *wsig, uint8_t mask,
+                      uint8_t spass)
 {
     for (int i = 0; i < MAX_NODES; i++) {
         float now = wsig[i];
@@ -1541,6 +1684,7 @@ static void wsig_note(const RunResult *r, const float *wsig, uint8_t mask)
         e->index   = r->index;
         e->node    = (uint8_t)i;
         e->counted = (mask & (1u << i)) ? 1 : 0;
+        e->spass   = spass;
         memcpy(e->nums, r->nums, sizeof(e->nums));
         memcpy(e->euro, r->euro, sizeof(e->euro));
         e->prev = prev;
@@ -2458,6 +2602,14 @@ void elotto_task(void *pvParam)
     for (int i = 0; i < MAX_NODES; i++) s_prev_wsig[i] = NAN;
     s_wsig_jsq = 0.0; s_wsig_jn = 0;
     g_status.wsig_sd = 0.0; g_status.wsig_sd_n = 0;
+    /* Scoring table: allocated once, emptied per session and again per round
+     * (score_rows_begin). */
+    if (!g_status.score_rows)
+        g_status.score_rows = heap_caps_calloc(SCORE_ROWS_MAX, sizeof(ScoreRow),
+                                               MALLOC_CAP_SPIRAM);
+    g_status.score_rows_n = 0;
+    g_status.score_sig_z = g_status.score_sig_c = 0.0;
+    g_status.score_span_n = g_status.score_conc_n = 0;
     focus_reset();
     // Block history in PSRAM, for the life of the app (allocated once), so a
     // finished session's table stays readable.
@@ -2569,6 +2721,8 @@ void elotto_task(void *pvParam)
         g_status.scoring_passes = SCORE_PASSES;
         g_status.scoring_done   = 0;
         g_status.scoring_pass   = 0;
+        g_status.scoring_start_ms = (uint32_t)elapsed_ms_now();
+        score_rows_begin(mx, euro);
         g_status.pool_need_main = (uint8_t)nm;
         g_status.pool_need_euro = euro ? 2 : 0;
         /* Unlimited: the pool sizes come from the run cap, and are re-derived every
@@ -2776,7 +2930,7 @@ void elotto_task(void *pvParam)
             /* After index/round/have_mask and after nums/euro above, because
              * the board copies all of them: it has to name the measurement
              * without results[], which compaction will have taken. */
-            wsig_note(r, wsig, mask);
+            wsig_note(r, wsig, mask, 0);
             r->acz = (k > 0) ? acz_collect(mask) : NAN;
             if (k > 0) {
                 r->z_score = z;

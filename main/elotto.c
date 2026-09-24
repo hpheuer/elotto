@@ -300,6 +300,13 @@ static const char HTML[] =
 "<span id='sScoreDone'>0</span> / <span id='sScoreTotal'>-</span> Runs "
 "(<span id='sScoreReps'>-</span>&times; per number"
 " · pass <span id='sScorePass'>-</span>/<span id='sScorePasses'>-</span>)</div>"
+/* The scoring's own row of three, the twin of the measurement's: numbers
+   scored / progress / time and ETA of THIS round's scoring. */
+"<div class='stats' id='scStats' style='display:none'>"
+"<div class='stat'><div class='sv' id='sScDone'>0</div><div class='sl'>Numbers</div></div>"
+"<div class='stat'><div class='sv' id='sScPct'>0%</div><div class='sl'>Progress</div></div>"
+"<div class='stat'><div class='sv' id='sScTime'>0 / -</div><div class='sl'>Time / ETA</div></div>"
+"</div>"
 /* The numbers scoring actually picked — directly under the bar that picked
    them. In unlimited mode this is the one thing that changes from round to
    round, and without it the Focus panel's draws come from a pool nobody saw
@@ -318,14 +325,16 @@ static const char HTML[] =
 "<div class='stat'><div class='sv' id='sPct'>0%</div><div class='sl'>Progress</div></div>"
 "<div class='stat'><div class='sv' id='sTime'>0 / -</div><div class='sl'>Time / ETA</div></div>"
 "</div>"
-"<div class='stats' id='stats2' style='display:none'>"
+"</div>"
+/* Session-relative row, outside the measurement block so it stands through
+   the scoring as well. */
+"<div class='stats' id='stats2' style='display:none;margin-top:10px'>"
 "<div class='stat'><div class='sv' id='sRound'>-</div>"
 "<div class='sl'>rounds · combos</div></div>"
 "<div class='stat'><div class='sv' id='sTotal'>-</div>"
 "<div class='sl'>Total Measured</div></div>"
 "<div class='stat'><div class='sv' id='sTotTime'>-</div>"
 "<div class='sl'>Total Time</div></div>"
-"</div>"
 "</div>"
 "</div>"
 "<div id='msg'></div>"
@@ -518,7 +527,8 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "if(d.scoring_done>=d.scoring_total)"
 "document.getElementById('scoreCheck').innerHTML=\" <span style='color:#90ee90;font-size:1.1em'>&#10004;</span>\";"
 "if(d.phase==='measuring')document.getElementById('measArea').style.display='';"
-"if(d.top&&d.top.length)showResults(d);"
+"updateScoreStats(d);updateStats2(d);"
+"showResults(d);"
 "if(timer)clearInterval(timer);timer=setInterval(poll,1000);"
 "}}else if(d.state==='done'||d.state==='aborted'){"
 "curMode=d.mode==='euro'?0:1;setMode(curMode);"
@@ -750,6 +760,30 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "box.innerHTML=h;"
 "}).catch(function(){});"
 "}"
+/* Session-relative row: shown through scoring and pass alike. */
+"function updateStats2(d){"
+"var s2=document.getElementById('stats2');"
+"if(d.unlimited&&(d.state==='running'||d.completed>0)){s2.style.display='';"
+"document.getElementById('sRound').textContent=(d.round||1)+' \\u00b7 '+(d.round_total||0);"
+"document.getElementById('sTotal').textContent=(d.completed||0);"
+"document.getElementById('sTotTime').textContent=fmt(d.elapsed_ms);"
+"}else s2.style.display='none';}"
+/* The scoring's Numbers / Progress / Time-ETA, round-relative like the
+   measurement's. Pace is this scoring's own (elapsed since scoring_start_ms
+   over the runs done), so the mid-scoring sweep is in it, as a sweep is in
+   the pass's pace. */
+"function updateScoreStats(d){"
+"var el=document.getElementById('scStats');"
+"if(!(d.scoring_total>0)){el.style.display='none';return;}"
+"el.style.display='';"
+"var dn=d.scoring_done||0,tt=d.scoring_total;"
+"document.getElementById('sScDone').textContent=dn+'/'+tt;"
+"document.getElementById('sScPct').textContent=Math.round(dn*100/tt)+'%';"
+"var ms=(d.elapsed_ms>(d.scoring_start_ms||0))?(d.elapsed_ms-(d.scoring_start_ms||0)):0;"
+"var eta='-';"
+"if(dn>0&&tt>dn)eta=fmtEta(Math.round(ms/dn*(tt-dn)));"
+"else if(dn>=tt)eta='\\u2714';"
+"document.getElementById('sScTime').textContent=fmt(ms)+' / '+eta;}"
 "function poll(){"
 "fetch('/status').then(function(r){return r.json();}).then(function(d){"
 "lastSlowMbit=slowMbit(d)||lastSlowMbit;"
@@ -777,6 +811,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "if(d.scoring_total>0&&d.scoring_done>=d.scoring_total)"
 "document.getElementById('scoreCheck').innerHTML=\" <span style='color:#90ee90;font-size:1.1em'>&#10004;</span>\";"
 "else document.getElementById('scoreCheck').innerHTML='';"
+"updateScoreStats(d);"
 /* Camera-sweep progress. Estimated against the LAST sweep's measured duration,
    not the budget: the budget is a cap while a sweep actually finishes sooner,
    so a budget-based bar would visibly stall. Falls back to the budget on the
@@ -832,15 +867,12 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "etaTxt=fmtEta(Math.round(msPer*(rt-rd)));"
 "}"
 "document.getElementById('sTime').textContent=fmt(rms)+' / '+etaTxt;"
-"var s2=document.getElementById('stats2');"
-"if(d.unlimited){s2.style.display='';"
-"document.getElementById('sRound').textContent=(d.round||1)+' \\u00b7 '+(d.round_total||0);"
-"document.getElementById('sTotal').textContent=(d.completed||0);"
-"document.getElementById('sTotTime').textContent=fmt(d.elapsed_ms);"
-"}else s2.style.display='none';"
 "showSlaveBadge(d);"
 "}"
-"if(d.state==='running'&&d.top&&d.top.length)showResults(d);"
+"updateStats2(d);"
+/* Every phase shows the results card: while numbers are scored it carries
+   the scoring table, the node table and the boards, as the pass does. */
+"if(d.state==='running')showResults(d);"
 "if(d.state==='done'||d.state==='aborted'){"
 "clearInterval(timer);stopFocus();"
 "document.getElementById('runBtns').style.display='none';"
@@ -876,7 +908,18 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 /* Pass health is the GCP primary endpoint; ranking is secondary.
    null_flags / NB / CUSUM are deleted (D47) — the numbers stay, the banner does not. */
 "var ph='';"
-"if((d.pass_n_valid||0)>0){"
+/* While numbers are scored the card describes the scoring: its health line is
+   the last closed scoring pass's own channel σ (what that pass's keys divide
+   by), the twin of the pass line below. */
+"SCM=(d.state==='running'&&d.scoring_pass>0);"
+"if(SCM){"
+"ph=(d.score_span_n>0)"
+"?('scoring pass '+(d.scoring_pass>1?d.scoring_pass-1:d.scoring_pass)+' closed \\u00b7 \\u03c3 z '+(d.score_sig_z||0).toFixed(3)"
+"+(d.pre_w>0?' \\u00b7 \\u03c3 conc '+(d.score_sig_c||0).toFixed(3):'')"
+"+' \\u00b7 numbers '+d.score_span_n"
+"+(d.pre_w>0?' \\u00b7 \\u2211 conc '+(d.score_conc_n||0)+'/'+d.score_span_n:''))"
+":'scoring pass '+d.scoring_pass+' open \\u2014 its centre and \\u03c3 exist once it closes';"
+"}else if((d.pass_n_valid||0)>0){"
 "ph='pass mean '+(d.pass_mean||0).toFixed(3)"
 "+' \\u00b7 \\u03c3 '+(d.pass_sigma||0).toFixed(3)"
 "+' \\u00b7 \\u03a3z\\u00b2/n '+((d.pass_chi2||0)/(d.pass_n_valid||1)).toFixed(3)"
@@ -889,7 +932,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "sl.innerHTML=ph||'';"
 "var s2='';"
 /* Concordance coverage when weight is on: pre_n = items with zc_ctr != 0. */
-"if((d.pre_w||0)>0){"
+"if(!SCM&&(d.pre_w||0)>0){"
 "var e='\u2211 conc';"
 "if(d.pass_n_valid>0)e+=' '+(d.pre_n||0)+'/'+d.pass_n_valid"
 "+((d.pre_n<d.pass_n_valid)?' \u26a0':'');"
@@ -1040,6 +1083,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "+\" \\u00b7 <a href='/loops' target='_blank' style='color:#90ee90'>table</a>\";"
 "sl.innerHTML+='<br>'+s4;}"
 "document.getElementById('resCard').style.display='block';"
+"if(SCM){LD=d;fetchScore();showWsig(d);showTrip(d);return;}"
 "if(!d.top||d.top.length===0){"
 "document.getElementById('resTitle').innerHTML='\\uD83C\\uDFC6 Top 10';"
 "document.getElementById('resHead').innerHTML='';"
@@ -1088,8 +1132,12 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
    by the arrow. Items still ENTER the set by |Z*| only — the sort reorders
    what is shown, it never changes the display pool of 50 or the pool. */
 "var EX=[],SORTK='key',SORTD=-1,LD=null;"
+/* The scoring table keeps its own sort: it opens on the running sum, the key
+   that picks the pool, and the item table keeps whatever the operator chose. */
+"var SC=[],SCM=false,SSK='sum',SSD=-1,lastSc=0;"
 "function colVal(r,k){var v;"
 "if(k==='key')v=r.key;"
+"else if(k==='sum')v=r.sum;"
 "else if(k==='z_ctr')v=(r.z_ctr===undefined||r.z_ctr===null)?r.z:r.z_ctr;"
 "else if(k==='zc')v=r.zc;"
 "else if(k==='ac')v=r.ac;"
@@ -1098,9 +1146,61 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 /* desc, and a missing value (Δn on a solo item) always sinks to the end. */
 "function exCmp(a,b){var x=colVal(a,SORTK),y=colVal(b,SORTK);"
 "if(x===null&&y===null)return 0;if(x===null)return 1;if(y===null)return -1;return y-x;}"
-"function exArrow(k){if(SORTK!==k)return ' <span style=\"color:#667\">\\u21c5</span>';"
-"return SORTD<0?' \\u25be':' \\u25b4';}"
-"function sortBy(k){if(SORTK===k)SORTD=-SORTD;else{SORTK=k;SORTD=-1;}renderExtremeTables();}"
+"function scCmp(a,b){var x=colVal(a,SSK),y=colVal(b,SSK);"
+"if(x===null&&y===null)return 0;if(x===null)return 1;if(y===null)return -1;return SSD<0?y-x:x-y;}"
+"function exArrow(k){var K=SCM?SSK:SORTK,D=SCM?SSD:SORTD;"
+"if(K!==k)return ' <span style=\"color:#667\">\\u21c5</span>';"
+"return D<0?' \\u25be':' \\u25b4';}"
+"function sortBy(k){"
+"if(SCM){if(SSK===k)SSD=-SSD;else{SSK=k;SSD=-1;}renderScoreTable();return;}"
+"if(SORTK===k)SORTD=-SORTD;else{SORTK=k;SORTD=-1;}renderExtremeTables();}"
+/* The scoring table: every number of this round's scoring, its latest
+   measurement and the running sum (/extremes?score=1). 5 s like /extremes —
+   the same HTTP task shares the consumer core (D78b). */
+"function fetchScore(){"
+"var now=Date.now();"
+"if(now-lastSc<5000){renderScoreTable();return;}"
+"lastSc=now;"
+"fetch('/extremes?score=1').then(function(r){return r.json();}).then(function(x){"
+"SC=(x&&x.rows)?x.rows:[];renderScoreTable();}).catch(function(){});}"
+"function renderScoreTable(){"
+"if(!LD)return;var d=LD;"
+"var lab={sum:'\\u03a3',key:'Z*',z_ctr:'Z',zc:'Conc',nsd:'\\u0394n',ac:'AC'};"
+"var s=SC.slice().sort(scCmp);"
+"var top=s.slice(0,10);"
+"document.getElementById('resTitle').innerHTML="
+"'\\uD83C\\uDFC6 Top '+top.length+' of '+SC.length+' numbers \\u2014 scoring pass '"
+"+d.scoring_pass+'/'+(d.scoring_passes||" EL_STR(SCORE_PASSES) ")"
+"+' ('+(SSD<0?'highest':'lowest')+' '+lab[SSK]+')';"
+"function th(k,t,tip){return '<th style=\"cursor:pointer\" title=\"'+tip+' Click to sort.\" "
+"onclick=\"sortBy(\\''+k+'\\')\">'+t+exArrow(k)+'</th>';}"
+"document.getElementById('resHead').innerHTML='<tr><th>#</th><th>Number</th>'"
+"+th('sum','\\u03a3','running sum of this number\\u2019s pass keys \\u2014 the pool is picked on it.')"
+"+th('key','Z*','key of the latest closed pass, in that pass\\u2019s own \\u03c3. \\u2014 while the pass is open.')"
+"+th('z_ctr','Z','span-centred combined z of the latest measurement; raw (dimmed) while its pass is open.')"
+"+th('zc','Conc','leave-one-out half-window concordance; provisional (dimmed) while the pass is open.')"
+"+th('nsd','\\u0394n','node agreement over the pass span, in each camera\\u2019s own \\u03c3; \\u2248 1 is chance. Never ranks.')"
+"+th('ac','AC','window autocorrelation of the bits, unit normal for independent bits. Never ranks.')"
+"+'</tr>';"
+"var tb=document.getElementById('resBody'),h='';"
+"if(!top.length)h='<tr><td colspan=\"8\" style=\"color:#d0b0b0;padding:10px\">No number scored yet.</td></tr>';"
+"for(var i=0;i<top.length;i++){var r=top[i];"
+"var open=(r.key===null);"
+"var dim=open?' style=\"opacity:.55\"':'';"
+"var zv=(r.z_ctr!==null)?r.z_ctr:r.z;"
+"var f=function(v,n){return (v===null||v===undefined)?'\\u2014':v.toFixed(n);};"
+"var nsdTxt=(r.nsd===null)?'\\u2014':(r.nsd.toFixed(2)+' ('+r.k+')');"
+"var nsdCol=(r.nsd===null)?'#9aa':(r.nsd<0.6?'#90ee90':(r.nsd>1.0?'#c09090':''));"
+"var acCol=(r.ac===null)?'#9aa':(Math.abs(r.ac)>3?'#ffd479':'');"
+"h+='<tr><td>'+(i+1)+'</td>'"
+"+'<td><span class=\"num'+(r.euro?' euro':'')+'\">'+r.num+'</span></td>'"
+"+'<td title=\"over '+r.passes+' closed passes\"><b>'+r.sum.toFixed(3)+'</b></td>'"
+"+'<td>'+f(r.key,3)+'</td>'"
+"+'<td'+(r.z_ctr===null?dim:'')+'>'+f(zv,2)+'</td>'"
+"+'<td'+dim+'>'+f(r.zc,2)+'</td>'"
+"+'<td'+(nsdCol?' style=\"color:'+nsdCol+'\"':'')+'>'+nsdTxt+'</td>'"
+"+'<td'+(acCol?' style=\"color:'+acCol+'\"':'')+'>'+f(r.ac,2)+'</td></tr>';}"
+"tb.innerHTML=h;}"
 /* Throttled to 5 s (D78b): /extremes is a ~15 KB streamed scan served on the
    MASTER's HTTP task, which shares the consumer core with the GCP consumer
    (D61) — fetching it every 1 s stole extraction CPU from the master alone and
@@ -1299,6 +1399,9 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "for(var j=0;j<e.euro.length;j++)"
 "estr+='<span class=\"num euro\">'+e.euro[j]+'</span>';"
 "var itm=(d.unlimited&&e.round)?(e.index+'/'+e.round):e.index;"
+/* A scoring run has no item: it is named by its pass (and round); the number
+   stands in the Numbers / Bonus column. */
+"if(e.spass>0)itm='scoring '+e.spass+(d.unlimited&&e.round?'/'+e.round:'');"
 "var sgn=e.jump>0?'+':'';"
 /* One row per NODE, not per item: one node jumping alone is that camera,
    two nodes on the SAME item is the light. Collapsing them would erase the
@@ -1471,7 +1574,9 @@ static esp_err_t status_handler(httpd_req_t *req)
         "\"off_first\":%.4f,\"off_last\":%.4f,"
         "\"sigma_lo\":%.4f,\"sigma_hi\":%.4f,"
         "\"scoring_done\":%d,\"scoring_total\":%d,"
-        "\"scoring_pass\":%d,\"scoring_passes\":%d,"
+        "\"scoring_pass\":%d,\"scoring_passes\":%d,\"scoring_start_ms\":%lu,"
+        "\"score_sig_z\":%.4f,\"score_sig_c\":%.4f,"
+        "\"score_span_n\":%d,\"score_conc_n\":%d,"
         "\"completed\":%d,\"total\":%d,\"elapsed_ms\":%lld,\"compacted\":%d,"
         /* `completed` is session-wide (the results[] prefix); `total` is the
          * CURRENT round's combination space. In an ordinary session there is
@@ -1528,6 +1633,9 @@ static esp_err_t status_handler(httpd_req_t *req)
         g_status.sigma_lo, g_status.sigma_hi,
         g_status.scoring_done, g_status.scoring_total,
         g_status.scoring_pass, g_status.scoring_passes,
+        (unsigned long)g_status.scoring_start_ms,
+        g_status.score_sig_z, g_status.score_sig_c,
+        g_status.score_span_n, g_status.score_conc_n,
         /* PROGRESS is items_done, never runs_completed: after a compaction the
          * latter is the rows still held and would step backwards. */
         g_status.items_done, g_status.runs_total,
@@ -1697,9 +1805,9 @@ static esp_err_t status_handler(httpd_req_t *req)
     for (int i = 0; i < g_status.wsig_n && i < WSIG_TOP_N; i++) {
         const WsigEvent *e = &g_status.wsig_top[i];
         buf_append(buf, sizeof(buf), &pos,
-            "%s{\"round\":%d,\"index\":%d,\"node\":%d,\"counted\":%d,"
+            "%s{\"round\":%d,\"index\":%d,\"spass\":%d,\"node\":%d,\"counted\":%d,"
             "\"prev\":%.4f,\"now\":%.4f,\"jump\":%.4f,\"nums\":[",
-            i ? "," : "", (int)e->round, (int)e->index, (int)e->node,
+            i ? "," : "", (int)e->round, (int)e->index, (int)e->spass, (int)e->node,
             (int)e->counted, e->prev, e->now, e->jump);
         bool f1 = true;
         for (int m = 0; m < 6; m++) {
@@ -1859,6 +1967,43 @@ static esp_err_t extremes_handler(httpd_req_t *req)
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+
+    /* ?score=1: the scoring table — every number of this round's scoring, one
+     * row each (ScoreRow). A query flag, not a new handler: the URI-handler
+     * cap fails silently. Same columns as an item row plus `sum`, the running
+     * Σ that picks the pool, and `passes` behind it. */
+    char q[32], v[8];
+    if (httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK &&
+        httpd_query_key_value(q, "score", v, sizeof(v)) == ESP_OK && v[0] == '1') {
+        const ScoreRow *R = g_status.score_rows;
+        int nr = R ? g_status.score_rows_n : 0;
+        char sb[320];
+        int sl = snprintf(sb, sizeof(sb), "{\"n\":%d,\"pass\":%d,\"rows\":[",
+                          nr, g_status.scoring_pass);
+        send_chunk(req, sb, sl, sizeof(sb));
+        bool first = true;
+        for (int i = 0; i < nr; i++) {
+            const ScoreRow *s = &R[i];
+            if (s->k == 0 && s->passes == 0) continue;   /* not measured yet */
+            char f[6][16];
+            const float fv[6] = { s->z, s->z_ctr, s->zc, s->key, s->nsd, s->ac };
+            for (int j = 0; j < 6; j++) {
+                if (isfinite((double)fv[j])) snprintf(f[j], sizeof(f[j]), "%.4f", (double)fv[j]);
+                else                         snprintf(f[j], sizeof(f[j]), "null");
+            }
+            sl = snprintf(sb, sizeof(sb),
+                "%s{\"num\":%d,\"euro\":%d,\"k\":%d,\"passes\":%d,"
+                "\"z\":%s,\"z_ctr\":%s,\"zc\":%s,\"key\":%s,\"nsd\":%s,\"ac\":%s,"
+                "\"sum\":%.4f}",
+                first ? "" : ",", s->num, s->euro, s->k, s->passes,
+                f[0], f[1], f[2], f[3], f[4], f[5], (double)s->sum);
+            send_chunk(req, sb, sl, sizeof(sb));
+            first = false;
+        }
+        httpd_resp_send_chunk(req, "]}", 2);
+        httpd_resp_send_chunk(req, NULL, 0);
+        return ESP_OK;
+    }
 
     int n = ex ? results_extremes(ex, EXTREMES_MAX) : 0;
     bool euro = (g_status.mode == MODE_EUROJACKPOT);
