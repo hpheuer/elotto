@@ -1400,7 +1400,7 @@ plugged in.
 **Pooling:** IMX219 vs OV5647 is a hardware change — do not pool the two. Same
 `sensor=` only.
 
-### D81 — Scoring is 10 shuffled passes, keys summed (2026-09-22)
+### D81 — Scoring is `SCORE_PASSES` shuffled passes (10; 20 since D86), keys summed (2026-09-22)
 **Entscheidung:** Phase 0 measures every number `SCORE_PASSES` (10) times. Each pass is one
 session-length window per number, new Fisher–Yates order, never the same number twice in a row
 (D5 onset). After each pass `score_build_keys()` builds that pass's keys (own centre and σ);
@@ -2006,7 +2006,7 @@ of items, about 3 in a 1000-item session.
 pool on the summed pass keys), but the page shows during it everything the measuring pass shows.
 
 **Built.**
-- `ScoreRow` per number of the round's scoring (PSRAM, 62 rows, cleared per round): latest
+- `ScoreRow` (since D103 a `RunResult` in `ScoreItem`) per number of the round's scoring (PSRAM, 62 rows, cleared per round): latest
   measurement's raw z, provisional concordance and `AC`; at the pass close `score_build_keys()` fills
   the span-centred z, concordance, key (`Z*`) and `Δn` — formed as `center_block()` forms it, each
   node in its own σ over that pass span — and the running Σ. `GET /extremes?score=1` streams the rows.
