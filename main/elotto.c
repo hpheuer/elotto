@@ -353,9 +353,14 @@ static const char HTML[] =
 "<div id='evBody' style='font-size:.8em;line-height:1.55;max-height:260px;"
 "overflow-y:auto;font-family:monospace'></div>"
 "</div>"
+/* Nodes and health (health line, node table, link, drift) in their own card,
+   so the results card's title sits directly over its table. */
+"<div class='card' id='nodeCard' style='display:none'>"
+"<h3 style='color:#6ab0e8;margin-bottom:4px'>&#128421; Nodes</h3>"
+"<div id='sigLine' style='color:#a0c0a0;font-size:.82em'></div>"
+"</div>"
 "<div class='card' id='resCard' style='display:none'>"
 "<h3 id='resTitle' style='color:#6ab0e8;margin-bottom:4px'></h3>"
-"<div id='sigLine' style='color:#a0c0a0;font-size:.82em;margin-bottom:4px'></div>"
 "<table><thead id='resHead'></thead>"
 "<tbody id='resBody'></tbody></table>"
 "</div>"
@@ -588,8 +593,10 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "d.gap_s||0,slowMbit(d))/1000).toFixed(1)+' s est.'));"
 "if(d.focus_win_ms>0)p.push(pItem('window/gap',Math.round(d.focus_win_ms)"
 "+' / '+Math.round(d.focus_gap_ms||0)+' ms'));"
+/* Dynamic interval (D106): 15 min, doubling on every ok sweep up to 2 h. */
 "p.push(pItem('Sweep',d.cal_budget_ms>0"
-"?((d.cal_budget_ms/1000)+' s, every round')"
+"?((d.cal_budget_ms/1000)+' s, every '+fmt(d.cal_interval_ms||0)"
+"+((d.cal_due_ms>0)?' (next \u2264 '+fmt(d.cal_due_ms)+')':''))"
 ":'off'));"
 "var kz=1-(d.pre_w||0);"
 "var ktxt=(d.pre_w>0)"
@@ -678,6 +685,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "pausePendUntil=0;setPauseBtn(false);"
 "startFocus();"
 "document.getElementById('resCard').style.display='none';"
+"document.getElementById('nodeCard').style.display='none';"
 "document.getElementById('resCardWsig').style.display='none';"
 "document.getElementById('resCardTrip').style.display='none';"
 "document.getElementById('msg').textContent='';"
@@ -1094,6 +1102,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "+\" \\u00b7 <a href='/loops' target='_blank' style='color:#90ee90'>table</a>\";"
 "sl.innerHTML+='<br>'+s4;}"
 "document.getElementById('resCard').style.display='block';"
+"document.getElementById('nodeCard').style.display='block';"
 "if(SCM){LD=d;fetchScore();showWsig(d);showTrip(d);return;}"
 "if(!d.top||d.top.length===0){"
 "document.getElementById('resTitle').innerHTML='\\uD83C\\uDFC6 Top 10';"
@@ -1597,6 +1606,7 @@ static esp_err_t status_handler(httpd_req_t *req)
         "\"run_s\":%.2f,\"gap_s\":%.2f,\"run_segs\":%d,"
         "\"cal_budget_ms\":%d,\"cal_ms\":%d,\"cal_elapsed_ms\":%d,"
         "\"cal_did_sweep\":%d,\"settle_left_ms\":%d,\"ev_seq\":%lu,"
+        "\"cal_interval_ms\":%d,\"cal_due_ms\":%d,"
         "\"loops_done\":%d,\"drift_slope\":%.5f,\"drift_t\":%.2f,"
         "\"off_first\":%.4f,\"off_last\":%.4f,"
         "\"sigma_lo\":%.4f,\"sigma_hi\":%.4f,"
@@ -1657,6 +1667,7 @@ static esp_err_t status_handler(httpd_req_t *req)
             ? (int)((g_status.settle_end_us - esp_timer_get_time()) / 1000) : 0,
         /* Moves when an event is logged; the page then fetches /loops?ev=1. */
         (unsigned long)evlog_seq(),
+        g_status.cal_interval_ms, g_status.cal_due_ms,
         g_status.loops_done, g_status.drift_slope, g_status.drift_t,
         g_status.off_first, g_status.off_last,
         g_status.sigma_lo, g_status.sigma_hi,

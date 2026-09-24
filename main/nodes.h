@@ -84,7 +84,7 @@ bool node_take_z(int k, double *out_z,
 // Broadcast 'K' and sweep the master's own ladder in parallel, then collect
 // each node's chosen setting. Nodes land on different exposures on purpose.
 // Returns true if a sweep actually ran, false if it was skipped (budget 0, no
-// nodes, or the round was shorter than twice the sweep budget).
+// nodes, or the dynamic interval has not run out yet `[D106]`).
 // If any node's exposure changed, blocks CAL_SETTLE_AFTER_MS more before
 // returning — the settle pause `[D87]`. `why` names the trigger in the event log.
 bool calibrate_all(const char *why);
@@ -93,6 +93,9 @@ bool calibrate_all(const char *why);
 // unconditionally. Called at session start: a new session must never inherit
 // the age of the previous one's calibration.
 void calibrate_forget(void);
+
+// A soft-down trip: the interval falls back to CAL_DYN_MIN_MS `[D106]`.
+void calibrate_shorten(const char *why);
 
 // Per-node camera health via 'D'. Between loops only, never between an 'M' and
 // its 'Z:'. A missing answer is diagnostics-only and never drops a node.

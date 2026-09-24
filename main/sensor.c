@@ -757,29 +757,25 @@ static void score_run(int max_val, int pool_size, bool euro_pool)
         }
         score_publish_live(ix);
 
-        /* ── Mid-scoring sweep `[D86]` ──────────────────────────────────────
-         * Halfway through the passes, so the pool is not chosen on a single
-         * operating point held for the whole scoring run — at SCORE_PASSES 20
-         * that run is over an hour, and `raw_sigma` is non-stationary per node
-         * on a timescale of minutes `[D59]`.
+        /* ── Sweep candidate after every scoring pass `[D86]` `[D106]` ────────
+         * So the pool is not chosen on a single operating point held for the
+         * whole scoring run. Whether it actually sweeps is the dynamic
+         * interval's call (calibrate_all()).
          *
-         * Why here and not anywhere else in the loop: score_build_keys() has
+         * Why at a pass boundary and not anywhere else in the loop: score_build_keys() has
          * just run, so this pass is centred and scaled and closed. Every pass
          * is its own centring span, which makes a pass boundary the only place
          * a rung may move without shifting a node's offset underneath the mean
          * that is being subtracted from it — the same argument as the sweep
          * between the scoring and the pass `[D85]`.
          *
-         * ⚠ EVERY scoring run does this, so Eurojackpot sweeps twice here: once
-         * in the main-number run, once in the euro-number run. Both are spans
-         * whose pool is chosen on their own keys, so neither gets to run an hour
-         * on one rung while the other is re-tuned.
-         *
          * ⚠ calibrate_all() leaves g_status.phase at PHASE_CALIBRATE — it is the
          * caller's job to restore it, and here the scoring is not over. */
-        if (pass + 1 == SCORE_PASSES / 2 && pass + 1 < SCORE_PASSES) {
-            g_status.cal_did_sweep = calibrate_all(euro_pool
-                ? "mid-scoring, euro numbers" : "mid-scoring");
+        /* `[D106]`: every closed scoring pass is a candidate; calibrate_all()
+         * sweeps only once the dynamic interval has run out. */
+        if (pass + 1 < SCORE_PASSES) {
+            if (calibrate_all(euro_pool ? "scoring pass, euro numbers" : "scoring pass"))
+                g_status.cal_did_sweep = true;
             if (g_status.abort_requested) return;
             g_status.phase = PHASE_SCORING;
         }
@@ -2300,6 +2296,7 @@ static void record_loop(double loop_mean, int loop_idx)
             /* Before anything else touches results[]: this is the only moment
              * the block's own rows still exist (D63). */
             trip_record(loop_idx, i, mean_i[i], sig_i[i]);
+            calibrate_shorten("soft-down");
             trip_mask |= (uint8_t)(1u << i);
             evlog("Block %d: %s %s (sigma %.2f, bar %.2f)%s", loop_idx + 1,
                   i == 0 ? "master" : g_status.nodes[i].ip,
@@ -2764,7 +2761,11 @@ void elotto_task(void *pvParam)
          * they should not be the ones measured on a stale sweep. This is now the
          * ONLY sweep trigger `[D76]`; `?cal=0` is the no-calibration control. */
         if (round > 1) {
-            g_status.cal_did_sweep = calibrate_all("round boundary");
+            /* `cal_did_sweep` now means "a sweep ran somewhere in this round"
+             * (its /loops row): the round has several candidate points and
+             * most of them skip `[D106]`. */
+            g_status.cal_did_sweep = false;
+            if (calibrate_all("round boundary")) g_status.cal_did_sweep = true;
             if (g_status.abort_requested) { slave_abort(); goto done; }
         }
 
@@ -2858,7 +2859,7 @@ void elotto_task(void *pvParam)
          * Placed after the combination-space check so an aborting round does
          * not pay for a sweep, and before round_start_ms is stamped so the
          * sweep stays out of the measuring clock. */
-        g_status.cal_did_sweep = calibrate_all("before the pass");
+        if (calibrate_all("before the pass")) g_status.cal_did_sweep = true;
         if (g_status.abort_requested) { slave_abort(); goto done; }
 
         /* Where this round lands in results[], and how much room is left. The

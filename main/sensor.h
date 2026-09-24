@@ -60,6 +60,14 @@
  * which names `?run=`, the parameter that actually sets the length. */
 #define CAL_BUDGET_DEFAULT_MS 10000      // exposure-sweep CAP, split over 9 rungs
 #define CAL_BUDGET_MAX_MS   120000
+/* Dynamic sweep interval `[D106]`. A sweep runs at a CANDIDATE point — the end
+ * of every scoring pass, before the pass, the round boundary: the only places
+ * no centring mean straddles — once the interval since the last sweep has run
+ * out. An ok sweep (every node certified, no exposure moved) doubles the
+ * interval up to the max; anything else, and every soft-down trip, puts it
+ * back to the min. The session-start sweep always runs. */
+#define CAL_DYN_MIN_MS      (15 * 60 * 1000)
+#define CAL_DYN_MAX_MS      (120 * 60 * 1000)
 /* The settle pause after a sweep that moved any node's exposure `[D87]`: the
  * whole array waits this long before the next window. calibrate_all() owns it;
  * here so the page's countdown bar reads the same number. */
@@ -991,6 +999,9 @@ typedef struct {
                                           // is the matched control this change
                                           // has to be compared against, so it is
                                           // a session parameter, not a #define
+    int              cal_interval_ms;     // current dynamic interval [D106]
+    int              cal_due_ms;          // until the next sweep is due, 0 = due
+                                          // (refreshed at every candidate point)
     int              cal_ms;              // what the last sweep actually cost,
                                           // master + ack wait —
                                           // the sweep-cost gate is a measured number

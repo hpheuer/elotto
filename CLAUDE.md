@@ -33,9 +33,11 @@ OV `[D89]`. `/status` `cam_sensor` names the bound chip. The **sweep**
 picks the exposure with the lowest **`raw_sigma`** among rungs that still look like noise (autocorr,
 dark / zero_diff) `[D83]` — dispersion is what `rank_key()` divides by and what soft-down trips on;
 the bias is subtracted by the centring and costs nothing. If a node's block σ is too loud against its peers, **soft-down**
-takes it out of the combine. The next sweep — **three times a round in 6-of-49, four in Eurojackpot:
-at the boundary, halfway through each scoring run `[D86]`, and between the scoring and the pass
-`[D85]`** — recalibrates every node including that one. It returns after four
+takes it out of the combine. Sweeps are **dynamic** `[D106]`: they run at candidate points — the
+end of every scoring pass, before the pass, the round boundary — once the interval since the last
+sweep has run out: 15 min after the session-start sweep, doubled by every ok sweep (all nodes
+certified, no exposure moved) up to 2 h, back to 15 min after any other sweep or a soft-down trip.
+The next sweep recalibrates every node including the tripped one. It returns after four
 clean blocks. ⚠ `?cal=0` turns every sweep off; a trip then waits until the next session.
 ⚠ **A rung change is not free**: after one, this rig's cameras need ~1 min to settle (px still
 climbing, bit bias moving by ~0,002), and the items measured in that minute sit far enough from the
@@ -103,11 +105,12 @@ across rounds a combination can recur — identity is **(round, index)**.
   session and loses it; nothing is exported `[D94]`.
 - **Blocks are the statistics unit, and ONE BLOCK IS ONE ROUND** `[D76]`. The round boundary is the
   only block boundary: the pass parks there → `/loops` row, drift point, pairwise close, block
-  centring, then the camera sweep before the next round scores. ⛔ There is no wall-clock trigger and
-  `?calint=` answers **400**; `?cal=0` is the no-sweep control.
-  ⚠ **A sweep is not a block boundary.** There are **three sweeps per round** (four in Eurojackpot)
-  — the boundary, one halfway through each scoring run `[D86]`, and one between the scoring and the
-  pass `[D85]` — but still exactly one block per round. Each extra sweep sits on a centring
+  centring, then a sweep candidate before the next round scores. The sweep timing is the dynamic
+  interval `[D106]` (operator decision, supersedes the ⛔ "no wall-clock trigger" of `[D76]`);
+  `?calint=` still answers **400**; `?cal=0` is the no-sweep control.
+  ⚠ **A sweep is not a block boundary.** Sweeps happen only at candidate points — the end of each
+  scoring pass, before the pass, the round boundary — never inside the pass block, so the 2 h can
+  be overrun by at most one pass. Still exactly one block per round. Every candidate sits on a centring
   boundary: every scoring PASS is its own centring span (`score_build_keys()` runs per pass), and
   the pass block is its own. No operating point ever moves underneath a mean being subtracted.
   ⚠ **The block length is `?maxruns=`**, so every round holds the same item count and its `Z*`
@@ -170,10 +173,8 @@ as backstop for a compaction that cannot allocate.
   ⚠ `compacted` non-zero in `/status`: `results[]` holds extremes plus survivors, not a sample —
   never compute a distribution from its rows.
 - **Every round closes its own block, and only the round boundary does** `[D76]`, so centring never
-  mixes items from either side of a re-scoring and every block has the same item count. Rounds after
-  the first re-run the sweep **before** scoring, **every** scoring run sweeps again at its
-  halfway pass `[D86]`, and **every** round sweeps once more between the scoring and its pass
-  `[D85]`.
+  mixes items from either side of a re-scoring and every block has the same item count. Whether a
+  sweep runs at a candidate point is the dynamic interval's call `[D106]`.
 - **No pool-confirmation gate** — the machinery is deleted, not disabled `[D73]`: no
   `PHASE_POOL_CONFIRM`, no `pool_confirm` in `/status`. `pool_auto` stays at 1 as the record.
 - ⚠ Inside a round "measured exactly once" holds; **across rounds a combination can recur**. Each
@@ -404,17 +405,12 @@ ladder `[D46]``[D65]`), no stuck frames, `mean_px` ≥ 5,0 `[D18]`,
   more rungs fail; the answer is light, not a lower floor. An IMX219 is gated the other way `[D90]`.
 - `raw_runs_z` is published per sweep rung and gates nothing. ⚠ 0,0 in a measurement window means
   NOT ARMED, not "perfectly random" (`raw_trans` says which).
-- The budget is a **cap, not a target** (default 10 s, `?cal=<ms>`, 0 = off) `[D21]`. **The triggers
-  are the ROUND BOUNDARY** `[D76]` — which also sets the block size and the drift regression's
-  resolution, so `?maxruns=` is the knob for both — **the middle of every scoring run** `[D86]`,
-  after pass `SCORE_PASSES/2`, so an hour-long scoring run does not pick the pool on one rung —
-  **and the end of the scoring** `[D85]`, so the pass does not run on a rung certified a scoring
-  phase (tens of minutes) earlier. Still no time trigger. ⚠ A sweep is skipped when the last one is
-  younger than **twice its own budget** (`calibrate_all()`) — a backstop for a round shorter than
-  its own sweep, never reached at a sane `?run=`.
-  ⚠ A round costs `3 × ?cal=` in wall time, `4 ×` in Eurojackpot (the euro-number run sweeps too) —
-  at the 10 s default 30–40 s against hours, at `?cal=40000` two to three minutes.
-  Plus 60 s settle for each of those sweeps that moved an exposure `[D87]`.
+- The budget is a **cap, not a target** (default 10 s, `?cal=<ms>`, 0 = off) `[D21]`. **When** is the
+  dynamic interval `[D106]` (`CAL_DYN_MIN_MS` 15 min … `CAL_DYN_MAX_MS` 2 h, `calibrate_all()`,
+  `calibrate_shorten()` on a soft-down), checked at the candidate points only. `/status`
+  `cal_interval_ms` / `cal_due_ms`; the Log names every sweep and the next interval. The
+  session-start sweep always runs. `cal_did_sweep` / the `/loops` `cal_ms` mean "a sweep ran in this
+  round". Plus 60 s settle for each sweep that moved an exposure `[D87]`.
 - **Nodes land on different exposures on purpose**; what they must share is the segment count.
 - Between rungs the sweep discards `CAL_STEP_SETTLE_PAIRS` 8 frame pairs (~0,44 s) before scoring
   the rung — driver queue plus margin `[D87]`. The ~1 min drift is not waited out per rung: it moves

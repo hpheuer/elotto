@@ -512,20 +512,29 @@ static void calibrate_master(int budget_ms)
  * loop to calibrate however short the interval is. */
 static int64_t s_cal_last_us;
 
-void calibrate_forget(void) { s_cal_last_us = 0; }
+void calibrate_forget(void)
+{
+    s_cal_last_us = 0;
+    g_status.cal_interval_ms = CAL_DYN_MIN_MS;
+    g_status.cal_due_ms      = 0;
+}
+
+void calibrate_shorten(const char *why)
+{
+    if (g_status.cal_interval_ms == CAL_DYN_MIN_MS) return;
+    g_status.cal_interval_ms = CAL_DYN_MIN_MS;
+    evlog("Sweep interval back to %d min (%s)", CAL_DYN_MIN_MS / 60000, why);
+}
 
 /* One calibration phase: broadcast, sweep locally in parallel, wait for acks.
  * Skipped when the budget is 0 — that is the matched no-calibration control —
  * and when nothing is left to calibrate.
  *
- * Also skipped when the last sweep is younger than TWICE its own budget. The
- * trigger is the round boundary `[D76]`, and a round with a very small
- * `?maxruns=` can be shorter than the sweep it would trigger — re-tuning a
- * camera that was tuned 20 s ago measures nothing but the sweep's own noise,
- * and what the sweep corrects (thermal drift of the sensors) moves on a
- * wall-clock scale, not a per-round one. Twice the budget is a backstop against
- * that degenerate case, not a policy: at any sane round length it never fires,
- * and it bounds the sweep to at most a third of the wall time when it does.
+ * Also skipped until the dynamic interval since the last sweep has run out
+ * `[D106]`: every caller is a candidate point, and most candidates pass. What
+ * the sweep corrects (thermal drift of the sensors) moves on a wall-clock
+ * scale, and a clean sweep is evidence it is not moving: 15 min after the
+ * session start, doubling on every ok sweep up to 2 h.
  *
  * ⚠ camera_calibrate() resets the camera statistics, so `mbit_s`/`bias` in
  * /status and /loops are "since the last sweep" — on a skipped loop they now
@@ -550,17 +559,16 @@ bool calibrate_all(const char *why)
     if (g_status.cal_budget_ms <= 0) return false;
     if (g_status.node_ok == 0) return false;
 
+    if (g_status.cal_interval_ms < CAL_DYN_MIN_MS) g_status.cal_interval_ms = CAL_DYN_MIN_MS;
     if (s_cal_last_us) {
         int64_t age_ms = (esp_timer_get_time() - s_cal_last_us) / 1000;
-        int64_t floor_ms = 2 * (int64_t)g_status.cal_budget_ms;
-        if (age_ms < floor_ms) {
-            printf("calibration: skipped, last sweep %d s ago (floor %d s -- "
-                   "round shorter than twice the sweep budget)\n",
-                   (int)(age_ms / 1000), (int)(floor_ms / 1000));
-            evlog("Sweep skipped (%s) - last one %d s ago", why, (int)(age_ms / 1000));
+        if (age_ms < g_status.cal_interval_ms) {
+            /* Not logged: most candidate points skip, and the event ring holds 48. */
+            g_status.cal_due_ms = (int)(g_status.cal_interval_ms - age_ms);
             return false;
         }
     }
+    g_status.cal_due_ms = 0;
 
     g_status.phase = PHASE_CALIBRATE;
     evlog("Sweep started (%s), budget %d s", why, g_status.cal_budget_ms / 1000);
@@ -611,12 +619,23 @@ bool calibrate_all(const char *why)
     }
     if (upos) evlog("Sweep: NO certified setting on %s - see its /calibrate", unc);
 
+    /* Next interval `[D106]`: an ok sweep — every node certified, nothing
+     * moved — doubles it, anything else puts it back to the minimum. */
+    if (n_moved == 0 && upos == 0) {
+        int nx = g_status.cal_interval_ms * 2;
+        g_status.cal_interval_ms = nx > CAL_DYN_MAX_MS ? CAL_DYN_MAX_MS : nx;
+    } else {
+        g_status.cal_interval_ms = CAL_DYN_MIN_MS;
+    }
+    g_status.cal_due_ms = g_status.cal_interval_ms;
+
     if (n_moved == 0) {
-        evlog("Sweep done in %.1f s - every node kept its exposure, no settle",
-              g_status.cal_ms / 1000.0);
+        evlog("Sweep done in %.1f s - every node kept its exposure, no settle; next in %d min",
+              g_status.cal_ms / 1000.0, g_status.cal_interval_ms / 60000);
         return true;
     }
-    evlog("Sweep done in %.1f s - exposure changed: %s", g_status.cal_ms / 1000.0, moved);
+    evlog("Sweep done in %.1f s - exposure changed: %s; next in %d min",
+          g_status.cal_ms / 1000.0, moved, g_status.cal_interval_ms / 60000);
 
     evlog("Settling %d s - whole array waits, nothing measured", CAL_SETTLE_AFTER_MS / 1000);
     int64_t end = esp_timer_get_time() + (int64_t)CAL_SETTLE_AFTER_MS * 1000;

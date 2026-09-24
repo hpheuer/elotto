@@ -2106,3 +2106,21 @@ Now the first pair after the request is requeued unextracted; the window opens o
 Residual: when `M` lands while a pair is being extracted, the first counted pair's first frame
 may have begun its exposure up to one frame time (~33 ms) before `M`. Cost: one pair cycle per
 window. `ONSET_SETTLE_MS` and the slave's `SLAVE_FLUSH_MS` 500 → 700 ms for the extra pair.
+
+### D106 — Dynamic sweep interval; Nodes card (2026-09-24)
+**Operator decision.** Sweeps are no longer fixed per round (boundary, mid-scoring D86, before the
+pass D85). `calibrate_all()` is called at candidate points — the end of every scoring pass, before
+the pass, the round boundary, i.e. only where no centring mean straddles — and sweeps once the
+interval since the last sweep has run out. The session-start sweep always runs; the interval
+starts at 15 min (`CAL_DYN_MIN_MS`), doubles after every ok sweep (every node certified and no
+exposure moved) up to 2 h (`CAL_DYN_MAX_MS`), and falls back to 15 min after any other sweep and on
+every soft-down trip (`calibrate_shorten()`). Supersedes D76's ⛔ "no wall-clock trigger" and the
+fixed D85/D86 triggers; replaces the twice-the-budget floor.
+Consequences: the 2 h can be overrun by at most one pass block (no candidate inside it); a
+tripped node is recalibrated at the first candidate ≥ 15 min after the last sweep, not at the next
+round boundary; the camera statistics (`cam_*` in `/loops`) span longer between resets. With the
+dark IMX219 a sweep costs ~3 s and never settles, so the time saved is small — the point is to
+collect experience with fewer sweeps.
+UI: the health line, node table, link and drift lines moved into their own "Nodes" card, so the
+results title stands directly over its table. `/status` `cal_interval_ms`, `cal_due_ms`; the
+parameter line shows the interval and when the next sweep is due.
