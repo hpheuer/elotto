@@ -1846,7 +1846,16 @@ decimals on every node.
 | `ms_pair` live, master idle | 233 | 166,6 | **134,2** |
 | production `mbit_s` | 8,66 | ~12,1 | **15,0** |
 
-`ms_wait` fell 16,6 → 5,7 with it (not understood; the driver holds two filled buffers).
+`ms_wait` fell 16,6 → 5,7 with it, and that is **frame quantisation**, not a separate gain:
+with `CONFIG_ESP_VIDEO_DISABLE_MIPI_CSI_DRIVER_BACKUP_BUFFER=y` the driver keeps its last buffer and
+overwrites it with every new frame once no free buffer is queued (`esp_video_device_common_on_get_new_trans`,
+`backup_element`). So after an extraction the first frame of the next pair is ready, the second is the
+one still being written, released at the next frame end. Every pair cycle rounds UP to whole frames
+of ~33,3 ms: 216 ms of work → 7 frames = 233,3 (wait 16,8); 128,5 → 4 frames = 133,3 (wait ~5).
+Under session load the slaves sit at the edge (`ms_extract` 128,8, pair 139,8 = ~20 % of pairs slip
+to 5 frames). ⚠ Extraction gains pay only in steps of one frame: ~5 ms more gets every pair onto 4
+frames, below ~97 ms onto 3 (+33 %). The two frames of a pair are ~3–4 frames apart, not adjacent;
+FPN still cancels (same pixel).
 **Under load** (6-of-49, `?run=0.5`, `?cal=0`, all four on it): slaves `ms_extract` 127,7, production
 14,7, consumption 15,3–15,8 with `waits` > 0 (the reader keeps up), `focus_win_ms` 937,9 → **579,8**.
 No fault, void, flush timeout or stall. At `?run=2` (the form's value): `focus_win_ms` 1762 + gap 871

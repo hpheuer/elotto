@@ -600,6 +600,10 @@ every ~134 ms against 66 on offer) `[D93]`. On the IMX219 that is also the **loa
 block reader `[D92]` the consumer outruns production (`waits` > 0), so the RAW10 extractor is the
 session's clock. Its remaining headroom is compute: PSRAM reads both frames of a pair in ~54 ms
 (`/camtest` `ms_pair_read`), the sensor offers a pair every 66 ms.
+⚠ **The pair cycle is quantised to whole frames (~33,3 ms)** `[D93]`: the CSI driver overwrites
+its last buffer until a free one is queued, so the second frame of every pair waits for the next
+frame end. A faster extractor pays only when it crosses a frame boundary (4 → 3 frames needs
+`ms_extract` below ~97 ms); in between the saving turns into `ms_wait`.
 - ⛔ **On an OV5647** nothing done to the extraction path can raise the **idle** rate `[D23]` — that
   sensor is the ceiling. It does not hold for the IMX219. Prove any extractor change with
   `ms_extract` under load, never at idle `[D25]`.
