@@ -127,7 +127,7 @@ sum `[D81]`. Direction pre-registered: `?score=high|low|abs`, default `high` —
 picks the pool. The UI shows pass k/20 and the current top of the pool with the running sum, and
 **everything the pass shows** `[D98]`: a Top-10 of the numbers (Σ, Z\*, Z, Conc, Δn, AC — `GET
 /extremes?score=1`, `RunResult` rows in their own buffer, never in `results[]` `[D103]`; display
-only, the pool is picked from the sum in `score_and_build_pool()`; pool members green `#` `[D102]`),
+only, the pool is picked from the sum in `score_and_build_pool()`; pool members: `#` in green `[D102]`),
 a scoring health line (last closed pass's own σ), stat cards, node table and boards. **The scoring key is the pass key** — z and concordance at the session's
 `?wpre=` `[D48]``[D65]``[D69]`; `score_build_keys()` is the only place a scoring key is built.
 ⚠ Scoring has no `/loops` block; the scoring span **is** the block. Per-node centre over the

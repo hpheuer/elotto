@@ -2059,7 +2059,7 @@ after it, so the scoring ETA does not include it.
 
 ### D102 — The pool is marked in the scoring table (2026-09-24)
 **Operator decision.** While numbers are scored the pool badge shows only its size ("x numbers");
-the pool itself is marked in the scoring table: a green `#` cell on every number the device has
+the pool itself is marked in the scoring table: the `#` printed in green on every number the device has
 put in the pool so far (`pool_main`/`pool_euro`, re-published after each scoring pass). Marked by
 membership, not by position, so any column sort still shows it; the table runs at least 10 rows
 and down to the last pool member. `Σ` sorts in the `?score=` direction (high: Σ, low: −Σ,
