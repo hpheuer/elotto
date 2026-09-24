@@ -1461,6 +1461,27 @@ static void wsig_collect(float out[MAX_NODES])
         out[i] = g_status.nodes[i].cam_wsig_now;
 }
 
+/* This window's autocorrelation for the item (D97): Σ over the combined nodes
+ * of each node's Σ_{L=1..4} z_L, over √(4·n). The master reads its own camera;
+ * a slave's arrived as ,ac= on its 'Z' reply. NaN when no node in `mask`
+ * reported one. Same timing rule as wsig_collect(): before the next 'M'. */
+static float acz_collect(uint8_t mask)
+{
+    double sum = 0.0;
+    int    n   = 0;
+    camera_stats_t cs;
+    camera_get_stats(&cs);
+    if ((mask & 1u) && cs.win_sigma_samples > 0) {
+        sum += cs.win_ac_z[0] + cs.win_ac_z[1] + cs.win_ac_z[2] + cs.win_ac_z[3];
+        n++;
+    }
+    for (int i = 1; i < g_status.node_count && i < MAX_NODES; i++) {
+        float v = g_status.nodes[i].cam_ac_now;
+        if ((mask & (1u << i)) && isfinite(v)) { sum += v; n++; }
+    }
+    return n ? (float)(sum / sqrt(4.0 * n)) : NAN;
+}
+
 /* Offer one item's per-node camera sigmas to the jump board, keeping the
  * WSIG_TOP_N largest |jump| of the whole session (D62).
  *
@@ -2756,6 +2777,7 @@ void elotto_task(void *pvParam)
              * the board copies all of them: it has to name the measurement
              * without results[], which compaction will have taken. */
             wsig_note(r, wsig, mask);
+            r->acz = (k > 0) ? acz_collect(mask) : NAN;
             if (k > 0) {
                 r->z_score = z;
                 /* Provisional: the block's node means are not known until it

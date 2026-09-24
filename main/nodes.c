@@ -15,6 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <ctype.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -712,9 +713,19 @@ bool node_take_z(int k, double *out_z,
         double v = atof(wsg + 6);
         if (isfinite(v) && v > 0.0) g_status.nodes[k + 1].cam_wsig_now = (float)v;
     }
+    /* ,ac= — the node's window autocorrelation, Σ of the lag-1..4 z (D97).
+     * Same handling as wsig: on the node, NAN when absent. */
+    g_status.nodes[k + 1].cam_ac_now = NAN;
+    const char *acs = strstr(resp, ",ac=");
+    if (acs) {
+        double v = atof(acs + 4);
+        if (isfinite(v)) g_status.nodes[k + 1].cam_ac_now = (float)v;
+    }
 
+    /* The halves are the first two fields only if the first comma is followed
+     * by a number: a node without halves sends ,wsig= or ,ac= there. */
     const char *comma = strchr(resp + 2, ',');
-    if (comma && comma[1] != 'w') {
+    if (comma && !isalpha((unsigned char)comma[1])) {
         const char *c2 = strchr(comma + 1, ',');
         if (c2 && out_have_h && out_h1 && out_h2) {
             double a = atof(comma + 1), b = atof(c2 + 1);

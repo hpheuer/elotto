@@ -229,7 +229,7 @@ not fault.
 **cannot manufacture a false positive** — the scale stays right. What it costs is diversification,
 i.e. sensitivity, which is the harm that matters when the effect being hunted is small.
 
-Wire: `Z:<z>[,<h1>,<h2>][,wsig=<σ>]` `[D65]`. `,wsig=` TAGGED. Every node measures the commanded `nseg`.
+Wire: `Z:<z>[,<h1>,<h2>][,wsig=<σ>][,ac=<Σz_L>]` `[D65]``[D97]`. `,wsig=` and `,ac=` TAGGED. Every node measures the commanded `nseg`.
 
 ## Stored z is RAW; ranking is block-centred
 - **`z_score` is the raw combined Stouffer z and is never rewritten.** It stays beside `z_ctr` in
@@ -251,17 +251,24 @@ what remains visible is an effect varying **between items inside a block**.
   Total Time). ⚠ The bottom row is shown only while a session runs — every session is rounds
   `[D67]`.
 - **One sortable table of ten**: Top-10, item counter + block badge. Columns: `Z*` (key
-  in that item's block-σ units `[D68]`), `Z`, `Conc`, `Δn`.
+  in that item's block-σ units `[D68]`), `Z`, `Conc`, `Δn`, `AC`.
   ⚠ **The table is the leading 10 of the ~50 most extreme items by `|Z*|`, sorted by whichever
   column header was clicked** `[D78]``[D78b]`. `GET /extremes` (streamed JSON, `emit_run` row shape,
   polled every **5 s** — it is a ~15 KB scan on the master's HTTP task, which shares the consumer
   core, so a 1 s poll stole the master's extraction CPU `[D78b]`) carries the set; the page sorts client-side
-  and shows the top 10 of the active sort. Click `Z*`/`Z`/`Conc`/`Δn` to sort; a second click on the
+  and shows the top 10 of the active sort. Click `Z*`/`Z`/`Conc`/`Δn`/`AC` to sort; a second click on the
   same header flips direction (arrow ▾/▴, ⇅ on the inactive ones), so the low end is one click away —
   which is why the old Bottom-5 table is gone. ⛔ Items still ENTER the set by `|Z*|` only — the sort
   reorders the view, never the display pool of 50 or the compaction archive of 100 `[D78]``[D78b]`. A missing `Δn` (solo item) sinks to the
   bottom of a `Δn` sort. `Δn` prints the node count it is taken over in parentheses — `0,79 (3)` is
   three cameras. Until the first `/extremes` reply lands the table falls back to `/status` `top`.
+  **`AC` is the window autocorrelation** of the bits behind the item `[D97]`: per node
+  z_L = r_L·√pairs_L for lags 1..4 (r_L = correlation of pixels L apart in a row), summed over
+  lags and over the combined nodes, divided by √(4·n) — **unit normal for independent bits**, read
+  against 0. + = neighbours agree too often (spread inflated), − = they alternate. Coloured at
+  |AC| > 3. ⛔ Diagnostic column like `Δn`: it sorts the 50, it never ranks, selects or excludes.
+  ⚠ It only sorts the ~50 extremes by `|Z*|` — the items with the largest `AC` session-wide are
+  not necessarily in that set. Per-lag, per-node detail is `wac` in `/camlog`.
   **`Δn` is node agreement** `[D70]`: σ across the contributing nodes of their block-centred z,
   each node divided by ITS OWN σ over that block. Small = the cameras moved together on this
   item; **≈ 1 is what independent nodes give**, so read it against 1, not against 0.
@@ -441,15 +448,17 @@ ladder `[D46]``[D65]`), no stuck frames, `mean_px` ≥ 5,0 `[D18]`,
 ## The per-window log — `GET /camlog` `[D64]`
 **Every node keeps its own**, 512 windows deep, one entry per measurement window. It is the only
 place a disturbance can still be located in time.
-- Entry: `t_ms` `tag` `wsig` `wn` `rsig` `rbias` `sig` `bias` `px` `ac1` `zdiff`.
+- Entry: `t_ms` `tag` `wsig` `wn` `wlo` `wac[4]` `rsig` `rbias` `sig` `bias` `px` `ac1` `zdiff`.
+  `wac` = lag-1..4 autocorrelation over THIS window as z; ⚠ `ac1` is cumulative since the sweep.
+  `wlo` = 1 when `wsig` sits more than 3 SE (1/√(2(wn−1))) below 1 `[D97]`.
   `tag` = combination id on the master, answered `M` sequence on a slave, **0 = a scoring run**.
 - ⚠ **It is a RING** — ~25 min at 2,9 s per window. `dropped` counts what fell out, so a gap
   never reads as a quiet stretch. **Pull it inside the session, per node**; there is no
   master-side collector.
 - ⚠ `t_ms` is each node's OWN uptime. Align by `tag` or by ordinal, **never** by subtracting
   timestamps across boards.
-- It records what never travels on the wire — `rsig`, `px`, `ac1`, `zdiff`. The wire carries
-  `wsig` and nothing else. That difference is what separates "the light moved" from "this sensor
+- It records what never travels on the wire — `rsig`, `px`, `ac1`, `zdiff`, the per-lag `wac`.
+  The wire carries `wsig` and the lag sum of `wac` (`,ac=`) and nothing else. That difference is what separates "the light moved" from "this sensor
   is dispersing".
 - ⚠ Only windows that produced a **Z** are pushed; a faulted or voided run has no window.
 
@@ -543,7 +552,7 @@ image). ⚠ The repos must stay siblings on disk; build, flash and commit them t
 
 ### Wire protocol
 `P` discovery · `M<seg>` measure · `K<budget_ms>,<segs>` calibrate · `D` diagnostics · `A` abort ·
-`R` reboot. Replies `OK`, `Z:<z>[,<h1>,<h2>][,wsig=]`, `D:`, `E:<reason>`, `V:<reason>` (void, not a
+`R` reboot. Replies `OK`, `Z:<z>[,<h1>,<h2>][,wsig=][,ac=]`, `D:`, `E:<reason>`, `V:<reason>` (void, not a
 fault). `h1`/`h2` are z of the two halves of the same window `[D56]`; a node that sends none
 is ranked on the full window (leave-one-out still applies). Extra fields ignored.
 UDP loss is handled explicitly: every frame carries the sequence it answers, mismatches are dropped

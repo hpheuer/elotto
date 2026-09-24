@@ -26,7 +26,7 @@
  * FRAME:  "EL1 <seq> <payload>"      (plain ASCII, one command per datagram)
  *
  * The payload is the command/reply text — "M<seg>", "K<ms>,<segs>", "D",
- * "A", "P", "R" and the "Z:<z>[,h1,h2][,wsig=]" / "D:..." / "OK" / "E:" / "V:"
+ * "A", "P", "R" and the "Z:<z>[,h1,h2][,wsig=][,ac=]" / "D:..." / "OK" / "E:" / "V:"
  * answers. Transport is UDP; the sequence number is the only addition over the
  * old UART framing.
  *

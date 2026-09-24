@@ -431,6 +431,15 @@ typedef struct {
      * confidence column beside Z*, not a second ranking key. Nothing selects,
      * excludes or reorders on it. */
     float      node_sd;
+    /* WINDOW AUTOCORRELATION of the bits this item was scored from (D97):
+     * Σ over the combined nodes of Σ_{L=1..4} z_L, divided by √(4·n), n = nodes
+     * that reported one. z_L = r_L·√pairs_L is a node's lag-L autocorrelation
+     * over the window, unit normal for independent bits, so this is unit normal
+     * too. Sign: + = neighbouring pixels agree too often (mini-run spread
+     * inflated), − = they alternate (spread deflated).
+     * ⚠ A diagnostic column, not a key: nothing ranks, selects or excludes on it.
+     * NaN = no node reported one (VOID, or firmware without ,ac=). */
+    float      acz;
 } RunResult;
 _Static_assert(sizeof(RunResult) == 48, "results[] row is the internal-RAM budget");
 
@@ -522,6 +531,9 @@ typedef struct {
      * per-item jump meaningful.
      * ⚠ NAN = the node did not report one, NOT a quiet window. */
     float    cam_wsig_now;
+    /* The same window's autocorrelation, ,ac= on the 'Z' reply (D97): the sum
+     * of the lag-1..4 z, variance 4 under independence. NAN = not reported. */
+    float    cam_ac_now;
     /* Mean raw pixel level from that same 'D' query (,px=, 2026-08-28). The one
      * covariate that separates a light change from a sensor change, which D46
      * named as missing and nothing recorded until LoopStat.cam_px.

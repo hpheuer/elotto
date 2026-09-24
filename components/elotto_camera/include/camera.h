@@ -49,7 +49,14 @@ typedef struct {
      * value", never as a quiet window. */
     double   win_sigma;           // per-mini-run sigma over THIS window only
     int      win_sigma_samples;   // mini-runs behind win_sigma; 0 = no value
-    double   autocorr_lag[4];     // lag-1..4 word-stream bit autocorrelation (ideal 0)
+    /* Lag-1..4 autocorrelation over THIS window, as z: r_L·√pairs_L, unit
+     * normal for independent bits (D97). Same window and same validity as
+     * win_sigma — 0 with win_sigma_samples 0 means "no value". Bits of one word
+     * are 32 horizontally adjacent pixels, so lag L is the correlation between
+     * pixels L apart in a row, not a time correlation. */
+    double   win_ac_z[4];
+    double   autocorr_lag[4];     // lag-1..4 word-stream bit autocorrelation (ideal 0),
+                                  // cumulative since the last sweep
     double   mean_pixel_level;    // running mean raw pixel byte, light-leak check (black floor)
     double   mbit_per_sec;        // sustained PRODUCTION rate: what extraction wrote
                                   // into the ring, over wall time. ⚠ NOT what a
@@ -411,7 +418,9 @@ void camera_winlog_new_session(void);
  *
  * `{"n":<entries>,"dropped":<overwritten>,"cap":512,"ses":<current>,
  * "win":[{...},...]}` with per entry: ses, t_ms (node uptime at the push),
- * tag, wsig, wn, rsig, rbias, sig, bias, px, ac1, zdiff.
+ * tag, wsig, wn, wlo, wac[4], rsig, rbias, sig, bias, px, ac1, zdiff.
+ * `wac` is the lag-1..4 autocorrelation over the window as z (D97); `ac1` is
+ * the cumulative one since the sweep. `wlo` flags wsig > 3 SE below 1.
  *
  * ⚠ `ses` is what makes a boundary visible: entries from before the current
  * session carry a lower number. Filter on it before comparing windows by

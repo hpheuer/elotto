@@ -457,6 +457,12 @@ static void cam_verify_regs(const char *when)
  * camera_task), not where a caller asks for it. */
 static uint32_t s_win_z_n;
 static double   s_win_z_mean, s_win_z_m2;
+/* Autocorrelation over the same window (D97): the lag-1..4 counts process_words()
+ * already takes, kept a second time window-scoped, plus the window's own ones
+ * and bits so the estimator is centred on the window's bias. Zeroed with
+ * s_win_z_* and nowhere else. */
+static uint64_t s_win_ac_both1[4], s_win_ac_pairs[4];
+static uint64_t s_win_ones, s_win_bits;
 
 /* Below this many mini-runs the window sigma is not published: a partial
  * window would otherwise report a wild value that reads like a disturbance.
@@ -553,6 +559,18 @@ static void process_words(void)
     s_autocorr_both1[1] += ac2; s_autocorr_pairs[1] += 30u * (uint64_t)n;
     s_autocorr_both1[2] += ac3; s_autocorr_pairs[2] += 29u * (uint64_t)n;
     s_autocorr_both1[3] += ac4; s_autocorr_pairs[3] += 28u * (uint64_t)n;
+    s_win_ac_both1[0] += ac1; s_win_ac_pairs[0] += 31u * (uint64_t)n;
+    s_win_ac_both1[1] += ac2; s_win_ac_pairs[1] += 30u * (uint64_t)n;
+    s_win_ac_both1[2] += ac3; s_win_ac_pairs[2] += 29u * (uint64_t)n;
+    s_win_ac_both1[3] += ac4; s_win_ac_pairs[3] += 28u * (uint64_t)n;
+    s_win_ones += ones; s_win_bits += 32u * (uint64_t)n;
+}
+
+static void win_stats_zero(void)
+{
+    s_win_z_n = 0; s_win_z_mean = 0.0; s_win_z_m2 = 0.0;
+    for (int L = 0; L < 4; L++) { s_win_ac_both1[L] = 0; s_win_ac_pairs[L] = 0; }
+    s_win_ones = 0; s_win_bits = 0;
 }
 
 /* accumulate_pixel_level() is GONE. It walked the first frame of every pair
@@ -704,6 +722,19 @@ static void publish_stats(void)
     s_stats.win_sigma_samples = (s_win_z_n >= WIN_SIGMA_MIN_N) ? (int)s_win_z_n : 0;
     s_stats.win_sigma         = (s_win_z_n >= WIN_SIGMA_MIN_N)
         ? sqrt(s_win_z_m2 / (double)(s_win_z_n - 1)) : 0.0;
+    /* Same Pearson r as autocorr_lag below, centred on the WINDOW's bias, then
+     * times √pairs: for independent bits r has SE 1/√pairs (the centring takes
+     * the bias fluctuation out of E[xy] - p²), so this is a unit-normal z. */
+    {
+        double wb = s_win_bits ? (double)s_win_ones / (double)s_win_bits : 0.0;
+        double wv = wb * (1.0 - wb);
+        bool ok = (s_win_z_n >= WIN_SIGMA_MIN_N) && wv > 0.0;
+        for (int L = 0; L < 4; L++) {
+            double np = (double)s_win_ac_pairs[L];
+            s_stats.win_ac_z[L] = (ok && np > 0.0)
+                ? ((double)s_win_ac_both1[L] / np - wb * wb) / wv * sqrt(np) : 0.0;
+        }
+    }
     s_stats.mean_pixel_level  = mean_px;
     s_stats.mbit_per_sec      = mbps;
     s_stats.zero_diff_frac    = s_diff_n ? (double)s_zero_diffs / (double)s_diff_n : 0.0;
@@ -758,7 +789,7 @@ static void stats_reset_locked(void)
     /* A sweep or a /expose opens a new window too, so the window-scoped
      * accumulator goes with it (D62). Without this a sweep would leave the
      * previous window's mini-runs standing in front of the next one. */
-    s_win_z_mean = 0.0; s_win_z_m2 = 0.0; s_win_z_n = 0;
+    win_stats_zero();
     for (int L = 0; L < 4; L++) { s_autocorr_both1[L] = 0; s_autocorr_pairs[L] = 0; }
     s_pixel_sum = 0; s_pixel_n = 0;
     s_zero_diffs = 0; s_diff_n = 0;
@@ -798,6 +829,7 @@ static void stats_reset_locked(void)
     s_stats.sigma_samples     = 0;
     s_stats.win_sigma         = 0.0;
     s_stats.win_sigma_samples = 0;
+    for (int L = 0; L < 4; L++) s_stats.win_ac_z[L] = 0.0;
     s_stats.mean_pixel_level  = 0.0;
     s_stats.mbit_per_sec      = 0.0;
     s_stats.consume_mbit_per_sec = 0.0;
@@ -907,7 +939,7 @@ static void camera_task(void *arg)
              * (D62). This is the only place that knows it: the consumer asks
              * for a flush and then waits, and everything produced before this
              * line belongs to the previous window. */
-            s_win_z_n = 0; s_win_z_mean = 0.0; s_win_z_m2 = 0.0;
+            win_stats_zero();
             s_flush_dropped = true;
         }
 
@@ -2366,7 +2398,7 @@ esp_err_t camera_selftest_handle(void *httpd_req, bool busy)
 /* ── The per-window log (D64) ──────────────────────────────────────────
  *
  * See camera.h for why this is here rather than on the master. The ring itself
- * is internal RAM, not PSRAM: 512 * 40 B = 20 KB, and it is written from the
+ * is internal RAM, not PSRAM: 512 * 56 B = 28 KB, and it is written from the
  * consumer once per window and read from the HTTP task — both of which would
  * rather not take a PSRAM stall on a path that already owns s_mutex. It is
  * allocated lazily on the first push so a node that never measures never pays
@@ -2380,8 +2412,9 @@ typedef struct {
     float    rsig, rbias; /* LSB sigma/bias, cumulative since the sweep */
     float    sig, bias;   /* likewise cumulative */
     float    px;          /* mean pixel level -- the light */
-    float    ac1;         /* lag-1 autocorrelation */
+    float    ac1;         /* lag-1 autocorrelation, cumulative since the sweep */
     float    zdiff;       /* zero-diff fraction */
+    float    wac[4];      /* lag-1..4 autocorrelation over THIS window, as z (D97) */
 } cam_winlog_t;
 
 static cam_winlog_t *s_winlog;
@@ -2434,6 +2467,7 @@ void camera_winlog_push(uint32_t tag)
     e->px    = (float)cs.mean_pixel_level;
     e->ac1   = (float)cs.autocorr_lag[0];
     e->zdiff = (float)cs.zero_diff_frac;
+    for (int L = 0; L < 4; L++) e->wac[L] = (float)cs.win_ac_z[L];
     s_winlog_head = (s_winlog_head + 1) % CAM_WINLOG_N;
     if (s_winlog_n < CAM_WINLOG_N) s_winlog_n++;
     else                           s_winlog_dropped++;
@@ -2479,13 +2513,22 @@ esp_err_t camera_winlog_send_json(void *httpd_req)
         xSemaphoreTake(s_mutex, portMAX_DELAY);
         e = s_winlog[(start + i) % CAM_WINLOG_N];
         xSemaphoreGive(s_mutex);
+        /* `wlo` (D97): wsig more than 3 SE BELOW 1, SE = 1/√(2(wn−1)). Negative
+         * serial correlation shrinks the mini-run spread, and nothing else in
+         * the project looks downward — soft-down and the sweep gate are
+         * one-sided. A flag to read, never an exclusion. */
+        int wlo = (e.wn > 1) &&
+                  (double)e.wsig < 1.0 - 3.0 / sqrt(2.0 * (double)(e.wn - 1));
         len = snprintf(buf, sizeof(buf),
             "%s{\"ses\":%lu,\"t_ms\":%lu,\"tag\":%lu,\"wsig\":%.4f,\"wn\":%ld,"
+            "\"wlo\":%d,\"wac\":[%.2f,%.2f,%.2f,%.2f],"
             "\"rsig\":%.4f,\"rbias\":%.6f,\"sig\":%.4f,\"bias\":%.6f,"
             "\"px\":%.2f,\"ac1\":%.4f,\"zdiff\":%.4f}",
             i ? "," : "", (unsigned long)e.ses,
             (unsigned long)e.t_ms, (unsigned long)e.tag,
-            (double)e.wsig, (long)e.wn, (double)e.rsig, (double)e.rbias,
+            (double)e.wsig, (long)e.wn, wlo,
+            (double)e.wac[0], (double)e.wac[1], (double)e.wac[2], (double)e.wac[3],
+            (double)e.rsig, (double)e.rbias,
             (double)e.sig, (double)e.bias, (double)e.px, (double)e.ac1,
             (double)e.zdiff);
         httpd_resp_send_chunk(req, buf, len);

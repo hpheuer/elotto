@@ -1092,6 +1092,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "if(k==='key')v=r.key;"
 "else if(k==='z_ctr')v=(r.z_ctr===undefined||r.z_ctr===null)?r.z:r.z_ctr;"
 "else if(k==='zc')v=r.zc;"
+"else if(k==='ac')v=r.ac;"
 "else v=r.nsd;"
 "return (v===undefined||v===null||v!==v)?null:v;}"
 /* desc, and a missing value (Δn on a solo item) always sinks to the end. */
@@ -1114,7 +1115,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "EX=(x&&x.extremes)?x.extremes:[];renderExtremeTables();}).catch(function(){});}"
 "function renderExtremeTables(){"
 "if(!LD)return;var d=LD,isEuro=d.mode==='euro',st={p:d.pre_w||0};"
-"var lab={key:'Z*',z_ctr:'Z',zc:'Conc',nsd:'\\u0394n'};"
+"var lab={key:'Z*',z_ctr:'Z',zc:'Conc',nsd:'\\u0394n',ac:'AC'};"
 "var top,endTxt;"
 /* One table (D78): the leading 10 of the active sort over the extremes set.
    The other end is one header click away (direction flips), so a second table
@@ -1148,7 +1149,18 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "\\u2014 = not computed yet (block still open) or too few cameras\\n"
 "\\u0394n does not change which numbers enter the pool; the table can be sorted "
 "by it. Click to sort the 50.\" style=\"cursor:pointer\" onclick=\"sortBy(\\'nsd\\')\">"
-"\\u0394n'+exArrow('nsd')+'</th>':'')"
+"\\u0394n'+exArrow('nsd')+'</th>'"
+/* AC (D97): the window autocorrelation of the bits behind this item. A
+   diagnostic column like Δn: it sorts the 50, it never enters a key. */
+"+'<th title=\"Were the bits of this item serially independent?\\n"
+"Autocorrelation between neighbouring pixels (1 to 4 apart) over this item\\u2019s "
+"window, summed over the cameras, in units of pure chance.\\n"
+"around 0 (within \\u00b12) = what independent bits give\\n"
+"large + = neighbouring pixels agree too often (clumping, e.g. interference)\\n"
+"large \\u2212 = they alternate too often\\n"
+"\\u2014 = not reported\\n"
+"AC does not change which numbers enter the pool. Click to sort the 50.\" "
+"style=\"cursor:pointer\" onclick=\"sortBy(\\'ac\\')\">AC'+exArrow('ac')+'</th>':'')"
 "+'<th>Numbers</th>'"
 "+(isEuro?'<th>Bonus</th>':'')+'</tr>';"
 "var tb=document.getElementById(bodyId);tb.innerHTML='';"
@@ -1175,6 +1187,8 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
    that entered this item's combine (D78). A dash carries no count. */
 "var nsdTxt=(nsd===null)?'\\u2014':(nsd.toFixed(2)+' ('+(r.k===undefined?'?':r.k)+')');"
 "var nsdCol=(nsd===null)?'#9aa':(nsd<0.6?'#90ee90':(nsd>1.0?'#c09090':''));"
+"var acTxt=(r.ac===undefined||r.ac===null)?'\\u2014':r.ac.toFixed(2);"
+"var acCol=(r.ac===undefined||r.ac===null)?'#9aa':(Math.abs(r.ac)>3?'#ffd479':'');"
 "var det='Z '+zTxt+' \\u00b7 Conc '+concTxt"
 "+' \\u00b7 \\u0394n '+nsdTxt+' (k '+(r.k===undefined?'?':r.k)+')';"
 "if(st)det+='\\nweights: z '+(1-(st.p||0)).toFixed(2)"
@@ -1182,7 +1196,8 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "tb.innerHTML+='<tr><td>'+(i+1)+'</td><td>'+itm+'</td>"
 "'+(st?'<td title=\"'+det+'\">'+zs.toFixed(3)+'</td>'"
 "+'<td>'+zTxt+'</td><td>'+concTxt+'</td>'"
-"+'<td'+(nsdCol?' style=\"color:'+nsdCol+'\"':'')+'>'+nsdTxt+'</td>':'')+'"
+"+'<td'+(nsdCol?' style=\"color:'+nsdCol+'\"':'')+'>'+nsdTxt+'</td>'"
+"+'<td'+(acCol?' style=\"color:'+acCol+'\"':'')+'>'+acTxt+'</td>':'')+'"
 "<td>'+nums+'</td>"
 "'+(isEuro?'<td>'+estr+'</td>':'')+'</tr>';"
 "}"
@@ -1318,22 +1333,28 @@ static int emit_run(char *buf, int cap, const RunResult *r, bool euro)
         snprintf(nsd, sizeof(nsd), "%.3f", (double)r->node_sd);
     else
         snprintf(nsd, sizeof(nsd), "null");
+    /* `ac`: window autocorrelation (D97), null when no node reported one. */
+    char ac[16];
+    if (isfinite((double)r->acz))
+        snprintf(ac, sizeof(ac), "%.2f", (double)r->acz);
+    else
+        snprintf(ac, sizeof(ac), "null");
 
     if (euro)
         return snprintf(buf, cap,
             "{\"run\":%d,\"round\":%d,\"z\":%.4f,\"z_ctr\":%.4f,"
-            "\"zc\":%.3f,\"key\":%.4f,\"k\":%d,\"nsd\":%s,"
+            "\"zc\":%.3f,\"key\":%.4f,\"k\":%d,\"nsd\":%s,\"ac\":%s,"
             "\"nums\":[%d,%d,%d,%d,%d],\"euro\":[%d,%d]}",
             r->index, (int)r->round, r->z_score, (double)r->z_ctr,
-            (double)r->zc_ctr, rank_key(r), (int)r->k, nsd,
+            (double)r->zc_ctr, rank_key(r), (int)r->k, nsd, ac,
             r->nums[0], r->nums[1], r->nums[2], r->nums[3], r->nums[4],
             r->euro[0], r->euro[1]);
     return snprintf(buf, cap,
         "{\"run\":%d,\"round\":%d,\"z\":%.4f,\"z_ctr\":%.4f,"
-        "\"zc\":%.3f,\"key\":%.4f,\"k\":%d,\"nsd\":%s,"
+        "\"zc\":%.3f,\"key\":%.4f,\"k\":%d,\"nsd\":%s,\"ac\":%s,"
         "\"nums\":[%d,%d,%d,%d,%d,%d],\"euro\":[]}",
         r->index, (int)r->round, r->z_score, (double)r->z_ctr,
-        (double)r->zc_ctr, rank_key(r), (int)r->k, nsd,
+        (double)r->zc_ctr, rank_key(r), (int)r->k, nsd, ac,
         r->nums[0], r->nums[1], r->nums[2],
         r->nums[3], r->nums[4], r->nums[5]);
 }

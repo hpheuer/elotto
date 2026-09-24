@@ -1962,3 +1962,41 @@ esp_http_server, app_update, bootloader_support, FreeRTOS, esp_timer, heap).
 **Cost it avoids.** New toolchain via EIM and the venv path in `build.ps1`, all three projects
 rebuilt, the managed components (esp_video, the IMX219 driver) re-checked against the new IDF, and
 the D61 core-pinning behaviour re-tested over ~20 session starts (it was intermittent).
+
+### D97 — Window autocorrelation per item: `AC` column, `/camlog` `wac` and `wlo` (2026-09-24)
+**Operator decision: an experiment.** A column beside Z*, Z, Conc, Δn, sortable like them, to see
+what a session shows. Suggested as an extra randomness criterion; built as a diagnostic.
+
+**Why a window value was missing.** `process_words()` counted lag-1..4 pairs of every word, but only
+cumulative since the last sweep (`autocorr_lag`, `/camlog` `ac1`). Nothing described one window.
+The window σ `wsig` (D62) sees serial correlation only through the mini-run variance,
+≈ 1 + 2·Σρ_L, and only once |Σρ| is large: at `?run=2` a window holds `wn` ≈ 7577 mini-runs
+(24 Mbit), so `wsig` has SE 1/√(2·7577) ≈ 0,008 and needs |Σρ| ≈ 0,012 for 3 SE, while the window's
+own r_1 has SE 1/√(23,5·10⁶) ≈ 2·10⁻⁴ and shows 6·10⁻⁴. And correlations of opposite sign at
+different lags cancel in Σρ entirely. What z and autocorrelation measure differs (0101… has z = 0 and
+r_1 = −1; its `wsig` is 0, not 1).
+
+**What it measures.** The 32 bits of a word come from 32 horizontally adjacent pixels of one frame
+pair, so lag L is the correlation between pixels L apart in a row: banding, interference, readout
+coupling. Not time: steady flicker cancels in the frame difference and moves the bias.
+
+**Built.** camera.c keeps the lag-1..4 counts a second time, window-scoped (zeroed with the window σ
+at the ring flush and in `stats_reset_locked()`), plus the window's ones and bits, and publishes
+`win_ac_z[L]` = r_L·√pairs_L with r_L centred on the window's own bias — unit normal for independent
+bits. Validity as `wsig` (`WIN_SIGMA_MIN_N`). Cost: four 64-bit adds per 64-word batch.
+- Wire: `,ac=<z_1+z_2+z_3+z_4>` after `,wsig=` on the `Z` reply (variance 4 under independence).
+  `node_take_z()` now takes halves only when the first comma is followed by a number, not a letter.
+- `results[]`: `acz` = Σ over the item's combine mask of each node's lag sum, / √(4·n), n = nodes
+  that reported one — unit normal; NaN on a VOID. Fits in the 48-byte row (it used the tail pad).
+- `/extremes` and `/status` rows carry `ac`; the table has an `AC` column, sortable, highlighted at
+  |AC| > 3.
+- `/camlog` per window: `wac[4]` (the four z), `wlo` = 1 when `wsig` < 1 − 3/√(2(wn−1)).
+  `wlo` exists because negative serial correlation deflates the spread and nothing in the project
+  looks downward: soft-down trips at σ > 1,35 × the peer median, the sweep gate is σ ≤ 1,35 × the
+  ladder's best.
+
+**Not a key.** At r_1 = 10⁻³ an item's z spread grows by ~0,1 %; what stays below `wsig`'s reach
+does not distort z. So AC is a sensor early-warning figure: it ranks, selects and excludes nothing.
+⚠ The column sorts only the ~50 extremes by |Z*| (D78). Under the null |AC| > 3 happens in ~0,27 %
+of items, about 3 in a 1000-item session.
+
