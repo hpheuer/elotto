@@ -364,7 +364,8 @@ The session is always unattended `[D66]`.
   window, so the UI counts *missed* windows — a skipped window names the wrong numbers.
 - `POST /pause?on=1|0` holds **between** runs only; state stays `running`, paused time is excluded
   from `elapsed_ms`.
-- **Every window starts on fresh bits** (`onset_settle()`, all four nodes flush in parallel on `M`)
+- **Every window starts on fresh bits** (`onset_settle()`, all four nodes flush in parallel on `M`;
+  the first pair after `M` is discarded unextracted `[D105]`)
   `[D34]`. ⚠ A flush that does not finish **voids the run** (`flush_timeouts`) `[D35]`.
 - ⚠ `?focus=` answers **400**.
 

@@ -178,7 +178,13 @@ void camera_get_stats(camera_stats_t *out);
  * Called before every measurement window so the bits credited to an item were
  * physically captured during it. Without it the ring is FULL at a window's
  * start, having filled through the preceding gap: 524288 bits, which is 10 %
- * of a run=1 item and 2 % of a run=5 one, collected before the item existed. */
+ * of a run=1 item and 2 % of a run=5 one, collected before the item existed.
+ *
+ * The FIRST pair after the request is thrown away unextracted `[D105]`: its
+ * frames may have been finished — and exposed — before the request, waiting
+ * in the driver's queue or overwritten in its last buffer while the previous
+ * pair was being extracted. Only the pairs after it count. Costs one pair
+ * cycle (~0,1 s on an IMX219) per window. */
 void camera_ring_flush(int pairs);
 bool camera_ring_flushed(void);
 

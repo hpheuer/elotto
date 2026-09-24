@@ -485,7 +485,7 @@ static uint8_t s_soft_clean[MAX_NODES];
  * already refuses to return a short run rather than normalise it by a √segments
  * it never reached. A run whose provenance is unknown is treated the same way —
  * archived with k=0, never ranked. It is NOT a camera fault: a pair costs 56 ms
- * idle and 85 ms loaded, so 500 ms is a long stall but well short of
+ * idle and 85 ms loaded, so ONSET_SETTLE_MS (two pairs, one discarded [D105]) is a long stall but well short of
  * CAM_STALL_TIMEOUT_MS, and escalating a transient to a node drop would cost an
  * arm for the rest of the session. */
 static bool onset_settle(void)

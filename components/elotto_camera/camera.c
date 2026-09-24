@@ -356,6 +356,7 @@ static int64_t  s_last_pair_us = 0;
  * item. That is the number this rig uses to decide whether an arm is healthy.
  * A flush must not cost it. */
 static volatile int    s_flush_pairs = 0;   // fresh pairs still owed
+static volatile int    s_flush_discard = 0; // pairs to throw away first [D105]
 static volatile bool   s_flush_dropped = false;
 static volatile bool   s_flush_done = true;
 
@@ -928,6 +929,20 @@ static void camera_task(void *arg)
             continue;
         }
 
+        /* The first pair after a flush request is not extracted at all
+         * `[D105]`: both its frames may predate the request (queued in the
+         * driver, or finished while the previous pair was extracted). Its
+         * buffers go straight back; the NEXT pair opens the window below. */
+        if (s_flush_pairs > 0 && s_flush_discard > 0) {
+            s_flush_discard--;
+            ioctl(s_fd, VIDIOC_QBUF, &first);
+            ioctl(s_fd, VIDIOC_QBUF, &buf);
+            have_first = false;
+            pair_wait_us = 0;       // a discarded pair times nothing
+            s_last_pair_us = 0;
+            continue;
+        }
+
         /* Drop everything produced BEFORE this pair, then let this pair and any
          * further owed pairs refill the ring. The packer goes too: it can hold
          * up to 31 bits of the previous pair, which would otherwise be the one
@@ -1442,6 +1457,7 @@ void camera_ring_flush(int pairs)
     if (pairs < 1) pairs = 1;
     s_flush_done    = false;
     s_flush_dropped = false;
+    s_flush_discard = 1;          /* [D105] the first pair after the request */
     s_flush_pairs   = pairs;      /* last, so the capture task sees a full request */
 }
 

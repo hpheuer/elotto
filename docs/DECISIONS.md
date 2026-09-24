@@ -2094,3 +2094,15 @@ not reported, no z) adds nothing to that column; missing Conc counts 0 (results[
 
 **Lifts** the ⛔ of D70 (Δn never ranks/selects) and D97 (AC never ranks/selects) — for the pool
 sum only. Neither ranks items in the pass; the pass key is unchanged.
+
+### D105 — The flush discards the first pair after the trigger (2026-09-24)
+**Operator decision.** `camera_ring_flush()` used to drop the ring at the next pair boundary and
+then extract that pair into the window. That pair's frames can predate the trigger: the capture
+task checks the flush flag only after both `DQBUF`s, the driver holds up to two finished frames
+(4 buffers, 2 in extraction) and overwrites its last buffer until one is freed, so the oldest
+frame could be exposed ~one pair cycle + one frame (~0,15 s on an IMX219) before `M`. Never the
+previous item's window while the gap is ≥ 0,5 s, but not the item's either.
+Now the first pair after the request is requeued unextracted; the window opens on the next one.
+Residual: when `M` lands while a pair is being extracted, the first counted pair's first frame
+may have begun its exposure up to one frame time (~33 ms) before `M`. Cost: one pair cycle per
+window. `ONSET_SETTLE_MS` and the slave's `SLAVE_FLUSH_MS` 500 → 700 ms for the extra pair.

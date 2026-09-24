@@ -100,7 +100,7 @@
 /* Cap on the per-item ring flush (sensor.c onset_settle). A fresh pair costs
  * ~56 ms idle and ~85 ms under load, so the wait is normally well under this;
  * the cap only bounds the damage if the camera has stopped delivering. */
-#define ONSET_SETTLE_MS        500
+#define ONSET_SETTLE_MS        700   // two pairs now: one discarded [D105]
 
 #define RUN_S_MIN              0.5
 #define RUN_S_MAX                5
