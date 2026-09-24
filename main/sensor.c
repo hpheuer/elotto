@@ -286,7 +286,8 @@ static void nth_combination(const uint8_t *pool, int n, int r, int k, uint8_t *o
 // random passes; it must NOT go back to repeats in place (onset is the payload).
 static void score_one_run(bool *ok, float znode[MAX_NODES],
                           float h1[MAX_NODES], float h2[MAX_NODES],
-                          uint8_t *mask, ScoreItem *row, float wsig[MAX_NODES]);
+                          uint8_t *mask, float *ac, ScoreItem *row,
+                          float wsig[MAX_NODES]);
 static void score_build_keys(const float zn[][MAX_NODES],
                              const float h1[][MAX_NODES],
                              const float h2[][MAX_NODES],
@@ -677,6 +678,8 @@ static void score_run(int max_val, int pool_size, bool euro_pool)
         g_status.scoring_pass = pass + 1;
         bool scored[51] = {false};
         double scores[51] = {0};
+        float  acp[51];                 /* AC of each number this pass, for SUM_AC */
+        for (int i = 0; i < 51; i++) acp[i] = NAN;
         for (int i = 0; i < 51; i++) {
             smask[i] = 0;
             for (int n = 0; n < MAX_NODES; n++)
@@ -697,7 +700,7 @@ static void score_run(int max_val, int pool_size, bool euro_pool)
             focus_show_number(k, euro_pool);
             bool ok = false;
             float wsig[MAX_NODES];
-            score_one_run(&ok, zn[k], h1[k], h2[k], &smask[k],
+            score_one_run(&ok, zn[k], h1[k], h2[k], &smask[k], &acp[k],
                           score_row(euro_pool, k), wsig);
             /* The jump board sees every window, scoring included: a camera
              * that moves during the hour of scoring is the same camera that
@@ -736,7 +739,7 @@ static void score_run(int max_val, int pool_size, bool euro_pool)
             v[SUM_Z]    = zc_ctr[k];
             v[SUM_CONC] = isnan(conc[k]) ? 0.0 : conc[k];
             v[SUM_NSD]  = nsd[k];
-            v[SUM_AC]   = row ? (double)row->r.acz : NAN;
+            v[SUM_AC]   = (double)acp[k];   /* this pass's own, not the display row's */
             for (int c = 0; c < SCORE_SUM_N; c++) {
                 if (!isfinite(v[c])) continue;
                 A->acc[c][k] += v[c];
@@ -982,12 +985,15 @@ static int measure_window(WindowMeas *w)
  * candidates from selection instead. */
 static void score_one_run(bool *ok, float znode[MAX_NODES],
                           float h1[MAX_NODES], float h2[MAX_NODES],
-                          uint8_t *mask, ScoreItem *row, float wsig[MAX_NODES])
+                          uint8_t *mask, float *ac, ScoreItem *row,
+                          float wsig[MAX_NODES])
 {
     WindowMeas m;
     int k = measure_window(&m);
     /* Before the next 'M' overwrites them — same rule as the pass. */
     wsig_collect(wsig);
+    float acv = (k > 0) ? acz_collect(m.mask) : NAN;
+    if (ac) *ac = acv;
     if (row) {
         /* The number's latest measurement, filled as the pass fills an item
          * (D103): raw z, provisional z_ctr = z and raw-half concordance until
@@ -999,7 +1005,7 @@ static void score_one_run(bool *ok, float znode[MAX_NODES],
         r->z_score   = (k > 0) ? m.z : 0.0;
         r->z_ctr     = (k > 0) ? (float)m.z  : 0.0f;
         r->zc_ctr    = (k > 0) ? (float)m.zc : 0.0f;
-        r->acz       = (k > 0) ? acz_collect(m.mask) : NAN;
+        r->acz       = acv;
         r->node_sd   = NAN;
         row->key     = NAN;
     }
