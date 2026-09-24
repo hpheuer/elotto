@@ -74,8 +74,6 @@ static void prng_seed(void)
     if (!s_prng) s_prng = 0x9E3779B9u;         // xorshift32 must never sit at 0
 }
 
-#define SEGMENT_BITS   200                     // 6 words + 8 bits, per z segment
-
 /* Segments per run.
  *
  * Phase 5 made the run length the *display* window: the Focus panel holds a
