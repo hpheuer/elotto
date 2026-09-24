@@ -85,15 +85,16 @@ across rounds a combination can recur — identity is **(round, index)**.
   `g_status` only after every one validates, so a 400 leaves the finished session's `/status` —
   `pre_w` above all — describing that session. A 500 (task create failed) restores
   the snapshot, including `state`; `prefs_save()` runs only after the task exists `[D79]`. 100 % of the progress bar is the
-  full combination space. `NUM_RUNS` 400 is the hard cap on `results[]` `[D99]`.
+  full combination space. `NUM_RUNS` 500 is the hard cap on `results[]` `[D100]`.
   ⚠ **A combination space larger than `NUM_RUNS` aborts** rather than compacting mid-round.
   Eurojackpot's 7920 and 6-of-49's 5005 are both over it; the pool is sized down to `?maxruns=`.
-  ⚠ Compaction keeps at most 200 rows (100 extremes + 100 quarantined). The next round is
-  appended first, so `?maxruns=` above 200 truncates that round and ends the session `[D99]`.
+  Compaction keeps at most 100 rows (the ranked extremes) and the next round is appended after
+  them, so `?maxruns=` is capped at `UNLIM_RUNS_MAX` 400 = `NUM_RUNS` − 100 and a round is never
+  truncated `[D100]`.
 - **Measuring time is a session parameter.** `?run=<s>` is **0,5–5 s, default 5**; out of range
   answers **400**, no fallback. `?gap=<s>` if present must be 0,5–10 s, else **400**; omitted →
   40 % of run (floor `GAP_S_MIN` 0,5). `?cal=` 0..`CAL_BUDGET_MAX_MS` (0 = no sweep),
-  `?maxruns=` 10..400; out of range **400**, no fallback `[D79]` `[D91]`. Segment count follows from
+  `?maxruns=` 10..400 (`UNLIM_RUNS_MAX`); out of range **400**, no fallback `[D79]` `[D100]`. Segment count follows from
   `RUN_SEGS_REF`/`RUN_MS_REF` in `sensor.h`. ⚠ The requested window is
   not the wall time you get — actual is `focus_win_ms`, set by the **slowest** node's bit rate
   `[D2]``[D51]`.
@@ -154,8 +155,8 @@ as backstop for a compaction that cannot allocate.
 - **Results ACCUMULATE** — `results[]` is never cleared between rounds; every statistic runs on the
   union of all rounds.
 - **Every round compact at the boundary** `[D56]`: the 100 most extreme items by
-  `|rank_key|` stay as rows (both tails), and **separately up to 100 quarantined ones** — without
-  that quota a quarantined round lost every row `[D88]`. The rest merges into moments — pass mean/σ/χ²
+  `|rank_key|` stay as rows (both tails). Quarantined rows are not kept — nothing reads them after
+  their block closes `[D100]`. The rest merges into moments — pass mean/σ/χ²
   stay exact. `n ≤ 100` is a no-op, so a short session keeps every row. The display
   pool (`GET /extremes`, 50) is separate from this archive.
   ⚠ The counter and round-base semantics after a compaction (`completed`/`runs_completed`,
@@ -163,8 +164,7 @@ as backstop for a compaction that cannot allocate.
   read them before touching anything that counts or indexes items; getting them wrong is what broke
   the first compaction on hardware `[D42]`.
   ⚠ `compacted` non-zero in `/status`: `results[]` holds extremes plus survivors, not a sample —
-  never compute a distribution from its rows. The quarantine quota served the CSV `[D88]` and has
-  no consumer since `[D94]`.
+  never compute a distribution from its rows.
 - **Every round closes its own block, and only the round boundary does** `[D76]`, so centring never
   mixes items from either side of a re-scoring and every block has the same item count. Rounds after
   the first re-run the sweep **before** scoring, **every** scoring run sweeps again at its
@@ -571,7 +571,7 @@ floor is load-bearing.
 - **PSRAM is mandatory**: capture buffers, the LSB-ones side ring (`s_ring_raw`), `loop_hist`,
   per-item per-node archives (`s_node_z` and the half-window copies, sized to `NUM_RUNS`).
   The word ring `s_ring` (64 KB) is **internal RAM** `[D91]`; `results[]` stays internal too:
-  `NUM_RUNS` 400 `[D99]`.
+  `NUM_RUNS` 500 `[D100]`.
 - ⚠ **The measurement path reads the ring in BLOCKS** — `camera_read_words()`, 112 words per call
   from `gcp_zscore_pre()` `[D92]`. `camera_read_word()` takes `s_mutex` and fences four times per
   32 bits; read that way, the reader — not PSRAM, not the camera — was the session rate (6,2 Mbit/s

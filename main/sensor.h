@@ -7,18 +7,17 @@
 /* v3 (D67): rounds until Abort. Inside a round every combination is measured
  * exactly ONCE; results[] holds it in MEASUREMENT order and ACCUMULATES across
  * rounds, so NUM_RUNS is the hard cap on the buffer, not on the session.
- * 400 rows [D99]. A row is 48 B (the double in RunResult forces 8-byte
- * alignment). Compaction keeps at most 2*PASS_KEEP_EXTREME rows (200); the
- * next round is appended before that compaction, so a round longer than
- * NUM_RUNS-200 (i.e. ?maxruns= above 200) is truncated and that round ends
- * the session. A combination
- * space larger than NUM_RUNS aborts — the shuffle buffer is this wide. */
-#define NUM_RUNS       400
+ * 500 rows [D100]. A row is 48 B (the double in RunResult forces 8-byte
+ * alignment). Compaction keeps at most PASS_KEEP_EXTREME rows (100) and the
+ * next round is appended after them, so the resident peak is 100 + ?maxruns=;
+ * UNLIM_RUNS_MAX 400 is what keeps every round whole. A combination space
+ * larger than NUM_RUNS aborts — the shuffle buffer is this wide. */
+#define NUM_RUNS       500
 #define TOP_N            5
 /* ── Round-boundary compaction (D56) ──────────────────────────────────────
  * Unlimited rounds keep the 100 most extreme RANKED items by |rank_key| (both
- * tails), plus up to 100 most extreme QUARANTINED items as a separate quota
- * `[D88]`. Everything else merges into pass moments. Offline re-analysis of the dropped
+ * tails). Quarantined rows are not kept `[D100]`: nothing reads them once their
+ * block is closed. Everything else merges into pass moments. Offline re-analysis of the dropped
  * rows is not a goal. Since D67 every session is rounds, so every round
  * boundary calls pass_compact() (no-op while n ≤ 100). */
 #define PASS_KEEP_EXTREME 100
@@ -191,7 +190,9 @@ _Static_assert(((long long)RUN_S_MAX * 1000 * RUN_SEGS_REF) / RUN_MS_REF <= EL_S
  * meaningful WITHIN a round: the pool it enumerates changes every round. */
 #define UNLIM_RUNS_DEFAULT     100   // measurement runs per round
 #define UNLIM_RUNS_MIN          10
-#define UNLIM_RUNS_MAX    NUM_RUNS
+#define UNLIM_RUNS_MAX         400   // NUM_RUNS minus the compaction survivors
+_Static_assert(UNLIM_RUNS_MAX + PASS_KEEP_EXTREME <= NUM_RUNS,
+               "a round of ?maxruns= must fit beside the compaction survivors");
 #define UNLIM_RUNS_STEP         10
 /* ⚠ The pool split is NOT a free choice, and a weighted one was tried and
  * withdrawn (2026-08-18, same day). The probability that a round's pool even

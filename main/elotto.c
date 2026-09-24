@@ -222,7 +222,7 @@ static const char HTML[] =
 "<span style='display:flex;align-items:center;gap:8px'>"
 "<input id='numUnlimRuns' class='fin' type='number'"
 " value='" EL_STR(UNLIM_RUNS_DEFAULT) "' min='" EL_STR(UNLIM_RUNS_MIN) "'"
-" max='" EL_STR(NUM_RUNS) "' step='" EL_STR(UNLIM_RUNS_STEP) "'"
+" max='" EL_STR(UNLIM_RUNS_MAX) "' step='" EL_STR(UNLIM_RUNS_STEP) "'"
 " oninput='unlimHint()'>"
 "<span id='unlimHint' style='color:#8fae8f;font-size:.85em;line-height:1.55'>"
 "</span>"
@@ -640,7 +640,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "var mxr=parseInt(document.getElementById('numUnlimRuns').value)"
 "||" EL_STR(UNLIM_RUNS_DEFAULT) ";"
 "if(mxr<" EL_STR(UNLIM_RUNS_MIN) ")mxr=" EL_STR(UNLIM_RUNS_MIN) ";"
-"if(mxr>" EL_STR(NUM_RUNS) ")mxr=" EL_STR(NUM_RUNS) ";"
+"if(mxr>" EL_STR(UNLIM_RUNS_MAX) ")mxr=" EL_STR(UNLIM_RUNS_MAX) ";"
 "var score=document.getElementById('selScore').value||'high';"
 // Clamped here as well as validated in C: /start answers 400 for anything
 // outside 0..1 rather than falling back, so the form must not be able to send
@@ -2222,7 +2222,7 @@ static bool start_parse_maxruns(const char *val, StartReq *r, httpd_req_t *req)
     int m;
     if (!parse_int_all(val, &m) || m < UNLIM_RUNS_MIN || m > UNLIM_RUNS_MAX) {
         start_refuse(req, "maxruns= must be between " EL_STR(UNLIM_RUNS_MIN)
-                     " and " EL_STR(NUM_RUNS));
+                     " and " EL_STR(UNLIM_RUNS_MAX));
         return false;
     }
     r->runs_cap = m;

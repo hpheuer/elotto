@@ -2036,3 +2036,15 @@ ends the session.
 **Use of the freed RAM:** none. The ring is not binding — the consumer outruns production on the
 IMX219 (`waits` > 0, D92/D95), so a larger `s_ring` buys nothing; the extractor's cost is reading
 the PSRAM frames, which do not fit internal RAM. Kept as heap headroom.
+
+### D100 — No quarantine quota; NUM_RUNS 500, ?maxruns= up to 400 (2026-09-24)
+**Operator decision.** Compaction keeps only the 100 ranked extremes. The quota of up to 100
+quarantined rows (D88) is gone: its only consumer was the CSV (removed in D94). A quarantined row
+is out of every statistic (D14), block σ and soft-down origins are taken at the block close, and
+`pass_n_excl` counts a dropped quarantined row via `s_drop_excl`, so nothing reads the row later.
+
+`NUM_RUNS` 400 → 500; `UNLIM_RUNS_MAX` 400 (form, form clamp and `/start` validation), asserted
+`UNLIM_RUNS_MAX + PASS_KEEP_EXTREME <= NUM_RUNS`. Resident peak = 100 survivors + one round
+(≤ `?maxruns=`) ≤ 500, so no round is truncated any more and the combination space (≤ `?maxruns=`)
+never reaches the `s_perm` abort. Supersedes D99's numbers; internal RAM against D91's 1000 rows:
+500 × 48 B + 500 × 2 B = 25 KB freed.
