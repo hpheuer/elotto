@@ -2080,3 +2080,17 @@ span, `node_sd` (Δn), `acz` (AC). Beside it `key` (the pass key; `rank_key()` w
 one `emit_row()`; the page renders both through one `renderRunTable()` — for the scoring the Item
 column is Σ and pool members get a green `#`. ScoreRow and the separate number table are gone.
 ⛔ Not results[]: pass statistics, blocks, the pairwise matrix and compaction never see a scoring run.
+
+### D104 — The pool sum is selectable: Z*, Z, Conc, Δn, AC (2026-09-24)
+**Operator decision (research).** The scoring sums every column over the closed passes — Z\* (the
+pass key), Z (span-centred z), Conc, Δn and AC — per number and per pool (`s_sacc`, `ScoreItem.sums`).
+The operator picks which sum decides: a Σ marker in each column header of the scoring table
+(`POST /scoresum?c=key|z|conc|nsd|ac`, 409 outside the scoring); the selected header is printed in
+gold, the Σ column shows that sum. The pool is picked **once, when the whole scoring ends**, on the
+column selected then — in Eurojackpot main and bonus pool together, after the bonus run. The live
+pool (green `#`) is rebuilt after every pass and on every switch. Direction `?score=` applies to
+whichever column. Default Z\* at every session start. A pass without a value (Δn with < 2 nodes, AC
+not reported, no z) adds nothing to that column; missing Conc counts 0 (results[] convention).
+
+**Lifts** the ⛔ of D70 (Δn never ranks/selects) and D97 (AC never ranks/selects) — for the pool
+sum only. Neither ranks items in the pass; the pass key is unchanged.

@@ -122,8 +122,10 @@ across rounds a combination can recur — identity is **(round, index)**.
 **Phase 0 — scoring.** It starts 2 s after the sweep before it (`SCORE_START_PAUSE_MS`, a visible
 break for the operator `[D101]`). Each number 1..N is measured **`SCORE_PASSES` (20) times** `[D86]`, each pass a
 full session window in a fresh Fisher–Yates order (never the same number back-to-back `[D5]`).
-After each pass the ranking **key** is added to that number's sum; the pool is the top by that
-sum `[D81]`. Direction pre-registered: `?score=high|low|abs`, default `high` — it only
+After each pass every column — Z\*, Z, Conc, Δn, AC — is added to that number's own running sum;
+the pool is the top by ONE of those sums, the one selected on the page (Σ marker in a column
+header, `POST /scoresum?c=key|z|conc|nsd|ac`, default `key` = Z\*) **when the whole scoring
+ends** — in Eurojackpot both pools at once `[D81]` `[D104]`. `/status` `score_sum` names it. Direction pre-registered: `?score=high|low|abs`, default `high` — it only
 picks the pool. The UI shows pass k/20 and the current top of the pool with the running sum, and
 **everything the pass shows** `[D98]`: a Top-10 of the numbers (Σ, Z\*, Z, Conc, Δn, AC — `GET
 /extremes?score=1`, `RunResult` rows in their own buffer, never in `results[]` `[D103]`; display
@@ -271,13 +273,15 @@ what remains visible is an effect varying **between items inside a block**.
   z_L = r_L·√pairs_L for lags 1..4 (r_L = correlation of pixels L apart in a row), summed over
   lags and over the combined nodes, divided by √(4·n) — **unit normal for independent bits**, read
   against 0. + = neighbours agree too often (spread inflated), − = they alternate. Coloured at
-  |AC| > 3. ⛔ Diagnostic column like `Δn`: it sorts the 50, it never ranks, selects or excludes.
+  |AC| > 3. It never ranks items or excludes; its scoring SUM may pick the pool when selected
+  (research, `[D104]` lifts the ⛔ of `[D97]` for that).
   ⚠ It only sorts the ~50 extremes by `|Z*|` — the items with the largest `AC` session-wide are
   not necessarily in that set. Per-lag, per-node detail is `wac` in `/camlog`.
   **`Δn` is node agreement** `[D70]`: σ across the contributing nodes of their block-centred z,
   each node divided by ITS OWN σ over that block. Small = the cameras moved together on this
   item; **≈ 1 is what independent nodes give**, so read it against 1, not against 0.
-  ⛔ It ranks and excludes nothing — a confidence figure beside Z*, never a second key `[D70]`.
+  It never ranks items or excludes; its scoring SUM may pick the pool when selected (research,
+  `[D104]` lifts the ⛔ of `[D70]` for that).
   ⚠ **—** until the item's block has been centred (same wait as `Z`), and whenever fewer than
   two nodes have a block σ. Never 0 for "unknown": 0 would read as perfect agreement.
   ⚠ Small Δn is agreement, not evidence — centring has already removed the block-wide common

@@ -501,15 +501,43 @@ static bool onset_settle(void)
     return false;
 }
 
-static int score_pick_best(const double *acc, const bool *ok, const bool *used,
-                           const bool *skip, int max_val)
+/* ── The pool's sums `[D104]` ──────────────────────────────────────────────
+ * One accumulator per pool (0 = main numbers, 1 = bonus numbers) and per
+ * column (ScoreSum), over the closed passes of this round's scoring. The pool
+ * is picked from ONE of them — g_status.score_sum as it stands when the whole
+ * scoring ends — so every column is summed all the way through and switching
+ * costs nothing. Independent of the display rows, which may fail to allocate. */
+typedef struct {
+    double acc[SCORE_SUM_N][51];
+    bool   ok[SCORE_SUM_N][51];
+    int    max_val, pool_size;
+    bool   active;
+} ScoreAcc;
+static ScoreAcc s_sacc[2];
+static int      s_live_sum = -1;   /* the column the live pool was last built on */
+
+static void score_acc_begin(int ix, int max_val, int pool_size)
+{
+    memset(&s_sacc[ix], 0, sizeof(s_sacc[ix]));
+    s_sacc[ix].max_val   = max_val;
+    s_sacc[ix].pool_size = pool_size;
+    s_sacc[ix].active    = true;
+}
+
+static int score_sum_sel(void)
+{
+    int c = g_status.score_sum;
+    return (c >= 0 && c < SCORE_SUM_N) ? c : SUM_KEY;
+}
+
+static int score_pick_best(const ScoreAcc *A, int ch, const bool *used)
 {
     int b = 0;
     double bs = 0.0;
     bool first = true;
-    for (int j = 1; j <= max_val; j++) {
-        if (used[j] || skip[j] || !ok[j]) continue;
-        double s = acc[j], key;
+    for (int j = 1; j <= A->max_val; j++) {
+        if (used[j] || !A->ok[ch][j]) continue;
+        double s = A->acc[ch][j], key;
         switch (g_status.score_dir) {
         case SCORE_DIR_LOW: key = -s;      break;
         case SCORE_DIR_ABS: key = fabs(s); break;
@@ -520,26 +548,65 @@ static int score_pick_best(const double *acc, const bool *ok, const bool *used,
     return b;
 }
 
-static void score_publish_live(bool euro_pool, const double *acc, const bool *ok,
-                               const bool *skip, int max_val, int pool_size)
+/* The pool as it would be picked now, on the selected column, into /status —
+ * after every pass and whenever the operator switches the column. */
+static void score_publish_live(int ix)
 {
+    const ScoreAcc *A = &s_sacc[ix];
+    if (!A->active) return;
+    int ch = score_sum_sel();
     bool used[51] = {false};
     int n = 0;
-    for (int i = 0; i < pool_size; i++) {
-        int b = score_pick_best(acc, ok, used, skip, max_val);
+    for (int i = 0; i < A->pool_size; i++) {
+        int b = score_pick_best(A, ch, used);
         if (!b) break;
         used[b] = true;
-        if (euro_pool) {
+        if (ix) {
             g_status.pool_euro[n]   = (uint8_t)b;
-            g_status.pool_euro_z[n] = (float)acc[b];
+            g_status.pool_euro_z[n] = (float)A->acc[ch][b];
         } else {
             g_status.pool_main[n]   = (uint8_t)b;
-            g_status.pool_main_z[n] = (float)acc[b];
+            g_status.pool_main_z[n] = (float)A->acc[ch][b];
         }
         n++;
     }
-    if (euro_pool) g_status.pool_n_euro = (uint8_t)n;
-    else           g_status.pool_n_main = (uint8_t)n;
+    if (ix) g_status.pool_n_euro = (uint8_t)n;
+    else    g_status.pool_n_main = (uint8_t)n;
+    s_live_sum = ch;
+}
+
+/* The final pick, on the column selected NOW — called once the whole scoring
+ * (both runs in Eurojackpot) is over. Sorted ascending for a stable
+ * combination enumeration; out_z follows the sort. */
+static bool score_pick_pool(int ix, uint8_t *pool, float *out_z)
+{
+    const ScoreAcc *A = &s_sacc[ix];
+    int ch = score_sum_sel();
+    bool used[51] = {false};
+    for (int i = 0; i < A->pool_size; i++) {
+        int b = score_pick_best(A, ch, used);
+        if (b == 0) {
+            snprintf(g_status.fault, sizeof(g_status.fault),
+                     "scoring: only %d of %d candidates carry a %s sum "
+                     "— session aborted", i, A->pool_size,
+                     ch == SUM_KEY ? "Z*" : ch == SUM_Z ? "Z" : ch == SUM_CONC ? "Conc"
+                     : ch == SUM_NSD ? "dn" : "AC");
+            printf("pass: %s\n", g_status.fault);
+            g_status.abort_requested = true;
+            return false;
+        }
+        pool[i] = (uint8_t)b;
+        used[b] = true;
+    }
+    for (int i = 1; i < A->pool_size; i++) {
+        uint8_t key = pool[i]; int j = i - 1;
+        while (j >= 0 && pool[j] > key) { pool[j+1] = pool[j]; j--; }
+        pool[j+1] = key;
+    }
+    if (out_z)
+        for (int i = 0; i < A->pool_size; i++)
+            out_z[i] = (float)A->acc[ch][pool[i]];
+    return true;
 }
 
 /* ── The scoring table (ScoreItem) ────────────────────────────────────────
@@ -581,17 +648,14 @@ static ScoreItem *score_row(bool euro_pool, int k)
 
 // `euro_pool` selects the bonus-number pool; it only reaches the Focus panel,
 // which styles a euro candidate differently from a main one.
-/* `keep`/`n_keep` implement "Select more": those numbers are already chosen and
- * are OMITTED from scoring — they keep the measurement that put them in the
- * pool. Pass keep = NULL for the ordinary first pass. */
-static void score_and_build_pool(int max_val, int pool_size, uint8_t *pool,
-                                 bool euro_pool,
-                                 const uint8_t *keep, const float *keep_z,
-                                 int n_keep, float *out_z)
+/* One scoring run: every number SCORE_PASSES times, every column summed into
+ * s_sacc[euro_pool]. It picks nothing — score_pick_pool() does, once the whole
+ * scoring is over `[D104]`. */
+static void score_run(int max_val, int pool_size, bool euro_pool)
 {
-    double acc[51] = {0};
-    bool   skip[51]   = {false};
-    bool   ok_any[51] = {false};
+    const int ix = euro_pool ? 1 : 0;
+    score_acc_begin(ix, max_val, pool_size);
+    ScoreAcc *A = &s_sacc[ix];
     /* Per-node archive for ONE scoring pass (D69). Function-static: ~1,6 KB. */
     static float zn[51][MAX_NODES];
     static float h1[51][MAX_NODES];
@@ -601,14 +665,11 @@ static void score_and_build_pool(int max_val, int pool_size, uint8_t *pool,
      * euro-number run must not show the main run's last span as its own. */
     g_status.score_sig_z = g_status.score_sig_c = 0.0;
     g_status.score_span_n = g_status.score_conc_n = 0;
-    if (n_keep > pool_size) n_keep = pool_size;
-    for (int i = 0; i < n_keep; i++)
-        if (keep[i] >= 1 && keep[i] <= max_val) skip[keep[i]] = true;
 
     uint8_t order[51];
     int     n_order = 0;
     for (int i = 1; i <= max_val; i++)
-        if (!skip[i]) order[n_order++] = (uint8_t)i;
+        order[n_order++] = (uint8_t)i;
     /* scoring_total is set by the caller to SCORE_PASSES × (main+bonus). */
 
     uint8_t last = 0;
@@ -653,6 +714,11 @@ static void score_and_build_pool(int max_val, int pool_size, uint8_t *pool,
             }
             scored[k] = ok;
             g_status.scoring_done++;
+            /* The operator switched the column: show the pool it picks now. */
+            if (score_sum_sel() != s_live_sum) {
+                score_publish_live(0);
+                score_publish_live(1);
+            }
             g_status.elapsed_ms = elapsed_ms_now();
             run_gap_ms(gap_for());
         }
@@ -662,9 +728,20 @@ static void score_and_build_pool(int max_val, int pool_size, uint8_t *pool,
                          zc_ctr, conc, nsd);
         for (int k = 1; k <= max_val; k++) {
             if (!scored[k]) continue;
-            acc[k] += scores[k];
-            ok_any[k] = true;
             ScoreItem *row = score_row(euro_pool, k);
+            /* This pass's value per column. Missing concordance counts as 0,
+             * the results[] convention; missing Δn / AC / z adds nothing. */
+            double v[SCORE_SUM_N];
+            v[SUM_KEY]  = scores[k];
+            v[SUM_Z]    = zc_ctr[k];
+            v[SUM_CONC] = isnan(conc[k]) ? 0.0 : conc[k];
+            v[SUM_NSD]  = nsd[k];
+            v[SUM_AC]   = row ? (double)row->r.acz : NAN;
+            for (int c = 0; c < SCORE_SUM_N; c++) {
+                if (!isfinite(v[c])) continue;
+                A->acc[c][k] += v[c];
+                A->ok[c][k]   = true;
+            }
             if (!row) continue;
             /* The pass closed: centred values, as center_block() writes an
              * item's. No concordance is 0, the results[] convention. */
@@ -672,10 +749,13 @@ static void score_and_build_pool(int max_val, int pool_size, uint8_t *pool,
             row->r.zc_ctr  = isnan(conc[k])   ? 0.0f : (float)conc[k];
             row->r.node_sd = (float)nsd[k];
             row->key       = (float)scores[k];
-            row->sum       = (float)acc[k];
+            for (int c = 0; c < SCORE_SUM_N; c++) {
+                row->sums[c] = (float)A->acc[c][k];
+                if (isfinite(v[c])) row->sum_n[c]++;
+            }
             row->passes++;
         }
-        score_publish_live(euro_pool, acc, ok_any, skip, max_val, pool_size);
+        score_publish_live(ix);
 
         /* ── Mid-scoring sweep `[D86]` ──────────────────────────────────────
          * Halfway through the passes, so the pool is not chosen on a single
@@ -705,40 +785,6 @@ static void score_and_build_pool(int max_val, int pool_size, uint8_t *pool,
         }
     }
 
-    for (int i = 0; i < n_keep; i++)
-        if (keep[i] >= 1 && keep[i] <= max_val)
-            acc[keep[i]] = keep_z ? (double)keep_z[i] : 0.0;
-
-    bool used[51] = {false};
-    for (int i = 0; i < n_keep; i++) {
-        pool[i] = keep[i];
-        if (keep[i] >= 1 && keep[i] <= max_val) used[keep[i]] = true;
-    }
-    for (int i = n_keep; i < pool_size; i++) {
-        int b = score_pick_best(acc, ok_any, used, skip, max_val);
-        if (b == 0) {
-            snprintf(g_status.fault, sizeof(g_status.fault),
-                     "scoring: only %d of %d candidates produced a usable z "
-                     "— session aborted", i - n_keep, pool_size - n_keep);
-            printf("pass: %s\n", g_status.fault);
-            g_status.abort_requested = true;
-            return;
-        }
-        pool[i] = (uint8_t)b;
-        used[b] = true;
-    }
-    // Sort ascending (for consistent combination enumeration).
-    for (int i = 1; i < pool_size; i++) {
-        uint8_t key = pool[i]; int j = i - 1;
-        while (j >= 0 && pool[j] > key) { pool[j+1] = pool[j]; j--; }
-        pool[j+1] = key;
-    }
-    // Scores follow the sorted pool, so slot i always describes pool[i].
-    if (out_z)
-        for (int i = 0; i < pool_size; i++) {
-            int k = pool[i];
-            out_z[i] = (k >= 1 && k <= max_val) ? (float)acc[k] : 0.0f;
-        }
 }
 
 /* Per-node half-window LSB z (D56).
@@ -2614,6 +2660,7 @@ void elotto_task(void *pvParam)
         g_status.score_rows = heap_caps_calloc(SCORE_ROWS_MAX, sizeof(ScoreItem),
                                                MALLOC_CAP_SPIRAM);
     g_status.score_rows_n = 0;
+    g_status.score_sum    = SUM_KEY;
     g_status.score_sig_z = g_status.score_sig_c = 0.0;
     g_status.score_span_n = g_status.score_conc_n = 0;
     focus_reset();
@@ -2745,12 +2792,16 @@ void elotto_task(void *pvParam)
          * session start before the state went RUNNING. Nothing to clear here. */
         memset(pool_main, 0, sizeof(pool_main));
         memset(pool_euro, 0, sizeof(pool_euro));
-        score_and_build_pool(mx, pool_nm, pool_main, false,
-                             NULL, NULL, 0, g_status.pool_main_z);
+        s_sacc[0].active = s_sacc[1].active = false;
+        s_live_sum = -1;
+        score_run(mx, pool_nm, false);
         if (g_status.abort_requested) goto done;
-        if (euro) score_and_build_pool(12, pool_ne, pool_euro, true,
-                                       NULL, NULL, 0, g_status.pool_euro_z);
+        if (euro) score_run(12, pool_ne, true);
         if (g_status.abort_requested) goto done;
+        /* The pick, on the column selected at the END of the scoring `[D104]`
+         * — main and bonus pool alike. */
+        if (!score_pick_pool(0, pool_main, g_status.pool_main_z)) goto done;
+        if (euro && !score_pick_pool(1, pool_euro, g_status.pool_euro_z)) goto done;
         g_status.scoring_pass = 0;
         focus_off();
 

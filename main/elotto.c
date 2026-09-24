@@ -1159,6 +1159,16 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 /* desc, and a missing value (Δn on a solo item) always sinks to the end. */
 "function exCmp(a,b){var x=colVal(a,SORTK),y=colVal(b,SORTK);"
 "if(x===null&&y===null)return 0;if(x===null)return 1;if(y===null)return -1;return y-x;}"
+/* The column the pool is summed on (D104): the Σ marker in a header selects
+   it on the device, the selected header is printed in gold. */
+"function curSum(){return (LD&&LD.score_sum)||'key';}"
+"function sumLab(opt,c,t){return (opt&&curSum()===c)?'<span style=\"color:#f0c040\">'+t+'</span>':t;}"
+"function sumMark(opt,c){if(!opt)return '';var on=curSum()===c;"
+"return ' <span title=\"'+(on?'the pool is picked on the sum of this column':'pick the pool on the sum of this column')"
+"+'\" style=\"cursor:pointer;font-weight:700;color:'+(on?'#f0c040':'#667')+'\" "
+"onclick=\"event.stopPropagation();setSum(\\''+c+'\\')\">\\u03a3</span>';}"
+"function setSum(c){fetch('/scoresum?c='+c,{method:'POST'}).catch(function(){});"
+"if(LD)LD.score_sum=c;lastSc=0;fetchScore();}"
 "function scCmp(a,b){var x=colVal(a,SSK),y=colVal(b,SSK);"
 "if(x===null&&y===null)return 0;if(x===null)return 1;if(y===null)return -1;return SSD<0?y-x:x-y;}"
 "function exArrow(k){var K=SCM?SSK:SORTK,D=SCM?SSD:SORTD;"
@@ -1228,10 +1238,10 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
    pass is still open shows Z* as a dash with Z / Conc dimmed. */
 "function renderRunTable(headId,bodyId,res,isEuro,d,st,opt){"
 "document.getElementById(headId).innerHTML="
-"'<tr><th>#</th>'+(opt?'<th style=\"cursor:pointer\" title=\"running sum of this number\\u2019s pass keys \\u2014 the pool is picked on it; sorts in the ?score= direction (high / low / |\\u03a3|). A green # marks a pool member.\" onclick=\"sortBy(\\'sum\\')\">\\u03a3'+exArrow('sum')+'</th>':'<th>Item</th>')"
-"+(st?'<th style=\"cursor:pointer\" title=\"ranking key in units of its own block σ. Click to sort the 50\" onclick=\"sortBy(\\'key\\')\">Z*'+exArrow('key')+'</th>'"
-"+'<th style=\"cursor:pointer\" title=\"block-centred combined z. Click to sort the 50\" onclick=\"sortBy(\\'z_ctr\\')\">Z'+exArrow('z_ctr')+'</th>'"
-"+'<th style=\"cursor:pointer\" title=\"leave-one-out half-window concordance. Click to sort the 50\" onclick=\"sortBy(\\'zc\\')\">Conc'+exArrow('zc')+'</th>'"
+"'<tr><th>#</th>'+(opt?'<th style=\"cursor:pointer\" title=\"running sum of this number\\u2019s pass keys \\u2014 the pool is picked on it; sorts in the ?score= direction (high / low / |\\u03a3|). A green # marks a pool member.\" onclick=\"sortBy(\\'sum\\')\">\\u03a3 '+{key:'Z*',z:'Z',conc:'Conc',nsd:'\\u0394n',ac:'AC'}[curSum()]+exArrow('sum')+'</th>':'<th>Item</th>')"
+"+(st?'<th style=\"cursor:pointer\" title=\"ranking key in units of its own block σ. Click to sort the 50\" onclick=\"sortBy(\\'key\\')\">'+sumLab(opt,'key','Z*')+exArrow('key')+sumMark(opt,'key')+'</th>'"
+"+'<th style=\"cursor:pointer\" title=\"block-centred combined z. Click to sort the 50\" onclick=\"sortBy(\\'z_ctr\\')\">'+sumLab(opt,'z','Z')+exArrow('z_ctr')+sumMark(opt,'z')+'</th>'"
+"+'<th style=\"cursor:pointer\" title=\"leave-one-out half-window concordance. Click to sort the 50\" onclick=\"sortBy(\\'zc\\')\">'+sumLab(opt,'conc','Conc')+exArrow('zc')+sumMark(opt,'conc')+'</th>'"
 /* Plain-language tooltip: the operator is the only reader of this cell, and the
    column is worthless if its meaning has to be looked up. English like the rest
    of the page. \\n inside a title
@@ -1246,7 +1256,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "\\u2014 = not computed yet (block still open) or too few cameras\\n"
 "\\u0394n does not change which numbers enter the pool; the table can be sorted "
 "by it. Click to sort the 50.\" style=\"cursor:pointer\" onclick=\"sortBy(\\'nsd\\')\">"
-"\\u0394n'+exArrow('nsd')+'</th>'"
+"'+sumLab(opt,'nsd','\\u0394n')+exArrow('nsd')+sumMark(opt,'nsd')+'</th>'"
 /* AC (D97): the window autocorrelation of the bits behind this item. A
    diagnostic column like Δn: it sorts the 50, it never enters a key. */
 "+'<th title=\"Were the bits of this item serially independent?\\n"
@@ -1257,7 +1267,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "large \\u2212 = they alternate too often\\n"
 "\\u2014 = not reported\\n"
 "AC does not change which numbers enter the pool. Click to sort the 50.\" "
-"style=\"cursor:pointer\" onclick=\"sortBy(\\'ac\\')\">AC'+exArrow('ac')+'</th>':'')"
+"style=\"cursor:pointer\" onclick=\"sortBy(\\'ac\\')\">'+sumLab(opt,'ac','AC')+exArrow('ac')+sumMark(opt,'ac')+'</th>':'')"
 "+'<th>Numbers</th>'"
 "+(isEuro?'<th>Bonus</th>':'')+'</tr>';"
 "var tb=document.getElementById(bodyId);tb.innerHTML='';"
@@ -1274,7 +1284,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "var itm=(d.unlimited&&r.round)?(r.run+'/'+r.round):r.run;"
 "var dim=(opt&&r.key===null)?' style=\"opacity:.55\"':'';"
 "var inP=opt&&opt.pool[(r.euro&&r.euro.length?'e':'m')+r.run];"
-"if(opt)itm='<b title=\"over '+r.passes+' closed passes\">'+r.sum.toFixed(3)+'</b>';"
+"if(opt)itm='<b title=\"over '+(r.sum_n===undefined?r.passes:r.sum_n)+' of '+r.passes+' closed passes\">'+r.sum.toFixed(3)+'</b>';"
 "var zTxt=(r.z_ctr===undefined||r.z_ctr===null)?z.toFixed(2):r.z_ctr.toFixed(2);"
 "var concTxt=(r.zc===undefined||r.zc===null)?'\\u2014':r.zc.toFixed(2);"
 /* Node agreement (nsd). null until the item's block has been centred -- the
@@ -1431,6 +1441,9 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
  * pass span; NaN → null (a scoring row whose pass is still open). `tail` adds
  * fields (the scoring's `sum`/`passes`), "" for none. nums/euro carry their
  * non-zero entries: 6 or 5+2 for an item, the one number for a scoring row. */
+/* ScoreSum names on the wire (/status score_sum, POST /scoresum?c=). */
+static const char *const SCORE_SUM_NAME[SCORE_SUM_N] = { "key", "z", "conc", "nsd", "ac" };
+
 static int emit_row(char *buf, int cap, const RunResult *r, double key,
                     const char *tail)
 {
@@ -1565,7 +1578,7 @@ static esp_err_t status_handler(httpd_req_t *req)
          * with D72 and rank_mean / rank_sigma with D71. */
         "\"pre_w\":%.3f,"
         "\"pre_n\":%d,"
-        "\"score_dir\":\"%s\","
+        "\"score_dir\":\"%s\",\"score_sum\":\"%s\","
         "\"loop_sigma\":%.4f,"
         "\"pair_r\":%.4f,\"pair_n\":%d,"
         "\"pair_i\":%d,\"pair_j\":%d,\"pair_count\":%d,"
@@ -1612,6 +1625,8 @@ static esp_err_t status_handler(httpd_req_t *req)
         g_status.pre_w,
         g_status.pre_n,
         score_str,
+        SCORE_SUM_NAME[(g_status.score_sum >= 0 && g_status.score_sum < SCORE_SUM_N)
+                       ? g_status.score_sum : 0],
         g_status.loop_sigma,
         g_status.pair_r_max, g_status.pair_n,
         g_status.pair_r_i, g_status.pair_r_j, g_status.pair_count,
@@ -1991,7 +2006,7 @@ static esp_err_t extremes_handler(httpd_req_t *req)
         httpd_query_key_value(q, "score", v, sizeof(v)) == ESP_OK && v[0] == '1') {
         const ScoreItem *R = g_status.score_rows;
         int nr = R ? g_status.score_rows_n : 0;
-        char sb[320];
+        char sb[448];
         int sl = snprintf(sb, sizeof(sb), "{\"n\":%d,\"pass\":%d,\"extremes\":[",
                           nr, g_status.scoring_pass);
         send_chunk(req, sb, sl, sizeof(sb));
@@ -1999,9 +2014,15 @@ static esp_err_t extremes_handler(httpd_req_t *req)
         for (int i = 0; i < nr; i++) {
             const ScoreItem *s = &R[i];
             if (s->r.k == 0 && s->passes == 0) continue;   /* not measured yet */
-            char tail[48];
-            snprintf(tail, sizeof(tail), ",\"sum\":%.4f,\"passes\":%d",
-                     (double)s->sum, (int)s->passes);
+            int  c = (g_status.score_sum >= 0 && g_status.score_sum < SCORE_SUM_N)
+                     ? g_status.score_sum : 0;
+            char tail[128];
+            snprintf(tail, sizeof(tail),
+                     ",\"sum\":%.4f,\"sum_n\":%d,\"passes\":%d,"
+                     "\"sums\":[%.4f,%.4f,%.4f,%.4f,%.4f]",
+                     (double)s->sums[c], (int)s->sum_n[c], (int)s->passes,
+                     (double)s->sums[0], (double)s->sums[1], (double)s->sums[2],
+                     (double)s->sums[3], (double)s->sums[4]);
             if (!first) httpd_resp_send_chunk(req, ",", 1);
             sl = emit_row(sb, sizeof(sb), &s->r, (double)s->key, tail);
             send_chunk(req, sb, sl, sizeof(sb));
@@ -2095,6 +2116,33 @@ static esp_err_t focus_handler(httpd_req_t *req)
  * always finishes and is kept.
  *
  * Device-side, like the loop itself: closing the browser does not resume it. */
+/* ── /scoresum POST — the column the pool is summed on (D104) ─────────────
+ * ?c=key|z|conc|nsd|ac. Every column is summed all the way through, so a
+ * switch only changes which sum the pick reads; the pick itself happens when
+ * the whole scoring ends, on whatever is selected then. 409 outside the
+ * scoring: after it the pool is already picked. */
+static esp_err_t scoresum_handler(httpd_req_t *req)
+{
+    if (!origin_ok(req)) return ESP_OK;
+    if (g_status.state != ELOTTO_RUNNING || g_status.scoring_pass <= 0) {
+        httpd_resp_set_status(req, "409 Conflict");
+        httpd_resp_sendstr(req, "no scoring running -- the pool is picked when it ends");
+        return ESP_OK;
+    }
+    char qry[32] = "", val[8] = "";
+    if (httpd_req_get_url_query_str(req, qry, sizeof(qry)) == ESP_OK)
+        httpd_query_key_value(qry, "c", val, sizeof(val));
+    for (int c = 0; c < SCORE_SUM_N; c++)
+        if (strcmp(val, SCORE_SUM_NAME[c]) == 0) {
+            g_status.score_sum = c;
+            httpd_resp_sendstr(req, SCORE_SUM_NAME[c]);
+            return ESP_OK;
+        }
+    httpd_resp_set_status(req, "400 Bad Request");
+    httpd_resp_sendstr(req, "c= must be key, z, conc, nsd or ac");
+    return ESP_OK;
+}
+
 static esp_err_t pause_handler(httpd_req_t *req)
 {
     if (!origin_ok(req)) return ESP_OK;
@@ -3064,7 +3112,7 @@ static void start_webserver(void)
      * headroom: registration past this limit fails, and the return value is not
      * checked at either call site, so an endpoint would simply 404 with nothing
      * logged. Count them when adding one, and raise the cap before it bites. */
-    cfg.max_uri_handlers  = 25;   /* 17 here + 5 from elotto_ota = 22 */
+    cfg.max_uri_handlers  = 25;   /* 18 here + 5 from elotto_ota = 23 */
     cfg.stack_size        = 8192;
     cfg.recv_wait_timeout = 20;   /* /update streams a ~700 KB body */
     cfg.send_wait_timeout = 20;
@@ -3095,6 +3143,7 @@ static void start_webserver(void)
         {"/extremes", HTTP_GET, extremes_handler, NULL},
         {"/focus",  HTTP_GET,  focus_handler,  NULL},
         {"/pause",  HTTP_POST, pause_handler,  NULL},
+        {"/scoresum", HTTP_POST, scoresum_handler, NULL},
         {"/calibrate", HTTP_GET, calibrate_handler, NULL},
         {"/pool", HTTP_POST, pool_handler, NULL},
         {"/probe", HTTP_POST, probe_handler, NULL},

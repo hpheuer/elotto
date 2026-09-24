@@ -742,11 +742,20 @@ typedef struct {
  * The pool is picked from score_and_build_pool()'s own `acc`. Written by the
  * sensor task, read unlocked by the HTTP task: a torn row shows mixed values
  * for one poll, nothing else. */
+/* What the pool is picked on `[D104]`: the running sum of ONE column over the
+ * closed scoring passes, chosen by the operator on the page (POST /scoresum)
+ * and read when the whole scoring ends. SUM_KEY (Z*) is the default. */
+typedef enum { SUM_KEY = 0, SUM_Z, SUM_CONC, SUM_NSD, SUM_AC, SCORE_SUM_N } ScoreSum;
+
 typedef struct {
     RunResult r;
     float     key;       // Z*: pass key in span-σ units, NaN while open
-    float     sum;       // Σ key over the closed passes — what picks the pool
-    uint8_t   passes;    // passes summed into `sum`
+    /* Σ per column over the closed passes, indexed by ScoreSum. A pass whose
+     * value is missing (Δn with < 2 nodes, AC not reported, no z) adds
+     * nothing; sum_n says how many passes did add. */
+    float     sums[SCORE_SUM_N];
+    uint8_t   sum_n[SCORE_SUM_N];
+    uint8_t   passes;    // closed passes of this number
 } ScoreItem;
 
 #define SCORE_ROWS_MAX 62   // 50 main + 12 bonus (Eurojackpot)
@@ -822,6 +831,8 @@ typedef struct {
      * scoring, cleared at every round start. score_sig_z / score_sig_c are the
      * last closed scoring pass's own channel σ (the span σ its keys divide by),
      * score_span_n the numbers in that pass — the scoring's health line. */
+    volatile int     score_sum;           // ScoreSum picking the pool [D104]; SUM_KEY
+                                          // at session start, set by POST /scoresum
     ScoreItem       *score_rows;          // SCORE_ROWS_MAX, PSRAM (internal RAM is the
                                           // ring's [D91]); NULL = allocation failed
     int              score_rows_n;
