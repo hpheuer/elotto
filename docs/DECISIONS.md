@@ -2056,3 +2056,16 @@ moving scoring bar it read as if both ran at once. After a sweep the card is now
 `calibrating`. And each round's scoring starts after a 2 s break (`SCORE_START_PAUSE_MS`) so the
 hand-over from sweep to scoring is visible. Nothing is measured in it; `scoring_start_ms` is taken
 after it, so the scoring ETA does not include it.
+
+### D102 — The pool is marked in the scoring table (2026-09-24)
+**Operator decision.** While numbers are scored the pool badge shows only its size ("x numbers");
+the pool itself is marked in the scoring table: a green `#` cell on every number the device has
+put in the pool so far (`pool_main`/`pool_euro`, re-published after each scoring pass). Marked by
+membership, not by position, so any column sort still shows it; the table runs at least 10 rows
+and down to the last pool member. `Σ` sorts in the `?score=` direction (high: Σ, low: −Σ,
+abs: |Σ|), so "largest first" is always the pool end. During the pass the badge keeps the chips.
+
+**Not unified internally.** Scoring and the pass already share `measure_window()` and the key mix
+(`score_build_keys()` = `rank_key()` on the pass span). Scoring runs stay out of `results[]`: they
+would enter pass mean/σ/χ², the pairwise matrix, blocks and compaction, and a number is summed
+over 20 passes, an item is measured once.
