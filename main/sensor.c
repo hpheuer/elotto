@@ -296,7 +296,7 @@ static void score_build_keys(const float zn[][MAX_NODES],
                              double *zc_out, double *conc_out, double *nsd_out);
 static void   center_block(int block_idx);  // forward: publish_valid centres the OPEN block
 static void   wsig_collect(float out[MAX_NODES]);
-static float  acz_collect(uint8_t mask);
+static void   series_ac(const double *u, int n, float *item, float zl[4]);
 static void   wsig_note(const RunResult *r, const float *wsig, uint8_t mask,
                         uint8_t spass);
 
@@ -729,6 +729,31 @@ static void score_run(int max_val, int pool_size, bool euro_pool)
         double zc_ctr[51], conc[51], nsd[51];
         score_build_keys(zn, h1, h2, smask, scored, max_val, scores,
                          zc_ctr, conc, nsd);
+        /* Item AC over this pass `[D110]`: the centred z in the order the
+         * numbers were measured, scaled by the pass span's own σ. */
+        {
+            double u[51];
+            int    num[51], n = 0;
+            double mean = 0.0;
+            double sz = g_status.score_sig_z;
+            for (int idx = 0; idx < n_order; idx++) {
+                int k = order[idx];
+                if (!scored[k] || !isfinite(zc_ctr[k])) continue;
+                u[n] = zc_ctr[k]; mean += u[n]; num[n] = k; n++;
+            }
+            if (n >= 2 && sz > 0.0) {
+                float a[51];
+                mean /= (double)n;
+                for (int t = 0; t < n; t++) u[t] = (u[t] - mean) / sz;
+                series_ac(u, n, a, g_status.score_ac_z);
+                g_status.score_ac_n = n;
+                for (int t = 0; t < n; t++) {
+                    acp[num[t]] = a[t];
+                    ScoreItem *row = score_row(euro_pool, num[t]);
+                    if (row) row->r.acz = a[t];
+                }
+            }
+        }
         for (int k = 1; k <= max_val; k++) {
             if (!scored[k]) continue;
             ScoreItem *row = score_row(euro_pool, k);
@@ -992,7 +1017,7 @@ static void score_one_run(bool *ok, float znode[MAX_NODES],
     int k = measure_window(&m);
     /* Before the next 'M' overwrites them — same rule as the pass. */
     wsig_collect(wsig);
-    float acv = (k > 0) ? acz_collect(m.mask) : NAN;
+    float acv = NAN;   /* item AC, set when the pass closes [D110] */
     if (ac) *ac = acv;
     if (row) {
         /* The number's latest measurement, filled as the pass fills an item
@@ -1657,25 +1682,57 @@ static void wsig_collect(float out[MAX_NODES])
         out[i] = g_status.nodes[i].cam_wsig_now;
 }
 
-/* This window's autocorrelation for the item (D97): Σ over the combined nodes
- * of each node's Σ_{L=1..4} z_L, over √(4·n). The master reads its own camera;
- * a slave's arrived as ,ac= on its 'Z' reply. NaN when no node in `mask`
- * reported one. Same timing rule as wsig_collect(): before the next 'M'. */
-static float acz_collect(uint8_t mask)
+/* ── Item autocorrelation `[D110]` ───────────────────────────────────────────
+ * Replaces the pixel AC of D97 in the table and the pool sums (that one stays
+ * in /camlog `wac`). u[0..n) is a series of centred, σ-scaled z in MEASUREMENT
+ * order. Per item: AC_j = Σ_{L=1..4, j−L≥0} u_j·u_{j−L} / √m_j, m_j the lags
+ * available — unit variance for independent items, read against 0; NaN for
+ * the first item, which has no predecessor. Series: z_L = r_L·√(n−L),
+ * r_L = Σ u_j·u_{j−L} / Σ u_j². */
+static void series_ac(const double *u, int n, float *item, float zl[4])
 {
-    double sum = 0.0;
-    int    n   = 0;
-    camera_stats_t cs;
-    camera_get_stats(&cs);
-    if ((mask & 1u) && cs.win_sigma_samples > 0) {
-        sum += cs.win_ac_z[0] + cs.win_ac_z[1] + cs.win_ac_z[2] + cs.win_ac_z[3];
-        n++;
+    double ss = 0.0;
+    for (int j = 0; j < n; j++) ss += u[j] * u[j];
+    for (int L = 1; L <= 4; L++) {
+        double s = 0.0;
+        for (int j = L; j < n; j++) s += u[j] * u[j - L];
+        zl[L - 1] = (n > L && ss > 0.0) ? (float)(s / ss * sqrt((double)(n - L))) : 0.0f;
     }
-    for (int i = 1; i < g_status.node_count && i < MAX_NODES; i++) {
-        float v = g_status.nodes[i].cam_ac_now;
-        if ((mask & (1u << i)) && isfinite(v)) { sum += v; n++; }
+    if (!item) return;
+    for (int j = 0; j < n; j++) {
+        double s = 0.0;
+        int    m = 0;
+        for (int L = 1; L <= 4 && j - L >= 0; L++) { s += u[j] * u[j - L]; m++; }
+        item[j] = m ? (float)(s / sqrt((double)m)) : NAN;
     }
-    return n ? (float)(sum / sqrt(4.0 * n)) : NAN;
+}
+
+/* AC of every item of a closed block, in measurement order (results[] is in
+ * measurement order and the block's rows are all still there at its close).
+ * u = (z_ctr − block mean) / block σ; VOID rows are not in the series. */
+static void block_ac_compute(int block_idx)
+{
+    if (!s_bsig || block_idx < 0 || block_idx >= LOOP_HIST) return;
+    double sp = (double)s_bsig[block_idx].sig_p;
+    int ntot = g_status.runs_completed;
+    if (ntot > NUM_RUNS) ntot = NUM_RUNS;
+    static double u[NUM_RUNS];
+    static float  a[NUM_RUNS];
+    static int    at[NUM_RUNS];
+    int n = 0;
+    double mean = 0.0;
+    for (int j = 0; j < ntot; j++) {
+        const RunResult *r = &g_status.results[j];
+        if ((int)r->block != block_idx || r->k == 0) continue;
+        u[n] = (double)r->z_ctr; mean += u[n]; at[n] = j; n++;
+    }
+    if (n < 2 || !(sp > 0.0)) return;
+    mean /= (double)n;
+    for (int t = 0; t < n; t++) u[t] = (u[t] - mean) / sp;
+    series_ac(u, n, a, g_status.item_ac_z);
+    for (int t = 0; t < n; t++) g_status.results[at[t]].acz = a[t];
+    g_status.item_ac_n     = n;
+    g_status.item_ac_block = block_idx + 1;
 }
 
 /* Offer one item's per-node camera sigmas to the jump board, keeping the
@@ -2529,6 +2586,7 @@ static void close_block(int block_idx)
     if (block_idx + 1 > s_blocks_centred) s_blocks_centred = block_idx + 1;
     s_open_centred = false;              // the next block starts with nothing in it
     block_sig_compute(block_idx, true);
+    block_ac_compute(block_idx);
     record_loop(m, block_idx);           // before the clear of the sums
     recompute_pass_ranks();              // centring moved every item in the block
     pairs_commit_block();
@@ -2664,6 +2722,9 @@ void elotto_task(void *pvParam)
                                                MALLOC_CAP_SPIRAM);
     g_status.score_rows_n = 0;
     g_status.score_sum    = SUM_KEY;
+    memset(g_status.item_ac_z, 0, sizeof(g_status.item_ac_z));
+    memset(g_status.score_ac_z, 0, sizeof(g_status.score_ac_z));
+    g_status.item_ac_n = g_status.item_ac_block = g_status.score_ac_n = 0;
     g_status.pool_used_n = g_status.pool_used_sum = g_status.pool_used_round = 0;
     g_status.score_sig_z = g_status.score_sig_c = 0.0;
     g_status.score_span_n = g_status.score_conc_n = 0;
@@ -3005,7 +3066,7 @@ void elotto_task(void *pvParam)
              * the board copies all of them: it has to name the measurement
              * without results[], which compaction will have taken. */
             wsig_note(r, wsig, mask, 0);
-            r->acz = (k > 0) ? acz_collect(mask) : NAN;
+            r->acz = NAN;   /* item AC, filled at block close [D110] */
             if (k > 0) {
                 r->z_score = z;
                 /* Provisional: the block's node means are not known until it
@@ -3075,6 +3136,7 @@ done:
         if (block + 1 > s_blocks_centred) s_blocks_centred = block + 1;
         s_open_centred = false;
         block_sig_compute(block, true);
+        block_ac_compute(block);
     }
     pairs_commit_block();
     publish_pair_stats();

@@ -76,7 +76,8 @@ typedef enum {
  * slowest device.
  *
  * `*out` is the binomial z of the whole window (D65: the stream is LSB).
- * Half-window (D56): *out_h1 / *out_h2 are the same bits split at nseg/2
+ * Half-window (D56): *out_h1 / *out_h2 are the same bits split at the frame-
+ * pair boundary nearest nseg/2 `[D110]`, nseg/2 when the window holds none
  * (NULL disables). nseg < 2 leaves both at 0. Written only on GCP_OK. */
 gcp_result_t gcp_zscore_raw(int nseg, bool (*on_yield)(void), double *out);
 

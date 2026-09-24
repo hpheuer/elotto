@@ -2148,3 +2148,34 @@ window over a ~1,08 s cycle ≈ 5,4 Mbit/s per node, against 18,7 Mbit/s extract
 reading rate — the rest is produced during gaps and flushes and dropped. The reading
 (`consume_mbit_s`) and extraction (`mbit_s`) rates move to the cell's hover text. Page only; the
 per-node `/diag` poll no longer overwrites the cell.
+
+### D110 — Item autocorrelation replaces pixel AC; Conc halves split at a frame pair (2026-09-24)
+**Operator decision**, prompted by the GCP secondary analyses (Bancel's autocorrelation of the
+per-second statistic; lag-1 Z = 2,22 after 9/11).
+
+**AC.** The `AC` column and the Σ AC pool sum are now the item autocorrelation: u = (z_ctr − block
+mean) / block σ in measurement order, AC_j = Σ_{L=1..4} u_j·u_{j−L} / √m_j (m_j lags available),
+unit variance under independence; NaN for the block's first item and until the block closes
+(`block_ac_compute()` at the close and on abort). Scoring: per pass, the centred z in the order the
+numbers were measured over the span's σ. Series z_L = r_L·√(n−L), lags 1..4, in `/status`
+(`item_ac_z` last closed block, `score_ac_z` last scoring pass) and the Nodes card. The pixel AC
+(D97) leaves table and sums; `acz_collect()` is gone; `/camlog` `wac` and the wire's `,ac=` stay.
+
+**Conc.** Measured on the running session: a pair is ~1,9–2,0 Mbit (IMX219, 1640×1232 LSBs, 18,7
+Mbit/s at ~9,9 pairs/s), a `?run=0,5` window 5,84 Mbit ≈ 3 pairs, and within a pair the bits are in
+sensor-row order. So the nseg/2 split cut the middle pair into top and bottom of the chip. The
+halves now split at the frame-pair boundary nearest nseg/2: the capture task records, per window,
+the word index where each pair starts (`camera_window_pair_starts()`, words enqueued since the
+flush = the order they are read), and `gcp_zscore_pre()` records the ones count at each boundary
+it crosses (at the end of that 16-segment read block, < 0,2 % of a pair late); no boundary inside →
+nseg/2. The whole-window z is unchanged (bit-identical). Halves may be unequal.
+Found on the way: the window's first pair is a fragment — nobody reads while it is extracted, so
+the 64 KB ring keeps its first ~0,52 Mbit (top rows) and drops the rest; the later pairs arrive
+whole because the consumer outruns production.
+
+**Not built: an ERP-style time course per pair index.** Every window is the same kind of event,
+so there is no contrast (GCP compares event vs non-event time), and per-pair z carries the raw LSB
+bias at ~bias·2·√n (≈ 14 σ per pair at 5·10⁻³), which varies with the pair's size and — through
+the fragment — with the sensor rows it covers. A curve averaged over items would show that
+instrument signature, and removing it by centring per pair index removes any item-constant shape
+with it.

@@ -213,10 +213,17 @@ whatever σ comes out. A quiet block cannot manufacture a large key.
 ⚠ The last round of a session is short because Abort cut it.
 UI: **Z\*** is the key itself (block-σ units), **Z**, **Conc**.
 
-**Concordance (D56, D77).** Per node, split the window at nseg/2 and **centre each half on that
-node's own per-half block mean** (scoring: span mean).
-⛔ How the window is split does not matter `[D84]`: an interleaved split was built, flashed and
-measured at 75,2 % agreement against front/back's 69,9 % — 1,7 σ, i.e. nothing — and reverted. Same sign → `√2 · min(|h1|,|h2|)` with that
+**Concordance (D56, D77).** Per node, split the window at the **frame-pair boundary nearest the
+middle** `[D110]` (nseg/2 if the window holds none) and **centre each half on that node's own
+per-half block mean** (scoring: span mean). A window is only ~3 pairs at `?run=0,5`, and within a
+pair the bits run in sensor-row order, so the old nseg/2 split compared chip regions as much as
+moments; at a pair boundary the halves are two moments. The halves may be unequal (e.g. 2,5 :
+3,3 Mbit). Boundaries: `camera_window_pair_starts()`, taken at the end of the 16-segment read block
+they fall in. ⚠ The window's first pair is a FRAGMENT (~0,52 Mbit): nobody reads while it is
+extracted, the 64 KB ring fills and drops the rest of it.
+D84 (interleaved vs front/back, 75,2 % against 69,9 % agreement, 1,7 σ) found the agreement rate
+insensitive to the split; the pair-boundary split is an operator decision `[D110]`, not a
+re-opening of that measurement. Same sign → `√2 · min(|h1|,|h2|)` with that
 sign (equals z_ctr when the bias is stable). Opposite sign or a zero half → 0. Then drop the loudest
 node and Stouffer-combine the rest. k < 2 after the drop → 0.
 ⚠ **The sign test is on CENTRED halves, and only there does it test anything** `[D77]`: a raw half
@@ -237,7 +244,8 @@ not fault.
 **cannot manufacture a false positive** — the scale stays right. What it costs is diversification,
 i.e. sensitivity, which is the harm that matters when the effect being hunted is small.
 
-Wire: `Z:<z>[,<h1>,<h2>][,wsig=<σ>][,ac=<Σz_L>]` `[D65]``[D97]`. `,wsig=` and `,ac=` TAGGED. Every node measures the commanded `nseg`.
+Wire: `Z:<z>[,<h1>,<h2>][,wsig=<σ>][,ac=<Σz_L>]` `[D65]``[D97]`. `,wsig=` and `,ac=` TAGGED.
+`,ac=` (pixel AC) is still sent and no longer read `[D110]`. Every node measures the commanded `nseg`.
 
 ## Stored z is RAW; ranking is block-centred
 - **`z_score` is the raw combined Stouffer z and is never rewritten.** It stays beside `z_ctr` in
@@ -272,14 +280,16 @@ what remains visible is an effect varying **between items inside a block**.
   reorders the view, never the display pool of 50 or the compaction archive of 100 `[D78]``[D78b]`. A missing `Δn` (solo item) sinks to the
   bottom of a `Δn` sort. `Δn` prints the node count it is taken over in parentheses — `0,79 (3)` is
   three cameras. Until the first `/extremes` reply lands the table falls back to `/status` `top`.
-  **`AC` is the window autocorrelation** of the bits behind the item `[D97]`: per node
-  z_L = r_L·√pairs_L for lags 1..4 (r_L = correlation of pixels L apart in a row), summed over
-  lags and over the combined nodes, divided by √(4·n) — **unit normal for independent bits**, read
-  against 0. + = neighbours agree too often (spread inflated), − = they alternate. Coloured at
-  |AC| > 3. It never ranks items or excludes; its scoring SUM may pick the pool when selected
-  (research, `[D104]` lifts the ⛔ of `[D97]` for that).
+  **`AC` is the ITEM autocorrelation** `[D110]` (it replaced the pixel AC of `[D97]`, which
+  stays only in `/camlog` `wac`): u = centred combined z / block σ in MEASUREMENT order,
+  AC_j = Σ_{L=1..4} u_j·u_{j−L} / √m (m = lags available) — **unit variance for independent
+  items**, read against 0. + = it moved with its predecessors, − = it alternated. Coloured at
+  |AC| > 3. **—** until the block (scoring: the pass) closes, and for its first item. The
+  series' own z_L = r_L·√(n−L) for lags 1..4 (Bancel's lag-1 test on the GCP series) is in the
+  Nodes card (`/status` `item_ac_z`, `score_ac_z`). It never ranks items or excludes; its scoring
+  SUM may pick the pool when selected (research, `[D104]`).
   ⚠ It only sorts the ~50 extremes by `|Z*|` — the items with the largest `AC` session-wide are
-  not necessarily in that set. Per-lag, per-node detail is `wac` in `/camlog`.
+  not necessarily in that set.
   **`Δn` is node agreement** `[D70]`: σ across the contributing nodes of their block-centred z,
   each node divided by ITS OWN σ over that block. Small = the cameras moved together on this
   item; **≈ 1 is what independent nodes give**, so read it against 1, not against 0.

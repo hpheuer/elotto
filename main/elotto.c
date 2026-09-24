@@ -964,6 +964,12 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "+((d.pass_n_void>0)?(' \\u00b7 void '+d.pass_n_void):'');"
 "}"
 "sl.innerHTML=ph||'';"
+/* Item autocorrelation of the series (D110): lag 1..4 as z, |z|>3 marked. */
+"var acz=SCM?d.score_ac_z:d.item_ac_z,acn=SCM?d.score_ac_n:d.item_ac_n;"
+"if(acn>0&&acz){var t=[];for(var L=0;L<4;L++){var v=acz[L];"
+"t.push('L'+(L+1)+' '+(v>=0?'+':'')+v.toFixed(2)+(Math.abs(v)>3?' \\u26a0':''));}"
+"sl.innerHTML+=(sl.innerHTML?'<br>':'')+'item autocorrelation ('+(SCM?'last scoring pass':'block '+d.item_ac_block)"
+"+', n '+acn+', z): '+t.join(' \\u00b7 ');}"
 "var s2='';"
 /* Concordance coverage when weight is on: pre_n = items with zc_ctr != 0. */
 "if(!SCM&&(d.pre_w||0)>0){"
@@ -1297,13 +1303,13 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "'+sumLab(opt,'nsd','\\u0394n')+exArrow('nsd')+sumMark(opt,'nsd')+'</th>'"
 /* AC (D97): the window autocorrelation of the bits behind this item. A
    diagnostic column like Δn: it sorts the 50, it never enters a key. */
-"+'<th title=\"Were the bits of this item serially independent?\\n"
-"Autocorrelation between neighbouring pixels (1 to 4 apart) over this item\\u2019s "
-"window, summed over the cameras, in units of pure chance.\\n"
-"around 0 (within \\u00b12) = what independent bits give\\n"
-"large + = neighbouring pixels agree too often (clumping, e.g. interference)\\n"
-"large \\u2212 = they alternate too often\\n"
-"\\u2014 = not reported\\n"
+"+'<th title=\"Did this item\\u2019s z follow the items measured just before it?\\n"
+"Autocorrelation of the centred z series in measurement order: this item times "
+"each of the 1 to 4 items before it, in units of pure chance (D110).\\n"
+"around 0 (within \\u00b12) = what independent items give\\n"
+"large + = it moved together with its predecessors (a slow drift or a shared state)\\n"
+"large \\u2212 = it alternated against them\\n"
+"\\u2014 = block (scoring: pass) still open, or the first item of it\\n"
 "AC does not change which numbers enter the pool. Click to sort the 50.\" "
 "style=\"cursor:pointer\" onclick=\"sortBy(\\'ac\\')\">'+sumLab(opt,'ac','AC')+exArrow('ac')+sumMark(opt,'ac')+'</th>':'')"
 "+'<th>Numbers</th>'"
@@ -1637,6 +1643,8 @@ static esp_err_t status_handler(httpd_req_t *req)
         "\"cal_did_sweep\":%d,\"settle_left_ms\":%d,\"ev_seq\":%lu,"
         "\"cal_interval_ms\":%d,\"cal_due_ms\":%d,"
         "\"pool_used_n\":%d,\"pool_used_sum\":\"%s\",\"pool_used_round\":%d,"
+        "\"item_ac_z\":[%.2f,%.2f,%.2f,%.2f],\"item_ac_n\":%d,\"item_ac_block\":%d,"
+        "\"score_ac_z\":[%.2f,%.2f,%.2f,%.2f],\"score_ac_n\":%d,"
         "\"loops_done\":%d,\"drift_slope\":%.5f,\"drift_t\":%.2f,"
         "\"off_first\":%.4f,\"off_last\":%.4f,"
         "\"sigma_lo\":%.4f,\"sigma_hi\":%.4f,"
@@ -1702,6 +1710,12 @@ static esp_err_t status_handler(httpd_req_t *req)
         SCORE_SUM_NAME[(g_status.pool_used_sum >= 0 && g_status.pool_used_sum < SCORE_SUM_N)
                        ? g_status.pool_used_sum : 0],
         g_status.pool_used_round,
+        (double)g_status.item_ac_z[0], (double)g_status.item_ac_z[1],
+        (double)g_status.item_ac_z[2], (double)g_status.item_ac_z[3],
+        g_status.item_ac_n, g_status.item_ac_block,
+        (double)g_status.score_ac_z[0], (double)g_status.score_ac_z[1],
+        (double)g_status.score_ac_z[2], (double)g_status.score_ac_z[3],
+        g_status.score_ac_n,
         g_status.loops_done, g_status.drift_slope, g_status.drift_t,
         g_status.off_first, g_status.off_last,
         g_status.sigma_lo, g_status.sigma_hi,

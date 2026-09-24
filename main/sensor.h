@@ -852,6 +852,14 @@ typedef struct {
     double           score_sig_z, score_sig_c;
     int              score_span_n;
     int              score_conc_n;        // numbers of that pass carrying a concordance
+    /* Item autocorrelation `[D110]`: z_L = r_L·√(n−L) of the centred, block-σ
+     * scaled z series in MEASUREMENT order, lags 1..4 — the last closed pass
+     * block (item_ac_*) and the last closed scoring pass (score_ac_*). Unit
+     * normal for independent items; Bancel's lag-1 test on the GCP series. */
+    float            item_ac_z[4];
+    int              item_ac_n, item_ac_block;   // items, 1-based block; 0 = none yet
+    float            score_ac_z[4];
+    int              score_ac_n;
     int              comparisons;         // == VALID items so far (voids excluded)
     /* ── Pass-level health (GCP primary endpoints) ─────────────────────
      * Under H₀ with a working instrument: mean ≈ 0, σ ≈ 1, Σz² ≈ n.

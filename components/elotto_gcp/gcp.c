@@ -40,13 +40,27 @@ static double z_from_counts(uint64_t ones, uint64_t words)
 #define GCP_READ_SEGS 16
 
 /* One stream, LSB bits as measured (D65). Seven words per segment, all 32 bits.
- * z is the binomial over the window; h1/h2 are the same bits split at nseg/2. */
+ * z is the binomial over the window; h1/h2 are the same bits split at the
+ * FRAME-PAIR boundary nearest the middle `[D110]`, so the halves compare two
+ * moments in time rather than the top and bottom of one frame. Boundaries come
+ * from camera_window_pair_starts(); a boundary is taken at the end of the read
+ * block it falls into (<= GCP_READ_SEGS segments late, < 0,2 % of a pair).
+ * No pair boundary inside the window -> nseg/2 as before. */
 gcp_result_t gcp_zscore_pre(int nseg, bool (*on_yield)(void), double *out,
                             double *out_h1, double *out_h2)
 {
     const uint64_t words_per_seg = 7;
     const int n1 = nseg / 2;
     uint64_t ones = 0, mid_ones = 0;
+    /* Pair boundaries crossed so far: (segment, ones before it). */
+    /* Static, not on the stack: the slave's link task has 6 KB. One caller per
+     * node at a time (the measuring task), so no reentrancy to protect. */
+    enum { NB = 64 };
+    static int      b_seg[NB];
+    static uint64_t b_ones[NB];
+    static uint32_t starts[NB];
+    int      nb = 0;
+    uint32_t seen = 1;               /* entry 0 is the window start, not a boundary */
     const int poll = nseg / 4 + 1;
     const int64_t t_read0 = esp_timer_get_time();
     uint32_t buf[GCP_READ_SEGS * 7];
@@ -74,6 +88,18 @@ gcp_result_t gcp_zscore_pre(int nseg, bool (*on_yield)(void), double *out,
         int last = end - 1;
         if (last + 1 == n1) mid_ones = ones;
 
+        /* Every pair start at or before the words read so far is a boundary. */
+        if (out_h1 || out_h2) {
+            uint32_t ns = camera_window_pair_starts(starts, NB);
+            uint64_t wpos = (uint64_t)end * words_per_seg;
+            while (seen < ns && starts[seen] <= wpos && nb < NB) {
+                b_seg[nb]  = end;
+                b_ones[nb] = ones;
+                nb++;
+                seen++;
+            }
+        }
+
         if (last % poll == 0) {
             vTaskDelay(1);
             if (on_yield && !on_yield()) return GCP_ABORTED;
@@ -86,11 +112,21 @@ gcp_result_t gcp_zscore_pre(int nseg, bool (*on_yield)(void), double *out,
 
     uint64_t words = (uint64_t)nseg * words_per_seg;
     *out = z_from_counts(ones, words);
-    if (out_h1 && n1 > 0)
-        *out_h1 = z_from_counts(mid_ones, (uint64_t)n1 * words_per_seg);
-    if (out_h2 && nseg > n1)
-        *out_h2 = z_from_counts(ones - mid_ones,
-                                words - (uint64_t)n1 * words_per_seg);
+
+    /* The split: the pair boundary nearest nseg/2, strictly inside. */
+    int      cut = n1;
+    uint64_t cut_ones = mid_ones;
+    int      best = -1;
+    for (int i = 0; i < nb; i++) {
+        if (b_seg[i] <= 0 || b_seg[i] >= nseg) continue;
+        int d = b_seg[i] - n1; if (d < 0) d = -d;
+        if (best < 0 || d < best) { best = d; cut = b_seg[i]; cut_ones = b_ones[i]; }
+    }
+    if (out_h1 && cut > 0)
+        *out_h1 = z_from_counts(cut_ones, (uint64_t)cut * words_per_seg);
+    if (out_h2 && nseg > cut)
+        *out_h2 = z_from_counts(ones - cut_ones,
+                                words - (uint64_t)cut * words_per_seg);
     return GCP_OK;
 }
 

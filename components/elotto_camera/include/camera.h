@@ -188,6 +188,14 @@ void camera_get_stats(camera_stats_t *out);
 void camera_ring_flush(int pairs);
 bool camera_ring_flushed(void);
 
+/* Start of every frame pair of the current window, as a word index into the
+ * words the consumer reads after the flush (0 = the window's first word), in
+ * order; returns how many are known so far `[D110]`. Entry 0 is a FRAGMENT of
+ * its pair (the ring drops the rest while nobody reads); later pairs are whole.
+ * A pair is listed once its extraction has begun, i.e. before any of its words
+ * can be read. */
+uint32_t camera_window_pair_starts(uint32_t *out, uint32_t max);
+
 // Discard `settle_pairs` frame pairs (>=1), empty the ring, then zero every
 // entropy statistic and restart the rate clock. Asynchronous: the capture task
 // performs it, so poll camera_stats_settled().
