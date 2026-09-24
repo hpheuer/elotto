@@ -7,12 +7,13 @@
 /* v3 (D67): rounds until Abort. Inside a round every combination is measured
  * exactly ONCE; results[] holds it in MEASUREMENT order and ACCUMULATES across
  * rounds, so NUM_RUNS is the hard cap on the buffer, not on the session.
- * 1000 rows [D91]. A row is 48 B (the double in RunResult forces 8-byte
+ * 400 rows [D99]. A row is 48 B (the double in RunResult forces 8-byte
  * alignment). Compaction keeps at most 2*PASS_KEEP_EXTREME rows (200); the
  * next round is appended before that compaction, so a round longer than
- * NUM_RUNS-200 is truncated and that round ends the session. A combination
+ * NUM_RUNS-200 (i.e. ?maxruns= above 200) is truncated and that round ends
+ * the session. A combination
  * space larger than NUM_RUNS aborts — the shuffle buffer is this wide. */
-#define NUM_RUNS      1000
+#define NUM_RUNS       400
 #define TOP_N            5
 /* ── Round-boundary compaction (D56) ──────────────────────────────────────
  * Unlimited rounds keep the 100 most extreme RANKED items by |rank_key| (both

@@ -2021,3 +2021,18 @@ pool on the summed pass keys), but the page shows during it everything the measu
   so `wsig_sd` is taken over every window of the session.
 - The node table's `Z` (session mean raw z per node) includes scoring runs. The pairwise matrix and
   the block accumulators stay pass-only — a scoring run is not an item.
+
+### D99 — NUM_RUNS 400 (2026-09-24)
+**Operator decision:** `NUM_RUNS` 1000 → 400. Frees 600 × 48 B = 28,8 KB of `results[]` plus
+1,2 KB of `s_perm` in internal RAM (and 3 × 9,6 KB of per-node archives in PSRAM).
+
+**Check.** The resident peak is the compaction survivors (≤ 200: two quotas of
+`PASS_KEEP_EXTREME` 100) plus one round (≤ `?maxruns=`, since the pool is sized so its
+combination space fits the cap). At the operator's 200 runs/round that is 400 = `NUM_RUNS`: fits.
+The combination space is ≤ `?maxruns=` ≤ 400, so the `s_perm` abort cannot fire.
+⚠ `?maxruns=` 201..400 stays legal as before (D91's rule): the second round is then truncated and
+ends the session.
+
+**Use of the freed RAM:** none. The ring is not binding — the consumer outruns production on the
+IMX219 (`waits` > 0, D92/D95), so a larger `s_ring` buys nothing; the extractor's cost is reading
+the PSRAM frames, which do not fit internal RAM. Kept as heap headroom.
