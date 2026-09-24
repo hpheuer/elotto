@@ -2069,3 +2069,14 @@ abs: |Σ|), so "largest first" is always the pool end. During the pass the badge
 (`score_build_keys()` = `rank_key()` on the pass span). Scoring runs stay out of `results[]`: they
 would enter pass mean/σ/χ², the pairwise matrix, blocks and compaction, and a number is summed
 over 20 passes, an item is measured once.
+
+### D103 — Scoring numbers are RunResult rows (own buffer) (2026-09-24)
+**Operator decision.** The scoring is held and shown exactly like the pass, only filled
+differently: each scored number is a `RunResult` (`ScoreItem.r`) in its own PSRAM buffer of 62,
+cleared per round — index = number, the number in `nums[0]`/`euro[0]`, `round`, `k`, `have_mask`,
+`z_score` raw, `z_ctr`/`zc_ctr` provisional raw until the pass closes and then centred on the pass
+span, `node_sd` (Δn), `acz` (AC). Beside it `key` (the pass key; `rank_key()` would read a block
+σ the row has none of) and `sum`/`passes`. `/extremes?score=1` and `/extremes` serialise through
+one `emit_row()`; the page renders both through one `renderRunTable()` — for the scoring the Item
+column is Σ and pool members get a green `#`. ScoreRow and the separate number table are gone.
+⛔ Not results[]: pass statistics, blocks, the pairwise matrix and compaction never see a scoring run.

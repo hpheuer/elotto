@@ -1175,9 +1175,9 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "if(now-lastSc<5000){renderScoreTable();return;}"
 "lastSc=now;"
 "fetch('/extremes?score=1').then(function(r){return r.json();}).then(function(x){"
-"SC=(x&&x.rows)?x.rows:[];renderScoreTable();}).catch(function(){});}"
+"SC=(x&&x.extremes)?x.extremes:[];renderScoreTable();}).catch(function(){});}"
 "function renderScoreTable(){"
-"if(!LD)return;var d=LD;"
+"if(!LD)return;var d=LD,isEuro=d.mode==='euro';"
 "var lab={sum:'\\u03a3',key:'Z*',z_ctr:'Z',zc:'Conc',nsd:'\\u0394n',ac:'AC'};"
 "var s=SC.slice().sort(scCmp);"
 /* Pool members (D102): the numbers the device picked from the sums so far.
@@ -1185,42 +1185,15 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
    runs at least 10 rows and far enough to show every one of them. */
 "var pool={};(d.pool_main||[]).forEach(function(x){pool['m'+x.n]=1;});"
 "(d.pool_euro||[]).forEach(function(x){pool['e'+x.n]=1;});"
-"var last=-1;for(var i=0;i<s.length;i++)if(pool[(s[i].euro?'e':'m')+s[i].num])last=i;"
+"var last=-1;for(var i=0;i<s.length;i++)if(pool[(s[i].euro&&s[i].euro.length?'e':'m')+s[i].run])last=i;"
 "var top=s.slice(0,Math.max(10,last+1));"
 "document.getElementById('resTitle').innerHTML="
 "'\\uD83C\\uDFC6 Top '+top.length+' of '+SC.length+' numbers \\u2014 scoring pass '"
 "+d.scoring_pass+'/'+(d.scoring_passes||" EL_STR(SCORE_PASSES) ")"
 "+' ('+(SSD<0?'highest':'lowest')+' '+lab[SSK]+')';"
-"function th(k,t,tip){return '<th style=\"cursor:pointer\" title=\"'+tip+' Click to sort.\" "
-"onclick=\"sortBy(\\''+k+'\\')\">'+t+exArrow(k)+'</th>';}"
-"document.getElementById('resHead').innerHTML='<tr><th>#</th><th>Number</th>'"
-"+th('sum','\\u03a3','running sum of this number\\u2019s pass keys \\u2014 the pool is picked on it; sorts in the ?score= direction (high / low / |\\u03a3|). A green # marks a pool member.')"
-"+th('key','Z*','key of the latest closed pass, in that pass\\u2019s own \\u03c3. \\u2014 while the pass is open.')"
-"+th('z_ctr','Z','span-centred combined z of the latest measurement; raw (dimmed) while its pass is open.')"
-"+th('zc','Conc','leave-one-out half-window concordance; provisional (dimmed) while the pass is open.')"
-"+th('nsd','\\u0394n','node agreement over the pass span, in each camera\\u2019s own \\u03c3; \\u2248 1 is chance. Never ranks.')"
-"+th('ac','AC','window autocorrelation of the bits, unit normal for independent bits. Never ranks.')"
-"+'</tr>';"
-"var tb=document.getElementById('resBody'),h='';"
-"if(!top.length)h='<tr><td colspan=\"8\" style=\"color:#d0b0b0;padding:10px\">No number scored yet.</td></tr>';"
-"for(var i=0;i<top.length;i++){var r=top[i];"
-"var open=(r.key===null);"
-"var dim=open?' style=\"opacity:.55\"':'';"
-"var zv=(r.z_ctr!==null)?r.z_ctr:r.z;"
-"var f=function(v,n){return (v===null||v===undefined)?'\\u2014':v.toFixed(n);};"
-"var nsdTxt=(r.nsd===null)?'\\u2014':(r.nsd.toFixed(2)+' ('+r.k+')');"
-"var nsdCol=(r.nsd===null)?'#9aa':(r.nsd<0.6?'#90ee90':(r.nsd>1.0?'#c09090':''));"
-"var acCol=(r.ac===null)?'#9aa':(Math.abs(r.ac)>3?'#ffd479':'');"
-"var inP=pool[(r.euro?'e':'m')+r.num];"
-"h+='<tr><td'+(inP?' style=\"background:#2e7d32;color:#fff;font-weight:700;border-radius:6px\" title=\"in the pool\"':'')+'>'+(i+1)+'</td>'"
-"+'<td><span class=\"num'+(r.euro?' euro':'')+'\">'+r.num+'</span></td>'"
-"+'<td title=\"over '+r.passes+' closed passes\"><b>'+r.sum.toFixed(3)+'</b></td>'"
-"+'<td>'+f(r.key,3)+'</td>'"
-"+'<td'+(r.z_ctr===null?dim:'')+'>'+f(zv,2)+'</td>'"
-"+'<td'+dim+'>'+f(r.zc,2)+'</td>'"
-"+'<td'+(nsdCol?' style=\"color:'+nsdCol+'\"':'')+'>'+nsdTxt+'</td>'"
-"+'<td'+(acCol?' style=\"color:'+acCol+'\"':'')+'>'+f(r.ac,2)+'</td></tr>';}"
-"tb.innerHTML=h;}"
+"renderRunTable('resHead','resBody',top,isEuro,d,{p:d.pre_w||0},{pool:pool});"
+"if(!top.length)document.getElementById('resBody').innerHTML="
+"'<tr><td colspan=\"9\" style=\"color:#d0b0b0;padding:10px\">No number scored yet.</td></tr>';}"
 /* Throttled to 5 s (D78b): /extremes is a ~15 KB streamed scan served on the
    MASTER's HTTP task, which shares the consumer core with the GCP consumer
    (D61) — fetching it every 1 s stole extraction CPU from the master alone and
@@ -1249,9 +1222,13 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "'\\uD83C\\uDFC6 Top '+top.length+' of '+(EX.length||d.comparisons||top.length)"
 "+(isEuro?' \\u2014 Eurojackpot':' \\u2014 6-of-49')+' ('+endTxt+' '+lab[SORTK]+')';"
 "renderRunTable('resHead','resBody',top,isEuro,d,st);}"
-"function renderRunTable(headId,bodyId,res,isEuro,d,st){"
+/* Items and scoring numbers (D103): the same rows, one renderer. `opt` is set
+   for the scoring — the Item column becomes the running sum \u03a3 (the number
+   stands in Numbers / Bonus), a green # marks a pool member, and a row whose
+   pass is still open shows Z* as a dash with Z / Conc dimmed. */
+"function renderRunTable(headId,bodyId,res,isEuro,d,st,opt){"
 "document.getElementById(headId).innerHTML="
-"'<tr><th>#</th><th>Item</th>'"
+"'<tr><th>#</th>'+(opt?'<th style=\"cursor:pointer\" title=\"running sum of this number\\u2019s pass keys \\u2014 the pool is picked on it; sorts in the ?score= direction (high / low / |\\u03a3|). A green # marks a pool member.\" onclick=\"sortBy(\\'sum\\')\">\\u03a3'+exArrow('sum')+'</th>':'<th>Item</th>')"
 "+(st?'<th style=\"cursor:pointer\" title=\"ranking key in units of its own block σ. Click to sort the 50\" onclick=\"sortBy(\\'key\\')\">Z*'+exArrow('key')+'</th>'"
 "+'<th style=\"cursor:pointer\" title=\"block-centred combined z. Click to sort the 50\" onclick=\"sortBy(\\'z_ctr\\')\">Z'+exArrow('z_ctr')+'</th>'"
 "+'<th style=\"cursor:pointer\" title=\"leave-one-out half-window concordance. Click to sort the 50\" onclick=\"sortBy(\\'zc\\')\">Conc'+exArrow('zc')+'</th>'"
@@ -1293,8 +1270,11 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "for(var j=0;j<r.euro.length;j++)"
 "estr+='<span class=\"num euro\">'+r.euro[j]+'</span>';"
 "var z=r.z,kk=(r.key===undefined?(r.z_ctr===undefined?z:r.z_ctr):r.key);"
-"var zs=kk;"
+"var zs=(kk===null)?'\\u2014':kk.toFixed(3);"
 "var itm=(d.unlimited&&r.round)?(r.run+'/'+r.round):r.run;"
+"var dim=(opt&&r.key===null)?' style=\"opacity:.55\"':'';"
+"var inP=opt&&opt.pool[(r.euro&&r.euro.length?'e':'m')+r.run];"
+"if(opt)itm='<b title=\"over '+r.passes+' closed passes\">'+r.sum.toFixed(3)+'</b>';"
 "var zTxt=(r.z_ctr===undefined||r.z_ctr===null)?z.toFixed(2):r.z_ctr.toFixed(2);"
 "var concTxt=(r.zc===undefined||r.zc===null)?'\\u2014':r.zc.toFixed(2);"
 /* Node agreement (nsd). null until the item's block has been centred -- the
@@ -1313,9 +1293,9 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "+' \\u00b7 \\u0394n '+nsdTxt+' (k '+(r.k===undefined?'?':r.k)+')';"
 "if(st)det+='\\nweights: z '+(1-(st.p||0)).toFixed(2)"
 "+' \\u00b7 conc '+(st.p||0).toFixed(2);"
-"tb.innerHTML+='<tr><td>'+(i+1)+'</td><td>'+itm+'</td>"
-"'+(st?'<td title=\"'+det+'\">'+zs.toFixed(3)+'</td>'"
-"+'<td>'+zTxt+'</td><td>'+concTxt+'</td>'"
+"tb.innerHTML+='<tr><td'+(inP?' style=\"background:#2e7d32;color:#fff;font-weight:700;border-radius:6px\" title=\"in the pool\"':'')+'>'+(i+1)+'</td><td>'+itm+'</td>"
+"'+(st?'<td title=\"'+det+'\">'+zs+'</td>'"
+"+'<td'+dim+'>'+zTxt+'</td><td'+dim+'>'+concTxt+'</td>'"
 "+'<td'+(nsdCol?' style=\"color:'+nsdCol+'\"':'')+'>'+nsdTxt+'</td>'"
 "+'<td'+(acCol?' style=\"color:'+acCol+'\"':'')+'>'+acTxt+'</td>':'')+'"
 "<td>'+nums+'</td>"
@@ -1445,7 +1425,14 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
  * a later round re-uses the same numbers. The identity is (round, index) — see
  * the unlimited-mode notes in sensor.h. The UI prints round because every
  * session is rounds (D67); index alone does not identify an item. */
-static int emit_run(char *buf, int cap, const RunResult *r, bool euro)
+/* One row as JSON — an item of the pass or a number of the scoring (D103), the
+ * same shape for both so the page renders them with one table. `key` is passed
+ * in: an item's comes from rank_key() on its block, a scoring row's from its
+ * pass span; NaN → null (a scoring row whose pass is still open). `tail` adds
+ * fields (the scoring's `sum`/`passes`), "" for none. nums/euro carry their
+ * non-zero entries: 6 or 5+2 for an item, the one number for a scoring row. */
+static int emit_row(char *buf, int cap, const RunResult *r, double key,
+                    const char *tail)
 {
     /* `zc` and `key` travel per row so the table can show the channel that put
      * an item where it is, and so the UI never has to recompute the key.
@@ -1462,24 +1449,31 @@ static int emit_run(char *buf, int cap, const RunResult *r, bool euro)
         snprintf(ac, sizeof(ac), "%.2f", (double)r->acz);
     else
         snprintf(ac, sizeof(ac), "null");
+    char ks[16];
+    if (isfinite(key)) snprintf(ks, sizeof(ks), "%.4f", key);
+    else               snprintf(ks, sizeof(ks), "null");
+    char nums[40], eu[16];
+    int  pn = 0, pe = 0;
+    nums[0] = eu[0] = '\0';
+    for (int m = 0; m < 6; m++)
+        if (r->nums[m])
+            pn += snprintf(nums + pn, sizeof(nums) - pn, "%s%d", pn ? "," : "", r->nums[m]);
+    for (int m = 0; m < 2; m++)
+        if (r->euro[m])
+            pe += snprintf(eu + pe, sizeof(eu) - pe, "%s%d", pe ? "," : "", r->euro[m]);
 
-    if (euro)
-        return snprintf(buf, cap,
-            "{\"run\":%d,\"round\":%d,\"z\":%.4f,\"z_ctr\":%.4f,"
-            "\"zc\":%.3f,\"key\":%.4f,\"k\":%d,\"nsd\":%s,\"ac\":%s,"
-            "\"nums\":[%d,%d,%d,%d,%d],\"euro\":[%d,%d]}",
-            r->index, (int)r->round, r->z_score, (double)r->z_ctr,
-            (double)r->zc_ctr, rank_key(r), (int)r->k, nsd, ac,
-            r->nums[0], r->nums[1], r->nums[2], r->nums[3], r->nums[4],
-            r->euro[0], r->euro[1]);
     return snprintf(buf, cap,
         "{\"run\":%d,\"round\":%d,\"z\":%.4f,\"z_ctr\":%.4f,"
-        "\"zc\":%.3f,\"key\":%.4f,\"k\":%d,\"nsd\":%s,\"ac\":%s,"
-        "\"nums\":[%d,%d,%d,%d,%d,%d],\"euro\":[]}",
+        "\"zc\":%.3f,\"key\":%s,\"k\":%d,\"nsd\":%s,\"ac\":%s,"
+        "\"nums\":[%s],\"euro\":[%s]%s}",
         r->index, (int)r->round, r->z_score, (double)r->z_ctr,
-        (double)r->zc_ctr, rank_key(r), (int)r->k, nsd, ac,
-        r->nums[0], r->nums[1], r->nums[2],
-        r->nums[3], r->nums[4], r->nums[5]);
+        (double)r->zc_ctr, ks, (int)r->k, nsd, ac, nums, eu, tail ? tail : "");
+}
+
+static int emit_run(char *buf, int cap, const RunResult *r, bool euro)
+{
+    (void)euro;   /* the row's own nums/euro say which game it is */
+    return emit_row(buf, cap, r, rank_key(r), "");
 }
 
 /* ── Clamped JSON-buffer append ──────────────────────────────────────────
@@ -1989,34 +1983,27 @@ static esp_err_t extremes_handler(httpd_req_t *req)
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
 
     /* ?score=1: the scoring table — every number of this round's scoring, one
-     * row each (ScoreRow). A query flag, not a new handler: the URI-handler
-     * cap fails silently. Same columns as an item row plus `sum`, the running
-     * Σ that picks the pool, and `passes` behind it. */
+     * row each, in the item row shape (emit_row, D103) plus `sum`, the running
+     * Σ that picks the pool, and `passes` behind it. A query flag, not a new
+     * handler: the URI-handler cap fails silently. */
     char q[32], v[8];
     if (httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK &&
         httpd_query_key_value(q, "score", v, sizeof(v)) == ESP_OK && v[0] == '1') {
-        const ScoreRow *R = g_status.score_rows;
+        const ScoreItem *R = g_status.score_rows;
         int nr = R ? g_status.score_rows_n : 0;
         char sb[320];
-        int sl = snprintf(sb, sizeof(sb), "{\"n\":%d,\"pass\":%d,\"rows\":[",
+        int sl = snprintf(sb, sizeof(sb), "{\"n\":%d,\"pass\":%d,\"extremes\":[",
                           nr, g_status.scoring_pass);
         send_chunk(req, sb, sl, sizeof(sb));
         bool first = true;
         for (int i = 0; i < nr; i++) {
-            const ScoreRow *s = &R[i];
-            if (s->k == 0 && s->passes == 0) continue;   /* not measured yet */
-            char f[6][16];
-            const float fv[6] = { s->z, s->z_ctr, s->zc, s->key, s->nsd, s->ac };
-            for (int j = 0; j < 6; j++) {
-                if (isfinite((double)fv[j])) snprintf(f[j], sizeof(f[j]), "%.4f", (double)fv[j]);
-                else                         snprintf(f[j], sizeof(f[j]), "null");
-            }
-            sl = snprintf(sb, sizeof(sb),
-                "%s{\"num\":%d,\"euro\":%d,\"k\":%d,\"passes\":%d,"
-                "\"z\":%s,\"z_ctr\":%s,\"zc\":%s,\"key\":%s,\"nsd\":%s,\"ac\":%s,"
-                "\"sum\":%.4f}",
-                first ? "" : ",", s->num, s->euro, s->k, s->passes,
-                f[0], f[1], f[2], f[3], f[4], f[5], (double)s->sum);
+            const ScoreItem *s = &R[i];
+            if (s->r.k == 0 && s->passes == 0) continue;   /* not measured yet */
+            char tail[48];
+            snprintf(tail, sizeof(tail), ",\"sum\":%.4f,\"passes\":%d",
+                     (double)s->sum, (int)s->passes);
+            if (!first) httpd_resp_send_chunk(req, ",", 1);
+            sl = emit_row(sb, sizeof(sb), &s->r, (double)s->key, tail);
             send_chunk(req, sb, sl, sizeof(sb));
             first = false;
         }

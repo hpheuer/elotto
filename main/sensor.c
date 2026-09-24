@@ -286,7 +286,7 @@ static void nth_combination(const uint8_t *pool, int n, int r, int k, uint8_t *o
 // random passes; it must NOT go back to repeats in place (onset is the payload).
 static void score_one_run(bool *ok, float znode[MAX_NODES],
                           float h1[MAX_NODES], float h2[MAX_NODES],
-                          uint8_t *mask, ScoreRow *row, float wsig[MAX_NODES]);
+                          uint8_t *mask, ScoreItem *row, float wsig[MAX_NODES]);
 static void score_build_keys(const float zn[][MAX_NODES],
                              const float h1[][MAX_NODES],
                              const float h2[][MAX_NODES],
@@ -542,7 +542,7 @@ static void score_publish_live(bool euro_pool, const double *acc, const bool *ok
     else           g_status.pool_n_main = (uint8_t)n;
 }
 
-/* ── The scoring table (ScoreRow) ─────────────────────────────────────────
+/* ── The scoring table (ScoreItem) ────────────────────────────────────────
  * Main numbers first, bonus numbers after them — `s_score_main_n` is where the
  * bonus rows start. Display only: nothing here feeds the pool. */
 static int s_score_main_n;
@@ -550,26 +550,29 @@ static int s_score_main_n;
 static void score_rows_begin(int main_max, bool euro)
 {
     s_score_main_n = main_max;
-    ScoreRow *R = g_status.score_rows;
+    ScoreItem *R = g_status.score_rows;
     if (!R) { g_status.score_rows_n = 0; return; }
     int n = main_max + (euro ? 12 : 0);
     if (n > SCORE_ROWS_MAX) n = SCORE_ROWS_MAX;
+    memset(R, 0, (size_t)n * sizeof(ScoreItem));
     for (int i = 0; i < n; i++) {
-        ScoreRow *s = &R[i];
+        ScoreItem *s = &R[i];
         bool e = (i >= main_max);
-        s->num    = (uint8_t)(e ? i - main_max + 1 : i + 1);
-        s->euro   = e ? 1 : 0;
-        s->k      = 0;
-        s->passes = 0;
-        s->z = s->z_ctr = s->zc = s->key = s->nsd = s->ac = NAN;
-        s->sum    = 0.0f;
+        int  num = e ? i - main_max + 1 : i + 1;
+        s->r.index = num;
+        s->r.round = (uint16_t)g_status.round;
+        if (e) s->r.euro[0] = (uint8_t)num;
+        else   s->r.nums[0] = (uint8_t)num;
+        s->r.node_sd = NAN;
+        s->r.acz     = NAN;
+        s->key       = NAN;
     }
     g_status.score_sig_z = g_status.score_sig_c = 0.0;
     g_status.score_span_n = g_status.score_conc_n = 0;
     g_status.score_rows_n = n;
 }
 
-static ScoreRow *score_row(bool euro_pool, int k)
+static ScoreItem *score_row(bool euro_pool, int k)
 {
     int i = euro_pool ? s_score_main_n + k - 1 : k - 1;
     if (!g_status.score_rows || i < 0 || i >= g_status.score_rows_n) return NULL;
@@ -639,13 +642,14 @@ static void score_and_build_pool(int max_val, int pool_size, uint8_t *pool,
              * that moves during the hour of scoring is the same camera that
              * then measures the pass. Named by number and pass, not item. */
             {
+                ScoreItem *row = score_row(euro_pool, k);
                 RunResult id;
                 memset(&id, 0, sizeof(id));
                 id.round = (uint16_t)g_status.round;
-                id.index = (uint16_t)k;
+                id.index = k;
                 if (euro_pool) id.euro[0] = (uint8_t)k;
                 else           id.nums[0] = (uint8_t)k;
-                wsig_note(&id, wsig, smask[k], (uint8_t)(pass + 1));
+                wsig_note(row ? &row->r : &id, wsig, smask[k], (uint8_t)(pass + 1));
             }
             scored[k] = ok;
             g_status.scoring_done++;
@@ -660,13 +664,15 @@ static void score_and_build_pool(int max_val, int pool_size, uint8_t *pool,
             if (!scored[k]) continue;
             acc[k] += scores[k];
             ok_any[k] = true;
-            ScoreRow *row = score_row(euro_pool, k);
+            ScoreItem *row = score_row(euro_pool, k);
             if (!row) continue;
-            row->z_ctr  = (float)zc_ctr[k];
-            row->zc     = (float)conc[k];
-            row->key    = (float)scores[k];
-            row->nsd    = (float)nsd[k];
-            row->sum    = (float)acc[k];
+            /* The pass closed: centred values, as center_block() writes an
+             * item's. No concordance is 0, the results[] convention. */
+            row->r.z_ctr   = isnan(zc_ctr[k]) ? 0.0f : (float)zc_ctr[k];
+            row->r.zc_ctr  = isnan(conc[k])   ? 0.0f : (float)conc[k];
+            row->r.node_sd = (float)nsd[k];
+            row->key       = (float)scores[k];
+            row->sum       = (float)acc[k];
             row->passes++;
         }
         score_publish_live(euro_pool, acc, ok_any, skip, max_val, pool_size);
@@ -934,20 +940,26 @@ static int measure_window(WindowMeas *w)
  * candidates from selection instead. */
 static void score_one_run(bool *ok, float znode[MAX_NODES],
                           float h1[MAX_NODES], float h2[MAX_NODES],
-                          uint8_t *mask, ScoreRow *row, float wsig[MAX_NODES])
+                          uint8_t *mask, ScoreItem *row, float wsig[MAX_NODES])
 {
     WindowMeas m;
     int k = measure_window(&m);
     /* Before the next 'M' overwrites them — same rule as the pass. */
     wsig_collect(wsig);
     if (row) {
-        /* The number's latest measurement, open until its pass closes:
-         * raw z and provisional concordance, no key yet (see ScoreRow). */
-        row->k     = (uint8_t)k;
-        row->z     = (k > 0) ? (float)m.z  : NAN;
-        row->zc    = (k > 0) ? (float)m.zc : NAN;
-        row->ac    = (k > 0) ? acz_collect(m.mask) : NAN;
-        row->z_ctr = row->key = row->nsd = NAN;
+        /* The number's latest measurement, filled as the pass fills an item
+         * (D103): raw z, provisional z_ctr = z and raw-half concordance until
+         * its pass closes, no key and no Δn yet. A VOID is k = 0 and zeros. */
+        RunResult *r = &row->r;
+        r->k         = (uint8_t)k;
+        r->have_mask = (k > 0) ? m.mask : 0;
+        r->round     = (uint16_t)g_status.round;
+        r->z_score   = (k > 0) ? m.z : 0.0;
+        r->z_ctr     = (k > 0) ? (float)m.z  : 0.0f;
+        r->zc_ctr    = (k > 0) ? (float)m.zc : 0.0f;
+        r->acz       = (k > 0) ? acz_collect(m.mask) : NAN;
+        r->node_sd   = NAN;
+        row->key     = NAN;
     }
     /* The node table's Z column is the session mean of every raw per-run z,
      * scoring included. Only that display mean: the pairwise matrix and the
@@ -2599,7 +2611,7 @@ void elotto_task(void *pvParam)
     /* Scoring table: allocated once, emptied per session and again per round
      * (score_rows_begin). */
     if (!g_status.score_rows)
-        g_status.score_rows = heap_caps_calloc(SCORE_ROWS_MAX, sizeof(ScoreRow),
+        g_status.score_rows = heap_caps_calloc(SCORE_ROWS_MAX, sizeof(ScoreItem),
                                                MALLOC_CAP_SPIRAM);
     g_status.score_rows_n = 0;
     g_status.score_sig_z = g_status.score_sig_c = 0.0;
