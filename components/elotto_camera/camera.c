@@ -2242,7 +2242,7 @@ esp_err_t camera_selftest_handle(void *httpd_req, bool busy)
     double fps_raw = camera_fps_probe(60, 6000);
 
     cam_selftest_t t;
-    char buf[900];
+    char buf[1200];
     /* THE LIVE FRAME SIZE, not a convenient one. See extract.h. */
     if (!cam_extract_selftest(&t, s_frame_size)) {
         httpd_resp_set_status(req, "500 Internal Server Error");
@@ -2272,7 +2272,11 @@ esp_err_t camera_selftest_handle(void *httpd_req, bool busy)
         "\"r10_bad_at\":%lu,\"r10_ref_w\":\"%08lx\",\"r10_fast_w\":\"%08lx\","
         "\"ns10_ref\":%.3f,\"ns10_fast\":%.3f,\"ns10_stats\":%.3f,"
         "\"ms_pair_r10_ref\":%.1f,\"ms_pair_r10_fast\":%.1f,\"ms_pair_r10_stats\":%.1f,"
-        "\"ms_pair_read\":%.1f}",
+        "\"ms_pair_read\":%.1f,"
+        /* Cache autoload experiment `[D95]`: [L2, L1, both]. */
+        "\"al_l1_ctrl\":\"%08lx\",\"al_l2_ctrl\":\"%08lx\","
+        "\"ns_read_al\":[%.3f,%.3f,%.3f],\"ns10_fast_al\":[%.3f,%.3f,%.3f],"
+        "\"ms_pair_r10_fast_al\":[%.1f,%.1f,%.1f]}",
         t.equal ? "true" : "false", t.cases, t.failed_case, (unsigned long)t.words,
         t.ns_read, t.ns_ref, t.ns_fast, t.ns_stats, t.ns_raw,
         t.ns_read * mhz / 1000.0, t.ns_ref * mhz / 1000.0,
@@ -2300,7 +2304,13 @@ esp_err_t camera_selftest_handle(void *httpd_req, bool busy)
         t.ns10_fast  * (double)s_frame_size / 1e6,
         t.ns10_stats * (double)s_frame_size / 1e6,
         /* Both frames of one pair read and nothing else: the memory floor. */
-        t.ns_read * (double)s_frame_size / 1e6);
+        t.ns_read * (double)s_frame_size / 1e6,
+        (unsigned long)t.al_l1_ctrl, (unsigned long)t.al_l2_ctrl,
+        t.ns_read_al[0], t.ns_read_al[1], t.ns_read_al[2],
+        t.ns10_fast_al[0], t.ns10_fast_al[1], t.ns10_fast_al[2],
+        t.ns10_fast_al[0] * (double)s_frame_size / 1e6,
+        t.ns10_fast_al[1] * (double)s_frame_size / 1e6,
+        t.ns10_fast_al[2] * (double)s_frame_size / 1e6);
     httpd_resp_sendstr(req, buf);
     return ESP_OK;
 }

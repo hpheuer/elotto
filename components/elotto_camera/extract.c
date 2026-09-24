@@ -2,6 +2,8 @@
 #include <stdlib.h>
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
+#include "soc/soc.h"
+#include "soc/cache_reg.h"
 #include "extract.h"
 
 /* ── Reference: the original byte-at-a-time loop ───────────────────────────
@@ -974,6 +976,56 @@ bool cam_extract_selftest(cam_selftest_t *out, uint32_t bytes)
       cam_extract_raw10_fast(a, b, N, &st, stats_emit, &ss, &z, &an, &ps, &rw);
       out->ns10_stats = (float)((esp_timer_get_time() - t0) * 1000.0 / N);
       sink = (uint32_t)ss.ones; }
+
+    /* ── Cache autoload experiment `[D95]` ──────────────────────────────────
+     * The extractor is memory-bound for ~54 of its ~125 ms per pair: the core
+     * is in-order and stalls on every line it misses. The L1 DCache and the L2
+     * cache can prefetch ("autoload") the following lines of an address section
+     * on their own. Nothing in the live path touches this yet — the question
+     * here is only what it buys on the bench buffers. Nine registers per level
+     * (CTRL, then four ADDR/SIZE pairs), saved and written back exactly. */
+    {
+        const uint32_t base[2] = { CACHE_L1_DCACHE_AUTOLOAD_CTRL_REG,
+                                   CACHE_L2_CACHE_AUTOLOAD_CTRL_REG };
+        uint32_t saved[2][9];
+        for (int l = 0; l < 2; l++)
+            for (int i = 0; i < 9; i++) saved[l][i] = REG_READ(base[l] + 4 * i);
+        out->al_l1_ctrl = saved[0][0];
+        out->al_l2_ctrl = saved[1][0];
+
+        for (int m = 0; m < 3; m++) {                 /* 0 L2, 1 L1, 2 both */
+            for (int l = 0; l < 2; l++) {
+                bool on = (m == 2) || (m == 0 && l == 1) || (m == 1 && l == 0);
+                if (!on) continue;
+                REG_WRITE(base[l], 0);
+                REG_WRITE(base[l] + 4,  (uint32_t)a); REG_WRITE(base[l] + 8,  N);
+                REG_WRITE(base[l] + 12, (uint32_t)b); REG_WRITE(base[l] + 16, N);
+                /* ENA | ascending | miss+hit trigger | sections 0,1 | gid kept */
+                REG_WRITE(base[l], 1u | (2u << 3) | (1u << 8) | (1u << 9) |
+                                   (saved[l][0] & (0xFu << 12)));
+            }
+
+            t0 = esp_timer_get_time();
+            { uint32_t o = 0;
+              for (uint32_t i = 0; i + 4 <= N; i += 4) {
+                  uint32_t x, y; memcpy(&x, a + i, 4); memcpy(&y, b + i, 4); o |= x ^ y;
+              }
+              sink = o; }
+            out->ns_read_al[m] = (float)((esp_timer_get_time() - t0) * 1000.0 / N);
+
+            cam_raw_t rw; memset(&rw, 0, sizeof(rw));
+            st = (cam_pack_t){0}; z = 0; an = 0; sink = 0;
+            t0 = esp_timer_get_time();
+            cam_extract_raw10_fast(a, b, N, &st, count_emit, (void *)&sink, &z, &an, &ps, &rw);
+            out->ns10_fast_al[m] = (float)((esp_timer_get_time() - t0) * 1000.0 / N);
+
+            for (int l = 0; l < 2; l++) {             /* restore, CTRL last */
+                REG_WRITE(base[l], saved[l][0] & ~1u);
+                for (int i = 1; i < 9; i++) REG_WRITE(base[l] + 4 * i, saved[l][i]);
+                REG_WRITE(base[l], saved[l][0]);
+            }
+        }
+    }
 
     (void)sink;
     out->ran = true;

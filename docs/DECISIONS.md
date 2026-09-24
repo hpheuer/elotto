@@ -1892,3 +1892,26 @@ now has no reader.
 **Consequence.** A master reboot ends the session and its data; nothing survives it. Changing
 parameters, firmware or the instrument between sessions needs no bookkeeping, because no two
 sessions are ever read together — what must hold is that nothing changes WITHIN a session.
+
+### D95 — Cache autoload (hardware prefetch) for the extractor: experiment built, NOT measured (2026-09-24)
+**Goal.** Bring `ms_extract` below ~94 ms so a pair costs 3 camera frames instead of 4 (D93 frame
+quantisation: +33 % production). Of today's ~125 ms per pair, ~54 are the in-order core stalling on
+PSRAM misses (`/camtest` `ms_pair_read`), ~43 extraction arithmetic, ~28 per-word statistics.
+Arithmetic alone cannot give 30 ms; the lever is the memory stall.
+
+**Built, in `/camtest` only.** The L1 DCache and the L2 cache can prefetch the following lines of up
+to four address sections ("autoload", `CACHE_L1_DCACHE_AUTOLOAD_*` / `CACHE_L2_CACHE_AUTOLOAD_*`:
+CTRL + four ADDR/SIZE pairs, nine consecutive registers per level; CTRL bit 0 ENA, bit 2 order,
+bits 4:3 trigger 0 miss / 1 hit / 2 both, bits 11:8 section enables, bits 15:12 gid). The self-test
+reports the registers as found (`al_l1_ctrl`, `al_l2_ctrl`), then re-runs the read floor and the
+fast RAW10 extractor with sections over the two bench buffers — `ns_read_al` / `ns10_fast_al` /
+`ms_pair_r10_fast_al`, each `[L2, L1, both]` — and writes all nine registers back after every run.
+Nothing in the live path is changed.
+
+**Open.** (1) Measure: `/camtest` answers 409 during a session, and the build is not flashed yet.
+(2) If it pays: sections over the four frame buffers (`s_bufs[i]`, `s_buf_len[i]` — exactly four
+sections), set once after `camera_init()`. ⚠ Check stale lines: a prefetch must never run into a
+buffer the CSI DMA is writing; per-buffer sections bound it, but verify the stream (bias, σ,
+autocorrelation, stuck frames) after enabling. Unknown so far: whether section addresses are virtual
+(assumed) and how far ahead autoload runs. (3) If it does not pay: stage frame chunks into internal
+RAM by DMA while the core computes, or split the extraction across both cores.

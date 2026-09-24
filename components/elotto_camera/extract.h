@@ -175,6 +175,13 @@ typedef struct {
     float    ns10_ref;       // D89 loop, monitor on (as live)
     float    ns10_fast;      // word-wise, monitor on (as live)
     float    ns10_stats;     // word-wise + the process_word stand-in
+    /* Cache autoload (hardware prefetch) experiment `[D95]`: the autoload
+     * control registers as found, then ns_read and ns10_fast again with
+     * autoload sections over the two bench buffers — [0] L2 cache only,
+     * [1] L1 DCache only, [2] both — registers restored after each. */
+    uint32_t al_l1_ctrl, al_l2_ctrl;
+    float    ns_read_al[3];
+    float    ns10_fast_al[3];
 } cam_selftest_t;
 
 /* `bytes` is the FRAME SIZE to benchmark, and the caller passes the live one.
