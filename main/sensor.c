@@ -2664,6 +2664,7 @@ void elotto_task(void *pvParam)
                                                MALLOC_CAP_SPIRAM);
     g_status.score_rows_n = 0;
     g_status.score_sum    = SUM_KEY;
+    g_status.pool_used_n = g_status.pool_used_sum = g_status.pool_used_round = 0;
     g_status.score_sig_z = g_status.score_sig_c = 0.0;
     g_status.score_span_n = g_status.score_conc_n = 0;
     focus_reset();
@@ -2809,6 +2810,9 @@ void elotto_task(void *pvParam)
          * — main and bonus pool alike. */
         if (!score_pick_pool(0, pool_main, g_status.pool_main_z)) goto done;
         if (euro && !score_pick_pool(1, pool_euro, g_status.pool_euro_z)) goto done;
+        g_status.pool_used_n     = pool_nm + (euro ? pool_ne : 0);
+        g_status.pool_used_sum   = score_sum_sel();
+        g_status.pool_used_round = round;
         g_status.scoring_pass = 0;
         focus_off();
 

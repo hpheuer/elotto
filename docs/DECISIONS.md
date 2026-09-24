@@ -2132,3 +2132,10 @@ parameter line shows the interval and when the next sweep is due.
 scoring shows the numbers, everything else the items; a click overrides that until the phase
 changes. Outside a running scoring the scoring view is read-only (no Σ selectors: the pool is
 already picked) and titled "scoring done, round n". The Nodes card's health line follows the view.
+
+### D108 — The item table names how its pool was picked (2026-09-24)
+**Operator decision.** Under the item table's title a small line: "pool of round r: n numbers,
+scoring lowest Δn" — pool size (main + bonus), the `?score=` direction and the column whose sum
+picked it (D104). `/status` `pool_used_n`, `pool_used_sum`, `pool_used_round`, set at the pick and
+kept until the next one (unlike `pool_main`/`pool_euro`, which the next scoring replaces live).
+Items of earlier rounds came from their own pools; the line names the latest.

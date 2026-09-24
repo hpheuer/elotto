@@ -839,6 +839,11 @@ typedef struct {
      * scoring, cleared at every round start. score_sig_z / score_sig_c are the
      * last closed scoring pass's own channel σ (the span σ its keys divide by),
      * score_span_n the numbers in that pass — the scoring's health line. */
+    /* How the pool now being measured was picked `[D108]`: its size (main +
+     * bonus), the column its sum was on and the round. Set at the pick, kept
+     * until the next one — unlike pool_main/_euro, which the next scoring
+     * replaces live. 0 before the first pick. */
+    int              pool_used_n, pool_used_sum, pool_used_round;
     volatile int     score_sum;           // ScoreSum picking the pool [D104]; SUM_KEY
                                           // at session start, set by POST /scoresum
     ScoreItem       *score_rows;          // SCORE_ROWS_MAX, PSRAM (internal RAM is the

@@ -363,6 +363,7 @@ static const char HTML[] =
 "<button id='viewBtn' class='btn' style='display:none;float:right;padding:4px 10px;"
 "font-size:.8em;background:#2a4a2a;color:#cfe8cf' onclick='toggleView()'></button>"
 "<h3 id='resTitle' style='color:#6ab0e8;margin-bottom:4px'></h3>"
+"<div id='resSub' style='font-size:.78em;opacity:.75;margin:-2px 0 6px'></div>"
 "<table><thead id='resHead'></thead>"
 "<tbody id='resBody'></tbody></table>"
 "</div>"
@@ -1117,7 +1118,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "sl.innerHTML+='<br>'+s4;}"
 "document.getElementById('resCard').style.display='block';"
 "document.getElementById('nodeCard').style.display='block';"
-"if(SCM){LD=d;fetchScore();showWsig(d);showTrip(d);return;}"
+"if(SCM){LD=d;document.getElementById('resSub').textContent='';fetchScore();showWsig(d);showTrip(d);return;}"
 "if(!d.top||d.top.length===0){"
 "document.getElementById('resTitle').innerHTML='\\uD83C\\uDFC6 Top 10';"
 "document.getElementById('resHead').innerHTML='';"
@@ -1255,7 +1256,14 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "document.getElementById('resTitle').innerHTML="
 "'\\uD83C\\uDFC6 Top '+top.length+' of '+(EX.length||d.comparisons||top.length)"
 "+(isEuro?' \\u2014 Eurojackpot':' \\u2014 6-of-49')+' ('+endTxt+' '+lab[SORTK]+')';"
-"renderRunTable('resHead','resBody',top,isEuro,d,st);}"
+"renderRunTable('resHead','resBody',top,isEuro,d,st);"
+/* How the pool being measured was picked (D108), e.g. "9 numbers, scoring
+   lowest Δn". Items of earlier rounds came from their own pools. */
+"var su={key:'Z*',z:'Z',conc:'Conc',nsd:'\\u0394n',ac:'AC'}[d.pool_used_sum]||'Z*';"
+"var dr=d.score_dir==='low'?'lowest ':d.score_dir==='abs'?'largest |'+su+'|':'highest ';"
+"document.getElementById('resSub').textContent=(d.pool_used_n>0)"
+"?('pool of round '+d.pool_used_round+': '+d.pool_used_n+' numbers, scoring '"
+"+(d.score_dir==='abs'?dr:dr+su)):'';}"
 /* Items and scoring numbers (D103): the same rows, one renderer. `opt` is set
    for the scoring — the Item column becomes the running sum \u03a3 (the number
    stands in Numbers / Bonus), a green # marks a pool member, and a row whose
@@ -1622,6 +1630,7 @@ static esp_err_t status_handler(httpd_req_t *req)
         "\"cal_budget_ms\":%d,\"cal_ms\":%d,\"cal_elapsed_ms\":%d,"
         "\"cal_did_sweep\":%d,\"settle_left_ms\":%d,\"ev_seq\":%lu,"
         "\"cal_interval_ms\":%d,\"cal_due_ms\":%d,"
+        "\"pool_used_n\":%d,\"pool_used_sum\":\"%s\",\"pool_used_round\":%d,"
         "\"loops_done\":%d,\"drift_slope\":%.5f,\"drift_t\":%.2f,"
         "\"off_first\":%.4f,\"off_last\":%.4f,"
         "\"sigma_lo\":%.4f,\"sigma_hi\":%.4f,"
@@ -1683,6 +1692,10 @@ static esp_err_t status_handler(httpd_req_t *req)
         /* Moves when an event is logged; the page then fetches /loops?ev=1. */
         (unsigned long)evlog_seq(),
         g_status.cal_interval_ms, g_status.cal_due_ms,
+        g_status.pool_used_n,
+        SCORE_SUM_NAME[(g_status.pool_used_sum >= 0 && g_status.pool_used_sum < SCORE_SUM_N)
+                       ? g_status.pool_used_sum : 0],
+        g_status.pool_used_round,
         g_status.loops_done, g_status.drift_slope, g_status.drift_t,
         g_status.off_first, g_status.off_last,
         g_status.sigma_lo, g_status.sigma_hi,
