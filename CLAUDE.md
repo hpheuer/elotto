@@ -258,6 +258,8 @@ what remains visible is an effect varying **between items inside a block**.
   figure (Items, Progress, Time/ETA), bottom row session-relative (Round, Total Measured,
   Total Time). ⚠ The bottom row is shown only while a session runs — every session is rounds
   `[D67]`. The scoring has its own round-relative row (Numbers, Progress, Time/ETA) `[D98]`.
+- **A view button over the table** switches items ↔ number scoring whenever both have data;
+  default follows the phase `[D107]`.
 - **One sortable table of ten**: Top-10, item counter + block badge. Columns: `Z*` (key
   in that item's block-σ units `[D68]`), `Z`, `Conc`, `Δn`, `AC`.
   ⚠ **The table is the leading 10 of the ~50 most extreme items by `|Z*|`, sorted by whichever

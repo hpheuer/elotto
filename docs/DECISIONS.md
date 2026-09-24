@@ -2124,3 +2124,11 @@ collect experience with fewer sweeps.
 UI: the health line, node table, link and drift lines moved into their own "Nodes" card, so the
 results title stands directly over its table. `/status` `cal_interval_ms`, `cal_due_ms`; the
 parameter line shows the interval and when the next sweep is due.
+
+### D107 — View switch between number scoring and measurement results (2026-09-24)
+**Operator decision.** A button over the results table switches between the scoring table
+(`/extremes?score=1`) and the item table (`/extremes`). Offered only when both have data
+(`scoring_total` > 0 and at least one measured item). By default the running phase decides —
+scoring shows the numbers, everything else the items; a click overrides that until the phase
+changes. Outside a running scoring the scoring view is read-only (no Σ selectors: the pool is
+already picked) and titled "scoring done, round n". The Nodes card's health line follows the view.
