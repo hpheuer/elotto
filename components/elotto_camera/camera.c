@@ -13,6 +13,8 @@
 #include "esp_timer.h"
 #include "driver/temperature_sensor.h"
 #include "esp_heap_caps.h"
+#include "soc/soc.h"
+#include "soc/cache_reg.h"
 #include "linux/videodev2.h"
 #include "esp_video_device.h"
 #include "esp_video_init.h"
@@ -92,6 +94,46 @@ static uint32_t          s_dump_off;
 static volatile bool     s_dump_req, s_dump_done;
 static uint8_t *s_bufs[CAM_BUF_COUNT];
 static uint32_t s_buf_len[CAM_BUF_COUNT];   // mmap length per buffer, for fail-path munmap
+
+/* ── Cache autoload over the frame buffers `[D95]` ────────────────────────────
+ * The L1 DCache and the L2 cache prefetch the following lines of up to four
+ * address sections on their own. Bench (/camtest, master, 3 runs): fast RAW10
+ * pair 122,8..124,1 ms -> 87,2..88,7 with both levels on; L1 alone 98..100; L2
+ * alone erratic (88..214), so never L2 alone.
+ * ⚠ Armed PER PAIR, over the two buffers of that pair: set once at init, the L2
+ * dropped its ENA on its own (CTRL read 0x...12, bit 1 set) and only the L1 kept
+ * prefetching — live ms_extract 127 -> 119,6 instead of the bench's -30 %.
+ * Coherence with the CSI DMA: the driver invalidates each finished buffer (M2C)
+ * before handing it over, and the sections are exactly the two buffers this task
+ * owns until it queues them back. */
+#define CAM_AUTOLOAD        1
+
+/* /camtest writes the same registers for its bench and restores them after;
+ * the capture task leaves them alone meanwhile. */
+static volatile bool s_al_hold;
+
+static const uint32_t s_al_base[2] = { CACHE_L1_DCACHE_AUTOLOAD_CTRL_REG,
+                                       CACHE_L2_CACHE_AUTOLOAD_CTRL_REG };
+
+static void cam_autoload_arm(const uint8_t *a, const uint8_t *b, uint32_t n)
+{
+    if (!CAM_AUTOLOAD || s_al_hold) return;
+    for (int l = 0; l < 2; l++) {
+        uint32_t ctrl = REG_READ(s_al_base[l]);
+        REG_WRITE(s_al_base[l], ctrl & ~1u);             /* ENA off before the sections move */
+        REG_WRITE(s_al_base[l] + 4,  (uint32_t)a); REG_WRITE(s_al_base[l] + 8,  n);
+        REG_WRITE(s_al_base[l] + 12, (uint32_t)b); REG_WRITE(s_al_base[l] + 16, n);
+        /* ENA | ascending | miss+hit trigger | sections 0,1 | gid kept */
+        REG_WRITE(s_al_base[l], 1u | (2u << 3) | (1u << 8) | (1u << 9) |
+                                (ctrl & (0xFu << 12)));
+    }
+}
+
+static void cam_autoload_off(void)
+{
+    for (int l = 0; l < 2; l++)
+        REG_WRITE(s_al_base[l], REG_READ(s_al_base[l]) & ~1u);
+}
 #if CONFIG_ELOTTO_CAM_XCLK_PIN > 0
 static esp_cam_sensor_xclk_handle_t s_xclk_handle = NULL;
 #endif
@@ -878,6 +920,7 @@ static void camera_task(void *arg)
         }
 
         int64_t t_ext0 = esp_timer_get_time();
+        cam_autoload_arm(s_bufs[first.index], s_bufs[buf.index], s_frame_size);
         diff_and_extract(s_bufs[first.index], s_bufs[buf.index], s_frame_size);
         int64_t t_ext1 = esp_timer_get_time();
 
@@ -1145,6 +1188,7 @@ fail:
     if (s_fd >= 0) {
         int type_off = V4L2_BUF_TYPE_VIDEO_CAPTURE;
         ioctl(s_fd, VIDIOC_STREAMOFF, &type_off);
+        cam_autoload_off();
         for (int i = 0; i < CAM_BUF_COUNT; i++) {
             if (s_bufs[i] && s_bufs[i] != MAP_FAILED)
                 munmap(s_bufs[i], s_buf_len[i]);
@@ -2244,7 +2288,11 @@ esp_err_t camera_selftest_handle(void *httpd_req, bool busy)
     cam_selftest_t t;
     char buf[1200];
     /* THE LIVE FRAME SIZE, not a convenient one. See extract.h. */
-    if (!cam_extract_selftest(&t, s_frame_size)) {
+    s_al_hold = true;                    /* the bench owns the autoload registers */
+    vTaskDelay(pdMS_TO_TICKS(2));        /* let an arm already under way finish */
+    bool ran = cam_extract_selftest(&t, s_frame_size);
+    s_al_hold = false;
+    if (!ran) {
         httpd_resp_set_status(req, "500 Internal Server Error");
         httpd_resp_sendstr(req, "{\"err\":\"no psram for the test buffers\"}");
         return ESP_OK;

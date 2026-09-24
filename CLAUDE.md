@@ -595,15 +595,17 @@ Addresses are informational: the master finds slaves by UDP broadcast.
 
 ### Extraction — where the rate stands
 Idle production is **~7,4 Mbit/s** post-D65 (adjacent-pixel XOR off, 2× words) on an OV5647, and
-**~15 Mbit/s on an IMX219** (1640×1232, `ms_extract` ~126 ms per pair idle, ~128 loaded, a pair
-every ~134 ms against 66 on offer) `[D93]`. On the IMX219 that is also the **loaded** rate: since the
-block reader `[D92]` the consumer outruns production (`waits` > 0), so the RAW10 extractor is the
-session's clock. Its remaining headroom is compute: PSRAM reads both frames of a pair in ~54 ms
-(`/camtest` `ms_pair_read`), the sensor offers a pair every 66 ms.
+**~20 Mbit/s on an IMX219** (1640×1232, `ms_extract` ~89 ms per pair idle and loaded, a pair
+every ~100 ms = 3 frames, against 66 on offer) `[D95]`. On the IMX219 that is also the **loaded** rate:
+since the block reader `[D92]` the consumer outruns production (`waits` > 0), so the RAW10 extractor
+is the session's clock.
+⚠ **The ~89 ms depend on the cache autoload** (hardware prefetch) `[D95]`: `cam_autoload_arm()`
+re-arms L1 and L2 before EVERY pair over that pair's two buffers. Armed once, the L2 switches itself
+off and `ms_extract` falls back to ~120 (4 frames). `/camtest` `al_l2_ctrl` must read ENA (bit 0) set.
 ⚠ **The pair cycle is quantised to whole frames (~33,3 ms)** `[D93]`: the CSI driver overwrites
 its last buffer until a free one is queued, so the second frame of every pair waits for the next
-frame end. A faster extractor pays only when it crosses a frame boundary (4 → 3 frames needs
-`ms_extract` below ~97 ms); in between the saving turns into `ms_wait`.
+frame end. A faster extractor pays only when it crosses a frame boundary (3 → 2 frames needs
+`ms_extract` below ~64 ms); in between the saving turns into `ms_wait`.
 - ⛔ **On an OV5647** nothing done to the extraction path can raise the **idle** rate `[D23]` — that
   sensor is the ceiling. It does not hold for the IMX219. Prove any extractor change with
   `ms_extract` under load, never at idle `[D25]`.

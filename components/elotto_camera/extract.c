@@ -981,9 +981,10 @@ bool cam_extract_selftest(cam_selftest_t *out, uint32_t bytes)
      * The extractor is memory-bound for ~54 of its ~125 ms per pair: the core
      * is in-order and stalls on every line it misses. The L1 DCache and the L2
      * cache can prefetch ("autoload") the following lines of an address section
-     * on their own. Nothing in the live path touches this yet — the question
-     * here is only what it buys on the bench buffers. Nine registers per level
-     * (CTRL, then four ADDR/SIZE pairs), saved and written back exactly. */
+     * on their own. The live path arms it per pair (cam_autoload_arm() in
+     * camera.c) and stays off the registers while this runs; here it is priced
+     * on the bench buffers. Nine registers per level (CTRL, then four ADDR/SIZE
+     * pairs), saved and written back exactly. */
     {
         const uint32_t base[2] = { CACHE_L1_DCACHE_AUTOLOAD_CTRL_REG,
                                    CACHE_L2_CACHE_AUTOLOAD_CTRL_REG };

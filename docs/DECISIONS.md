@@ -1893,7 +1893,7 @@ now has no reader.
 parameters, firmware or the instrument between sessions needs no bookkeeping, because no two
 sessions are ever read together — what must hold is that nothing changes WITHIN a session.
 
-### D95 — Cache autoload (hardware prefetch) for the extractor: experiment built, NOT measured (2026-09-24)
+### D95 — Cache autoload (hardware prefetch) for the extractor: live, armed per pair (2026-09-24)
 **Goal.** Bring `ms_extract` below ~94 ms so a pair costs 3 camera frames instead of 4 (D93 frame
 quantisation: +33 % production). Of today's ~125 ms per pair, ~54 are the in-order core stalling on
 PSRAM misses (`/camtest` `ms_pair_read`), ~43 extraction arithmetic, ~28 per-word statistics.
@@ -1908,10 +1908,36 @@ fast RAW10 extractor with sections over the two bench buffers — `ns_read_al` /
 `ms_pair_r10_fast_al`, each `[L2, L1, both]` — and writes all nine registers back after every run.
 Nothing in the live path is changed.
 
-**Open.** (1) Measure: `/camtest` answers 409 during a session, and the build is not flashed yet.
-(2) If it pays: sections over the four frame buffers (`s_bufs[i]`, `s_buf_len[i]` — exactly four
-sections), set once after `camera_init()`. ⚠ Check stale lines: a prefetch must never run into a
-buffer the CSI DMA is writing; per-buffer sections bound it, but verify the stream (bias, σ,
-autocorrelation, stuck frames) after enabling. Unknown so far: whether section addresses are virtual
-(assumed) and how far ahead autoload runs. (3) If it does not pay: stage frame chunks into internal
-RAM by DMA while the core computes, or split the extraction across both cores.
+**Bench (master, 3 runs of `/camtest`, live path still without autoload).** Registers as found:
+CTRL 0x2 on both levels (ENA off). Fast RAW10 pair `ms_pair_r10_fast` 122,8 / 122,8 / 124,1 ms →
+with autoload **[L2, L1, both] = [92,4 / 94,0 / 213,5, 97,9 / 98,3 / 100,0, 88,7 / 87,2 / 87,9]**.
+Both levels together is stable at −29 %; L1 alone −20 %; L2 alone is erratic (one run 3,4× slower
+on the plain read, another 1,7× slower on the extractor) and is never used alone.
+
+**First live attempt: sections over all four frame buffers, set once after STREAMON.** Live
+`ms_extract` 127 → only 119,6 ms, pair still 4 frames. `/camtest` then read CTRL L1 0x…f11 (ENA on),
+**L2 0x…f12 (ENA cleared, bit 1 set)**: the L2 autoload switches itself off after a while and only
+the L1 kept prefetching. Cause not identified (end of section or the per-frame M2C invalidate by the
+CSI driver are the candidates).
+
+**Adopted: `cam_autoload_arm()` in camera.c re-arms both levels before EVERY pair**, with sections
+0 and 1 over exactly the two buffers of that pair (`s_frame_size` each), gid bits kept. `/camtest`
+sets `s_al_hold` for its bench so the capture task does not overwrite the bench's sections; the
+bench restores what it found. `CAM_AUTOLOAD` 0 turns it off.
+Coherence: the CSI driver invalidates each finished buffer (M2C) before handing it over, and the
+two sections are the buffers this task owns until it queues them back, so a prefetch cannot load a
+line the DMA is still writing.
+
+**Measured live, all four nodes (IMX219, dark).** Idle: `ms_extract` 87,9–89,5 ms, `ms_pair`
+100,4–101,2 (**3 frames**, was 4 at ~134), production 19,7–19,9 Mbit/s (was 14,6–14,8, +34 %).
+Under load (6-of-49, `?run=2`, `?cal=0`, scoring): `ms_extract` 88,0–89,6, production 19,9–20,0,
+consumption 20,3–20,5 with `waits` > 0 (the reader keeps up), `focus_win_ms` 1762 → **1277**, no
+void, flush timeout, stall or stuck frame. Stream on the master after 2001 pairs (4,0·10⁹ bits):
+bias 0,500002 (0,25 SE), `raw_sigma` 1,0009, autocorr 0,0000 at all four lags, `zero_diff` 0,2031
+and `mean_pixel` −0,19 unchanged. `equal` and `r10_equal` true.
+
+**Next quantum.** A pair of 2 frames needs `ms_extract` below ~64 ms; bench "both" is ~60 ms
+without statistics, so the per-word statistics (~28 ms) are what stands in the way.
+
+**Frame spacing** moves again (as in D93): pairs ~100 ms apart instead of ~134. Bits per item and
+their definition are unchanged.
