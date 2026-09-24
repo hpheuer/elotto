@@ -1938,6 +1938,27 @@ and `mean_pixel` −0,19 unchanged. `equal` and `r10_equal` true.
 
 **Next quantum.** A pair of 2 frames needs `ms_extract` below ~64 ms; bench "both" is ~60 ms
 without statistics, so the per-word statistics (~28 ms) are what stands in the way.
+⛔ They stay on in every measuring window (operator, 2026-09-24): the bit autocorrelation inside
+the window is wanted, so "statistics only in the sweep" is not an option.
 
 **Frame spacing** moves again (as in D93): pairs ~100 ms apart instead of ~134. Bits per item and
 their definition are unchanged.
+
+### D96 — Stay on ESP-IDF v6.0.1; no update to v6.0.3 (2026-09-24)
+**Operator decision.** The toolchain stays at v6.0.1.
+
+**Evidence.** The 1581 commits v6.0.1..v6.0.3 were filtered to the components elotto uses (CSI /
+esp_driver_cam, cache and esp_mm, PSRAM and MSPI, P4 hw_support / soc / hal, esp_eth, lwIP,
+esp_http_server, app_update, bootloader_support, FreeRTOS, esp_timer, heap).
+- Measuring path: nothing. The CSI driver only gains an error-path leak fix and a host error event;
+  cache, autoload and `esp_cache_msync` are untouched, so D95 is unaffected.
+- P4 fixes that do not apply here: the Zcmp hardware workaround needs code built with Zcmp, and
+  this build is `-march=rv32imafc_zicsr_zifencei_zaamo_zalrsc_xesploop_xespv2p1` (rev < v3); the
+  MPLL calibration change and the PMP fixes are for P4 v3.
+- What an update would buy: hardening in esp_http_server (use-after-free / double free, buffer
+  underflows, silent drop in `httpd_queue_work`, shutdown semaphore), app_update (out-of-bounds read,
+  rollback-guard gap), lwIP (out-of-order TCP segments). None of it has shown up on this closed LAN.
+
+**Cost it avoids.** New toolchain via EIM and the venv path in `build.ps1`, all three projects
+rebuilt, the managed components (esp_video, the IMX219 driver) re-checked against the new IDF, and
+the D61 core-pinning behaviour re-tested over ~20 session starts (it was intermittent).
