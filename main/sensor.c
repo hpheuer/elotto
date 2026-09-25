@@ -172,7 +172,8 @@ static int segments_for(void)
 
 static int gap_for(void)
 {
-    if (g_status.gap_ms <= 0) return SCORE_GAP_MS;
+    /* /start always resolves gap_ms, and 0 is a legal gap [D111]. */
+    if (g_status.gap_ms < 0) return SCORE_GAP_MS;
     return g_status.gap_ms;
 }
 

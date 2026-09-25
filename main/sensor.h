@@ -97,22 +97,24 @@
  * cycle; measured focus_gap_ms is larger because it also includes slave collect.
  * Segment count is derived from run_s via the segs↔ms cal — wall time can stretch
  * if the camera rate collapses at long windows (that IS the limit). */
-/* ⚠ 0,5..5 s (user, 2026-08-28): floor was 1 s from 2026-08-18; half-second
- * is now legal (~13043 segs / ~2,61 Mbit). Still capped at five — RUN_S_MAX was
+/* ⚠ 0,2..5 s (user, 2026-09-25 [D111]): 0,2 s is ~10435 segs / ~2,3 Mbit, the
+ * window's ~0,52 Mbit first-pair fragment plus about one whole pair. Capped at five — RUN_S_MAX was
  * 15, which after the 08-18 recalibration could not be delivered: 15 s asks for
  * 391304 segments against a wire limit of 200000, and the request came back as
  * a silent 7,7 s window. Capping the input removes that failure mode by
  * construction rather than reporting it.
- * Auto-gap stays ≥ GAP_S_MIN 0,5 (40 % of 0,5 s would be 0,2). */
+ * Auto-gap is 40 % of the window with no floor above GAP_S_MIN 0, and an
+ * explicit ?gap= may be 0: the item boundary is the flush on M, not the gap
+ * [D105], so a short gap never credits one item's bits to the next [D111]. */
 #define RUN_S_DEFAULT            5
 /* Cap on the per-item ring flush (sensor.c onset_settle). A fresh pair costs
  * ~56 ms idle and ~85 ms under load, so the wait is normally well under this;
  * the cap only bounds the damage if the camera has stopped delivering. */
 #define ONSET_SETTLE_MS        700   // two pairs now: one discarded [D105]
 
-#define RUN_S_MIN              0.5
+#define RUN_S_MIN              0.2
 #define RUN_S_MAX                5
-#define GAP_S_MIN              0.5
+#define GAP_S_MIN                0
 #define GAP_S_MAX               10
 /* Live 4-node cal. ⚠ THIS PAIR IS A MEASUREMENT, and it must be re-measured
  * after anything that changes the extraction rate — otherwise the window the

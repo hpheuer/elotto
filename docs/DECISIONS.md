@@ -2179,3 +2179,18 @@ bias at ~bias·2·√n (≈ 14 σ per pair at 5·10⁻³), which varies with the
 the fragment — with the sensor rows it covers. A curve averaged over items would show that
 instrument signature, and removing it by centring per pair index removes any item-constant shape
 with it.
+
+### D111 — Measuring time down to 0,2 s, gap down to 0 (2026-09-25)
+**Operator decision.** `RUN_S_MIN` 0,5 → 0,2 s (form step 0,1), `GAP_S_MIN` 0,5 → 0. The auto-gap
+(40 % of `?run=`) has no floor above that any more: `?run=0,2` → 0,08 s. An explicit `?gap=` may
+be 0..10 s. There is no gap field in the form; the gap follows the measuring time.
+Why the gap may shrink: the item boundary is the flush on `M` (ring and packer dropped, first pair
+after `M` requeued unextracted, D105), not the gap, so no gap length credits one item's frames to
+the next. Measured on the session of 2026-09-25 (`?run=2`, gap 0,8 s): `focus_gap_ms` 818 =
+800 gap + ~18 ms between items; the flush sits inside the window (1365 ms), so the gap is pure
+dark time. `gap_for()` treats 0 as a gap, not as "unset".
+Why 0,2 s: ~10435 segments ≈ 2,3 Mbit = the window's ~0,52 Mbit first-pair fragment plus about
+one whole pair (~2 Mbit on the IMX219), so Conc still finds a pair boundary to split at (D110).
+Untested: whether the higher duty cycle starves extraction. focus.c measured that on the pre-D92
+instrument; since the block reader the consumer outruns production, so it should not — watch
+`ms_extract` and the used Mbit/s on the first such session.

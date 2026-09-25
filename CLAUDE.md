@@ -93,9 +93,9 @@ across rounds a combination can recur — identity is **(round, index)**.
   Compaction keeps at most 100 rows (the ranked extremes) and the next round is appended after
   them, so `?maxruns=` is capped at `UNLIM_RUNS_MAX` 400 = `NUM_RUNS` − 100 and a round is never
   truncated `[D100]`.
-- **Measuring time is a session parameter.** `?run=<s>` is **0,5–5 s, default 5**; out of range
-  answers **400**, no fallback. `?gap=<s>` if present must be 0,5–10 s, else **400**; omitted →
-  40 % of run (floor `GAP_S_MIN` 0,5). `?cal=` 0..`CAL_BUDGET_MAX_MS` (0 = no sweep),
+- **Measuring time is a session parameter.** `?run=<s>` is **0,2–5 s, default 5**; out of range
+  answers **400**, no fallback. `?gap=<s>` if present must be 0–10 s, else **400**; omitted →
+  40 % of run, no floor; `?gap=0` is legal — the flush on `M`, not the gap, separates items `[D111]`. `?cal=` 0..`CAL_BUDGET_MAX_MS` (0 = no sweep),
   `?maxruns=` 10..400 (`UNLIM_RUNS_MAX`); out of range **400**, no fallback `[D79]` `[D100]`. Segment count follows from
   `RUN_SEGS_REF`/`RUN_MS_REF` in `sensor.h`. ⚠ The requested window is
   not the wall time you get — actual is `focus_win_ms`, set by the **slowest** node's bit rate
