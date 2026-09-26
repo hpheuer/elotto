@@ -82,6 +82,11 @@ static uint32_t s_fourcc = 0;       // V4L2 pixel format the driver was set to
 static uint8_t          *s_dump_a, *s_dump_b;
 static uint32_t          s_dump_off;
 static volatile bool     s_dump_req, s_dump_done;
+/* GET /camtest?bitscan=<s> (docs/BITSCAN.md). The capture task feeds every
+ * pair to the accumulator while s_bs_on; s_bs_busy brackets its call, so the
+ * handler can disarm and then wait until the task is out before reading. */
+static cam_bitscan_t     s_bs;
+static volatile bool     s_bs_on, s_bs_busy;
 static uint8_t *s_bufs[CAM_BUF_COUNT];
 static uint32_t s_buf_len[CAM_BUF_COUNT];   // mmap length per buffer, for fail-path munmap
 
@@ -891,6 +896,13 @@ static void camera_task(void *arg)
         int64_t t_ext1 = esp_timer_get_time();
 
         publish_stats();
+
+        s_bs_busy = true;
+        __sync_synchronize();
+        if (s_bs_on)
+            cam_bitscan_pair(&s_bs, s_bufs[first.index], s_bufs[buf.index],
+                             s_frame_size, s_packed_raw10);
+        s_bs_busy = false;
 
         ioctl(s_fd, VIDIOC_QBUF, &first);
         ioctl(s_fd, VIDIOC_QBUF, &buf);
@@ -2077,6 +2089,89 @@ static esp_err_t cam_dump_send(httpd_req_t *req, uint32_t off)
     return httpd_resp_sendstr(req, buf);
 }
 
+/* GET /camtest?bitscan=<s> — arm the per-bit monitor for s seconds (1..120) and
+ * reduce it per bit k of the frame-pair diff, bit 0 included as the baseline.
+ * Same reductions as publish_stats() and the sweep: bias, raw_sigma (3200-bit
+ * mini-runs), runs z conditioned on the bias, lag-1..4 Pearson r and its z
+ * (r·√pairs), plus r0/z0, the same-pixel correlation with bit 0. d_mean/d_sd
+ * are the signed diff in DN. The scan slows the capture task; idle use only. */
+static esp_err_t cam_bitscan_send(httpd_req_t *req, uint32_t sec)
+{
+    if (!camera_is_ready()) {
+        httpd_resp_set_status(req, "409 Conflict");
+        return httpd_resp_sendstr(req, "{\"err\":\"camera not streaming\"}");
+    }
+    if (sec < 1) sec = 1;
+    if (sec > 120) sec = 120;
+
+    s_bs_on = false;
+    __sync_synchronize();
+    while (s_bs_busy) vTaskDelay(pdMS_TO_TICKS(5));
+    memset(&s_bs, 0, sizeof(s_bs));
+    s_bs.nbits = s_packed_raw10 ? 10 : 8;
+    __sync_synchronize();
+    int64_t t0 = esp_timer_get_time();
+    s_bs_on = true;
+    vTaskDelay(pdMS_TO_TICKS(sec * 1000u));
+    s_bs_on = false;
+    __sync_synchronize();
+    while (s_bs_busy) vTaskDelay(pdMS_TO_TICKS(5));
+    double el_s = (esp_timer_get_time() - t0) / 1e6;
+
+    camera_stats_t cs;
+    camera_get_stats(&cs);
+    uint32_t e = 0, g = 0;
+    camera_get_exposure(&e, &g);
+    const cam_bitscan_t *s = &s_bs;
+    double px = (double)s->pixels;
+    double dm = px > 0 ? (double)s->d_sum / px : 0.0;
+    double dsd = px > 1 ? sqrt(((double)s->d_sumsq - px * dm * dm) / (px - 1.0)) : 0.0;
+
+    char buf[640];
+    snprintf(buf, sizeof(buf),
+        "{\"sensor\":\"%s\",\"nbits\":%d,\"exposure\":%lu,\"gain\":%lu,"
+        "\"mean_px\":%.3f,\"sec\":%.1f,\"pairs\":%lu,\"pixels\":%llu,"
+        "\"zero_diff\":%.5f,\"d_mean\":%.4f,\"d_sd\":%.4f,\"bits\":[",
+        s_sensor_name, s->nbits, (unsigned long)e, (unsigned long)g,
+        cs.mean_pixel_level, el_s, (unsigned long)s->pairs,
+        (unsigned long long)s->pixels,
+        px > 0 ? (double)s->zeros / px : 0.0, dm, dsd);
+    httpd_resp_sendstr_chunk(req, buf);
+
+    double n0 = (double)s->words * 32.0;
+    double p0 = n0 > 0 ? (double)s->b[0].ones / n0 : 0.0;
+    for (int k = 0; k < s->nbits; k++) {
+        const cam_bs_bit_t *x = &s->b[k];
+        double n = n0, p = n > 0 ? (double)x->ones / n : 0.0, q = p * (1.0 - p);
+        double sig = 0.0;
+        if (x->mr_n > 1) {
+            double m = (double)x->mr_n, mu = (double)x->mr_sum / m;
+            double ss = (double)x->mr_sumsq - m * mu * mu;
+            if (ss > 0.0) sig = sqrt(ss / (m - 1.0)) / sqrt(CAM_RAW_MINIRUN_BITS * 0.25);
+        }
+        double runs_z = 0.0, sd = 2.0 * sqrt(2.0 * n) * q;
+        if (sd > 0.0) runs_z = ((double)x->trans + 1.0 - (2.0 * n * q + 1.0)) / sd;
+        double r[4], z[4];
+        for (int L = 0; L < 4; L++) {
+            double np = (double)x->ac_pairs[L];
+            r[L] = (np > 0 && q > 0) ? ((double)x->ac_both1[L] / np - p * p) / q : 0.0;
+            z[L] = r[L] * sqrt(np);
+        }
+        double v0 = q * p0 * (1.0 - p0);
+        double r0 = (n > 0 && v0 > 0) ? ((double)x->both0 / n - p * p0) / sqrt(v0) : 0.0;
+        snprintf(buf, sizeof(buf),
+            "%s{\"k\":%d,\"bias\":%.6f,\"sigma\":%.4f,\"runs_z\":%.2f,"
+            "\"ac\":[%.5f,%.5f,%.5f,%.5f],\"ac_z\":[%.2f,%.2f,%.2f,%.2f],"
+            "\"r0\":%.5f,\"z0\":%.1f,\"mr_n\":%lu,\"frozen\":%s,\"bits\":%.0f}",
+            k ? "," : "", k, p, sig, runs_z, r[0], r[1], r[2], r[3],
+            z[0], z[1], z[2], z[3], r0, r0 * sqrt(n), (unsigned long)x->mr_n,
+            (x->ones == 0 || (double)x->ones == n) ? "true" : "false", n);
+        httpd_resp_sendstr_chunk(req, buf);
+    }
+    httpd_resp_sendstr_chunk(req, "]}");
+    return httpd_resp_sendstr_chunk(req, NULL);
+}
+
 esp_err_t camera_selftest_handle(void *httpd_req, bool busy)
 {
     httpd_req_t *req = (httpd_req_t *)httpd_req;
@@ -2089,9 +2184,12 @@ esp_err_t camera_selftest_handle(void *httpd_req, bool busy)
     }
 
     char qry[48], val[16];
-    if (httpd_req_get_url_query_str(req, qry, sizeof(qry)) == ESP_OK &&
-        httpd_query_key_value(qry, "dump", val, sizeof(val)) == ESP_OK)
-        return cam_dump_send(req, (uint32_t)strtoul(val, NULL, 10));
+    if (httpd_req_get_url_query_str(req, qry, sizeof(qry)) == ESP_OK) {
+        if (httpd_query_key_value(qry, "dump", val, sizeof(val)) == ESP_OK)
+            return cam_dump_send(req, (uint32_t)strtoul(val, NULL, 10));
+        if (httpd_query_key_value(qry, "bitscan", val, sizeof(val)) == ESP_OK)
+            return cam_bitscan_send(req, (uint32_t)strtoul(val, NULL, 10));
+    }
 
     /* The probe FIRST, while this task is only sleeping: it has to see an idle
      * CPU, or it measures the same contention the live loop already reports. */

@@ -1013,3 +1013,72 @@ bool cam_extract_selftest(cam_selftest_t *out, uint32_t bytes)
     heap_caps_free(a); heap_caps_free(b); heap_caps_free(wa); heap_caps_free(wb);
     return true;
 }
+
+/* ── BITSCAN (see extract.h) ─────────────────────────────────────────────── */
+static void bs_flush_words(cam_bitscan_t *s, const uint32_t *w)
+{
+    const bool cross = s->words > 0;
+    for (int k = 0; k < s->nbits; k++) {
+        cam_bs_bit_t *x = &s->b[k];
+        uint32_t v = w[k];
+        uint32_t pop = cam_popcount32(v);
+        x->ones     += pop;
+        x->run_ones += pop;
+        x->trans    += cam_popcount32((v ^ (v >> 1)) & 0x7FFFFFFFu)
+                     + (cross ? ((v >> 31) ^ x->prev) : 0u);
+        x->prev      = v & 1u;
+        for (int L = 1; L <= 4; L++) {
+            x->ac_both1[L - 1] += cam_popcount32(v & (v << L));
+            x->ac_pairs[L - 1] += 32u - (uint32_t)L;
+        }
+        x->both0 += cam_popcount32(v & w[0]);
+    }
+    s->words++;
+    if (++s->run_words == CAM_RAW_MINIRUN_BITS / 32u) {
+        for (int k = 0; k < s->nbits; k++) {
+            cam_bs_bit_t *x = &s->b[k];
+            uint64_t o = x->run_ones;
+            x->mr_sum += o; x->mr_sumsq += o * o; x->mr_n++;
+            x->run_ones = 0;
+        }
+        s->run_words = 0;
+    }
+}
+
+void cam_bitscan_pair(cam_bitscan_t *s, const uint8_t *a, const uint8_t *b,
+                      uint32_t n, bool packed_raw10)
+{
+    const int      nb   = s->nbits;
+    const uint32_t mask = (1u << nb) - 1u;
+    const int32_t  half = 1 << (nb - 1);
+    uint32_t w[CAM_BS_BITS_MAX];
+    for (int k = 0; k < nb; k++) w[k] = s->b[k].w;
+    uint32_t wn = s->wn;
+    uint64_t zeros = 0, sq = 0, pix = 0;
+    int64_t  sum = 0;
+
+    uint32_t npx = packed_raw10 ? n / 5 * 4 : n;
+    for (uint32_t i = 0; i < npx; i++) {
+        uint32_t va, vb;
+        if (packed_raw10) {
+            uint32_t g = (i >> 2) * 5, p = i & 3u;
+            va = ((uint32_t)a[g + p] << 2) | ((a[g + 4] >> (2 * p)) & 3u);
+            vb = ((uint32_t)b[g + p] << 2) | ((b[g + 4] >> (2 * p)) & 3u);
+        } else {
+            va = a[i]; vb = b[i];
+        }
+        uint32_t d = (vb - va) & mask;
+        int32_t  sd = (int32_t)d >= half ? (int32_t)d - (int32_t)(mask + 1u) : (int32_t)d;
+        zeros += (d == 0);
+        sum   += sd;
+        sq    += (uint64_t)((int64_t)sd * sd);
+        for (int k = 0; k < nb; k++) w[k] = (w[k] << 1) | ((d >> k) & 1u);
+        if (++wn == 32) { bs_flush_words(s, w); wn = 0; }
+    }
+    pix = npx;
+    for (int k = 0; k < nb; k++) s->b[k].w = w[k];
+    s->wn = wn;
+    s->pixels += pix; s->zeros += zeros;
+    s->d_sum  += sum; s->d_sumsq += sq;
+    s->pairs++;
+}

@@ -121,6 +121,45 @@ void cam_extract_raw10_fast(const uint8_t *a, const uint8_t *b, uint32_t n,
                             uint32_t *out_zeros, uint32_t *out_any, uint32_t *out_psum,
                             cam_raw_t *raw);
 
+/* ── BITSCAN: every bit of the frame-pair diff (docs/BITSCAN.md) ──────────
+ * Diagnostic only: never on the measurement path, never emits a word. Bit k of
+ * the NUMERIC diff d = (b − a) mod 2^nbits, per pixel in stream order.
+ * ⚠ For k ≥ 1 that is not bit k of a^b (borrows) — the diff is rebuilt.
+ * Bit 0 runs in the same accumulator: it is the baseline the other bits are
+ * held against, from the same pixels and the same code.
+ * Per bit the same four numbers the sweep takes from the LSB — bias, mini-run
+ * dispersion (3200-bit runs), runs statistic, lag-1..4 autocorrelation — plus
+ * the same-pixel coincidence with bit 0 (`both0`). Integer-only; the caller
+ * reduces. State persists across calls (a pair boundary may land mid-word). */
+#define CAM_BS_BITS_MAX 10
+
+typedef struct {
+    uint64_t ones, trans;
+    uint64_t ac_both1[4], ac_pairs[4];
+    uint64_t both0;          /* pixels with bit k AND bit 0 set               */
+    uint32_t run_ones, mr_n; /* mini-run being filled (100 words) / completed */
+    uint64_t mr_sum, mr_sumsq;
+    uint32_t w;              /* word being filled, MSB-first                  */
+    uint32_t prev;           /* last bit of the previous word                 */
+} cam_bs_bit_t;
+
+typedef struct {
+    int      nbits;          /* 10 RAW10, 8 RAW8                              */
+    uint32_t wn;             /* bits in the words being filled (0..31)        */
+    uint32_t run_words;      /* words in the mini-run being filled            */
+    uint64_t words;          /* completed words per bit                       */
+    uint64_t pixels, zeros;
+    int64_t  d_sum;          /* signed diff (−2^(n−1)..2^(n−1)−1), DN         */
+    uint64_t d_sumsq;
+    uint32_t pairs;
+    cam_bs_bit_t b[CAM_BS_BITS_MAX];
+} cam_bitscan_t;
+
+/* One frame pair. `packed_raw10` selects the RAW10 layout (n/5 groups),
+ * otherwise RAW8 (one byte per pixel). `s->nbits` must be set by the caller. */
+void cam_bitscan_pair(cam_bitscan_t *s, const uint8_t *a, const uint8_t *b,
+                      uint32_t n, bool packed_raw10);
+
 /* Result of the on-target self-test + micro-benchmark. Times are nanoseconds
  * PER PIXEL, which is the unit that compares against the 2,78 ns budget one
  * cycle costs at 360 MHz. */
