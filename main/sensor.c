@@ -635,18 +635,26 @@ static bool score_pick_pool(int ix, uint8_t *pool, float *out_z)
     if (out_z)
         for (int i = 0; i < A->pool_size; i++)
             out_z[i] = (float)A->acc[ch][pool[i]];
-    /* The Log card names the criterion the pool was picked on. */
-    char nums[64];
+    return true;
+}
+
+/* One Log line for the whole pool: main and bonus numbers are picked on the
+ * same criterion. */
+static void pool_log(const uint8_t *pm, int nm, const uint8_t *pe, int ne)
+{
+    char nums[80];
     int  np = 0;
     nums[0] = '\0';
-    for (int i = 0; i < A->pool_size && np < (int)sizeof(nums) - 4; i++)
-        np += snprintf(nums + np, sizeof(nums) - np, " %d", pool[i]);
-    evlog("Pool %s: %d numbers by %s sum of %s -%s", ix ? "bonus" : "main",
-          A->pool_size,
+    for (int i = 0; i < nm && np < (int)sizeof(nums) - 4; i++)
+        np += snprintf(nums + np, sizeof(nums) - np, " %d", pm[i]);
+    if (ne > 0 && np < (int)sizeof(nums) - 4)
+        np += snprintf(nums + np, sizeof(nums) - np, " +");
+    for (int i = 0; i < ne && np < (int)sizeof(nums) - 4; i++)
+        np += snprintf(nums + np, sizeof(nums) - np, " %d", pe[i]);
+    evlog("Pool by %s sum of %s:%s",
           g_status.score_dir == SCORE_DIR_LOW ? "lowest"
           : g_status.score_dir == SCORE_DIR_ABS ? "largest |.|" : "highest",
-          score_sum_label(ch), nums);
-    return true;
+          score_sum_label(score_sum_sel()), nums);
 }
 
 /* ── The scoring table (ScoreItem) ────────────────────────────────────────
@@ -2945,6 +2953,7 @@ void elotto_task(void *pvParam)
          * — main and bonus pool alike. */
         if (!score_pick_pool(0, pool_main, g_status.pool_main_z)) goto done;
         if (euro && !score_pick_pool(1, pool_euro, g_status.pool_euro_z)) goto done;
+        pool_log(pool_main, pool_nm, pool_euro, euro ? pool_ne : 0);
         g_status.pool_used_n     = pool_nm + (euro ? pool_ne : 0);
         g_status.pool_used_sum   = score_sum_sel();
         g_status.pool_used_round = round;
