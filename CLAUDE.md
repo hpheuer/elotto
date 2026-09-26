@@ -138,8 +138,11 @@ ends** — in Eurojackpot both pools at once. The pool criterion is **freely
 selectable and remembered**: a Σ click writes it to NVS at once (any start, not only
 `confirm=1`), boot loads it (Z\* if none stored), a session start keeps it — it holds for the whole
 session and the following ones until the next click. The start form shows it read-only
-("Pool criterion"). `/status` `score_sum` names it. Direction pre-registered: `?score=high|low|abs`, default `high` — it only
-picks the pool. The UI shows pass k/20 and the current top of the pool with the running sum, and
+("Pool criterion"). `/status` `score_sum` names it. Direction: `?score=high|low|abs`, API default `high` — it only
+picks the pool. Remembered like the column: the form's select writes it to NVS at once
+(`POST /scoresum?dir=`), and during the scoring it also applies to the running session.
+⚠ Δn is never negative, so `abs` on Σ Δn picks the same pool as `high`. The scoring table's
+title names the pool criterion; the column arrows show the table sort. The UI shows pass k/20 and the current top of the pool with the running sum, and
 **everything the pass shows**: a Top-10 of the numbers (Σ, Z\*, Z, Conc, Δn, AC — `GET
 /extremes?score=1`, `RunResult` rows in their own buffer, never in `results[]`; display
 only, the pool is picked from the sum in `score_and_build_pool()`; pool members: `#` in green),

@@ -26,6 +26,7 @@
 static const char *TAG = "ELOTTO";
 
 static void prefs_save(void);
+static void dir_pref_save(int d);
 static void sum_pref_save(int c);
 
 #define ETH_MDC_GPIO      31
@@ -233,7 +234,7 @@ static const char HTML[] =
 "<div class='frow'>"
 "<label for='selScore' title='Pre-registered scoring direction. Picks the pool only, never the "
 "measurement pass.'>Num-Score direction:</label>"
-"<select id='selScore' class='fin' style='padding:4px 6px' onchange='showSumPref()'>"
+"<select id='selScore' class='fin' style='padding:4px 6px' onchange='setDir(this.value)'>"
 "<option value='high' selected>High</option>"
 "<option value='low'>low</option>"
 "<option value='abs'>|Z|</option>"
@@ -522,6 +523,9 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 /* Pool criterion with the form's direction: "highest Σ Δn", "largest |Σ Z*|".
    Called without an argument when the direction select changes. */
 "var sumPrefC='key';"
+/* The direction is remembered at once, like the pool column (Σ click). */
+"function setDir(v){fetch('/scoresum?dir='+v,{method:'POST'}).catch(function(){});"
+"if(LD&&LD.state==='running'&&LD.scoring_pass>0)LD.score_dir=v;showSumPref();}"
 "function showSumPref(c){if(c)sumPrefC=c;var e=document.getElementById('sumPref');"
 "if(!e)return;var t='\\u03a3 '+({key:'Z*',z:'Z',conc:'Conc',nsd:'\\u0394n',ac:'AC',bac:'bAC',tr:'Tr'}[sumPrefC]||'Z*');"
 "var v=(document.getElementById('selScore')||{}).value;"
@@ -1241,9 +1245,9 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "var last=-1;for(var i=0;i<s.length;i++)if(pool[(s[i].euro&&s[i].euro.length?'e':'m')+s[i].run])last=i;"
 "var top=s.slice(0,Math.max(10,last+1));"
 "document.getElementById('resTitle').innerHTML="
-"'\\uD83C\\uDFC6 Top '+top.length+' of '+SC.length+' numbers \\u2014 scoring '"
+"'\\uD83C\\uDFC6 Top '+top.length+' of '+SC.length+' \\u2014 scoring '"
 "+(d.scoring_pass>0?'pass '+d.scoring_pass+'/'+(d.scoring_passes||" EL_STR(SCORE_PASSES) "):'done, round '+(d.round||1))"
-"+' ('+(SSD<0?'highest':'lowest')+' '+lab[SSK]+')';"
+"+' \\u00b7 pool: '+(d.score_dir==='low'?'lowest '+lab.sum:d.score_dir==='abs'?'largest |'+lab.sum+'|':'highest '+lab.sum);"
 "renderRunTable('resHead','resBody',top,isEuro,d,{p:d.pre_w||0},{pool:pool});"
 "if(!top.length)document.getElementById('resBody').innerHTML="
 "'<tr><td colspan=\"12\" style=\"color:#d0b0b0;padding:10px\">No number scored yet.</td></tr>';}"
@@ -2241,6 +2245,27 @@ static esp_err_t focus_handler(httpd_req_t *req)
 static esp_err_t scoresum_handler(httpd_req_t *req)
 {
     if (!origin_ok(req)) return ESP_OK;
+    /* ?dir=high|low|abs — the pool direction, remembered like the column:
+     * written to NVS at once (the start form's value from then on), and
+     * applied to a running session only while its scoring runs. */
+    {
+        char q[32] = "", v[8] = "";
+        if (httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK &&
+            httpd_query_key_value(q, "dir", v, sizeof(v)) == ESP_OK) {
+            int d = v[0] == 'l' ? SCORE_DIR_LOW : v[0] == 'a' ? SCORE_DIR_ABS
+                  : v[0] == 'h' ? SCORE_DIR_HIGH : -1;
+            if (d < 0) {
+                httpd_resp_set_status(req, "400 Bad Request");
+                httpd_resp_sendstr(req, "dir= must be high, low or abs");
+                return ESP_OK;
+            }
+            dir_pref_save(d);
+            bool live = g_status.state == ELOTTO_RUNNING && g_status.scoring_pass > 0;
+            if (live) g_status.score_dir = (ScoreDir)d;
+            httpd_resp_sendstr(req, live ? "saved, applied to this scoring" : "saved");
+            return ESP_OK;
+        }
+    }
     if (g_status.state != ELOTTO_RUNNING || g_status.scoring_pass <= 0) {
         httpd_resp_set_status(req, "409 Conflict");
         httpd_resp_sendstr(req, "no scoring running -- the pool is picked when it ends");
@@ -3150,6 +3175,15 @@ static void sum_pref_save(int c)
     nvs_handle_t h;
     if (nvs_open(PREF_NS, NVS_READWRITE, &h) != ESP_OK) return;
     nvs_set_u8(h, "scoresum", (uint8_t)c);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+static void dir_pref_save(int d)
+{
+    nvs_handle_t h;
+    if (nvs_open(PREF_NS, NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_u8(h, "score", (uint8_t)d);
     nvs_commit(h);
     nvs_close(h);
 }
