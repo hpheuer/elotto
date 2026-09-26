@@ -137,3 +137,21 @@ Entscheidungsschema:
 - ⚠ Nie über Nodes oder Zeiten hinweg vergleichen — nur interner Bit-0-vs-Bit-k-
   Vergleich im selben Lauf ist sauber.
 - ⚠ `r10_equal` nach jeder Änderung — Beweis, dass der Messpfad selbst unberührt ist.
+
+## 8. Ergebnis 2026-09-26 (IMX219 dunkel, exp 1600, gain 232, alle vier Nodes, 2 × 30 s)
+
+22 Paare = 44 Mbit pro Bit und Node und Lauf; beide Läufe reproduzieren. `d_sd` 1,99..2,06 DN,
+`zero_diff` 0,198..0,206.
+
+| Bit | bias | sigma | AC-z lag 1..4 | r0 (mit Bit 0) |
+|---|---|---|---|---|
+| 0 | 0,4999..0,5001 (≈ 0,5 innerhalb 1,5 SE) | 0,993..1,014 | \|z\| < 2 | 1 |
+| 1 | 0,4948..0,4965 (z ≈ −50..−70) | 1,000..1,018, meist 0,5..2 % über Bit 0 | \|z\| < 2,3 | 0,007..0,011 (z ≈ 50..70) |
+| 2 | 0,421..0,429 | 1,59..2,12 | ±47..±141 | 0,145..0,161 |
+| 3..9 | 0,397..0,402, untereinander identisch | 1,94..2,68 | ±85..±273 | 0,20..0,21 |
+
+- Bit 3..9 sind das Vorzeichen von d (|d| < 8 fast immer): bias = (1 − zero_diff)/2.
+  Ihr Vorzeichenmuster (lag 1 −, lag 2 +) zeigt räumliche Struktur im Differenzbild, die das
+  LSB nicht sieht.
+- Bit 2 und höher: unbrauchbar (AC-Gate 0,03 um ein Vielfaches verfehlt).
+- Bit 1: besteht AC und Runs, aber Bias 0,004..0,005 statt ~0 und messbar an Bit 0 gekoppelt.
