@@ -76,8 +76,13 @@ Einhängepunkt: `cam_bitscan_pair(a, b, n)` analog `diff_and_extract()`, rekonst
 pro Pixel die 10-Bit-Differenz und akkumuliert. Aufruf nur wenn `s_bitscan_on` gesetzt
 (wie `s_raw_runs_on`), sonst ein Branch und raus.
 
-Endpoint: `GET /bitscan?sec=<s>` (oder Erweiterung von `/camtest`) → armiert für `s`
-Sekunden, sammelt, dearmiert, liefert JSON:
+Endpoint: **`GET /camtest?bitscan=<s>`** (s = 1..120, jeder Node, 409 in einer Session)
+→ armiert für `s` Sekunden, sammelt, dearmiert, liefert JSON. Implementiert:
+`cam_bitscan_pair()` in `extract.c`, Reduktion in `cam_bitscan_send()` in `camera.c`.
+Pro Bit: `bias`, `sigma` (= raw_sigma), `runs_z`, `ac[4]`/`ac_z[4]` (r und r·√Paare),
+`r0`/`z0` (Korrelation mit Bit 0 am selben Pixel — misst, ob Bit k neue Information
+trägt), `frozen`. Kopf: `d_mean`/`d_sd` (vorzeichenbehaftete Differenz in DN),
+`zero_diff`, `pairs`. Geplant war:
 
 ```
 pro Bit k:  {bias, sigma, runs_z, ac1..4, frozen, bits}
