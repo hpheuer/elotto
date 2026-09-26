@@ -2089,7 +2089,7 @@ The operator picks which sum decides: a Σ marker in each column header of the s
 gold, the Σ column shows that sum. The pool is picked **once, when the whole scoring ends**, on the
 column selected then — in Eurojackpot main and bonus pool together, after the bonus run. The live
 pool (green `#`) is rebuilt after every pass and on every switch. Direction `?score=` applies to
-whichever column. Default Z\* at every session start. A pass without a value (Δn with < 2 nodes, AC
+whichever column. The default is the last Σ choice, stored in NVS (D112). A pass without a value (Δn with < 2 nodes, AC
 not reported, no z) adds nothing to that column; missing Conc counts 0 (results[] convention).
 
 **Lifts** the ⛔ of D70 (Δn never ranks/selects) and D97 (AC never ranks/selects) — for the pool
@@ -2194,3 +2194,12 @@ one whole pair (~2 Mbit on the IMX219), so Conc still finds a pair boundary to s
 Untested: whether the higher duty cycle starves extraction. focus.c measured that on the pre-D92
 instrument; since the block reader the consumer outruns production, so it should not — watch
 `ms_extract` and the used Mbit/s on the first such session.
+
+### D112 — The pool criterion is freely selectable and remembered (2026-09-26)
+**Operator decision.** The Σ choice of D104 is no longer reset to Z\* at every session start. A Σ
+click during the scoring (`POST /scoresum`) sets `g_status.score_sum` and writes it at once to NVS
+(ns `elstart`, key `scoresum`) — for every start, not only a `confirm=1` one, because it is not a
+form field. Boot loads it (Z\* if nothing is stored); a session start keeps it, so it holds for
+every round of the session and for every following session until the next Σ click. The start
+form shows it read-only ("Pool criterion: Σ …") from `/status` `score_sum`. `/scoresum` stays 409
+outside the scoring: the choice is made where its columns are visible.

@@ -2722,7 +2722,8 @@ void elotto_task(void *pvParam)
         g_status.score_rows = heap_caps_calloc(SCORE_ROWS_MAX, sizeof(ScoreItem),
                                                MALLOC_CAP_SPIRAM);
     g_status.score_rows_n = 0;
-    g_status.score_sum    = SUM_KEY;
+    /* score_sum is NOT reset: it holds the stored pool criterion (NVS,
+     * loaded at boot, rewritten by POST /scoresum) for the whole session. */
     memset(g_status.item_ac_z, 0, sizeof(g_status.item_ac_z));
     memset(g_status.score_ac_z, 0, sizeof(g_status.score_ac_z));
     g_status.item_ac_n = g_status.item_ac_block = g_status.score_ac_n = 0;

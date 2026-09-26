@@ -26,6 +26,7 @@
 static const char *TAG = "ELOTTO";
 
 static void prefs_save(void);
+static void sum_pref_save(int c);
 
 #define ETH_MDC_GPIO      31
 #define ETH_MDIO_GPIO     52
@@ -250,6 +251,12 @@ static const char HTML[] =
 "Concordance weight:</label>"
 "<input id='numPreW' class='fin' type='number' min='0' max='1' step='0.05' "
 "value='" EL_STR(ENT_W_PRE_FORM) "'>"
+"</div>"
+"<div class='frow'>"
+"<label title='The column whose running sum picks the pool. Chosen with the Σ marker "
+"in the number-scoring table header; the last choice is stored and used by every "
+"following session.'>Pool criterion:</label>"
+"<span id='sumPref' style='color:#f0c040;font-weight:700'>Σ Z*</span>"
 "</div>"
 "<button class='btn btn-euro' style='width:100%' onclick='doStart(0)'>&#127808; Euro-Lotto</button>"
 "<button class='btn btn-649' style='width:100%' onclick='doStart(1)'>&#127808; 6 of 49</button>"
@@ -520,12 +527,14 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "+'/round ('+fmt(p.s)+' scoring + '+fmtEta(p.m)+' pass)';}"
 "h.innerHTML=rl('Euro '+e.p+'+'+e.q,pe,e.c)+'<br>'"
 "+rl('6of49 '+l.p,pl,l.c);}"
+"function showSumPref(c){var e=document.getElementById('sumPref');"
+"if(e)e.textContent='\\u03a3 '+({key:'Z*',z:'Z',conc:'Conc',nsd:'\\u0394n',ac:'AC'}[c]||'Z*');}"
 "function setMode(mode){"
 "document.getElementById('subtitle').textContent="
 "mode===0?'Eurojackpot • 5 of 50 + 2 bonus numbers':'6 of 49 Lotto';}"
 "window.onload=function(){"
 "fetch('/status').then(function(r){return r.json();}).then(function(d){"
-"evPoll(d);"
+"evPoll(d);showSumPref(d.score_sum);"
 "if(d.state==='running'){"
 "curMode=d.mode==='euro'?0:1;setMode(curMode);"
 "document.getElementById('runsRow').style.display='none';"
@@ -808,7 +817,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "document.getElementById('sScTime').textContent=fmt(ms)+' / '+eta;}"
 "function poll(){"
 "fetch('/status').then(function(r){return r.json();}).then(function(d){"
-"lastSlowMbit=slowMbit(d)||lastSlowMbit;"
+"lastSlowMbit=slowMbit(d)||lastSlowMbit;showSumPref(d.score_sum);"
 "updatePoolBadge(d);updateParamBadge(d);"
 "updateFocusInfo(d);"
 "evPoll(d);"
@@ -1213,7 +1222,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "+'\" style=\"cursor:pointer;font-weight:700;color:'+(on?'#f0c040':'#667')+'\" "
 "onclick=\"event.stopPropagation();setSum(\\''+c+'\\')\">\\u03a3</span>';}"
 "function setSum(c){fetch('/scoresum?c='+c,{method:'POST'}).catch(function(){});"
-"if(LD)LD.score_sum=c;lastSc=0;fetchScore();}"
+"if(LD)LD.score_sum=c;showSumPref(c);lastSc=0;fetchScore();}"
 "function scCmp(a,b){var x=colVal(a,SSK),y=colVal(b,SSK);"
 "if(x===null&&y===null)return 0;if(x===null)return 1;if(y===null)return -1;return SSD<0?y-x:x-y;}"
 "function exArrow(k){var K=SCM?SSK:SORTK,D=SCM?SSD:SORTD;"
@@ -2213,6 +2222,7 @@ static esp_err_t scoresum_handler(httpd_req_t *req)
     for (int c = 0; c < SCORE_SUM_N; c++)
         if (strcmp(val, SCORE_SUM_NAME[c]) == 0) {
             g_status.score_sum = c;
+            sum_pref_save(c);
             httpd_resp_sendstr(req, SCORE_SUM_NAME[c]);
             return ESP_OK;
         }
@@ -3114,6 +3124,30 @@ static void prefs_save(void)
     nvs_close(h);
 }
 
+/* The pool criterion (D104, D112) is not a form field: the Σ click during the
+ * scoring picks it and writes it here at once, whatever started the session.
+ * Loaded into g_status.score_sum at boot; a session start keeps it, so the
+ * last choice is every following session's criterion until changed. */
+static void sum_pref_save(int c)
+{
+    nvs_handle_t h;
+    if (nvs_open(PREF_NS, NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_u8(h, "scoresum", (uint8_t)c);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+static void sum_pref_load(void)
+{
+    nvs_handle_t h;
+    uint8_t c = SUM_KEY;
+    if (nvs_open(PREF_NS, NVS_READONLY, &h) == ESP_OK) {
+        nvs_get_u8(h, "scoresum", &c);
+        nvs_close(h);
+    }
+    g_status.score_sum = c < SCORE_SUM_N ? c : SUM_KEY;
+}
+
 static void prefs_send(httpd_req_t *req)
 {
     nvs_handle_t h;
@@ -3309,6 +3343,7 @@ void app_main(void)
         ret = nvs_flash_init();
     }
     ESP_ERROR_CHECK(ret);
+    sum_pref_load();
 
     /* Before anything that can itself crash: counts boots that never reached a
      * healthy uptime and falls back to the factory updater. This is the only

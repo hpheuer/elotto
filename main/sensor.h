@@ -846,8 +846,9 @@ typedef struct {
      * until the next one — unlike pool_main/_euro, which the next scoring
      * replaces live. 0 before the first pick. */
     int              pool_used_n, pool_used_sum, pool_used_round;
-    volatile int     score_sum;           // ScoreSum picking the pool [D104]; SUM_KEY
-                                          // at session start, set by POST /scoresum
+    volatile int     score_sum;           // ScoreSum picking the pool [D104]; loaded
+                                          // from NVS at boot, kept across sessions,
+                                          // set + stored by POST /scoresum
     ScoreItem       *score_rows;          // SCORE_ROWS_MAX, PSRAM (internal RAM is the
                                           // ring's [D91]); NULL = allocation failed
     int              score_rows_n;

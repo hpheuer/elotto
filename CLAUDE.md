@@ -127,8 +127,12 @@ break for the operator `[D101]`). Each number 1..N is measured **`SCORE_PASSES` 
 full session window in a fresh Fisher–Yates order (never the same number back-to-back `[D5]`).
 After each pass every column — Z\*, Z, Conc, Δn, AC — is added to that number's own running sum;
 the pool is the top by ONE of those sums, the one selected on the page (Σ marker in a column
-header, `POST /scoresum?c=key|z|conc|nsd|ac`, default `key` = Z\*) **when the whole scoring
-ends** — in Eurojackpot both pools at once `[D81]` `[D104]`. `/status` `score_sum` names it. Direction pre-registered: `?score=high|low|abs`, default `high` — it only
+header, `POST /scoresum?c=key|z|conc|nsd|ac`) **when the whole scoring
+ends** — in Eurojackpot both pools at once `[D81]` `[D104]`. The pool criterion is **freely
+selectable and remembered** `[D112]`: a Σ click writes it to NVS at once (any start, not only
+`confirm=1`), boot loads it (Z\* if none stored), a session start keeps it — it holds for the whole
+session and the following ones until the next click. The start form shows it read-only
+("Pool criterion"). `/status` `score_sum` names it. Direction pre-registered: `?score=high|low|abs`, default `high` — it only
 picks the pool. The UI shows pass k/20 and the current top of the pool with the running sum, and
 **everything the pass shows** `[D98]`: a Top-10 of the numbers (Σ, Z\*, Z, Conc, Δn, AC — `GET
 /extremes?score=1`, `RunResult` rows in their own buffer, never in `results[]` `[D103]`; display
@@ -326,6 +330,7 @@ what remains visible is an effect varying **between items inside a block**.
   web UI. A curl start sends no `wpre=` and would otherwise replace the operator's weight with the
   API default. ⚠ It changes **no** API default: an omitted parameter still resolves to the
   compiled-in value. Mode is not remembered — it is which button was pressed, not a field.
+  The pool criterion is remembered too, but by its own rule `[D112]` (written on the Σ click).
 
 ---
 
