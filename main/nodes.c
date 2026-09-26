@@ -710,6 +710,10 @@ bool node_take_z(int k, double *out_z,
         double v = atof(acs + 4);
         if (isfinite(v)) g_status.nodes[k + 1].cam_ac_now = (float)v;
     }
+    /*,cut= — segments in h1 of this window. −1 when absent. */
+    g_status.nodes[k + 1].cam_cut_now = -1;
+    const char *cts = strstr(resp, ",cut=");
+    if (cts) g_status.nodes[k + 1].cam_cut_now = atoi(cts + 5);
 
     /* The halves are the first two fields only if the first comma is followed
      * by a number: a node without halves sends ,wsig= or ,ac= there. */

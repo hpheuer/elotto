@@ -42,6 +42,10 @@ static double z_from_counts(uint64_t ones, uint64_t words)
  * from camera_window_pair_starts(); a boundary is taken at the end of the read
  * block it falls into (<= GCP_READ_SEGS segments late, < 0,2 % of a pair).
  * No pair boundary inside the window -> nseg/2 as before. */
+static int s_last_cut;
+
+int gcp_last_cut(void) { return s_last_cut; }
+
 gcp_result_t gcp_zscore_pre(int nseg, bool (*on_yield)(void), double *out,
                             double *out_h1, double *out_h2)
 {
@@ -118,6 +122,7 @@ gcp_result_t gcp_zscore_pre(int nseg, bool (*on_yield)(void), double *out,
         int d = b_seg[i] - n1; if (d < 0) d = -d;
         if (best < 0 || d < best) { best = d; cut = b_seg[i]; cut_ones = b_ones[i]; }
     }
+    s_last_cut = cut;
     if (out_h1 && cut > 0)
         *out_h1 = z_from_counts(cut_ones, (uint64_t)cut * words_per_seg);
     if (out_h2 && nseg > cut)

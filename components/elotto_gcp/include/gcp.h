@@ -76,6 +76,11 @@ gcp_result_t gcp_zscore_raw(int nseg, bool (*on_yield)(void), double *out);
 gcp_result_t gcp_zscore_pre(int nseg, bool (*on_yield)(void), double *out,
                             double *out_h1, double *out_h2);
 
+/* Segments in h1 of the last gcp_zscore_pre() window (h2 has nseg − cut).
+ * The halves are unequal: the cut sits on a frame-pair boundary. 0 before any
+ * window. One caller per node (the measuring task), read right after it. */
+int gcp_last_cut(void);
+
 #ifdef __cplusplus
 }
 #endif

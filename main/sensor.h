@@ -336,8 +336,17 @@ typedef struct {
      * measured before it, / √m — see series_ac(). NaN until the block closes
      * and for its first item. Never enters Z*. */
     float      acz;
+    /* IN-WINDOW TREND (t): did the level move DURING this item's window?
+     * Per node t = (h2·√N1 − h1·√N2)/√(N1+N2), N1/N2 = segments in the two
+     * halves (unequal: the cut sits on a frame-pair boundary, sent as ,cut=).
+     * A constant bias cancels exactly; unit variance under the null, and
+     * uncorrelated with z. Then the same span treatment as bac: centred per
+     * node on the block, Stouffer, divided by the block's σ of that combine.
+     * + = second half higher than the first. Never enters Z*; its scoring SUM
+     * may pick the pool. NaN until centred, or no node sent ,cut=. */
+    float      trd;
 } RunResult;
-_Static_assert(sizeof(RunResult) == 48, "results[] row is the internal-RAM budget");
+_Static_assert(sizeof(RunResult) == 56, "results[] row is the internal-RAM budget");
 
 // Current-item display: what is on screen right now, for exactly the window
 // its bits are collected in. The session is unattended; the one
@@ -430,6 +439,9 @@ typedef struct {
     /* The same window's autocorrelation,,ac= on the 'Z' reply: the sum
      * of the lag-1..4 z, variance 4 under independence. NAN = not reported. */
     float    cam_ac_now;
+    /* Segments in h1 of that window (,cut=). −1 = not reported: without it
+     * the in-window trend t is not computed for this node. */
+    int      cam_cut_now;
     /* Mean raw pixel level from that same 'D' query (,px=). The one covariate
      * that separates a light change from a sensor change.
      * ⚠ 0 = this node did not report it (firmware older than 2026-08-28), not
@@ -600,7 +612,7 @@ typedef struct {
  * exactly as a results[] row would be — index = the number, the number in
  * nums[0] (euro[0] for a bonus number), round, k, have_mask, z_score (raw),
  * z_ctr / zc_ctr (provisional raw until the pass closes, then centred on the
- * pass span, like an item on its block), node_sd (Δn), acz (AC), bac. What a
+ * pass span, like an item on its block), node_sd (Δn), acz (AC), bac, trd (t). What a
  * results[] row gets from its block instead is carried beside it: `key` (Z*,
  * the pass key in span-σ units — rank_key() would read s_bsig[] of a block
  * this row has none of) and `sum`, the running Σ the pool is picked on.
@@ -614,7 +626,7 @@ typedef struct {
 /* What the pool is picked on: the running sum of ONE column over the
  * closed scoring passes, chosen by the operator on the page (POST /scoresum)
  * and read when the whole scoring ends. SUM_KEY (Z*) is the default. */
-typedef enum { SUM_KEY = 0, SUM_Z, SUM_CONC, SUM_NSD, SUM_AC, SUM_BAC, SCORE_SUM_N } ScoreSum;
+typedef enum { SUM_KEY = 0, SUM_Z, SUM_CONC, SUM_NSD, SUM_AC, SUM_BAC, SUM_TR, SCORE_SUM_N } ScoreSum;
 
 typedef struct {
     RunResult r;

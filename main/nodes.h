@@ -59,9 +59,10 @@ int  nodes_collect(int timeout_ms, bool critical);
  * answer or replied 'E:' (in which case the camera-fault policy has already
  * run and the node is dropped). The z travels through the out-parameter rather
  * than a struct the caller reaches into, so the per-slave table stays private. */
-/* Wire: Z:<z>[,<h1>,<h2>][,wsig=<σ>][,ac=<Σz_L>]. z is the window
- * binomial; h1/h2 are the same bits split at nseg/2. wsig and ac tagged,
- * left on the node (cam_wsig_now / cam_ac_now).
+/* Wire: Z:<z>[,<h1>,<h2>][,wsig=<σ>][,ac=<Σz_L>][,cut=<seg>]. z is the
+ * window binomial; h1/h2 are the same bits split at the frame-pair boundary
+ * nearest nseg/2, cut segments into the window. wsig, ac and cut tagged, left
+ * on the node (cam_wsig_now / cam_ac_now / cam_cut_now).
  * Absent halves ≠ 0. */
 bool node_take_z(int k, double *out_z,
                  bool *out_have_h, double *out_h1, double *out_h2);
