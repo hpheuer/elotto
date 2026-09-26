@@ -4,6 +4,9 @@ sdkconfig.old
 managed_components/
 .claude/settings.local.json
 
+# Build logs (build.ps1 | Tee-Object)
+bld_*.log
+
 # OTA updater build output
 ota_firmware/build/
 ota_firmware/sdkconfig
