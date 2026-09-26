@@ -115,7 +115,7 @@ static const char HTML[] =
 ".prog-wrap{background:rgba(255,255,255,.15);border-radius:20px;height:26px;"
 "margin:18px 0 10px;overflow:hidden}"
 ".prog-fill{background:linear-gradient(90deg,#4a9e4a,#90ee90);height:100%;"
-"border-radius:20px;width:0%;transition:width.6s}"
+"border-radius:20px;width:0%;transition:width .6s}"
 ".stats{display:flex;gap:12px;margin-top:8px}"
 ".stats+.stats{margin-top:6px}"
 ".stat{flex:1;text-align:center;background:rgba(0,0,0,.25);border-radius:8px;padding:6px}"
@@ -294,7 +294,7 @@ static const char HTML[] =
 "<span id='calCheck'></span></div>"
 "<div class='prog-wrap' style='height:18px'>"
 "<div id='pfCal' style='background:linear-gradient(90deg,#a08030,#f0c040);"
-"height:100%;border-radius:20px;width:0%;transition:width.5s'></div></div>"
+"height:100%;border-radius:20px;width:0%;transition:width .5s'></div></div>"
 "<div style='color:#f0c040;font-size:.9em;text-align:center;margin-top:4px'>"
 "<span id='calCount'>-</span></div>"
 "</div>"
@@ -303,7 +303,7 @@ static const char HTML[] =
 "<span id='scoreCheck'></span></div>"
 "<div class='prog-wrap' style='height:18px'>"
 "<div id='pfScore' style='background:linear-gradient(90deg,#206090,#6ab0e8);"
-"height:100%;border-radius:20px;width:0%;transition:width.5s'></div></div>"
+"height:100%;border-radius:20px;width:0%;transition:width .5s'></div></div>"
 "<div style='color:#6ab0e8;font-size:.9em;text-align:center;margin-top:4px'>"
 "<span id='sScoreDone'>0</span> / <span id='sScoreTotal'>-</span> Runs "
 "(<span id='sScoreReps'>-</span>&times; per number"
@@ -2693,7 +2693,7 @@ static esp_err_t pool_handler(httpd_req_t *req)
     if (!origin_ok(req)) return ESP_OK;
     httpd_resp_set_status(req, "400 Bad Request");
     httpd_resp_sendstr(req,
-        "pool confirmation is gone -- sessions are rounds until Abort ");
+        "pool confirmation is gone -- sessions are rounds until Abort");
     return ESP_OK;
 }
 
