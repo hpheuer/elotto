@@ -548,6 +548,13 @@ static void score_acc_begin(int ix, int max_val, int pool_size)
     s_sacc[ix].active    = true;
 }
 
+/* Column name for logs and faults, ASCII like the rest of the Log card. */
+static const char *score_sum_label(int ch)
+{
+    static const char *const L[SCORE_SUM_N] = { "Z*", "Z", "Conc", "dn", "AC", "bAC", "Tr" };
+    return (ch >= 0 && ch < SCORE_SUM_N) ? L[ch] : "?";
+}
+
 static int score_sum_sel(void)
 {
     int c = g_status.score_sum;
@@ -612,10 +619,7 @@ static bool score_pick_pool(int ix, uint8_t *pool, float *out_z)
         if (b == 0) {
             snprintf(g_status.fault, sizeof(g_status.fault),
                      "scoring: only %d of %d candidates carry a %s sum "
-                     "— session aborted", i, A->pool_size,
-                     ch == SUM_KEY ? "Z*" : ch == SUM_Z ? "Z" : ch == SUM_CONC ? "Conc"
-                     : ch == SUM_NSD ? "dn" : ch == SUM_AC ? "AC"
-                     : ch == SUM_BAC ? "bAC" : "t");
+                     "— session aborted", i, A->pool_size, score_sum_label(ch));
             printf("pass: %s\n", g_status.fault);
             g_status.abort_requested = true;
             return false;
@@ -631,6 +635,17 @@ static bool score_pick_pool(int ix, uint8_t *pool, float *out_z)
     if (out_z)
         for (int i = 0; i < A->pool_size; i++)
             out_z[i] = (float)A->acc[ch][pool[i]];
+    /* The Log card names the criterion the pool was picked on. */
+    char nums[64];
+    int  np = 0;
+    nums[0] = ' ';
+    for (int i = 0; i < A->pool_size && np < (int)sizeof(nums) - 4; i++)
+        np += snprintf(nums + np, sizeof(nums) - np, " %d", pool[i]);
+    evlog("Pool %s: %d numbers by %s sum of %s -%s", ix ? "bonus" : "main",
+          A->pool_size,
+          g_status.score_dir == SCORE_DIR_LOW ? "lowest"
+          : g_status.score_dir == SCORE_DIR_ABS ? "largest |.|" : "highest",
+          score_sum_label(ch), nums);
     return true;
 }
 
