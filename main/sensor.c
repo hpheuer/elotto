@@ -638,7 +638,7 @@ static bool score_pick_pool(int ix, uint8_t *pool, float *out_z)
     /* The Log card names the criterion the pool was picked on. */
     char nums[64];
     int  np = 0;
-    nums[0] = ' ';
+    nums[0] = '\0';
     for (int i = 0; i < A->pool_size && np < (int)sizeof(nums) - 4; i++)
         np += snprintf(nums + np, sizeof(nums) - np, " %d", pool[i]);
     evlog("Pool %s: %d numbers by %s sum of %s -%s", ix ? "bonus" : "main",
