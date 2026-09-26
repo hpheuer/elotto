@@ -263,7 +263,7 @@ static const char HTML[] =
 // margin-bottom, not a margin on what follows: several different things can sit
 // under these buttons (loop badge, progress, message) and each would otherwise
 // need its own spacing rule. Set here, it applies to whichever one appears.
-// JS only ever writes.style.display, so the margin survives show/hide.
+// JS only ever writes .style.display, so the margin survives show/hide.
 "<div class='btns' id='runBtns' style='display:none;margin-bottom:16px'>"
 // Pause holds BETWEEN runs (never inside one). Paused time is excluded from
 // elapsed_ms, so a break does not inflate the session clock.
@@ -1523,17 +1523,17 @@ static int emit_row(char *buf, int cap, const RunResult *r, double key,
     nums[0] = eu[0] = '\0';
     for (int m = 0; m < 6; m++)
         if (r->nums[m])
-            pn += snprintf(nums + pn, sizeof(nums) - pn, "%s%d", pn ? ",": "", r->nums[m]);
+            pn += snprintf(nums + pn, sizeof(nums) - pn, "%s%d", pn ? "," : "", r->nums[m]);
     for (int m = 0; m < 2; m++)
         if (r->euro[m])
-            pe += snprintf(eu + pe, sizeof(eu) - pe, "%s%d", pe ? ",": "", r->euro[m]);
+            pe += snprintf(eu + pe, sizeof(eu) - pe, "%s%d", pe ? "," : "", r->euro[m]);
 
     return snprintf(buf, cap,
         "{\"run\":%d,\"round\":%d,\"z\":%.4f,\"z_ctr\":%.4f,"
         "\"zc\":%.3f,\"key\":%s,\"k\":%d,\"nsd\":%s,\"ac\":%s,"
         "\"nums\":[%s],\"euro\":[%s]%s}",
         r->index, (int)r->round, r->z_score, (double)r->z_ctr,
-        (double)r->zc_ctr, ks, (int)r->k, nsd, ac, nums, eu, tail ? tail: "");
+        (double)r->zc_ctr, ks, (int)r->k, nsd, ac, nums, eu, tail ? tail : "");
 }
 
 static int emit_run(char *buf, int cap, const RunResult *r, bool euro)
@@ -1562,7 +1562,7 @@ static int buf_room(int pos, size_t cap)
  * saturates instead of overrunning. */
 static int buf_advance(size_t cap, int *pos, int n)
 {
-    if (!pos || n <= 0) return pos ? *pos: 0;
+    if (!pos || n <= 0) return pos ? *pos : 0;
     if (*pos < 0) *pos = 0;
     if ((size_t)*pos + (size_t)n > cap - 1) *pos = (int)(cap - 1);
     else *pos += n;
@@ -1572,7 +1572,7 @@ static int buf_advance(size_t cap, int *pos, int n)
 /* vsnprintf into a fixed buffer at *pos, clamped to cap-1. Never writes past
  * the buffer; on truncation the append is silently dropped (the alternative —
  * half a JSON value — is worse), and the document simply ends short. */
-static int buf_append(char *buf, size_t cap, int *pos, const char *fmt,...)
+static int buf_append(char *buf, size_t cap, int *pos, const char *fmt, ...)
 {
     int room = buf_room(*pos, cap);
     if (room <= 1) return *pos;   /* no room: drop the write entirely */
@@ -1601,19 +1601,19 @@ static esp_err_t status_handler(httpd_req_t *req)
     static char buf[8192];
     int  pos = 0;
     const char *state_str =
-        g_status.state == ELOTTO_RUNNING ? "running":
-        g_status.state == ELOTTO_DONE    ? "done":
-        g_status.state == ELOTTO_ABORTED ? "aborted": "idle";
+        g_status.state == ELOTTO_RUNNING ? "running" :
+        g_status.state == ELOTTO_DONE    ? "done"    :
+        g_status.state == ELOTTO_ABORTED ? "aborted" : "idle";
     const char *mode_str =
-        g_status.mode == MODE_EUROJACKPOT ? "euro": "649";
+        g_status.mode == MODE_EUROJACKPOT ? "euro" : "649";
 
     const char *phase_str =
-        g_status.phase == PHASE_SCORING      ? "scoring":
-        g_status.phase == PHASE_CALIBRATE    ? "calibrating":
+        g_status.phase == PHASE_SCORING      ? "scoring"     :
+        g_status.phase == PHASE_CALIBRATE    ? "calibrating" :
                                                "measuring";
     const char *score_str =
-        g_status.score_dir == SCORE_DIR_LOW ? "low":
-        g_status.score_dir == SCORE_DIR_ABS ? "abs": "high";
+        g_status.score_dir == SCORE_DIR_LOW ? "low" :
+        g_status.score_dir == SCORE_DIR_ABS ? "abs" : "high";
     pos = buf_append(buf, sizeof(buf), &pos,
         "{\"state\":\"%s\",\"mode\":\"%s\",\"phase\":\"%s\","
         "\"slave\":%s,"
@@ -1670,9 +1670,9 @@ static esp_err_t status_handler(httpd_req_t *req)
         "\"round_start_ms\":%lu,"
         "\"pool_need_main\":%d,\"pool_need_euro\":%d,",
         state_str, mode_str, phase_str,
-        g_status.slave_connected ? "true": "false",
+        g_status.slave_connected ? "true" : "false",
         camera_sensor_name(),
-        g_status.noise_stalled ? "true": "false", g_status.fault,
+        g_status.noise_stalled ? "true" : "false", g_status.fault,
         g_status.comparisons,
         g_status.pass_mean, g_status.pass_sigma, g_status.pass_chi2,
         g_status.pass_stouffer, g_status.pass_n_valid, g_status.pass_n_void,
@@ -1682,7 +1682,7 @@ static esp_err_t status_handler(httpd_req_t *req)
         g_status.pre_n,
         score_str,
         SCORE_SUM_NAME[(g_status.score_sum >= 0 && g_status.score_sum < SCORE_SUM_N)
-                       ? g_status.score_sum: 0],
+                       ? g_status.score_sum : 0],
         g_status.loop_sigma,
         g_status.pair_r_max, g_status.pair_n,
         g_status.pair_r_i, g_status.pair_r_j, g_status.pair_count,
@@ -1690,15 +1690,15 @@ static esp_err_t status_handler(httpd_req_t *req)
         (unsigned long)g_status.net_retries, (unsigned long)g_status.net_lost,
         (unsigned long)g_status.net_stale,
         (long long)(esp_timer_get_time() / 1000),
-        g_status.eth_up ? "true": "false",
+        g_status.eth_up ? "true" : "false",
         (unsigned long)g_status.eth_downs,
         (unsigned long)g_status.eth_lost_ips,
         (long long)g_status.eth_last_down_ms,
         (long long)g_status.eth_last_up_ms,
         g_status.drop_node, (long long)g_status.drop_uptime_ms,
-        g_status.drop_eth_up ? "true": "false",
+        g_status.drop_eth_up ? "true" : "false",
         (unsigned long)g_status.drop_eth_downs,
-        g_status.paused ? "true": "false", (long long)g_status.paused_ms,
+        g_status.paused ? "true" : "false", (long long)g_status.paused_ms,
         g_status.focus_win_ms, g_status.focus_gap_ms,
         g_status.run_target_ms / 1000.0, g_status.gap_ms / 1000.0,
         g_status.run_segments,
@@ -1706,17 +1706,17 @@ static esp_err_t status_handler(httpd_req_t *req)
         /* Live sweep progress, 0 when none is in flight. cal_ms is only written
          * when a sweep ENDS, so it cannot drive a bar while one runs. */
         g_status.cal_start_us
-            ? (int)((esp_timer_get_time() - g_status.cal_start_us) / 1000): 0,
-        g_status.cal_did_sweep ? 1: 0,
+            ? (int)((esp_timer_get_time() - g_status.cal_start_us) / 1000) : 0,
+        g_status.cal_did_sweep ? 1 : 0,
         /* The post-sweep settle pause, counting down; 0 when none runs. */
         g_status.settle_end_us > esp_timer_get_time()
-            ? (int)((g_status.settle_end_us - esp_timer_get_time()) / 1000): 0,
+            ? (int)((g_status.settle_end_us - esp_timer_get_time()) / 1000) : 0,
         /* Moves when an event is logged; the page then fetches /loops?ev=1. */
         (unsigned long)evlog_seq(),
         g_status.cal_interval_ms, g_status.cal_due_ms,
         g_status.pool_used_n,
         SCORE_SUM_NAME[(g_status.pool_used_sum >= 0 && g_status.pool_used_sum < SCORE_SUM_N)
-                       ? g_status.pool_used_sum: 0],
+                       ? g_status.pool_used_sum : 0],
         g_status.pool_used_round,
         (double)g_status.item_ac_z[0], (double)g_status.item_ac_z[1],
         (double)g_status.item_ac_z[2], (double)g_status.item_ac_z[3],
@@ -1736,13 +1736,13 @@ static esp_err_t status_handler(httpd_req_t *req)
          * latter is the rows still held and would step backwards. */
         g_status.items_done, g_status.runs_total,
         (long long)g_status.elapsed_ms, g_status.compacted,
-        g_status.unlimited ? "true": "false", g_status.runs_cap,
+        g_status.unlimited ? "true" : "false", g_status.runs_cap,
         g_status.round, g_status.round_base,
         /* round_ITEM_base, not round_base: the latter is an index into
          * results[] and compaction moves the two apart, which read as
          * "item 16184 / 378" on the page. */
         g_status.items_done > g_status.round_item_base
-            ? g_status.items_done - g_status.round_item_base: 0,
+            ? g_status.items_done - g_status.round_item_base : 0,
         g_status.round_total,
         (unsigned long)g_status.round_start_ms,
         g_status.pool_need_main, g_status.pool_need_euro);
@@ -1759,12 +1759,12 @@ static esp_err_t status_handler(httpd_req_t *req)
         buf_append(buf, sizeof(buf), &pos, "\"pool_main\":[");
         for (int i = 0; i < g_status.pool_n_main; i++)
             buf_append(buf, sizeof(buf), &pos, "%s{\"n\":%d,\"z\":%.2f}",
-                       i ? ",": "", g_status.pool_main[i],
+                       i ? "," : "", g_status.pool_main[i],
                        (double)g_status.pool_main_z[i]);
         buf_append(buf, sizeof(buf), &pos, "],\"pool_euro\":[");
         for (int i = 0; i < g_status.pool_n_euro; i++)
             buf_append(buf, sizeof(buf), &pos, "%s{\"n\":%d,\"z\":%.2f}",
-                       i ? ",": "", g_status.pool_euro[i],
+                       i ? "," : "", g_status.pool_euro[i],
                        (double)g_status.pool_euro_z[i]);
         buf_append(buf, sizeof(buf), &pos, "],");
     }
@@ -1789,7 +1789,7 @@ static esp_err_t status_handler(httpd_req_t *req)
          * the SLAVES. Its temperature comes from its own camera stats, or the
          * master would forever read null while happily reporting 48 °C in
          * /diagjson. */
-        double dt = i ? (double)N->die_temp_c: (double)st_cam.die_temp_c;
+        double dt = i ? (double)N->die_temp_c : (double)st_cam.die_temp_c;
         char dt_txt[16];
         if (isfinite(dt)) snprintf(dt_txt, sizeof(dt_txt), "%.2f", dt);
         else              snprintf(dt_txt, sizeof(dt_txt), "null");
@@ -1800,15 +1800,15 @@ static esp_err_t status_handler(httpd_req_t *req)
             "\"cam_fault\":%d,\"reboots\":%lu,\"die_temp\":%s,"
             "\"cam_exp\":%lu,\"cam_gain\":%d,\"cam_cal\":%d,"
             "\"cam_bias\":%.6f,\"cam_cal_mbit\":%.3f,\"cam_rsig\":%.4f}",
-            i ? ",": "", i, i ? N->ip: "self", N->ok ? "true": "false",
-            N->soft_down ? "true": "false",
+            i ? "," : "", i, i ? N->ip : "self", N->ok ? "true" : "false",
+            N->soft_down ? "true" : "false",
             N->z_mean, (unsigned long)N->z_n, N->sigma,
             (unsigned long)N->lost, N->cam_mbit, N->cam_cons_mbit,
             (unsigned long)N->cam_stalls,
             (int)N->cam_fault, (unsigned long)N->reboots, dt_txt,
             (unsigned long)N->cam_exp, (int)N->cam_gain,
             (int)N->cam_cal_ok, N->cam_bias, N->cam_cal_mbit,
-            i ? N->cam_raw_sigma: (float)st_cam.raw_sigma);
+            i ? N->cam_raw_sigma : (float)st_cam.raw_sigma);
     }
     buf_append(buf, sizeof(buf), &pos, "],");
 
@@ -1821,7 +1821,7 @@ static esp_err_t status_handler(httpd_req_t *req)
         for (int j = i + 1; j < g_status.node_count; j++) {
             buf_append(buf, sizeof(buf), &pos,
                 "%s{\"i\":%d,\"j\":%d,\"r\":%.4f}",
-                first_pair ? "": ",", i, j, g_status.pair_r[i][j]);
+                first_pair ? "" : ",", i, j, g_status.pair_r[i][j]);
             first_pair = false;
         }
     buf_append(buf, sizeof(buf), &pos, "],");
@@ -1861,24 +1861,24 @@ static esp_err_t status_handler(httpd_req_t *req)
         buf_append(buf, sizeof(buf), &pos,
             "%s{\"block\":%d,\"node\":%d,\"sigma\":%.3f,\"mean\":%.3f,"
             "\"t_ms\":%lld,\"items\":[",
-            i ? ",": "", (int)t->block, (int)t->node, t->sigma, t->mean,
+            i ? "," : "", (int)t->block, (int)t->node, t->sigma, t->mean,
             (long long)t->t_ms);
         for (int k = 0; k < t->n; k++) {
             const TripItem *e = &t->it[k];
             buf_append(buf, sizeof(buf), &pos,
                 "%s{\"round\":%d,\"index\":%d,\"z\":%.3f,\"dev\":%.2f,\"nums\":[",
-                k ? ",": "", (int)e->round, (int)e->index, e->z, e->dev);
+                k ? "," : "", (int)e->round, (int)e->index, e->z, e->dev);
             bool g1 = true;
             for (int m = 0; m < 6; m++) {
                 if (!e->nums[m]) continue;
-                buf_append(buf, sizeof(buf), &pos, "%s%d", g1 ? "": ",", (int)e->nums[m]);
+                buf_append(buf, sizeof(buf), &pos, "%s%d", g1 ? "" : ",", (int)e->nums[m]);
                 g1 = false;
             }
             buf_append(buf, sizeof(buf), &pos, "],\"euro\":[");
             bool g2 = true;
             for (int m = 0; m < 2; m++) {
                 if (!e->euro[m]) continue;
-                buf_append(buf, sizeof(buf), &pos, "%s%d", g2 ? "": ",", (int)e->euro[m]);
+                buf_append(buf, sizeof(buf), &pos, "%s%d", g2 ? "" : ",", (int)e->euro[m]);
                 g2 = false;
             }
             buf_append(buf, sizeof(buf), &pos, "]}");
@@ -1899,19 +1899,19 @@ static esp_err_t status_handler(httpd_req_t *req)
         buf_append(buf, sizeof(buf), &pos,
             "%s{\"round\":%d,\"index\":%d,\"spass\":%d,\"node\":%d,\"counted\":%d,"
             "\"prev\":%.4f,\"now\":%.4f,\"jump\":%.4f,\"nums\":[",
-            i ? ",": "", (int)e->round, (int)e->index, (int)e->spass, (int)e->node,
+            i ? "," : "", (int)e->round, (int)e->index, (int)e->spass, (int)e->node,
             (int)e->counted, e->prev, e->now, e->jump);
         bool f1 = true;
         for (int m = 0; m < 6; m++) {
             if (!e->nums[m]) continue;
-            buf_append(buf, sizeof(buf), &pos, "%s%d", f1 ? "": ",", (int)e->nums[m]);
+            buf_append(buf, sizeof(buf), &pos, "%s%d", f1 ? "" : ",", (int)e->nums[m]);
             f1 = false;
         }
         buf_append(buf, sizeof(buf), &pos, "],\"euro\":[");
         bool f2 = true;
         for (int m = 0; m < 2; m++) {
             if (!e->euro[m]) continue;
-            buf_append(buf, sizeof(buf), &pos, "%s%d", f2 ? "": ",", (int)e->euro[m]);
+            buf_append(buf, sizeof(buf), &pos, "%s%d", f2 ? "" : ",", (int)e->euro[m]);
             f2 = false;
         }
         buf_append(buf, sizeof(buf), &pos, "]}");
@@ -1950,7 +1950,7 @@ static esp_err_t evlog_send(httpd_req_t *req)
     /* PSRAM. httpd serialises handlers, so one shared buffer. */
     static EvEntry *ev;
     if (!ev) ev = heap_caps_malloc(EVLOG_N * sizeof(EvEntry), MALLOC_CAP_SPIRAM);
-    int n = ev ? evlog_copy(ev, EVLOG_N): 0;
+    int n = ev ? evlog_copy(ev, EVLOG_N) : 0;
     char buf[EVLOG_TXT + 64];
     int len = snprintf(buf, sizeof(buf), "{\"ev_seq\":%lu,\"ev\":[",
                        (unsigned long)evlog_seq());
@@ -1959,7 +1959,7 @@ static esp_err_t evlog_send(httpd_req_t *req)
         for (char *c = ev[i].txt; *c; c++)          /* JSON-safe: no escapes needed */
             if (*c == '"' || *c == '\\' || (unsigned char)*c < 0x20) *c = '\'';
         len = snprintf(buf, sizeof(buf), "%s{\"seq\":%lu,\"t_ms\":%lu,\"txt\":\"%s\"}",
-                       i ? ",": "", (unsigned long)ev[i].seq,
+                       i ? "," : "", (unsigned long)ev[i].seq,
                        (unsigned long)ev[i].t_ms, ev[i].txt);
         send_chunk(req, buf, len, sizeof(buf));
     }
@@ -1979,7 +1979,7 @@ static esp_err_t loops_handler(httpd_req_t *req)
         httpd_query_key_value(qry, "ev", val, sizeof(val)) == ESP_OK && val[0] == '1')
         return evlog_send(req);
 
-    int n = g_status.loop_hist ? g_status.loop_hist_n: 0;
+    int n = g_status.loop_hist ? g_status.loop_hist_n : 0;
     if (n > LOOP_HIST) n = LOOP_HIST;
     int len = snprintf(buf, sizeof(buf),
         "{\"loops_done\":%d,\"stored\":%d,\"cap\":%d,"
@@ -1992,7 +1992,7 @@ static esp_err_t loops_handler(httpd_req_t *req)
 
     for (int i = 0; i < n; i++) {
         const LoopStat *L = &g_status.loop_hist[i];
-        int nn = L->nodes ? L->nodes: 1;
+        int nn = L->nodes ? L->nodes : 1;
         if (nn > MAX_NODES) nn = MAX_NODES;
         /* clear_sig / quar / the per-node soft flag below are the block's own
          * exclusion verdict. Without them a finished session cannot say when an
@@ -2004,7 +2004,7 @@ static esp_err_t loops_handler(httpd_req_t *req)
             "\"cal_ms\":%d,"
             "\"win_ms\":%.1f,\"gap_ms\":%.1f,\"clear_sig\":%.3f,\"quar\":%d,"
             "\"nodes\":%d,\"n\":[",
-            i ? ",": "", i + 1, (unsigned long)L->t_s,
+            i ? "," : "", i + 1, (unsigned long)L->t_s,
             L->mean_n[0], L->mean, L->sigma, (int)L->cal_ms,
             L->win_ms, L->gap_ms, L->clear_sig, (int)L->quarantined, nn);
         send_chunk(req, buf, len, sizeof(buf));
@@ -2022,7 +2022,7 @@ static esp_err_t loops_handler(httpd_req_t *req)
                 "\"cam_exp\":%lu,\"cam_gain\":%d,\"cam_cal\":%d,"
                 "\"cam_bias\":%.6f,\"cam_sig\":%.4f,\"cam_rsig\":%.4f,\"cam_px\":%.2f,"
                 "\"soft\":%d,\"trip\":%d,\"mflag\":%d,\"die_temp\":%s}",
-                k ? ",": "", L->mean_n[k], L->sig_n[k], L->cam_mbit[k],
+                k ? "," : "", L->mean_n[k], L->sig_n[k], L->cam_mbit[k],
                 (unsigned long)L->cam_stalls[k], (unsigned long)L->cam_exp[k],
                 (int)L->cam_gain[k], (int)L->cam_cal_ok[k],
                 L->cam_bias[k], L->cam_sig[k], L->cam_rsig[k], L->cam_px[k],
@@ -2068,7 +2068,7 @@ static esp_err_t extremes_handler(httpd_req_t *req)
     if (httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK &&
         httpd_query_key_value(q, "score", v, sizeof(v)) == ESP_OK && v[0] == '1') {
         const ScoreItem *R = g_status.score_rows;
-        int nr = R ? g_status.score_rows_n: 0;
+        int nr = R ? g_status.score_rows_n : 0;
         char sb[448];
         int sl = snprintf(sb, sizeof(sb), "{\"n\":%d,\"pass\":%d,\"extremes\":[",
                           nr, g_status.scoring_pass);
@@ -2078,7 +2078,7 @@ static esp_err_t extremes_handler(httpd_req_t *req)
             const ScoreItem *s = &R[i];
             if (s->r.k == 0 && s->passes == 0) continue;   /* not measured yet */
             int  c = (g_status.score_sum >= 0 && g_status.score_sum < SCORE_SUM_N)
-                     ? g_status.score_sum: 0;
+                     ? g_status.score_sum : 0;
             char tail[128];
             snprintf(tail, sizeof(tail),
                      ",\"sum\":%.4f,\"sum_n\":%d,\"passes\":%d,"
@@ -2096,7 +2096,7 @@ static esp_err_t extremes_handler(httpd_req_t *req)
         return ESP_OK;
     }
 
-    int n = ex ? results_extremes(ex, EXTREMES_MAX): 0;
+    int n = ex ? results_extremes(ex, EXTREMES_MAX) : 0;
     bool euro = (g_status.mode == MODE_EUROJACKPOT);
 
     char buf[256];
@@ -2158,12 +2158,12 @@ static esp_err_t focus_handler(httpd_req_t *req)
     int  pos = 0;
     buf_append(buf, sizeof(buf), &pos,
         "{\"seq\":%lu,\"on\":%d,\"p\":%d,\"k\":%d,\"n\":[",
-        (unsigned long)f.seq, f.active ? 1: 0, g_status.paused ? 1: 0, f.kind);
+        (unsigned long)f.seq, f.active ? 1 : 0, g_status.paused ? 1 : 0, f.kind);
     for (int i = 0; i < f.n && i < 6; i++)
-        buf_append(buf, sizeof(buf), &pos, "%s%d", i ? ",": "", f.nums[i]);
+        buf_append(buf, sizeof(buf), &pos, "%s%d", i ? "," : "", f.nums[i]);
     buf_append(buf, sizeof(buf), &pos, "],\"e\":[");
     for (int i = 0; i < f.ne && i < 2; i++)
-        buf_append(buf, sizeof(buf), &pos, "%s%d", i ? ",": "", f.euro[i]);
+        buf_append(buf, sizeof(buf), &pos, "%s%d", i ? "," : "", f.euro[i]);
     buf_append(buf, sizeof(buf), &pos, "]}");
 
     httpd_resp_set_type(req, "application/json");
@@ -2225,7 +2225,7 @@ static esp_err_t pause_handler(httpd_req_t *req)
         httpd_query_key_value(qry, "on", val, sizeof(val)) == ESP_OK)
         on = (val[0] == '1');
     g_status.paused = on;
-    httpd_resp_sendstr(req, on ? "paused": "running");
+    httpd_resp_sendstr(req, on ? "paused" : "running");
     return ESP_OK;
 }
 
@@ -2285,7 +2285,7 @@ typedef struct {
 static bool start_parse_mode(const char *val, StartReq *r, httpd_req_t *req)
 {
     (void)req;
-    r->mode = (val[0] == '1') ? MODE_LOTTO_649: MODE_EUROJACKPOT;
+    r->mode = (val[0] == '1') ? MODE_LOTTO_649 : MODE_EUROJACKPOT;
     return true;
 }
 static bool start_parse_run(const char *val, StartReq *r, httpd_req_t *req)
@@ -2453,7 +2453,7 @@ _Static_assert(sizeof(start_keys) / sizeof(start_keys[0]) <= 32,
 static bool start_parse_query(httpd_req_t *req, const char *qry, StartReq *r)
 {
     uint32_t seen = 0;
-    for (const char *p = qry; *p;) {
+    for (const char *p = qry; *p; ) {
         while (*p == '&') p++;
         if (!*p) break;
         const char *eq = p;
@@ -2513,7 +2513,7 @@ static bool start_parse_query(httpd_req_t *req, const char *qry, StartReq *r)
             if (!spec->parse(val, r, req))
                 return true;
         }
-        p = (*eq == '&') ? eq + 1: eq;
+        p = (*eq == '&') ? eq + 1 : eq;
     }
     return false;
 }
@@ -2582,14 +2582,14 @@ static esp_err_t start_handler(httpd_req_t *req)
          * would relabel what the page shows about it. Parse into locals, commit
          * once at the end. */
         StartReq parsed = {
-.mode      = MODE_EUROJACKPOT,
-.runs_cap  = UNLIM_RUNS_DEFAULT,
-.run_ms    = RUN_S_DEFAULT * 1000,
-.gap_ms    = -1,
-.cal_ms    = CAL_BUDGET_DEFAULT_MS,
-.score_dir = SCORE_DIR_HIGH,
-.pre_w     = ENT_W_PRE_DEFAULT,
-.from_form = false,
+            .mode      = MODE_EUROJACKPOT,
+            .runs_cap  = UNLIM_RUNS_DEFAULT,
+            .run_ms    = RUN_S_DEFAULT * 1000,
+            .gap_ms    = -1,
+            .cal_ms    = CAL_BUDGET_DEFAULT_MS,
+            .score_dir = SCORE_DIR_HIGH,
+            .pre_w     = ENT_W_PRE_DEFAULT,
+            .from_form = false,
         };
 
         char qry[256] = "";
@@ -2611,7 +2611,7 @@ static esp_err_t start_handler(httpd_req_t *req)
         }
         int segments;
         {
-            int ms = parsed.run_ms < 100 ? 100: parsed.run_ms;
+            int ms = parsed.run_ms < 100 ? 100 : parsed.run_ms;
             long long n = ((long long)ms * RUN_SEGS_REF + RUN_MS_REF / 2) / RUN_MS_REF;
             if (n < 500) n = 500;
             if (n > EL_SEG_MAX) n = EL_SEG_MAX;
@@ -2749,7 +2749,7 @@ static const char DIAG_HTML[] =
 "<th title=\"exposure RIGHT NOW. Different rungs per node are normal &mdash; different sensors, different light\">Exp</th>"
 "<th class='l' title=\"halve or double this exposure by hand and reset the statistics, so mean_px answers in ~2 s. Refused while measuring; the next sweep overwrites it\">set exp</th>"
 "<th title=\"analog gain. Left at 1023 &mdash; the light is tuned with exposure and the lamp\">Gain</th>"
-"<th title=\"mean raw pixel byte. Must stay in [5,0, 100,0]: below = partly frozen frames, above = heading for saturation\">mean_px</th>"
+"<th title=\"mean raw pixel byte. Must stay in [5,0 , 100,0]: below = partly frozen frames, above = heading for saturation\">mean_px</th>"
 "<th title=\"ones fraction of the LSB stream minus 0,5. Small by construction &mdash; raw_bias in /diagjson is the front end itself\">bias&minus;0.5</th>"
 "<th title=\"&sigma; of the per-mini-run z (3200 bits each). Gate wants |&sigma;&minus;1| &le; 0,05\">&sigma;</th>"
 "<th title=\"fraction of pixels with frame difference exactly 0. Their LSB is 0, so a high value explains a deficit of ones. Gated at 0,125\">zero_diff</th>"
@@ -2939,7 +2939,7 @@ static esp_err_t diagjson_handler(httpd_req_t *req)
         "\"ms_pair\":%.2f,\"ms_wait\":%.2f,\"ms_extract\":%.2f,\"ms_rest\":%.2f,"
         "\"exposure\":%lu,\"gain\":%lu"
         "}",
-        cam.ready ? "true": "false",
+        cam.ready ? "true" : "false",
         (unsigned long long)cam.frame_pairs, (unsigned long long)cam.bits_extracted,
         (unsigned long)cam.stuck_frame_count,
         cam.bias, cam.sigma, cam.sigma_samples,
@@ -2973,16 +2973,16 @@ static esp_err_t diagjson_handler(httpd_req_t *req)
         for (int i = 0; i < g_status.node_count; i++) {
             const NodeStatus *N = &g_status.nodes[i];
             bool     me = (i == 0);
-            double   mb   = me ? cam.mbit_per_sec: N->cam_mbit;
-            double   cmb  = me ? cam.consume_mbit_per_sec: (double)N->cam_cons_mbit;
-            uint32_t stl  = me ? cam.stalls: N->cam_stalls;
-            double   rb   = me ? cam.raw_bias: N->cam_raw_bias;
-            double   rs   = me ? cam.raw_sigma: N->cam_raw_sigma;
-            double   bi   = me ? cam.bias: N->cam_bias_now;
-            double   sg   = me ? cam.sigma: N->cam_sigma_now;
-            uint32_t enow = me ? exp_now: N->cam_exp_now;
-            uint32_t gnow = me ? gain_now: N->cam_gain_now;
-            double   ct   = me ? (double)cam.die_temp_c: (double)N->die_temp_c;
+            double   mb   = me ? cam.mbit_per_sec : N->cam_mbit;
+            double   cmb  = me ? cam.consume_mbit_per_sec : (double)N->cam_cons_mbit;
+            uint32_t stl  = me ? cam.stalls       : N->cam_stalls;
+            double   rb   = me ? cam.raw_bias     : N->cam_raw_bias;
+            double   rs   = me ? cam.raw_sigma    : N->cam_raw_sigma;
+            double   bi   = me ? cam.bias         : N->cam_bias_now;
+            double   sg   = me ? cam.sigma        : N->cam_sigma_now;
+            uint32_t enow = me ? exp_now          : N->cam_exp_now;
+            uint32_t gnow = me ? gain_now         : N->cam_gain_now;
+            double   ct   = me ? (double)cam.die_temp_c : (double)N->die_temp_c;
             char ct_txt[16];
             if (isfinite(ct)) snprintf(ct_txt, sizeof(ct_txt), "%.2f", ct);
             else              snprintf(ct_txt, sizeof(ct_txt), "null");
@@ -2999,15 +2999,15 @@ static esp_err_t diagjson_handler(httpd_req_t *req)
                 /* ⚠ P4 DIE, not the camera. null = this node did not report it. */
                 "\"die_temp\":%s,"
                 "\"soft_down\":%s,\"lost\":%lu,\"reboots\":%lu,\"fw_sha\":\"%s\"}",
-                i ? ",": "", me ? "master": N->ip,
-                N->ok ? "true": "false", mb, cmb, (unsigned long)stl,
-                me ? camera_sensor_name(): "?",
+                i ? "," : "", me ? "master" : N->ip,
+                N->ok ? "true" : "false", mb, cmb, (unsigned long)stl,
+                me ? camera_sensor_name() : "?",
                 (unsigned long)enow, (unsigned long)gnow,
                 (unsigned long)N->cam_exp, (int)N->cam_cal_ok, N->cam_bias,
                 rb, rs, bi, sg, ct_txt,
-                N->soft_down ? "true": "false", (unsigned long)N->lost,
+                N->soft_down ? "true" : "false", (unsigned long)N->lost,
                 (unsigned long)N->reboots,
-                me ? master_sha: (N->fw_sha[0] ? N->fw_sha: "?"));
+                me ? master_sha : (N->fw_sha[0] ? N->fw_sha : "?"));
         }
         buf_append(buf, sizeof(buf), &pos,
             "],\"node_count\":%d,\"collected\":true", g_status.node_count);
@@ -3108,7 +3108,7 @@ static void sum_pref_load(void)
         nvs_get_u8(h, "scoresum", &c);
         nvs_close(h);
     }
-    g_status.score_sum = c < SCORE_SUM_N ? c: SUM_KEY;
+    g_status.score_sum = c < SCORE_SUM_N ? c : SUM_KEY;
 }
 
 static void prefs_send(httpd_req_t *req)
@@ -3138,7 +3138,7 @@ static void prefs_send(httpd_req_t *req)
             (unsigned)maxruns);
     if (score != 0xff) {
         const char *sv = score == SCORE_DIR_LOW ? "low"
-: score == SCORE_DIR_ABS ? "abs": "high";
+                       : score == SCORE_DIR_ABS ? "abs" : "high";
         p += snprintf(js + p, sizeof(js) - p,
             "e=document.getElementById('selScore');if(e)e.value='%s';", sv);
     }

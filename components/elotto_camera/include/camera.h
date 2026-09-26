@@ -152,7 +152,7 @@ void camera_get_stats(camera_stats_t *out);
  *   camera_stats_reset(settle)     -> discard `settle` pairs, empty the ring,
  *                                     then zero the statistics
  *   wait for camera_stats_settled()
- *...let bits accumulate...
+ *   ...let bits accumulate...
  *   camera_get_stats(&s)           -> describes only this window
  *
  * Must not run while a measurement is consuming words: the reset empties the

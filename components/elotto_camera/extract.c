@@ -81,7 +81,7 @@ void cam_extract_ref(const uint8_t *a, const uint8_t *b, uint32_t n,
  *    (byte pair 0x01,0x00 reports two zeros). This is the borrow-free form —
  *    adding 0x7F to a 7-bit value cannot carry out of its byte — which is exact
  *    per byte:
- *        ~( ((x & 0x7F7F7F7F) + 0x7F7F7F7F) | x | 0x7F7F7F7F)
+ *        ~( ((x & 0x7F7F7F7F) + 0x7F7F7F7F) | x | 0x7F7F7F7F )
  *    leaves 0x80 in a byte position iff that byte is zero, and nowhere else. */
 #define LSB_MASK   0x01010101u
 #define GATHER_MUL 0x08040201u
@@ -109,8 +109,8 @@ void cam_extract_fast(const uint8_t *a, const uint8_t *b, uint32_t n,
      * them, so it is not incremented in any loop: it is `n`, added at the end. */
     uint32_t r_word     = 0;             /* ones since the last emit         */
     uint32_t r_ones     = 0;             /* ones in the words already emitted */
-    uint32_t r_run_ones = raw ? raw->run_ones: 0u;
-    uint32_t r_run_bits = raw ? raw->run_bits: 0u;
+    uint32_t r_run_ones = raw ? raw->run_ones : 0u;
+    uint32_t r_run_bits = raw ? raw->run_bits : 0u;
     uint32_t r_mr_n     = 0;
     uint64_t r_mr_sum   = 0, r_mr_sumsq = 0;
     /* Runs channel, same locals-only treatment as the rest of the monitor.
@@ -120,8 +120,8 @@ void cam_extract_fast(const uint8_t *a, const uint8_t *b, uint32_t n,
      * moment it has consumed a bit. */
     const bool wr       = raw && raw->want_runs;
     uint32_t r_trans    = 0;
-    uint32_t r_prev     = wr ? raw->prev: 0u;
-    uint32_t r_tmask    = (wr && raw->have_prev) ? 0xFu: 0x7u;
+    uint32_t r_prev     = wr ? raw->prev : 0u;
+    uint32_t r_tmask    = (wr && raw->have_prev) ? 0xFu : 0x7u;
 
     /* raw_tick() against the locals. Same test, same moment, same result — the
      * self-test compares mr_n, mr_sum, mr_sumsq, run_ones and run_bits against
@@ -308,8 +308,8 @@ void cam_extract_raw10_ref(const uint8_t *a, const uint8_t *b, uint32_t n,
     uint64_t r_mr_sum = 0, r_mr_sumsq = 0;
     const bool wr = raw->want_runs;
     uint32_t r_trans = 0;
-    uint32_t r_prev  = wr ? raw->prev: 0u;
-    uint32_t r_tmask = (wr && raw->have_prev) ? 0xFu: 0x7u;
+    uint32_t r_prev  = wr ? raw->prev : 0u;
+    uint32_t r_tmask = (wr && raw->have_prev) ? 0xFu : 0x7u;
 
     uint32_t groups = n / 5;
     for (uint32_t g = 0; g < groups; g++) {
@@ -430,7 +430,7 @@ void cam_extract_raw10_fast(const uint8_t *a, const uint8_t *b, uint32_t n,
     uint64_t r_mr_sum = 0, r_mr_sumsq = 0;
     const bool wr = raw->want_runs;
     uint32_t r_trans = 0;
-    uint32_t r_prev  = wr ? raw->prev: 0u;
+    uint32_t r_prev  = wr ? raw->prev : 0u;
     bool     r_have  = wr && raw->have_prev;
 
 #define R10_CLOSE_RUN()                                                 \
@@ -515,7 +515,7 @@ void cam_extract_raw10_fast(const uint8_t *a, const uint8_t *b, uint32_t n,
         if (room > 16) {
             r_run_ones += pop; r_run_bits += 16;
         } else {
-            uint32_t head = (room == 16) ? pop: cam_popcount32(v16 >> (16 - room));
+            uint32_t head = (room == 16) ? pop : cam_popcount32(v16 >> (16 - room));
             r_run_ones += head;
             R10_CLOSE_RUN();
             r_run_ones = pop - head; r_run_bits = 16 - room;
@@ -523,7 +523,7 @@ void cam_extract_raw10_fast(const uint8_t *a, const uint8_t *b, uint32_t n,
         if (wr) {
             /* Bit 15 is prev^first, bit i the pair (i+1, i) in stream order;
              * bit 15 is dropped on the very first bit of a window. */
-            uint32_t d = (v16 ^ (((r_prev << 16) | v16) >> 1)) & (r_have ? 0xFFFFu: 0x7FFFu);
+            uint32_t d = (v16 ^ (((r_prev << 16) | v16) >> 1)) & (r_have ? 0xFFFFu : 0x7FFFu);
             r_trans += cam_popcount32(d);
             r_prev = v16 & 1u; r_have = true;
         }
@@ -556,7 +556,7 @@ void cam_extract_raw10_fast(const uint8_t *a, const uint8_t *b, uint32_t n,
     }
 
     if (out_zeros) *out_zeros += zeros;
-    if (out_any)   *out_any   |= (zeros != npix) ? 1u: 0u;
+    if (out_any)   *out_any   |= (zeros != npix) ? 1u : 0u;
     if (out_psum)  *out_psum  += psum;
 }
 #undef R10_GROUP_SLOW
@@ -704,8 +704,8 @@ static bool case_equal_fn(extract_fn ref, extract_fn fast,
         emitted += cam_popcount32(s1.bitacc);
         /* A preset partial word is emitted too, but its bits were never this
          * call's pixels; a preset monitor starts from its own count. */
-        emitted -= pk0 ? cam_popcount32(pk0->bitacc): 0u;
-        if (emitted != r1.ones - (rw0 ? rw0->ones: 0u)) {
+        emitted -= pk0 ? cam_popcount32(pk0->bitacc) : 0u;
+        if (emitted != r1.ones - (rw0 ? rw0->ones : 0u)) {
             rep->what = 8;
             rep->ref_w = (uint32_t)emitted; rep->fast_w = (uint32_t)r1.ones;
             return false;
@@ -780,7 +780,7 @@ static int r10_cases(uint8_t *a, uint8_t *b, uint32_t bytes, uint32_t *wa, uint3
         c++; if (!case_equal_fn(R, F, a, b, bytes, wa, wb, cap, &w, rep, NULL, &rw0)) goto fail;
     }
     {
-        cam_pack_t pk0 = {.bitacc = 0xAu,.bitacc_n = 4 };
+        cam_pack_t pk0 = { .bitacc = 0xAu, .bitacc_n = 4 };
         c++; if (!case_equal_fn(R, F, a + 1, b + 1, 100003, wa, wb, cap, &w, rep, &pk0, NULL)) goto fail;
     }
     heap_caps_free(b_save);

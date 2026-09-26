@@ -67,7 +67,7 @@ typedef struct {
     char     txt[EVLOG_TXT];
 } EvEntry;
 
-void     evlog(const char *fmt,...) __attribute__((format(printf, 1, 2)));
+void     evlog(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 uint32_t evlog_seq(void);
 // Oldest first. Returns the number copied (≤ max).
 int      evlog_copy(EvEntry *dst, int max);

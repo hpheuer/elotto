@@ -64,7 +64,7 @@ gcp_result_t gcp_zscore_pre(int nseg, bool (*on_yield)(void), double *out,
     if (out_h1) *out_h1 = 0.0;
     if (out_h2) *out_h2 = 0.0;
 
-    for (int seg = 0; seg < nseg;) {
+    for (int seg = 0; seg < nseg; ) {
         /* A block ends wherever the per-segment loop acted: after the midpoint
          * segment (n1 - 1) and after every segment with seg % poll == 0. So the
          * half split and the abort polls fall on the same segments, with the

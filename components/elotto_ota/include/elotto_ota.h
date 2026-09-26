@@ -13,7 +13,7 @@
  * Typical wiring in app_main():
  *
  *     elotto_ota_boot_check();            // FIRST, before networking
- *... bring up Ethernet, start httpd...
+ *     ... bring up Ethernet, start httpd ...
  *     elotto_ota_register(server, is_busy);
  *     elotto_ota_mark_valid();            // only once the server answers
  */

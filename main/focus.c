@@ -138,8 +138,8 @@ void focus_off(void)
  * spent dark. */
 void focus_timing_take(float *win_ms, float *gap_ms)
 {
-    *win_ms = s_win_n ? (float)(s_win_sum / s_win_n / 1000.0): 0.0f;
-    *gap_ms = s_gap_n ? (float)(s_gap_sum / s_gap_n / 1000.0): 0.0f;
+    *win_ms = s_win_n ? (float)(s_win_sum / s_win_n / 1000.0) : 0.0f;
+    *gap_ms = s_gap_n ? (float)(s_gap_sum / s_gap_n / 1000.0) : 0.0f;
     s_win_sum = s_gap_sum = 0.0;
     s_win_n   = s_gap_n   = 0;
     s_focus_off_us = 0;
@@ -175,7 +175,7 @@ static EvEntry     *s_ev;
 static uint32_t     s_ev_seq;          // entries ever written; slot = seq % N
 static portMUX_TYPE s_ev_mux = portMUX_INITIALIZER_UNLOCKED;
 
-void evlog(const char *fmt,...)
+void evlog(const char *fmt, ...)
 {
     if (!s_ev) {
         s_ev = heap_caps_calloc(EVLOG_N, sizeof(EvEntry), MALLOC_CAP_SPIRAM);
@@ -205,7 +205,7 @@ int evlog_copy(EvEntry *dst, int max)
     if (!s_ev || max <= 0) return 0;
     taskENTER_CRITICAL(&s_ev_mux);
     uint32_t end   = s_ev_seq;
-    uint32_t have  = end < EVLOG_N ? end: EVLOG_N;
+    uint32_t have  = end < EVLOG_N ? end : EVLOG_N;
     if (have > (uint32_t)max) have = (uint32_t)max;
     for (uint32_t i = 0; i < have; i++)
         dst[i] = s_ev[(end - have + i) % EVLOG_N];

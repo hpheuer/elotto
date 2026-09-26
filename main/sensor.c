@@ -20,13 +20,13 @@
 #include "elotto_link.h"
 
 ElottoStatus g_status = {
-.state = ELOTTO_IDLE,
+    .state = ELOTTO_IDLE,
     /* -1, not 0: 0 is a legitimate uptime and would read as "the link
      * dropped at boot" on a board whose link has been up the whole time. */
-.eth_last_down_ms = -1,
-.eth_last_up_ms   = -1,
-.drop_uptime_ms   = -1,
-.drop_node        = -1,
+    .eth_last_down_ms = -1,
+    .eth_last_up_ms   = -1,
+    .drop_uptime_ms   = -1,
+    .drop_node        = -1,
 };
 
 /* v3: rounds until Abort, every combination once WITHIN a round. The
@@ -128,7 +128,7 @@ static int segments_for(void)
     if (g_status.run_segments <= 0)
         g_status.run_segments = segs_from_run_ms(
             g_status.run_target_ms > 0 ? g_status.run_target_ms
-: RUN_S_DEFAULT * 1000);
+                                       : RUN_S_DEFAULT * 1000);
     return g_status.run_segments;
 }
 
@@ -190,16 +190,16 @@ static int comb(int n, int r)
 static void unlimited_pool_sizes(bool euro, int nm, int cap,
                                  int *out_nm, int *out_ne)
 {
-    int p_max = euro ? POOL_MAIN_50: POOL_MAIN_49;
-    int q_min = euro ? 2: 0;
-    int q_max = euro ? POOL_EURO_12: 0;
+    int p_max = euro ? POOL_MAIN_50 : POOL_MAIN_49;
+    int q_min = euro ? 2 : 0;
+    int q_max = euro ? POOL_EURO_12 : 0;
     int  best_p = nm, best_q = q_min;
     long best_c = 0;
 
     for (int p = nm; p <= p_max; p++) {
         long cm = comb(p, nm);
         for (int q = q_min; q <= q_max; q++) {
-            long total = cm * (euro ? comb(q, 2): 1);
+            long total = cm * (euro ? comb(q, 2) : 1);
             if (total > cap) continue;
             /* Strictly more combinations wins; an equal count goes to the
              * bigger bonus pool, then the bigger main pool. */
@@ -322,7 +322,7 @@ static void node_z_store(int j, const double *znode, const bool *have)
     if (!s_node_z || j < 0 || j >= NUM_RUNS) return;
     float *row = s_node_z + (size_t)j * MAX_NODES;
     for (int i = 0; i < MAX_NODES; i++)
-        row[i] = (have && have[i]) ? (float)znode[i]: NAN;
+        row[i] = (have && have[i]) ? (float)znode[i] : NAN;
 }
 
 static void node_h_store(int j, const double *h1, const double *h2,
@@ -333,8 +333,8 @@ static void node_h_store(int j, const double *h1, const double *h2,
     float *r2 = s_node_h2 + (size_t)j * MAX_NODES;
     for (int i = 0; i < MAX_NODES; i++) {
         bool h = have_h && have_h[i];
-        r1[i] = h ? (float)h1[i]: NAN;
-        r2[i] = h ? (float)h2[i]: NAN;
+        r1[i] = h ? (float)h1[i] : NAN;
+        r2[i] = h ? (float)h2[i] : NAN;
     }
 }
 
@@ -477,7 +477,7 @@ static void score_acc_begin(int ix, int max_val, int pool_size)
 static int score_sum_sel(void)
 {
     int c = g_status.score_sum;
-    return (c >= 0 && c < SCORE_SUM_N) ? c: SUM_KEY;
+    return (c >= 0 && c < SCORE_SUM_N) ? c : SUM_KEY;
 }
 
 static int score_pick_best(const ScoreAcc *A, int ch, const bool *used)
@@ -539,8 +539,8 @@ static bool score_pick_pool(int ix, uint8_t *pool, float *out_z)
             snprintf(g_status.fault, sizeof(g_status.fault),
                      "scoring: only %d of %d candidates carry a %s sum "
                      "— session aborted", i, A->pool_size,
-                     ch == SUM_KEY ? "Z*": ch == SUM_Z ? "Z": ch == SUM_CONC ? "Conc"
-: ch == SUM_NSD ? "dn": "AC");
+                     ch == SUM_KEY ? "Z*" : ch == SUM_Z ? "Z" : ch == SUM_CONC ? "Conc"
+                     : ch == SUM_NSD ? "dn" : "AC");
             printf("pass: %s\n", g_status.fault);
             g_status.abort_requested = true;
             return false;
@@ -569,13 +569,13 @@ static void score_rows_begin(int main_max, bool euro)
     s_score_main_n = main_max;
     ScoreItem *R = g_status.score_rows;
     if (!R) { g_status.score_rows_n = 0; return; }
-    int n = main_max + (euro ? 12: 0);
+    int n = main_max + (euro ? 12 : 0);
     if (n > SCORE_ROWS_MAX) n = SCORE_ROWS_MAX;
     memset(R, 0, (size_t)n * sizeof(ScoreItem));
     for (int i = 0; i < n; i++) {
         ScoreItem *s = &R[i];
         bool e = (i >= main_max);
-        int  num = e ? i - main_max + 1: i + 1;
+        int  num = e ? i - main_max + 1 : i + 1;
         s->r.index = num;
         s->r.round = (uint16_t)g_status.round;
         if (e) s->r.euro[0] = (uint8_t)num;
@@ -591,7 +591,7 @@ static void score_rows_begin(int main_max, bool euro)
 
 static ScoreItem *score_row(bool euro_pool, int k)
 {
-    int i = euro_pool ? s_score_main_n + k - 1: k - 1;
+    int i = euro_pool ? s_score_main_n + k - 1 : k - 1;
     if (!g_status.score_rows || i < 0 || i >= g_status.score_rows_n) return NULL;
     return &g_status.score_rows[i];
 }
@@ -603,7 +603,7 @@ static ScoreItem *score_row(bool euro_pool, int k)
  * scoring is over. */
 static void score_run(int max_val, int pool_size, bool euro_pool)
 {
-    const int ix = euro_pool ? 1: 0;
+    const int ix = euro_pool ? 1 : 0;
     score_acc_begin(ix, max_val, pool_size);
     ScoreAcc *A = &s_sacc[ix];
     /* Per-node archive for ONE scoring pass. Function-static: ~1,6 KB. */
@@ -662,7 +662,7 @@ static void score_run(int max_val, int pool_size, bool euro_pool)
                 id.index = k;
                 if (euro_pool) id.euro[0] = (uint8_t)k;
                 else           id.nums[0] = (uint8_t)k;
-                wsig_note(row ? &row->r: &id, wsig, smask[k], (uint8_t)(pass + 1));
+                wsig_note(row ? &row->r : &id, wsig, smask[k], (uint8_t)(pass + 1));
             }
             scored[k] = ok;
             g_status.scoring_done++;
@@ -674,7 +674,7 @@ static void score_run(int max_val, int pool_size, bool euro_pool)
             g_status.elapsed_ms = elapsed_ms_now();
             run_gap_ms(gap_for());
         }
-        last = n_order ? order[n_order - 1]: 0;
+        last = n_order ? order[n_order - 1] : 0;
         double zc_ctr[51], conc[51], nsd[51];
         score_build_keys(zn, h1, h2, smask, scored, max_val, scores,
                          zc_ctr, conc, nsd);
@@ -711,7 +711,7 @@ static void score_run(int max_val, int pool_size, bool euro_pool)
             double v[SCORE_SUM_N];
             v[SUM_KEY]  = scores[k];
             v[SUM_Z]    = zc_ctr[k];
-            v[SUM_CONC] = isnan(conc[k]) ? 0.0: conc[k];
+            v[SUM_CONC] = isnan(conc[k]) ? 0.0 : conc[k];
             v[SUM_NSD]  = nsd[k];
             v[SUM_AC]   = (double)acp[k];   /* this pass's own, not the display row's */
             for (int c = 0; c < SCORE_SUM_N; c++) {
@@ -722,8 +722,8 @@ static void score_run(int max_val, int pool_size, bool euro_pool)
             if (!row) continue;
             /* The pass closed: centred values, as center_block() writes an
              * item's. No concordance is 0, the results[] convention. */
-            row->r.z_ctr   = isnan(zc_ctr[k]) ? 0.0f: (float)zc_ctr[k];
-            row->r.zc_ctr  = isnan(conc[k])   ? 0.0f: (float)conc[k];
+            row->r.z_ctr   = isnan(zc_ctr[k]) ? 0.0f : (float)zc_ctr[k];
+            row->r.zc_ctr  = isnan(conc[k])   ? 0.0f : (float)conc[k];
             row->r.node_sd = (float)nsd[k];
             row->key       = (float)scores[k];
             for (int c = 0; c < SCORE_SUM_N; c++) {
@@ -751,7 +751,7 @@ static void score_run(int max_val, int pool_size, bool euro_pool)
         /*: every closed scoring pass is a candidate; calibrate_all()
          * sweeps only once the dynamic interval has run out. */
         if (pass + 1 < SCORE_PASSES) {
-            if (calibrate_all(euro_pool ? "scoring pass, euro numbers": "scoring pass"))
+            if (calibrate_all(euro_pool ? "scoring pass, euro numbers" : "scoring pass"))
                 g_status.cal_did_sweep = true;
             if (g_status.abort_requested) return;
             g_status.phase = PHASE_SCORING;
@@ -773,7 +773,7 @@ static void score_run(int max_val, int pool_size, bool euro_pool)
 static double node_halfwin(double h1, double h2)
 {
     if (!((h1 > 0.0 && h2 > 0.0) || (h1 < 0.0 && h2 < 0.0))) return 0.0;
-    double m = fabs(h1) < fabs(h2) ? fabs(h1): fabs(h2);
+    double m = fabs(h1) < fabs(h2) ? fabs(h1) : fabs(h2);
     return copysign(m, h1) * sqrt(2.0);
 }
 
@@ -812,8 +812,8 @@ static double conc_halves(const double *h1, const double *h2,
         v[i]  = 0.0;
         hv[i] = false;
         if (i >= n || !have[i]) continue;
-        double a = h1[i] - (m1 ? m1[i]: 0.0);
-        double b = h2[i] - (m2 ? m2[i]: 0.0);
+        double a = h1[i] - (m1 ? m1[i] : 0.0);
+        double b = h2[i] - (m2 ? m2[i] : 0.0);
         v[i]  = node_halfwin(a, b);
         hv[i] = true;
     }
@@ -877,7 +877,7 @@ static int gather_and_combine(double z_master, bool master_ok,
         mask |= (uint8_t)(1u << i);
     }
     if (out_mask) *out_mask = mask;
-    if (out_z) *out_z = (k > 0) ? sum / sqrt((double)k): 0.0;
+    if (out_z) *out_z = (k > 0) ? sum / sqrt((double)k) : 0.0;
     return k;
 }
 
@@ -956,7 +956,7 @@ static void score_one_run(bool *ok, float znode[MAX_NODES],
     int k = measure_window(&m);
     /* Before the next 'M' overwrites them — same rule as the pass. */
     wsig_collect(wsig);
-    float acv = NAN;   /* item AC, set when the pass closes  */
+    float acv = NAN;   /* item AC, set when the pass closes */
     if (ac) *ac = acv;
     if (row) {
         /* The number's latest measurement, filled as the pass fills an item
@@ -964,11 +964,11 @@ static void score_one_run(bool *ok, float znode[MAX_NODES],
          * its pass closes, no key and no Δn yet. A VOID is k = 0 and zeros. */
         RunResult *r = &row->r;
         r->k         = (uint8_t)k;
-        r->have_mask = (k > 0) ? m.mask: 0;
+        r->have_mask = (k > 0) ? m.mask : 0;
         r->round     = (uint16_t)g_status.round;
-        r->z_score   = (k > 0) ? m.z: 0.0;
-        r->z_ctr     = (k > 0) ? (float)m.z: 0.0f;
-        r->zc_ctr    = (k > 0) ? (float)m.zc: 0.0f;
+        r->z_score   = (k > 0) ? m.z : 0.0;
+        r->z_ctr     = (k > 0) ? (float)m.z  : 0.0f;
+        r->zc_ctr    = (k > 0) ? (float)m.zc : 0.0f;
         r->acz       = acv;
         r->node_sd   = NAN;
         row->key     = NAN;
@@ -989,11 +989,11 @@ static void score_one_run(bool *ok, float znode[MAX_NODES],
      * scoring windows too, tagged with the 'M' sequence. */
     camera_winlog_push(0);
     if (ok) *ok = (k > 0);
-    if (mask) *mask = (k > 0) ? m.mask: 0;
+    if (mask) *mask = (k > 0) ? m.mask : 0;
     for (int i = 0; i < MAX_NODES; i++) {
-        znode[i] = m.have[i]  ? (float)m.znode[i]: NAN;
-        h1[i]    = m.haveh[i] ? (float)m.h1[i]: NAN;
-        h2[i]    = m.haveh[i] ? (float)m.h2[i]: NAN;
+        znode[i] = m.have[i]  ? (float)m.znode[i] : NAN;
+        h1[i]    = m.haveh[i] ? (float)m.h1[i]    : NAN;
+        h2[i]    = m.haveh[i] ? (float)m.h2[i]    : NAN;
     }
 }
 
@@ -1069,7 +1069,7 @@ static void score_build_keys(const float zn[][MAX_NODES],
             hwh[i] = false;
             if (!(mask[k] & (1u << i))) continue;
             if (!isnan((double)zn[k][i])) {
-                sum += (double)zn[k][i] - (okz[i] ? mz[i]: 0.0);
+                sum += (double)zn[k][i] - (okz[i] ? mz[i] : 0.0);
                 kk++;
             }
             if (!isnan((double)h1[k][i]) && !isnan((double)h2[k][i])) {
@@ -1078,7 +1078,7 @@ static void score_build_keys(const float zn[][MAX_NODES],
                 hwh[i] = true;
             }
         }
-        zc[k]  = (kk > 0) ? sum / sqrt((double)kk): NAN;
+        zc[k]  = (kk > 0) ? sum / sqrt((double)kk) : NAN;
         zcc[k] = conc_halves(hv1, hv2, mh1, mh2, hwh, MAX_NODES);
         if (zcc[k] == 0.0) zcc[k] = NAN;   /* k<2 or all halves disagreed: no conc */
         if (nsd_out) {
@@ -1099,7 +1099,7 @@ static void score_build_keys(const float zn[][MAX_NODES],
                 double vv = 0.0;
                 for (int t = 0; t < ku; t++) vv += (u[t] - um) * (u[t] - um);
                 vv /= (double)(ku - 1);
-                v = vv > 0.0 ? sqrt(vv): 0.0;
+                v = vv > 0.0 ? sqrt(vv) : 0.0;
             }
             nsd_out[k] = v;
         }
@@ -1132,8 +1132,8 @@ static void score_build_keys(const float zn[][MAX_NODES],
     /* The scoring's health line: this span's own channel σ, the analogue of
      * the pass health the page shows while items are measured. Published only,
      * never read back. */
-    g_status.score_sig_z  = sn[0] >= 2 ? s[0]: 0.0;
-    g_status.score_sig_c  = sn[1] >= 2 ? s[1]: 0.0;
+    g_status.score_sig_z  = sn[0] >= 2 ? s[0] : 0.0;
+    g_status.score_sig_c  = sn[1] >= 2 ? s[1] : 0.0;
     g_status.score_span_n = sn[0];
     g_status.score_conc_n = sn[1];
 
@@ -1149,12 +1149,12 @@ static void score_build_keys(const float zn[][MAX_NODES],
         if (!scored[k]) { scores[k] = 0.0; continue; }
         bool haz = (!isnan(zc[k])  && s[0] > 0.0);
         bool hac = (!isnan(zcc[k]) && s[1] > 0.0);
-        double vz = haz ? zc[k]  / s[0]: 0.0;
-        double vc = hac ? zcc[k] / s[1]: 0.0;
-        double pk = hac ? p: 0.0;
-        double ak = haz ? (1.0 - pk): 0.0;
+        double vz = haz ? zc[k]  / s[0] : 0.0;
+        double vc = hac ? zcc[k] / s[1] : 0.0;
+        double pk = hac ? p : 0.0;
+        double ak = haz ? (1.0 - pk) : 0.0;
         double nk = sqrt(ak * ak + pk * pk);
-        scores[k] = (nk > 0.0) ? (ak * vz + pk * vc) / nk: 0.0;
+        scores[k] = (nk > 0.0) ? (ak * vz + pk * vc) / nk : 0.0;
     }
 }
 
@@ -1171,7 +1171,7 @@ static double compute_v_eff(void)
     for (int i = 0; i < n && i < MAX_NODES; i++) {
         if (!g_status.nodes[i].ok || g_status.nodes[i].soft_down) continue;
         idx[k] = i;
-        sig[k] = g_status.nodes[i].sigma > 0.0 ? g_status.nodes[i].sigma: 1.0;
+        sig[k] = g_status.nodes[i].sigma > 0.0 ? g_status.nodes[i].sigma : 1.0;
         k++;
     }
     if (k < 1) return 1.0;
@@ -1181,12 +1181,12 @@ static double compute_v_eff(void)
         num += sig[a] * sig[a];
         for (int b = a + 1; b < k; b++) {
             int i = idx[a], j = idx[b];
-            double r = (i < j) ? g_status.pair_r[i][j]: g_status.pair_r[j][i];
+            double r = (i < j) ? g_status.pair_r[i][j] : g_status.pair_r[j][i];
             num += 2.0 * r * sig[a] * sig[b];
         }
     }
     double v = num / (double)k;
-    return (v > 1e-12) ? v: 1.0;
+    return (v > 1e-12) ? v : 1.0;
 }
 
 /* True if this row enters pass mean/σ and the ranking tables. Void and quarantined
@@ -1243,10 +1243,10 @@ static void block_sig_compute(int block_idx, bool freeze)
             csum += c; csq += c * c; cn++;
         }
     }
-    double pss = psq - (pn > 0 ? psum * psum / (double)pn: 0.0);
-    B->sig_p = (pn > 1 && pss > 0.0) ? (float)sqrt(pss / (double)(pn - 1)): 0.0f;
-    double css = csq - (cn > 0 ? csum * csum / (double)cn: 0.0);
-    B->sig_c = (cn > 1 && css > 0.0) ? (float)sqrt(css / (double)(cn - 1)): 0.0f;
+    double pss = psq - (pn > 0 ? psum * psum / (double)pn : 0.0);
+    B->sig_p = (pn > 1 && pss > 0.0) ? (float)sqrt(pss / (double)(pn - 1)) : 0.0f;
+    double css = csq - (cn > 0 ? csum * csum / (double)cn : 0.0);
+    B->sig_c = (cn > 1 && css > 0.0) ? (float)sqrt(css / (double)(cn - 1)) : 0.0f;
     if (freeze) B->frozen = 1;
 }
 
@@ -1262,7 +1262,7 @@ static void block_sig_refresh_open(void)
 static void block_sig_of(const RunResult *r, double *out_p, double *out_c)
 {
     double sz = 0.0, sc = 0.0;
-    int b = r ? (int)r->block: -1;
+    int b = r ? (int)r->block : -1;
     if (s_bsig && b >= 0 && b < LOOP_HIST) {
         sz = (double)s_bsig[b].sig_p;
         sc = (double)s_bsig[b].sig_c;
@@ -1305,7 +1305,7 @@ double rank_key(const RunResult *r)
      * missing block σ means the same for the whole block. Adding a 0 under the
      * full two-channel normaliser is not "no concordance evidence", it is a
      * silent scale error. */
-    double p = (sc > 0.0 && r->zc_ctr != 0.0f) ? g_status.pre_w: 0.0;
+    double p = (sc > 0.0 && r->zc_ctr != 0.0f) ? g_status.pre_w : 0.0;
     if (p <= 0.0) return z;
 
     double zc = (double)r->zc_ctr / sc;
@@ -1431,7 +1431,7 @@ static void recompute_pass_ranks(void)
     }
     double mean = sum / (double)nv;
     double ss = sumsq - (double)nv * mean * mean;
-    double sigma = (nv > 1 && ss > 0.0) ? sqrt(ss / (double)(nv - 1)): 0.0;
+    double sigma = (nv > 1 && ss > 0.0) ? sqrt(ss / (double)(nv - 1)) : 0.0;
     g_status.pass_mean     = mean;
     g_status.pass_sigma    = sigma;
     g_status.pass_stouffer = mean * sqrt((double)nv);
@@ -1624,14 +1624,14 @@ static void series_ac(const double *u, int n, float *item, float zl[4])
     for (int L = 1; L <= 4; L++) {
         double s = 0.0;
         for (int j = L; j < n; j++) s += u[j] * u[j - L];
-        zl[L - 1] = (n > L && ss > 0.0) ? (float)(s / ss * sqrt((double)(n - L))): 0.0f;
+        zl[L - 1] = (n > L && ss > 0.0) ? (float)(s / ss * sqrt((double)(n - L))) : 0.0f;
     }
     if (!item) return;
     for (int j = 0; j < n; j++) {
         double s = 0.0;
         int    m = 0;
         for (int L = 1; L <= 4 && j - L >= 0; L++) { s += u[j] * u[j - L]; m++; }
-        item[j] = m ? (float)(s / sqrt((double)m)): NAN;
+        item[j] = m ? (float)(s / sqrt((double)m)) : NAN;
     }
 }
 
@@ -1686,7 +1686,7 @@ static void wsig_note(const RunResult *r, const float *wsig, uint8_t mask,
         if (!isfinite(prev)) continue;            /* first window: no jump yet */
 
         float jump = now - prev;
-        float mag  = jump < 0.0f ? -jump: jump;
+        float mag  = jump < 0.0f ? -jump : jump;
 
         /* The scale FIRST, from every jump including the quiet ones -- that is
          * the whole point of it. Taking it only from the ones that clear the
@@ -1696,7 +1696,7 @@ static void wsig_note(const RunResult *r, const float *wsig, uint8_t mask,
         s_wsig_jn++;
         s_wsig_jsq += (double)jump * (double)jump;
         g_status.wsig_sd_n = s_wsig_jn;
-        g_status.wsig_sd   = (s_wsig_jn > 1) ? sqrt(s_wsig_jsq / (double)s_wsig_jn): 0.0;
+        g_status.wsig_sd   = (s_wsig_jn > 1) ? sqrt(s_wsig_jsq / (double)s_wsig_jn) : 0.0;
 
         /* No floor: the board keeps the five largest of whatever happened, and
          * the x-sigma column says whether they matter. See WSIG_TOP_N. */
@@ -1713,7 +1713,7 @@ static void wsig_note(const RunResult *r, const float *wsig, uint8_t mask,
         if (at >= WSIG_TOP_N) continue;           /* smaller than all five */
 
         for (int j = (g_status.wsig_n < WSIG_TOP_N ? g_status.wsig_n
-: WSIG_TOP_N - 1); j > at; j--)
+                                                   : WSIG_TOP_N - 1); j > at; j--)
             g_status.wsig_top[j] = g_status.wsig_top[j - 1];
         if (g_status.wsig_n < WSIG_TOP_N) g_status.wsig_n++;
 
@@ -1721,7 +1721,7 @@ static void wsig_note(const RunResult *r, const float *wsig, uint8_t mask,
         e->round   = r->round;
         e->index   = r->index;
         e->node    = (uint8_t)i;
-        e->counted = (mask & (1u << i)) ? 1: 0;
+        e->counted = (mask & (1u << i)) ? 1 : 0;
         e->spass   = spass;
         memcpy(e->nums, r->nums, sizeof(e->nums));
         memcpy(e->euro, r->euro, sizeof(e->euro));
@@ -1764,7 +1764,7 @@ static void trip_record(int block_idx, int node, double mean, double sigma)
         float z = s_node_z[(size_t)j * MAX_NODES + node];
         if (!isfinite(z)) continue;                 /* node did not contribute */
         double dev = ((double)z - mean) / sigma;
-        double mag = dev < 0.0 ? -dev: dev;
+        double mag = dev < 0.0 ? -dev : dev;
 
         int at = t->n;
         for (int q = 0; q < t->n; q++) {
@@ -1773,7 +1773,7 @@ static void trip_record(int block_idx, int node, double mean, double sigma)
             if (mag > e) { at = q; break; }
         }
         if (at >= TRIPX_TOP_N) continue;
-        for (int q = (t->n < TRIPX_TOP_N ? t->n: TRIPX_TOP_N - 1); q > at; q--)
+        for (int q = (t->n < TRIPX_TOP_N ? t->n : TRIPX_TOP_N - 1); q > at; q--)
             t->it[q] = t->it[q - 1];
         if (t->n < TRIPX_TOP_N) t->n++;
 
@@ -1961,8 +1961,8 @@ static void publish_pair_stats(void)
     for (int i = 0; i < g_status.node_count; i++) {
         const NodeAcc *a = &s_nacc[i];
         int df = a->cn - a->cloops;          // one mean estimated per loop
-        double v = (df >= 1) ? a->css / df: 0.0;
-        g_status.nodes[i].sigma = v > 0.0 ? sqrt(v): 0.0;
+        double v = (df >= 1) ? a->css / df : 0.0;
+        g_status.nodes[i].sigma = v > 0.0 ? sqrt(v) : 0.0;
     }
 
     memset(g_status.pair_r, 0, sizeof(g_status.pair_r));
@@ -2021,7 +2021,7 @@ static void drift_add(double x, double y)
     if (resid < 0.0) resid = 0.0;
     double var_b = resid / (n - 2.0) / sxx;    // SE(slope)²
     g_status.drift_slope = b;
-    g_status.drift_t     = (var_b > 0.0) ? b / sqrt(var_b): 0.0;
+    g_status.drift_t     = (var_b > 0.0) ? b / sqrt(var_b) : 0.0;
 }
 
 /* Append one closed block to the health table. Must run BEFORE
@@ -2036,7 +2036,7 @@ static void record_loop(double loop_mean, int loop_idx)
         double n = (double)a->n;
         mean_n[i] = a->s / n;
         double v = (a->ss - n * mean_n[i] * mean_n[i]) / (n - 1.0);
-        sig_n[i] = v > 0.0 ? sqrt(v): 0.0;
+        sig_n[i] = v > 0.0 ? sqrt(v) : 0.0;
     }
     // Solo master: no per-node accumulation happened, so fall back to the
     // combined mean, which is the master's own mean in that case.
@@ -2071,19 +2071,19 @@ static void record_loop(double loop_mean, int loop_idx)
         // last sweep's duration (the UI estimates its progress bar from it), so
         // copying it unconditionally would log a sweep that never ran here.
         L->cal_ms = g_status.cal_did_sweep
-                  ? (uint16_t)(g_status.cal_ms > 65535 ? 65535: g_status.cal_ms)
-: 0;
+                  ? (uint16_t)(g_status.cal_ms > 65535 ? 65535 : g_status.cal_ms)
+                  : 0;
         L->win_ms = win_ms;
         L->gap_ms = gap_ms;
         for (int i = 0; i < g_status.node_count && i < MAX_NODES; i++) {
             L->mean_n[i] = (float)mean_n[i];
             L->sig_n[i]  = (float)sig_n[i];
-            L->cam_mbit[i]   = i ? g_status.nodes[i].cam_mbit: (float)cs.mbit_per_sec;
-            L->cam_stalls[i] = i ? g_status.nodes[i].cam_stalls: cs.stalls;
+            L->cam_mbit[i]   = i ? g_status.nodes[i].cam_mbit : (float)cs.mbit_per_sec;
+            L->cam_stalls[i] = i ? g_status.nodes[i].cam_stalls : cs.stalls;
             // The operating point this loop was measured AT (§1.5.2). Per-loop
             // re-tuning is only safe because it is recorded: without this the
             // setting change and a drift in the data look the same afterwards.
-            L->die_temp[i] = i ? g_status.nodes[i].die_temp_c: cs.die_temp_c;
+            L->die_temp[i] = i ? g_status.nodes[i].die_temp_c : cs.die_temp_c;
             L->cam_exp[i]    = g_status.nodes[i].cam_exp;
             L->cam_gain[i]   = g_status.nodes[i].cam_gain;
             L->cam_cal_ok[i] = g_status.nodes[i].cam_cal_ok;
@@ -2092,10 +2092,10 @@ static void record_loop(double loop_mean, int loop_idx)
              * sweep found. The master reads its own stats directly; the slaves'
              * come from the 'D' reply slaves_diag() collected a few lines up,
              * with the nodes idle between blocks. */
-            L->cam_sig[i]  = i ? g_status.nodes[i].cam_sigma_now: (float)cs.sigma;
-            L->cam_rsig[i] = i ? g_status.nodes[i].cam_raw_sigma: (float)cs.raw_sigma;
+            L->cam_sig[i]  = i ? g_status.nodes[i].cam_sigma_now : (float)cs.sigma;
+            L->cam_rsig[i] = i ? g_status.nodes[i].cam_raw_sigma : (float)cs.raw_sigma;
             L->cam_px[i]   = i ? g_status.nodes[i].cam_mean_px
-: (float)cs.mean_pixel_level;
+                               : (float)cs.mean_pixel_level;
         }
     }
     g_status.nodes[0].cam_mbit   = (float)cs.mbit_per_sec;
@@ -2140,7 +2140,7 @@ static void record_loop(double loop_mean, int loop_idx)
         if (a->n < NODE_SOFT_MIN_N) continue;
         double n = (double)a->n, m_i = a->s / n;
         double v = (a->ss - n * m_i * m_i) / (n - 1.0);
-        double sig = v > 0.0 ? sqrt(v): 0.0;
+        double sig = v > 0.0 ? sqrt(v) : 0.0;
         mean_i[i] = m_i;
         sig_i[i]  = sig;
         have_stats[i] = true;
@@ -2168,7 +2168,7 @@ static void record_loop(double loop_mean, int loop_idx)
                 all_sig[b + 1] = vs;
             }
             double med = (nall & 1) ? all_sig[nall / 2]
-: 0.5 * (all_sig[nall / 2 - 1] + all_sig[nall / 2]);
+                                    : 0.5 * (all_sig[nall / 2 - 1] + all_sig[nall / 2]);
             trip_bar = NODE_SOFT_TRIP_K * med;
             if (trip_bar > 0.0) {
                 for (int i = 0; i < g_status.node_count && i < MAX_NODES; i++) {
@@ -2229,10 +2229,10 @@ static void record_loop(double loop_mean, int loop_idx)
             peer_sig[b + 1] = vs;
         }
         double med_sig  = (npeer & 1) ? peer_sig[npeer / 2]
-: 0.5 * (peer_sig[npeer / 2 - 1] + peer_sig[npeer / 2]);
+                                      : 0.5 * (peer_sig[npeer / 2 - 1] + peer_sig[npeer / 2]);
         double cs = med_sig * NODE_SOFT_CLEAR_SIG_K;
         if (cs > clear_sig)  clear_sig  = cs;      /* floor: never tighter than before */
-        /*...and never as loose as the TRIP bar, or a block that trips the node
+        /* ...and never as loose as the TRIP bar, or a block that trips the node
          * could also be counted as a clean one. */
         if (trip_bar > 0.0 && clear_sig > trip_bar * NODE_SOFT_CLEAR_MARGIN)
             clear_sig  = trip_bar * NODE_SOFT_CLEAR_MARGIN;
@@ -2255,9 +2255,9 @@ static void record_loop(double loop_mean, int loop_idx)
              * entered this block's combines. */
             bool contaminated = (s_blk_contrib & (1u << i)) != 0;
             printf("node %d: soft-down %s (block mean=%.3f σ=%.3f)%s\n", i,
-                   g_status.nodes[i].soft_down ? "still tripped": "tripped (sticky)",
+                   g_status.nodes[i].soft_down ? "still tripped" : "tripped (sticky)",
                    mean_i[i], sig_i[i],
-                   contaminated ? " — block quarantined": " — was already out, block kept");
+                   contaminated ? " — block quarantined" : " — was already out, block kept");
             if (contaminated) any_trip = true;
             /* Before anything else touches results[]: this is the only moment
              * the block's own rows still exist. */
@@ -2265,10 +2265,10 @@ static void record_loop(double loop_mean, int loop_idx)
             calibrate_shorten("soft-down");
             trip_mask |= (uint8_t)(1u << i);
             evlog("Block %d: %s %s (sigma %.2f, bar %.2f)%s", loop_idx + 1,
-                  i == 0 ? "master": g_status.nodes[i].ip,
-                  g_status.nodes[i].soft_down ? "still soft-down": "SOFT-DOWN",
+                  i == 0 ? "master" : g_status.nodes[i].ip,
+                  g_status.nodes[i].soft_down ? "still soft-down" : "SOFT-DOWN",
                   sig_i[i], trip_bar,
-                  contaminated ? ", block quarantined": "");
+                  contaminated ? ", block quarantined" : "");
             g_status.nodes[i].soft_down = 1;
             s_soft_clean[i] = 0;
         } else if (g_status.nodes[i].soft_down && have_stats[i]) {
@@ -2284,7 +2284,7 @@ static void record_loop(double loop_mean, int loop_idx)
                     g_status.nodes[i].soft_down = 0;
                     s_soft_clean[i] = 0;
                     evlog("Block %d: %s back in the combine after %d clean blocks",
-                          loop_idx + 1, i == 0 ? "master": g_status.nodes[i].ip,
+                          loop_idx + 1, i == 0 ? "master" : g_status.nodes[i].ip,
                           NODE_SOFT_CLEAR_BLOCKS);
                 } else {
                     printf("node %d: soft-down clean %d/%d (mean=%.3f σ=%.3f)\n",
@@ -2317,7 +2317,7 @@ static void record_loop(double loop_mean, int loop_idx)
         row->soft_mask   = soft_mask;
         row->trip_mask   = trip_mask;
         row->mean_mask   = mean_mask;
-        row->quarantined = any_trip ? 1: 0;
+        row->quarantined = any_trip ? 1 : 0;
         row->clear_sig   = (float)clear_sig;
     }
 }
@@ -2411,7 +2411,7 @@ static void center_block(int block_idx)
         for (int i = 0; i < MAX_NODES; i++) {
             if (!(r->have_mask & (1u << i))) continue;
             if (isnan(row[i])) continue;
-            double c = (double)row[i] - (ok[i] ? m[i]: 0.0);
+            double c = (double)row[i] - (ok[i] ? m[i] : 0.0);
             sum += c;
             kk++;
             if (sdok[i]) u[ku++] = c / sd[i];
@@ -2431,13 +2431,13 @@ static void center_block(int block_idx)
             double vv = 0.0;
             for (int t = 0; t < ku; t++) vv += (u[t] - um) * (u[t] - um);
             vv /= (double)(ku - 1);
-            r->node_sd = (float)(vv > 0.0 ? sqrt(vv): 0.0);
+            r->node_sd = (float)(vv > 0.0 ? sqrt(vv) : 0.0);
         } else {
             r->node_sd = NAN;
         }
 
-        const float *r1 = s_node_h1 ? s_node_h1 + (size_t)j * MAX_NODES: NULL;
-        const float *r2 = s_node_h2 ? s_node_h2 + (size_t)j * MAX_NODES: NULL;
+        const float *r1 = s_node_h1 ? s_node_h1 + (size_t)j * MAX_NODES : NULL;
+        const float *r2 = s_node_h2 ? s_node_h2 + (size_t)j * MAX_NODES : NULL;
         double hv1[MAX_NODES], hv2[MAX_NODES];
         bool   hwh[MAX_NODES];
         for (int i = 0; i < MAX_NODES; i++) {
@@ -2468,7 +2468,7 @@ static void close_block(int block_idx)
     if (s_blk_n >= 4) {
         m = s_blk_sum / s_blk_n;
         double v = (s_blk_sumsq - s_blk_n * m * m) / (s_blk_n - 1);
-        s = v > 0.0 ? sqrt(v): 0.0;
+        s = v > 0.0 ? sqrt(v) : 0.0;
     }
     g_status.loop_sigma = s;             // "last closed block" in /status
     /* Centre first: record_loop may quarantine this block and re-rank, and the
@@ -2502,7 +2502,7 @@ static void close_block(int block_idx)
  * camera sweep runs before the next round scores.
  *
  * results[] fills in MEASUREMENT order (results[j] = j-th item measured, its
- * combination id in.index) and ACCUMULATES across rounds, so the prefix
+ * combination id in .index) and ACCUMULATES across rounds, so the prefix
  * [0..runs_completed) is always the complete record: publishing and an abort
  * both read it directly. ⚠ pass_compact() runs at every round
  * boundary, after which the prefix is the extremes plus survivors plus
@@ -2660,10 +2660,10 @@ void elotto_task(void *pvParam)
     camera_source_begin();
 
     bool euro    = (g_status.mode == MODE_EUROJACKPOT);
-    int  nm      = euro ? 5: 6;
-    int  mx      = euro ? 50: 49;
+    int  nm      = euro ? 5 : 6;
+    int  mx      = euro ? 50 : 49;
 
-    g_status.scoring_total = SCORE_PASSES * (mx + (euro ? 12: 0));
+    g_status.scoring_total = SCORE_PASSES * (mx + (euro ? 12 : 0));
     g_status.scoring_passes = SCORE_PASSES;
 
     uint8_t pool_main[POOL_MAIN_49] = {0};   // 15 slots, enough for both modes
@@ -2671,22 +2671,22 @@ void elotto_task(void *pvParam)
     // Pool sizes are variables, not constants: unlimited mode derives both
     // from the per-round run cap, and every count downstream is derived from
     // them.
-    int     pool_nm = euro ? POOL_MAIN_50: POOL_MAIN_49;
-    int     pool_ne = euro ? POOL_EURO_12: 0;
+    int     pool_nm = euro ? POOL_MAIN_50 : POOL_MAIN_49;
+    int     pool_ne = euro ? POOL_EURO_12 : 0;
     if (g_status.unlimited) {
         if (g_status.runs_cap < 1 || g_status.runs_cap > UNLIM_RUNS_MAX)
             g_status.runs_cap = UNLIM_RUNS_DEFAULT;
         unlimited_pool_sizes(euro, nm, g_status.runs_cap, &pool_nm, &pool_ne);
     }
-    g_status.runs_total = comb(pool_nm, nm) * (euro ? comb(pool_ne, 2): 1);
+    g_status.runs_total = comb(pool_nm, nm) * (euro ? comb(pool_ne, 2) : 1);
 
     // Pairwise independence check across all nodes (per-block centered)
     pairs_reset();
     session_clock_start();
     evlog("Session started - %s, run %.1f s, %d runs/round, sweep %s",
-          euro ? "Eurojackpot": "6 of 49", g_status.run_target_ms / 1000.0,
+          euro ? "Eurojackpot" : "6 of 49", g_status.run_target_ms / 1000.0,
           g_status.runs_cap,
-          g_status.cal_budget_ms > 0 ? "on": "off");
+          g_status.cal_budget_ms > 0 ? "on" : "off");
 
     /* Block index of the pass. Declared HERE, before the first goto done, so
      * the abort path can centre the open block (see done:). */
@@ -2737,7 +2737,7 @@ void elotto_task(void *pvParam)
 
         /* ── Phase 0: SCORE_PASSES over every number, keys summed  ── */
         g_status.phase = PHASE_SCORING;
-        g_status.scoring_total  = SCORE_PASSES * (mx + (euro ? 12: 0));
+        g_status.scoring_total  = SCORE_PASSES * (mx + (euro ? 12 : 0));
         g_status.scoring_passes = SCORE_PASSES;
         g_status.scoring_done   = 0;
         g_status.scoring_pass   = 0;
@@ -2750,7 +2750,7 @@ void elotto_task(void *pvParam)
         if (g_status.abort_requested) { slave_abort(); goto done; }
         g_status.scoring_start_ms = (uint32_t)elapsed_ms_now();
         g_status.pool_need_main = (uint8_t)nm;
-        g_status.pool_need_euro = euro ? 2: 0;
+        g_status.pool_need_euro = euro ? 2 : 0;
         /* Unlimited: the pool sizes come from the run cap, and are re-derived every
          * round because the cap is fixed while nothing else here is. */
         if (g_status.unlimited)
@@ -2769,7 +2769,7 @@ void elotto_task(void *pvParam)
          * — main and bonus pool alike. */
         if (!score_pick_pool(0, pool_main, g_status.pool_main_z)) goto done;
         if (euro && !score_pick_pool(1, pool_euro, g_status.pool_euro_z)) goto done;
-        g_status.pool_used_n     = pool_nm + (euro ? pool_ne: 0);
+        g_status.pool_used_n     = pool_nm + (euro ? pool_ne : 0);
         g_status.pool_used_sum   = score_sum_sel();
         g_status.pool_used_round = round;
         g_status.scoring_pass = 0;
@@ -2779,7 +2779,7 @@ void elotto_task(void *pvParam)
          * The UI shows it under the scoring bar for the whole run, and in
          * unlimited mode it is the one thing that changes from round to round. */
         g_status.pool_need_main = (uint8_t)nm;
-        g_status.pool_need_euro = euro ? 2: 0;
+        g_status.pool_need_euro = euro ? 2 : 0;
         for (int i = 0; i < pool_nm; i++) g_status.pool_main[i] = pool_main[i];
         for (int i = 0; i < pool_ne; i++) g_status.pool_euro[i] = pool_euro[i];
         g_status.pool_n_main    = (uint8_t)pool_nm;
@@ -2789,7 +2789,7 @@ void elotto_task(void *pvParam)
          * numbers, and in unlimited mode the sizes are the cap's answer. At the
          * minimum (pool == draw size) this is exactly ONE combination. */
         int main_combos = comb(pool_nm, nm);
-        int euro_combos = euro ? comb(pool_ne, 2): 1;
+        int euro_combos = euro ? comb(pool_ne, 2) : 1;
         int full_combos = main_combos * euro_combos;
         /* s_perm is NUM_RUNS wide and the shuffle below indexes the WHOLE
          * space, so the space must fit it. A pool above that is a hard stop,
@@ -2903,7 +2903,7 @@ void elotto_task(void *pvParam)
              * round's combination i. */
             int i  = s_perm[j];
             int mi = i % main_combos;
-            int ei = euro ? (i / main_combos): 0;
+            int ei = euro ? (i / main_combos) : 0;
             int slot = g_status.round_base + j;       // measurement order, session-wide
             RunResult *r = &g_status.results[slot];
             nth_combination(pool_main, pool_nm, nm, mi, r->nums);
@@ -2914,7 +2914,7 @@ void elotto_task(void *pvParam)
 
             // The draw goes on the HTML card BEFORE the trigger, so the
             // numbers on screen match the window being sampled.
-            focus_publish(FOCUS_DRAW, r->nums, nm, r->euro, euro ? 2: 0);
+            focus_publish(FOCUS_DRAW, r->nums, nm, r->euro, euro ? 2 : 0);
 
             // One broadcast starts every node, then measure locally — all of
             // them integrate the same window, which is the premise the sqrt(n)
@@ -2953,7 +2953,7 @@ void elotto_task(void *pvParam)
              * the board copies all of them: it has to name the measurement
              * without results[], which compaction will have taken. */
             wsig_note(r, wsig, mask, 0);
-            r->acz = NAN;   /* item AC, filled at block close  */
+            r->acz = NAN;   /* item AC, filled at block close */
             if (k > 0) {
                 r->z_score = z;
                 /* Provisional: the block's node means are not known until it
@@ -3038,8 +3038,8 @@ finalize:
     focus_off();
     g_status.paused     = false;
     g_status.elapsed_ms = elapsed_ms_now();
-    g_status.state = g_status.abort_requested ? ELOTTO_ABORTED: ELOTTO_DONE;
-    evlog("Session %s after %d items", g_status.abort_requested ? "aborted": "done",
+    g_status.state = g_status.abort_requested ? ELOTTO_ABORTED : ELOTTO_DONE;
+    evlog("Session %s after %d items", g_status.abort_requested ? "aborted" : "done",
           g_status.items_done);
     vTaskDelete(NULL);
 }

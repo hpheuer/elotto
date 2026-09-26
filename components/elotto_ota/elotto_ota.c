@@ -100,8 +100,8 @@ void elotto_ota_boot_check(void)
     const esp_partition_t *run = esp_ota_get_running_partition();
     s_from_slot = run && run->subtype != ESP_PARTITION_SUBTYPE_APP_FACTORY;
     s_checked   = true;
-    ESP_LOGI(TAG, "running from %s (%s)", run ? run->label: "?",
-             s_from_slot ? "OTA slot": "factory / recovery");
+    ESP_LOGI(TAG, "running from %s (%s)", run ? run->label : "?",
+             s_from_slot ? "OTA slot" : "factory / recovery");
     if (!s_from_slot) return;
 
     if (nvs_get_u8_or(NVS_KEY_POISON, 0) == POISON_EARLY) {
@@ -158,7 +158,7 @@ int elotto_ota_status_json(char *buf, int cap)
         "\"fw_version\":\"%s\",\"fw_built\":\"%s %s\",\"fw_sha\":\"%s\","
         "\"fw_slot\":\"%s\",\"fw_state\":%d,\"fw_boot_attempts\":%d",
         desc->version, desc->date, desc->time, sha,
-        run ? run->label: "?", (int)st, (int)nvs_get_u8_or(NVS_KEY_BOOTS, 0));
+        run ? run->label : "?", (int)st, (int)nvs_get_u8_or(NVS_KEY_BOOTS, 0));
 }
 
 /* ── handlers ─────────────────────────────────────────────────────────── */
@@ -295,7 +295,7 @@ static esp_err_t update_post_handler(httpd_req_t *req)
 
     int remaining = total;
     while (remaining > 0) {
-        int want = remaining < UPLOAD_CHUNK ? remaining: UPLOAD_CHUNK;
+        int want = remaining < UPLOAD_CHUNK ? remaining : UPLOAD_CHUNK;
         int got  = httpd_req_recv(req, buf, want);
         if (got == HTTPD_SOCK_ERR_TIMEOUT) continue;
         if (got <= 0) { err = ESP_FAIL; break; }
@@ -375,8 +375,8 @@ static esp_err_t poison_post_handler(httpd_req_t *req)
     if (on > POISON_EARLY) on = 0;
     nvs_set_u8_commit(NVS_KEY_POISON, on);
     httpd_resp_sendstr(req, (on == POISON_LATE)  ? "ok: poison=late (crash after validate)\n"
-: (on == POISON_EARLY) ? "ok: poison=early (crash before validate)\n"
-: "ok: poison cleared\n");
+                          : (on == POISON_EARLY) ? "ok: poison=early (crash before validate)\n"
+                                                 : "ok: poison cleared\n");
     return ESP_OK;
 }
 
@@ -384,12 +384,12 @@ static esp_err_t otainfo_get_handler(httpd_req_t *req)
 {
     char buf[512];
     int  pos = snprintf(buf, sizeof(buf), "{\"role\":\"%s\",",
-                        s_from_slot ? "app": "factory");
+                        s_from_slot ? "app" : "factory");
     pos += elotto_ota_status_json(buf + pos, sizeof(buf) - pos);
     const esp_partition_t *next = esp_ota_get_next_update_partition(NULL);
     pos += snprintf(buf + pos, sizeof(buf) - pos,
                     ",\"next_slot\":\"%s\",\"poison\":%d,\"heap_free\":%lu}",
-                    next ? next->label: "?", (int)nvs_get_u8_or(NVS_KEY_POISON, 0),
+                    next ? next->label : "?", (int)nvs_get_u8_or(NVS_KEY_POISON, 0),
                     (unsigned long)esp_get_free_heap_size());
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");

@@ -306,16 +306,16 @@ static double          s_probe_fps = 0.0;
 
 static esp_err_t cam_reg_write(uint32_t regaddr, uint32_t value)
 {
-    esp_cam_sensor_reg_val_t regval = {.regaddr = regaddr,.value = value };
+    esp_cam_sensor_reg_val_t regval = { .regaddr = regaddr, .value = value };
     struct v4l2_ext_control ctrl = {
-.id   = ESP_CAM_SENSOR_IOC_S_REG,
-.p_u8 = (uint8_t *)&regval,
-.size = sizeof(regval),
+        .id   = ESP_CAM_SENSOR_IOC_S_REG,
+        .p_u8 = (uint8_t *)&regval,
+        .size = sizeof(regval),
     };
     struct v4l2_ext_controls ctrls = {
-.ctrl_class = V4L2_CTRL_CLASS_ESP_CAM_IOCTL,
-.count      = 1,
-.controls   = &ctrl,
+        .ctrl_class = V4L2_CTRL_CLASS_ESP_CAM_IOCTL,
+        .count      = 1,
+        .controls   = &ctrl,
     };
     if (ioctl(s_fd, VIDIOC_S_EXT_CTRLS, &ctrls) != 0) {
         ESP_LOGW(TAG_CAM, "reg write 0x%04x=0x%02x failed", (unsigned)regaddr, (unsigned)value);
@@ -326,16 +326,16 @@ static esp_err_t cam_reg_write(uint32_t regaddr, uint32_t value)
 
 static esp_err_t cam_reg_read(uint32_t regaddr, uint32_t *value)
 {
-    esp_cam_sensor_reg_val_t regval = {.regaddr = regaddr,.value = 0 };
+    esp_cam_sensor_reg_val_t regval = { .regaddr = regaddr, .value = 0 };
     struct v4l2_ext_control ctrl = {
-.id   = ESP_CAM_SENSOR_IOC_G_REG,
-.p_u8 = (uint8_t *)&regval,
-.size = sizeof(regval),
+        .id   = ESP_CAM_SENSOR_IOC_G_REG,
+        .p_u8 = (uint8_t *)&regval,
+        .size = sizeof(regval),
     };
     struct v4l2_ext_controls ctrls = {
-.ctrl_class = V4L2_CTRL_CLASS_ESP_CAM_IOCTL,
-.count      = 1,
-.controls   = &ctrl,
+        .ctrl_class = V4L2_CTRL_CLASS_ESP_CAM_IOCTL,
+        .count      = 1,
+        .controls   = &ctrl,
     };
     if (ioctl(s_fd, VIDIOC_G_EXT_CTRLS, &ctrls) != 0) return ESP_FAIL;
     *value = regval.value;
@@ -350,14 +350,14 @@ static void cam_identify(void)
 {
     esp_cam_sensor_id_t id = {0};
     struct v4l2_ext_control ctrl = {
-.id   = ESP_CAM_SENSOR_IOC_G_CHIP_ID,
-.p_u8 = (uint8_t *)&id,
-.size = sizeof(id),
+        .id   = ESP_CAM_SENSOR_IOC_G_CHIP_ID,
+        .p_u8 = (uint8_t *)&id,
+        .size = sizeof(id),
     };
     struct v4l2_ext_controls ctrls = {
-.ctrl_class = V4L2_CTRL_CLASS_ESP_CAM_IOCTL,
-.count      = 1,
-.controls   = &ctrl,
+        .ctrl_class = V4L2_CTRL_CLASS_ESP_CAM_IOCTL,
+        .count      = 1,
+        .controls   = &ctrl,
     };
     if (ioctl(s_fd, VIDIOC_G_EXT_CTRLS, &ctrls) != 0) {
         ESP_LOGW(TAG_CAM, "G_CHIP_ID failed -- assuming OV5647 registers");
@@ -377,7 +377,7 @@ uint16_t    camera_sensor_pid(void)  { return s_sensor_pid; }
 
 static uint32_t cam_gain_max(void)
 {
-    return (s_sensor_pid == CAM_PID_IMX219) ? IMX219_GAIN_MAX: 0x3FFu;
+    return (s_sensor_pid == CAM_PID_IMX219) ? IMX219_GAIN_MAX : 0x3FFu;
 }
 
 static void cam_verify_regs(const char *when)
@@ -451,7 +451,7 @@ static void process_words(void)
     __sync_synchronize();
     s_ring_head = head;
     s_ring_drops += drops;
-    s_win_enq += n - drops;      /*  the window's word index */
+    s_win_enq += n - drops;      /* the window's word index */
 
     // Statistics cover every extracted word, including dropped ones: /diag must
     // characterise the source itself, not whichever subset got consumed.
@@ -528,7 +528,7 @@ static void emit_word_cb(uint32_t w, uint32_t ro, void *ctx)
 {
     (void)ctx;
     s_wb[s_wb_n] = w;
-    s_wb_raw[s_wb_n] = (uint8_t)(ro > 255 ? 255: ro);   /* cannot exceed 32 */
+    s_wb_raw[s_wb_n] = (uint8_t)(ro > 255 ? 255 : ro);   /* cannot exceed 32 */
     if (++s_wb_n == WORD_BATCH) process_words();
 }
 
@@ -581,16 +581,16 @@ static void diff_and_extract(const uint8_t *a, const uint8_t *b, uint32_t n)
 
 static void publish_stats(void)
 {
-    double bias  = s_bits_extracted ? (double)s_ones_count / (double)s_bits_extracted: 0.0;
-    double sigma = (s_z_n > 1) ? sqrt(s_z_m2 / (s_z_n - 1)): 0.0;
+    double bias  = s_bits_extracted ? (double)s_ones_count / (double)s_bits_extracted : 0.0;
+    double sigma = (s_z_n > 1) ? sqrt(s_z_m2 / (s_z_n - 1)) : 0.0;
     double elapsed_s = (esp_timer_get_time() - s_stream_start_us) / 1e6;
-    double mbps = (elapsed_s > 0) ? (s_bits_extracted / 1e6) / elapsed_s: 0.0;
+    double mbps = (elapsed_s > 0) ? (s_bits_extracted / 1e6) / elapsed_s : 0.0;
     /* ABOVE BLACK on the IMX219: it outputs a pedestal of 64 DN
      * (10-bit), 16 on this 8-bit scale. Left in, a sensor in total darkness
      * would read px 16 and clear the CAL_MIN_MEAN_PX dark gate, whose whole
      * point is that photons, not read noise, whiten the LSB. The OV5647 path
      * is unchanged. */
-    double mean_px = s_pixel_n ? (double)s_pixel_sum / (double)s_pixel_n: 0.0;
+    double mean_px = s_pixel_n ? (double)s_pixel_sum / (double)s_pixel_n : 0.0;
     if (s_sensor_pid == CAM_PID_IMX219 && s_pixel_n) mean_px -= IMX219_BLACK_PX;
 
     /* Cheap: an SAR read, no bus traffic, once per publish and not per frame. */
@@ -603,7 +603,7 @@ static void publish_stats(void)
      * publishes. The mini-run z is (ones - BITS/2)/sqrt(BITS/4) — linear in
      * `ones` — so sd(z) = sd(ones)/sqrt(BITS/4) and the integer sums are
      * sufficient. Var over the completed mini-runs, n-1. */
-    double raw_bias = s_raw.bits ? (double)s_raw.ones / (double)s_raw.bits: 0.0;
+    double raw_bias = s_raw.bits ? (double)s_raw.ones / (double)s_raw.bits : 0.0;
     double raw_sigma = 0.0;
     if (s_raw.mr_n > 1) {
         double n  = (double)s_raw.mr_n;
@@ -640,25 +640,25 @@ static void publish_stats(void)
     s_stats.sigma_samples     = s_z_n;
     /* Published as 0/0 until the window has enough mini-runs to mean anything;
      * the reader treats 0 samples as "no value", not as a quiet window. */
-    s_stats.win_sigma_samples = (s_win_z_n >= WIN_SIGMA_MIN_N) ? (int)s_win_z_n: 0;
+    s_stats.win_sigma_samples = (s_win_z_n >= WIN_SIGMA_MIN_N) ? (int)s_win_z_n : 0;
     s_stats.win_sigma         = (s_win_z_n >= WIN_SIGMA_MIN_N)
-        ? sqrt(s_win_z_m2 / (double)(s_win_z_n - 1)): 0.0;
+        ? sqrt(s_win_z_m2 / (double)(s_win_z_n - 1)) : 0.0;
     /* Same Pearson r as autocorr_lag below, centred on the WINDOW's bias, then
      * times √pairs: for independent bits r has SE 1/√pairs (the centring takes
      * the bias fluctuation out of E[xy] - p²), so this is a unit-normal z. */
     {
-        double wb = s_win_bits ? (double)s_win_ones / (double)s_win_bits: 0.0;
+        double wb = s_win_bits ? (double)s_win_ones / (double)s_win_bits : 0.0;
         double wv = wb * (1.0 - wb);
         bool ok = (s_win_z_n >= WIN_SIGMA_MIN_N) && wv > 0.0;
         for (int L = 0; L < 4; L++) {
             double np = (double)s_win_ac_pairs[L];
             s_stats.win_ac_z[L] = (ok && np > 0.0)
-                ? ((double)s_win_ac_both1[L] / np - wb * wb) / wv * sqrt(np): 0.0;
+                ? ((double)s_win_ac_both1[L] / np - wb * wb) / wv * sqrt(np) : 0.0;
         }
     }
     s_stats.mean_pixel_level  = mean_px;
     s_stats.mbit_per_sec      = mbps;
-    s_stats.zero_diff_frac    = s_diff_n ? (double)s_zero_diffs / (double)s_diff_n: 0.0;
+    s_stats.zero_diff_frac    = s_diff_n ? (double)s_zero_diffs / (double)s_diff_n : 0.0;
     s_stats.raw_bias          = raw_bias;
     s_stats.raw_sigma         = raw_sigma;
     s_stats.raw_sigma_samples = s_raw.mr_n;
@@ -670,9 +670,9 @@ static void publish_stats(void)
     s_stats.consumer_waits    = s_consumer_waits;
     s_stats.consume_mbit_per_sec = (s_cons_us > 0)
         ? (double)s_cons_bits / (double)s_cons_us   /* bit/us == Mbit/s */
-: 0.0;
+        : 0.0;
     s_stats.stalls            = s_stalls;
-    double np = (double)(s_acct_pairs ? s_acct_pairs: 1);
+    double np = (double)(s_acct_pairs ? s_acct_pairs : 1);
     s_stats.ms_pair           = s_us_cycle / np / 1000.0;
     s_stats.ms_wait           = s_us_wait  / np / 1000.0;
     s_stats.ms_extract        = s_us_ext   / np / 1000.0;
@@ -682,7 +682,7 @@ static void publish_stats(void)
     for (int L = 0; L < 4; L++) {
         s_stats.autocorr_lag[L] = (s_autocorr_pairs[L] && var > 0.0)
             ? (((double)s_autocorr_both1[L] / (double)s_autocorr_pairs[L]) - bias * bias) / var
-: 0.0;
+            : 0.0;
     }
     xSemaphoreGive(s_mutex);
 }
@@ -764,8 +764,8 @@ static void camera_task(void *arg)
 
     while (1) {
         struct v4l2_buffer buf = {
-.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE,
-.memory = V4L2_MEMORY_MMAP,
+            .type   = V4L2_BUF_TYPE_VIDEO_CAPTURE,
+            .memory = V4L2_MEMORY_MMAP,
         };
         if (s_probe_req > 0) {
             /* Give the driver every buffer first: the point is to measure the
@@ -777,8 +777,8 @@ static void camera_task(void *arg)
             int64_t tp0 = 0;
             while (got <= n) {
                 struct v4l2_buffer pb = {
-.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE,
-.memory = V4L2_MEMORY_MMAP,
+                    .type   = V4L2_BUF_TYPE_VIDEO_CAPTURE,
+                    .memory = V4L2_MEMORY_MMAP,
                 };
                 if (ioctl(s_fd, VIDIOC_DQBUF, &pb) != 0) break;
                 if (pb.flags & V4L2_BUF_FLAG_DONE) {
@@ -788,7 +788,7 @@ static void camera_task(void *arg)
                 ioctl(s_fd, VIDIOC_QBUF, &pb);
             }
             int64_t dtp = esp_timer_get_time() - tp0;
-            s_probe_fps = (got > 1 && dtp > 0) ? (double)(got - 1) * 1e6 / (double)dtp: 0.0;
+            s_probe_fps = (got > 1 && dtp > 0) ? (double)(got - 1) * 1e6 / (double)dtp : 0.0;
             s_probe_req = 0;
             /* The probe extracted nothing for ~n frame times, which would sit
              * in mbit_s and in the pair accounting as a hole. Start the window
@@ -870,7 +870,7 @@ static void camera_task(void *arg)
             s_flush_dropped = true;
         }
 
-        /*  Record where this pair starts in the window's stream. */
+        /* Record where this pair starts in the window's stream. */
         if (s_win_on && s_win_npair < WIN_PAIRS_MAX) {
             s_win_pair_start[s_win_npair] = s_win_enq;
             __sync_synchronize();
@@ -965,9 +965,9 @@ esp_err_t camera_init(void)
 
 #if CONFIG_ELOTTO_CAM_XCLK_PIN > 0
     esp_cam_sensor_xclk_config_t xclk_cfg = {
-.esp_clock_router_cfg = {
-.xclk_pin     = CONFIG_ELOTTO_CAM_XCLK_PIN,
-.xclk_freq_hz = CONFIG_ELOTTO_CAM_XCLK_FREQ,
+        .esp_clock_router_cfg = {
+            .xclk_pin     = CONFIG_ELOTTO_CAM_XCLK_PIN,
+            .xclk_freq_hz = CONFIG_ELOTTO_CAM_XCLK_FREQ,
         },
     };
     ret = esp_cam_sensor_xclk_allocate(ESP_CAM_SENSOR_XCLK_ESP_CLOCK_ROUTER, &s_xclk_handle);
@@ -985,19 +985,19 @@ esp_err_t camera_init(void)
 #endif
 
     static const esp_video_init_csi_config_t csi_config = {
-.sccb_config = {
-.init_sccb = true,
-.i2c_config = {
-.port    = CONFIG_ELOTTO_CAM_SCCB_I2C_PORT,
-.scl_pin = CONFIG_ELOTTO_CAM_SCL_PIN,
-.sda_pin = CONFIG_ELOTTO_CAM_SDA_PIN,
+        .sccb_config = {
+            .init_sccb = true,
+            .i2c_config = {
+                .port    = CONFIG_ELOTTO_CAM_SCCB_I2C_PORT,
+                .scl_pin = CONFIG_ELOTTO_CAM_SCL_PIN,
+                .sda_pin = CONFIG_ELOTTO_CAM_SDA_PIN,
             },
-.freq = CONFIG_ELOTTO_CAM_SCCB_I2C_FREQ,
+            .freq = CONFIG_ELOTTO_CAM_SCCB_I2C_FREQ,
         },
-.reset_pin = CONFIG_ELOTTO_CAM_RESET_PIN,
-.pwdn_pin  = CONFIG_ELOTTO_CAM_PWDN_PIN,
+        .reset_pin = CONFIG_ELOTTO_CAM_RESET_PIN,
+        .pwdn_pin  = CONFIG_ELOTTO_CAM_PWDN_PIN,
     };
-    const esp_video_init_config_t cam_config = {.csi = &csi_config };
+    const esp_video_init_config_t cam_config = { .csi = &csi_config };
 
     ret = esp_video_init(&cam_config);
     if (ret != ESP_OK) {
@@ -1016,13 +1016,13 @@ esp_err_t camera_init(void)
     // Use the sensor's default/native format (index 0) instead of hardcoding
     // a fourcc+resolution -- keeps this independent of the OV5647 Kconfig
     // format choice (RAW8 800x800 by default).
-    struct v4l2_fmtdesc fmtdesc = {.index = 0,.type = V4L2_BUF_TYPE_VIDEO_CAPTURE };
+    struct v4l2_fmtdesc fmtdesc = { .index = 0, .type = V4L2_BUF_TYPE_VIDEO_CAPTURE };
     if (ioctl(s_fd, VIDIOC_ENUM_FMT, &fmtdesc) != 0) {
         ESP_LOGE(TAG_CAM, "ENUM_FMT failed");
         ret = ESP_FAIL;
         goto fail;
     }
-    struct v4l2_frmsizeenum frmsize = {.index = 0,.pixel_format = fmtdesc.pixelformat };
+    struct v4l2_frmsizeenum frmsize = { .index = 0, .pixel_format = fmtdesc.pixelformat };
     if (ioctl(s_fd, VIDIOC_ENUM_FRAMESIZES, &frmsize) != 0) {
         ESP_LOGE(TAG_CAM, "ENUM_FRAMESIZES failed");
         ret = ESP_FAIL;
@@ -1030,10 +1030,10 @@ esp_err_t camera_init(void)
     }
 
     struct v4l2_format fmt = {
-.type = V4L2_BUF_TYPE_VIDEO_CAPTURE,
-.fmt.pix.width       = frmsize.discrete.width,
-.fmt.pix.height      = frmsize.discrete.height,
-.fmt.pix.pixelformat = fmtdesc.pixelformat,
+        .type = V4L2_BUF_TYPE_VIDEO_CAPTURE,
+        .fmt.pix.width       = frmsize.discrete.width,
+        .fmt.pix.height      = frmsize.discrete.height,
+        .fmt.pix.pixelformat = fmtdesc.pixelformat,
     };
     if (ioctl(s_fd, VIDIOC_S_FMT, &fmt) != 0) {
         ESP_LOGE(TAG_CAM, "S_FMT failed");
@@ -1051,7 +1051,7 @@ esp_err_t camera_init(void)
                       pf == V4L2_PIX_FMT_SGRBG10 || pf == V4L2_PIX_FMT_SRGGB10);
     uint32_t need = s_frame_w * s_frame_h;
     if (s_packed_raw10) need = need / 4 * 5;
-    s_frame_size = (fmt.fmt.pix.sizeimage >= need) ? fmt.fmt.pix.sizeimage: need;
+    s_frame_size = (fmt.fmt.pix.sizeimage >= need) ? fmt.fmt.pix.sizeimage : need;
     ESP_LOGI(TAG_CAM, "format " V4L2_FMT_STR " %ux%u size=%u",
              V4L2_FMT_STR_ARG(fmt.fmt.pix.pixelformat),
              (unsigned)fmt.fmt.pix.width, (unsigned)fmt.fmt.pix.height, (unsigned)s_frame_size);
@@ -1063,15 +1063,15 @@ esp_err_t camera_init(void)
     /* Dark operation boots ON its fixed rung, so the first sweep of a session
      * finds nothing to change and owes no settle pause. */
     uint32_t boot_e = cam_dark() ? IMX_DARK_EXPOSURE
-: (uint32_t)CONFIG_ELOTTO_CAM_REG_EXPOSURE;
+                                 : (uint32_t)CONFIG_ELOTTO_CAM_REG_EXPOSURE;
     if (!camera_set_exposure(boot_e, boot_g))
         ESP_LOGW(TAG_CAM, "boot exposure/gain did not latch");
     cam_verify_regs("after-write");
 
     struct v4l2_requestbuffers req = {
-.count  = CAM_BUF_COUNT,
-.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE,
-.memory = V4L2_MEMORY_MMAP,
+        .count  = CAM_BUF_COUNT,
+        .type   = V4L2_BUF_TYPE_VIDEO_CAPTURE,
+        .memory = V4L2_MEMORY_MMAP,
     };
     if (ioctl(s_fd, VIDIOC_REQBUFS, &req) != 0) {
         ESP_LOGE(TAG_CAM, "REQBUFS failed");
@@ -1081,9 +1081,9 @@ esp_err_t camera_init(void)
 
     for (int i = 0; i < CAM_BUF_COUNT; i++) {
         struct v4l2_buffer buf = {
-.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE,
-.memory = V4L2_MEMORY_MMAP,
-.index  = i,
+            .type   = V4L2_BUF_TYPE_VIDEO_CAPTURE,
+            .memory = V4L2_MEMORY_MMAP,
+            .index  = i,
         };
         if (ioctl(s_fd, VIDIOC_QUERYBUF, &buf) != 0) {
             ESP_LOGE(TAG_CAM, "QUERYBUF[%d] failed", i);
@@ -1103,7 +1103,7 @@ esp_err_t camera_init(void)
         if (buf.length < s_frame_size) {
             ESP_LOGE(TAG_CAM, "buffer %d is %lu B, frame needs %lu -- clamped",
                      i, (unsigned long)buf.length, (unsigned long)s_frame_size);
-            s_frame_size = s_packed_raw10 ? buf.length / 5 * 5: buf.length;
+            s_frame_size = s_packed_raw10 ? buf.length / 5 * 5 : buf.length;
         }
         if (ioctl(s_fd, VIDIOC_QBUF, &buf) != 0) {
             ESP_LOGE(TAG_CAM, "QBUF[%d] failed", i);
@@ -1222,12 +1222,12 @@ static bool read_words(uint32_t *out, uint32_t *out_raw, uint32_t n)
 
         /* The contiguous stretch from t: up to head, or to the array's end
          * when head has wrapped (the next pass starts at slot 0). */
-        uint32_t k = (h > t ? h: RING_WORDS) - t;
+        uint32_t k = (h > t ? h : RING_WORDS) - t;
         if (k > n) k = n;
         memcpy(out, &s_ring[t], k * sizeof(uint32_t));
         if (out_raw) {
             for (uint32_t i = 0; i < k; i++)
-                out_raw[i] = s_ring_raw ? s_ring_raw[t + i]: 0u;
+                out_raw[i] = s_ring_raw ? s_ring_raw[t + i] : 0u;
             out_raw += k;
         }
         __sync_synchronize();
@@ -1357,7 +1357,7 @@ void camera_ring_flush(int pairs)
     if (pairs < 1) pairs = 1;
     s_flush_done    = false;
     s_flush_dropped = false;
-    s_flush_discard = 1;          /*  the first pair after the request */
+    s_flush_discard = 1;          /* the first pair after the request */
     s_flush_pairs   = pairs;      /* last, so the capture task sees a full request */
 }
 
@@ -1498,7 +1498,7 @@ static double s_cal_z_scale = 0.0;
 
 void camera_cal_set_z_scale(double z_per_bias)
 {
-    s_cal_z_scale = (z_per_bias > 0.0) ? z_per_bias: 0.0;
+    s_cal_z_scale = (z_per_bias > 0.0) ? z_per_bias : 0.0;
 }
 
 /* The LSB bias bar for ONE window. Publish/audit only — cal_gate() no longer
@@ -1529,14 +1529,14 @@ static double cal_bias_bar(uint64_t bits)
  * work this reasoning does not credit it with — replay against `/loops`. */
 static double cal_key(const camera_cal_step_t *s)
 {
-    return (s->raw_bits > 0 && s->raw_sigma > 0.0) ? s->raw_sigma: s->sigma;
+    return (s->raw_bits > 0 && s->raw_sigma > 0.0) ? s->raw_sigma : s->sigma;
 }
 
 static double cal_key_se(const camera_cal_step_t *s)
 {
     double k = cal_key(s);
     int    m = s->minirun_n;
-    if (!(k > 0.0) || m < 2) return k > 0.0 ? k: 1.0;   /* unmeasurable: never decisive */
+    if (!(k > 0.0) || m < 2) return k > 0.0 ? k : 1.0;   /* unmeasurable: never decisive */
     return k / sqrt(2.0 * (double)(m - 1));
 }
 
@@ -1640,7 +1640,7 @@ static bool cal_step(camera_cal_step_t *st, uint32_t exposure, uint32_t gain,
              (st->bias - 0.5) * s_cal_z_scale,
              st->sigma, st->autocorr_max,
              st->mean_pixel_level, st->zero_diff_frac, st->mbit_per_sec,
-             st->bits / 1e6, st->fail ? "FAIL ": "pass ", (unsigned)st->fail);
+             st->bits / 1e6, st->fail ? "FAIL " : "pass ", (unsigned)st->fail);
     return true;
 }
 
@@ -1668,8 +1668,8 @@ bool camera_calibrate(int budget_ms, bool (*abort_cb)(void), camera_cal_t *out)
     /* Dark operation measures one rung after the entry setting. */
     static const uint32_t dark_ladder[] = { IMX_DARK_EXPOSURE };
     const uint32_t *ladder = cam_dark() ? dark_ladder
-: (s_sensor_pid == CAM_PID_IMX219) ? s_cal_ladder_imx: s_cal_ladder;
-    int ladder_n = cam_dark() ? 1: (int)CAL_LADDER_N;
+                           : (s_sensor_pid == CAM_PID_IMX219) ? s_cal_ladder_imx : s_cal_ladder;
+    int ladder_n = cam_dark() ? 1 : (int)CAL_LADDER_N;
     int planned = 1 + ladder_n;
     if (planned > CAM_CAL_MAX_STEPS) planned = CAM_CAL_MAX_STEPS;
     int64_t slice_us = (int64_t)budget_ms * 1000 / planned;
@@ -1781,8 +1781,8 @@ bool camera_calibrate(int budget_ms, bool (*abort_cb)(void), camera_cal_t *out)
      * entry setting exists to keep a working LIT rung, and in the dark there is
      * no other rung to keep. The failure is reported, not hidden. */
     uint32_t use_e   = (pick >= 0) ? out->step[pick].exposure
-: cam_dark()  ? IMX_DARK_EXPOSURE: e0;
-    uint32_t use_g   = (pick >= 0) ? out->step[pick].gain: g0;
+                     : cam_dark()  ? IMX_DARK_EXPOSURE : e0;
+    uint32_t use_g   = (pick >= 0) ? out->step[pick].gain     : g0;
 
     bool applied = camera_set_exposure(use_e, use_g);
     if (!applied && pick >= 0) {
@@ -1805,7 +1805,7 @@ bool camera_calibrate(int budget_ms, bool (*abort_cb)(void), camera_cal_t *out)
      * or not a gate certified it. When nothing passed we revert to the entry
      * setting, and step 0 measured exactly that. `ok` is what says certified or
      * not; these are just what was seen. */
-    int rep = (pick >= 0) ? pick: 0;
+    int rep = (pick >= 0) ? pick : 0;
     if (rep < n && out->step[rep].bits >= CAL_MIN_BITS) {
         out->bias             = out->step[rep].bias;
         out->sigma            = out->step[rep].sigma;
@@ -1817,7 +1817,7 @@ bool camera_calibrate(int budget_ms, bool (*abort_cb)(void), camera_cal_t *out)
         out->raw_runs_z       = out->step[rep].raw_runs_z;
     }
 
-    s_raw_runs_on = false;   /* measurement does not rank runs  */
+    s_raw_runs_on = false;   /* measurement does not rank runs */
 
     /* Open a clean window on the setting the session will actually run, so the
      * per-loop bias/rate in /status and /loops describe THIS loop's operating
@@ -1832,13 +1832,13 @@ bool camera_calibrate(int budget_ms, bool (*abort_cb)(void), camera_cal_t *out)
 
     out->elapsed_ms = (uint32_t)((esp_timer_get_time() - t0) / 1000);
     ESP_LOGI(TAG_CAM, "cal: %s exposure=%lu gain=%lu (%d/%d passed, %lu ms)",
-             out->ok ? "chose": "NO gated setting -- kept",
+             out->ok ? "chose" : "NO gated setting -- kept",
              (unsigned long)use_e, (unsigned long)use_g,
-             pick >= 0 ? 1: 0, n, (unsigned long)out->elapsed_ms);
+             pick >= 0 ? 1 : 0, n, (unsigned long)out->elapsed_ms);
     return out->ok;
 
 aborted:
-    s_raw_runs_on = false;  /* measurement does not rank runs  */
+    s_raw_runs_on = false;  /* measurement does not rank runs */
     out->nsteps = n;
     camera_set_exposure(e0, g0);
     // Re-arm rather than clear: nobody waits for it now, but the ring still holds
@@ -1866,7 +1866,7 @@ void camera_get_stats(camera_stats_t *out)
 /* ── GET /calibrate payload, shared by master and slave ─────────────────
  *
  * Takes void* rather than httpd_req_t* to keep esp_http_server out of this
- * component's public header — the.c includes it, callers pass their request
+ * component's public header — the .c includes it, callers pass their request
  * straight through.
  *
  * Chunked on purpose: 12 steps of ~200 bytes overflows any sane stack buffer,
@@ -1892,11 +1892,11 @@ esp_err_t camera_cal_send_json(void *httpd_req, const camera_cal_t *c)
         "\"raw_bias\":%.6f,\"raw_sigma\":%.4f,\"raw_runs_z\":%.2f,"
         "\"kept\":%s,"
         "\"autocorr\":%.4f,\"mean_px\":%.2f,\"ms\":%lu,\"steps\":[",
-        c->ok ? "true": "false", c->chosen,
+        c->ok ? "true" : "false", c->chosen,
         (unsigned long)c->exposure, (unsigned long)c->gain,
         c->bias, c->sigma, c->mbit_per_sec,
         c->raw_bias, c->raw_sigma, c->raw_runs_z,
-        c->kept ? "true": "false",
+        c->kept ? "true" : "false",
         c->autocorr_max, c->mean_pixel_level, (unsigned long)c->elapsed_ms);
     httpd_resp_send_chunk(req, buf, len);
 
@@ -1909,14 +1909,14 @@ esp_err_t camera_cal_send_json(void *httpd_req, const camera_cal_t *c)
             "\"miniruns\":%d,\"bias\":%.6f,\"sigma\":%.4f,\"mbit_s\":%.3f,"
             "\"autocorr\":%.4f,\"mean_px\":%.2f,\"zero_diff\":%.4f,"
             "\"stuck\":%lu,\"fail\":%lu,\"pass\":%s}",
-            i ? ",": "", (unsigned long)s->exposure, (unsigned long)s->gain,
+            i ? "," : "", (unsigned long)s->exposure, (unsigned long)s->gain,
             (unsigned long long)s->bits,
             s->raw_bias, s->raw_sigma, s->raw_runs_z,
             (unsigned long long)s->raw_bits, cal_key(s), s->minirun_n,
             s->bias, s->sigma, s->mbit_per_sec, s->autocorr_max,
             s->mean_pixel_level, s->zero_diff_frac,
             (unsigned long)s->stuck_frames, (unsigned long)s->fail,
-            s->fail ? "false": "true");
+            s->fail ? "false" : "true");
         httpd_resp_send_chunk(req, buf, len);
     }
     httpd_resp_send_chunk(req, "]}", 2);
@@ -1981,14 +1981,14 @@ esp_err_t camera_expose_handle(void *httpd_req, bool busy)
     camera_get_exposure(&got_e, &got_g);
     snprintf(buf, sizeof(buf),
         "{\"ok\":%s,\"exposure\":%lu,\"gain\":%lu,\"asked\":%lu}",
-        applied ? "true": "false",
+        applied ? "true" : "false",
         (unsigned long)got_e, (unsigned long)got_g, (unsigned long)want_e);
     if (!applied) httpd_resp_set_status(req, "500 Internal Server Error");
     httpd_resp_sendstr(req, buf);
     ESP_LOGI(TAG_CAM, "expose: set exposure=%lu gain=%lu -> read back %lu/%lu %s",
              (unsigned long)want_e, (unsigned long)want_g,
              (unsigned long)got_e, (unsigned long)got_g,
-             applied ? "": "(DID NOT LATCH)");
+             applied ? "" : "(DID NOT LATCH)");
     return ESP_OK;
 }
 
@@ -2063,7 +2063,7 @@ static esp_err_t cam_dump_send(httpd_req_t *req, uint32_t off)
         (char)(s_fourcc & 0xFF), (char)((s_fourcc >> 8) & 0xFF),
         (char)((s_fourcc >> 16) & 0xFF), (char)((s_fourcc >> 24) & 0xFF),
         (unsigned long)s_frame_w, (unsigned long)s_frame_h, (unsigned long)s_frame_size,
-        s_packed_raw10 ? "true": "false", (unsigned long)s_buf_len[0],
+        s_packed_raw10 ? "true" : "false", (unsigned long)s_buf_len[0],
         (unsigned long)off, CAM_DUMP_N,
         p_sum / p_n, (double)p_zero / p_n, (double)p_one / p_n,
         u_sum / u_n, (double)u_zero / u_n, (double)u_one / u_n, (double)u_big / u_n,
@@ -2136,11 +2136,11 @@ esp_err_t camera_selftest_handle(void *httpd_req, bool busy)
         "\"al_l1_ctrl\":\"%08lx\",\"al_l2_ctrl\":\"%08lx\","
         "\"ns_read_al\":[%.3f,%.3f,%.3f],\"ns10_fast_al\":[%.3f,%.3f,%.3f],"
         "\"ms_pair_r10_fast_al\":[%.1f,%.1f,%.1f]}",
-        t.equal ? "true": "false", t.cases, t.failed_case, (unsigned long)t.words,
+        t.equal ? "true" : "false", t.cases, t.failed_case, (unsigned long)t.words,
         t.ns_read, t.ns_ref, t.ns_fast, t.ns_stats, t.ns_raw,
         t.ns_read * mhz / 1000.0, t.ns_ref * mhz / 1000.0,
         t.ns_fast * mhz / 1000.0, t.ns_stats * mhz / 1000.0,
-        t.ns_stats > 0.0f ? t.ns_ref / t.ns_stats: 0.0, (int)mhz,
+        t.ns_stats > 0.0f ? t.ns_ref / t.ns_stats : 0.0, (int)mhz,
         (unsigned long)t.bench_bytes, (unsigned long)s_frame_size,
         /* What the benchmark says one live pair of extraction+statistics should
          * cost. Held next to /diagjson's measured ms_extract, this is the whole
@@ -2149,13 +2149,13 @@ esp_err_t camera_selftest_handle(void *httpd_req, bool busy)
         /* The sensor's own cadence with the CPU idle, and what one PAIR would
          * cost at it. If ms_pair_raw is close to the live ms_pair, the sensor
          * is the wall and no amount of faster extraction moves the bit rate. */
-        fps_raw, fps_raw > 0.0 ? 2000.0 / fps_raw: 0.0,
-        t.popcount_ok ? "true": "false", (unsigned long)t.popcount_n,
+        fps_raw, fps_raw > 0.0 ? 2000.0 / fps_raw : 0.0,
+        t.popcount_ok ? "true" : "false", (unsigned long)t.popcount_n,
         (unsigned long)t.popcount_bad,
         t.what, (unsigned long)t.bad_at,
         (unsigned long)t.ref_w, (unsigned long)t.fast_w,
         (unsigned long)t.ref_z, (unsigned long)t.fast_z,
-        t.r10_equal ? "true": "false", t.r10_cases, t.r10_failed_case, t.r10_what,
+        t.r10_equal ? "true" : "false", t.r10_cases, t.r10_failed_case, t.r10_what,
         (unsigned long)t.r10_bad_at, (unsigned long)t.r10_ref_w,
         (unsigned long)t.r10_fast_w,
         t.ns10_ref, t.ns10_fast, t.ns10_stats,
@@ -2193,7 +2193,7 @@ typedef struct {
     float    px;          /* mean pixel level -- the light */
     float    ac1;         /* lag-1 autocorrelation, cumulative since the sweep */
     float    zdiff;       /* zero-diff fraction */
-    float    wac[4];      /* lag-1..4 autocorrelation over THIS window, as z  */
+    float    wac[4];      /* lag-1..4 autocorrelation over THIS window, as z */
 } cam_winlog_t;
 
 static cam_winlog_t *s_winlog;
@@ -2302,7 +2302,7 @@ esp_err_t camera_winlog_send_json(void *httpd_req)
             "\"wlo\":%d,\"wac\":[%.2f,%.2f,%.2f,%.2f],"
             "\"rsig\":%.4f,\"rbias\":%.6f,\"sig\":%.4f,\"bias\":%.6f,"
             "\"px\":%.2f,\"ac1\":%.4f,\"zdiff\":%.4f}",
-            i ? ",": "", (unsigned long)e.ses,
+            i ? "," : "", (unsigned long)e.ses,
             (unsigned long)e.t_ms, (unsigned long)e.tag,
             (double)e.wsig, (long)e.wn, wlo,
             (double)e.wac[0], (double)e.wac[1], (double)e.wac[2], (double)e.wac[3],
@@ -2424,14 +2424,14 @@ esp_err_t camera_linearity_handle(void *httpd_req, bool busy)
          * actually doubled-ish -- the caller may pass any ladder. Steady light
          * gives ratio ~= exp[i]/exp[i-1]; flicker gives less. px_per_exp is the
          * scale-free form, constant under steady light whatever the ladder. */
-        double ratio  = (i > 0 && px[i - 1] > 0.0) ? px[i] / px[i - 1]: 0.0;
-        double eratio = (i > 0) ? (double)exps[i] / (double)exps[i - 1]: 0.0;
+        double ratio  = (i > 0 && px[i - 1] > 0.0) ? px[i] / px[i - 1] : 0.0;
+        double eratio = (i > 0) ? (double)exps[i] / (double)exps[i - 1] : 0.0;
         len = snprintf(buf, sizeof(buf),
             "%s{\"exposure\":%lu,\"applied\":%s,\"mean_px\":%.3f,"
             "\"px_per_exp\":%.4f,\"ratio\":%.3f,\"exp_ratio\":%.3f,"
             "\"raw_sigma\":%.4f,\"ac1\":%.4f}",
-            i ? ",": "", (unsigned long)exps[i],
-            applied[i] ? "true": "false", px[i],
+            i ? "," : "", (unsigned long)exps[i],
+            applied[i] ? "true" : "false", px[i],
             px[i] / (double)exps[i], ratio, eratio, rs[i], ac[i]);
         httpd_resp_send_chunk(req, buf, len);
     }

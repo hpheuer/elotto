@@ -46,7 +46,7 @@ void node_camera_failed(int node, const char *why)
         g_status.nodes[node].ok = false;
         g_status.node_ok--;
     }
-    const char *name = node ? g_status.nodes[node].ip: "master";
+    const char *name = node ? g_status.nodes[node].ip : "master";
     printf("node %d (%s): CAMERA FAULT (%s) -- dropped, %d node(s) left\n",
            node, name, why, g_status.node_ok);
 
@@ -62,7 +62,7 @@ void node_camera_failed(int node, const char *why)
     }
     note_first_drop(node);
 
-    int floor_n = (g_status.node_count >= 2) ? 2: 1;
+    int floor_n = (g_status.node_count >= 2) ? 2 : 1;
     if (g_status.node_ok < floor_n) {
         g_status.noise_stalled   = true;
         g_status.abort_requested = true;
@@ -111,7 +111,7 @@ static void note_first_drop(int node)
     printf("drop forensics: node %d at uptime %lld ms, master eth %s, "
            "%lu link down(s) since boot\n",
            node, (long long)g_status.drop_uptime_ms,
-           g_status.drop_eth_up ? "UP": "DOWN",
+           g_status.drop_eth_up ? "UP" : "DOWN",
            (unsigned long)g_status.drop_eth_downs);
 }
 
@@ -143,9 +143,9 @@ static bool link_open(void)
     int on = 1;
     setsockopt(s_sock, SOL_SOCKET, SO_BROADCAST, &on, sizeof(on));
     struct sockaddr_in me = {
-.sin_family      = AF_INET,
-.sin_port        = htons(ELOTTO_LINK_MASTER_PORT),
-.sin_addr.s_addr = htonl(INADDR_ANY),
+        .sin_family      = AF_INET,
+        .sin_port        = htons(ELOTTO_LINK_MASTER_PORT),
+        .sin_addr.s_addr = htonl(INADDR_ANY),
     };
     if (bind(s_sock, (struct sockaddr *)&me, sizeof(me)) < 0) {
         printf("link: bind(%d) failed\n", ELOTTO_LINK_MASTER_PORT);
@@ -201,8 +201,8 @@ static bool link_arm_timeout(int64_t deadline)
 {
     int64_t left = deadline - esp_timer_get_time();
     if (left < 1000) return false;
-    struct timeval tv = {.tv_sec  = (time_t)(left / 1000000),
-.tv_usec = (suseconds_t)(left % 1000000) };
+    struct timeval tv = { .tv_sec  = (time_t)(left / 1000000),
+                          .tv_usec = (suseconds_t)(left % 1000000) };
     setsockopt(s_sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     return true;
 }
@@ -304,11 +304,11 @@ int nodes_collect(int timeout_ms, bool critical)
             printf("node %d (%s): %d missed replies -- dropped, %d node(s) left\n",
                    k + 1, g_status.nodes[k + 1].ip, s_link[k].miss_streak,
                    g_status.node_ok);
-            int floor_n = (g_status.node_count >= 2) ? 2: 1;
+            int floor_n = (g_status.node_count >= 2) ? 2 : 1;
             if (g_status.node_ok < floor_n) g_status.abort_requested = true;
         }
     }
-    s_slave_ok = (g_status.node_ok > (g_status.nodes[0].ok ? 1: 0));
+    s_slave_ok = (g_status.node_ok > (g_status.nodes[0].ok ? 1 : 0));
     return got;
 }
 
@@ -430,10 +430,10 @@ static void node_take_cal(int k)
     N->cam_gain     = (uint16_t)g;
     N->cam_bias     = bias;
     N->cam_cal_mbit = mb;
-    N->cam_cal_ok   = (tag == 'G') ? 1: 0;
+    N->cam_cal_ok   = (tag == 'G') ? 1 : 0;
     printf("node %d (%s): cal exposure=%lu gain=%lu bias=%.6f %.2f Mbit/s %s\n",
            k + 1, N->ip, e, g, bias, mb,
-           N->cam_cal_ok ? "": "(no gated setting -- kept previous)");
+           N->cam_cal_ok ? "" : "(no gated setting -- kept previous)");
 }
 
 /* Wait for every node's ack. The timeout is derived from the budget the nodes
@@ -449,14 +449,14 @@ static void slave_calibrate_wait(int budget_ms)
 }
 
 /* The master's own sweep, kept in PSRAM: the table is ~1.2 KB and internal RAM
- * is already full with results[] (adding it as.bss fails the LINK, not the
+ * is already full with results[] (adding it as .bss fails the LINK, not the
  * run). Allocated once and never freed, so GET /calibrate can still serve the
  * last sweep long after the session that produced it finished. */
 static camera_cal_t *s_cal;
 
 const camera_cal_t *elotto_last_calibration(void)
 {
-    return (s_cal && s_cal->nsteps > 0) ? s_cal: NULL;
+    return (s_cal && s_cal->nsteps > 0) ? s_cal : NULL;
 }
 
 static bool cal_abort_cb(void) { return g_status.abort_requested; }
@@ -473,15 +473,15 @@ static void calibrate_master(int budget_ms)
     camera_cal_set_z_scale(gcp_z_per_bias(g_status.run_segments));
     bool ok = camera_calibrate(budget_ms, cal_abort_cb, s_cal);
     /* Step 0 re-measures the setting in force at entry without changing it. */
-    s_cal_e0[0]     = s_cal->nsteps > 0 ? s_cal->step[0].exposure: 0;
+    s_cal_e0[0]     = s_cal->nsteps > 0 ? s_cal->step[0].exposure : 0;
     N->cam_exp      = s_cal->exposure;
     N->cam_gain     = (uint16_t)s_cal->gain;
     N->cam_bias     = (float)s_cal->bias;
     N->cam_cal_mbit = (float)s_cal->mbit_per_sec;
-    N->cam_cal_ok   = ok ? 1: 0;
+    N->cam_cal_ok   = ok ? 1 : 0;
     printf("master: cal exposure=%lu gain=%lu %s (%lu ms, %d steps)\n",
            (unsigned long)s_cal->exposure, (unsigned long)s_cal->gain,
-           ok ? "": "(no gated setting -- kept previous)",
+           ok ? "" : "(no gated setting -- kept previous)",
            (unsigned long)s_cal->elapsed_ms, s_cal->nsteps);
 }
 
@@ -521,7 +521,7 @@ void calibrate_shorten(const char *why)
 
 static const char *node_label(int i)
 {
-    return i == 0 ? "master": g_status.nodes[i].ip;
+    return i == 0 ? "master" : g_status.nodes[i].ip;
 }
 
 bool calibrate_all(const char *why)
@@ -570,9 +570,9 @@ bool calibrate_all(const char *why)
         n_moved++;
         int w = (s_cal_e0[i] == 0)
             ? snprintf(moved + mpos, sizeof(moved) - mpos, "%s%s ?->%lu",
-                       mpos ? ", ": "", node_label(i), (unsigned long)now_e)
-: snprintf(moved + mpos, sizeof(moved) - mpos, "%s%s %lu->%lu",
-                       mpos ? ", ": "", node_label(i),
+                       mpos ? ", " : "", node_label(i), (unsigned long)now_e)
+            : snprintf(moved + mpos, sizeof(moved) - mpos, "%s%s %lu->%lu",
+                       mpos ? ", " : "", node_label(i),
                        (unsigned long)s_cal_e0[i], (unsigned long)now_e);
         if (w > 0 && mpos + w < (int)sizeof(moved)) mpos += w;
     }
@@ -584,7 +584,7 @@ bool calibrate_all(const char *why)
     for (int i = 0; i < g_status.node_count && i < MAX_NODES; i++) {
         if (!g_status.nodes[i].ok || g_status.nodes[i].cam_cal_ok) continue;
         int w = snprintf(unc + upos, sizeof(unc) - upos, "%s%s",
-                         upos ? ", ": "", node_label(i));
+                         upos ? ", " : "", node_label(i));
         if (w > 0 && upos + w < (int)sizeof(unc)) upos += w;
     }
     if (upos) evlog("Sweep: NO certified setting on %s - see its /calibrate", unc);
@@ -593,7 +593,7 @@ bool calibrate_all(const char *why)
      * moved — doubles it, anything else puts it back to the minimum. */
     if (n_moved == 0 && upos == 0) {
         int nx = g_status.cal_interval_ms * 2;
-        g_status.cal_interval_ms = nx > CAL_DYN_MAX_MS ? CAL_DYN_MAX_MS: nx;
+        g_status.cal_interval_ms = nx > CAL_DYN_MAX_MS ? CAL_DYN_MAX_MS : nx;
     } else {
         g_status.cal_interval_ms = CAL_DYN_MIN_MS;
     }
@@ -613,7 +613,7 @@ bool calibrate_all(const char *why)
     while (esp_timer_get_time() < end && !g_status.abort_requested)
         vTaskDelay(pdMS_TO_TICKS(100));
     g_status.settle_end_us = 0;
-    evlog(g_status.abort_requested ? "Settle aborted": "Settle done - measuring resumes");
+    evlog(g_status.abort_requested ? "Settle aborted" : "Settle done - measuring resumes");
     return true;
 }
 
@@ -712,7 +712,7 @@ bool node_take_z(int k, double *out_z,
     }
 
     /* The halves are the first two fields only if the first comma is followed
-     * by a number: a node without halves sends,wsig= or,ac= there. */
+     * by a number: a node without halves sends ,wsig= or ,ac= there. */
     const char *comma = strchr(resp + 2, ',');
     if (comma && !isalpha((unsigned char)comma[1])) {
         const char *c2 = strchr(comma + 1, ',');
@@ -769,7 +769,7 @@ void slaves_diag(void)
             N->fw_sha[16] = '\0';
         }
         /* ",raw=<bias>,<sigma>" — the LSB pair, tagged for the
-         * same reason,fw= is. Cleared first: a node that stops reporting it
+         * same reason ,fw= is. Cleared first: a node that stops reporting it
          * must read as absent, not as whatever it said last time. */
         N->cam_raw_bias = 0.0f; N->cam_raw_sigma = 0.0f;
         const char *rw = strstr(resp, ",raw=");

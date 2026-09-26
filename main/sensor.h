@@ -329,7 +329,7 @@ typedef struct {
      * too. Sign: + = neighbouring pixels agree too often (mini-run spread
      * inflated), − = they alternate (spread deflated).
      * ⚠ A diagnostic column, not a key: nothing ranks, selects or excludes on it.
-     * NaN = no node reported one (VOID, or firmware without,ac=). */
+     * NaN = no node reported one (VOID, or firmware without ,ac=). */
     float      acz;
 } RunResult;
 _Static_assert(sizeof(RunResult) == 48, "results[] row is the internal-RAM budget");
@@ -414,7 +414,7 @@ typedef struct {
     float    cam_bias_now;
     float    cam_sigma_now;
     /* The camera sigma of the LAST MEASUREMENT WINDOW on this node,
-     * from,wsig= on the 'Z' reply — not from the 'D' query the two fields
+     * from ,wsig= on the 'Z' reply — not from the 'D' query the two fields
      * above come from.
      * ⚠ cam_sigma_now spans everything since the last sweep, up to three
      * blocks on this rig, and therefore cannot localise anything. This one
@@ -914,7 +914,7 @@ typedef struct {
                                           // which case only the drift/σ aggregates exist)
     /* The pass, in MEASUREMENT order: results[j] is the j-th item measured
      * (its combination id is results[j].index). Compact by construction, so
-     * the prefix [0.. runs_completed) is always the complete record — an
+     * the prefix [0 .. runs_completed) is always the complete record — an
      * abort needs no compaction. */
     RunResult        results[NUM_RUNS];
 } ElottoStatus;
