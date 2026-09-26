@@ -4,9 +4,9 @@
 
 The full §1.1–§1.14 text (closed design findings for Task 1 / per-loop calibration, enclosure lighting, etc.) lived here until the **2026-08-28 docs trim**. Recover it from git:
 
-```text
+`text
 git show 1e62bca:docs/PLAN_HISTORY.md
-```
+`
 
 (or any ancestor that still carries the file before that trim).
 
@@ -17,4 +17,4 @@ git show 1e62bca:docs/PLAN_HISTORY.md
 | §1.1 – §1.14 | `git show 1e62bca:docs/PLAN_HISTORY.md` |
 | §1.15 onward (historical numbering) | superseded; v3 contract is [`../CLAUDE.md`](../CLAUDE.md) |
 
-Read findings there as **records of what was true when measured**, not as current state. Several were overturned later (enclosure is lit `[D28]`; selection key is `|bias−0,5|` `[D46]`; LSB-as-is `[D65]`).
+Read findings there as **records of what was true when measured**, not as current state. Several were overturned later (enclosure is lit; selection key is `|bias−0,5|`; LSB-as-is).

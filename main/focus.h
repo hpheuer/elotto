@@ -3,7 +3,7 @@
  * These four share state: pause_gate() accumulates held time, elapsed_ms_now()
  * subtracts it, and a pause must nudge the gap timer or the break is charged to
  * focus_gap_ms. Panel lit <=> this run's bits are being collected.
- * The session is always unattended `[D66]`; GET /focus feeds the HTML card.
+ * The session is always unattended; GET /focus feeds the HTML card.
  */
 #pragma once
 
@@ -67,7 +67,7 @@ typedef struct {
     char     txt[EVLOG_TXT];
 } EvEntry;
 
-void     evlog(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+void     evlog(const char *fmt,...) __attribute__((format(printf, 1, 2)));
 uint32_t evlog_seq(void);
 // Oldest first. Returns the number copied (≤ max).
 int      evlog_copy(EvEntry *dst, int max);

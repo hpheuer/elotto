@@ -5,14 +5,9 @@
  * drop/reboot policy, and the diagnostics poll. sensor.c keeps the GCP
  * statistics and calls in here when it needs the array to do something.
  *
- * The split is along the seam the code already had: every static this module
- * owns (the socket, the sequence number, the per-slave table) was used only by
- * the functions moved with it. Nothing here is a new abstraction — it is the
- * same code, in a file named after what it does.
- *
  * The transport itself is deliberately NOT abstracted away: a command leaves as
  * ONE broadcast datagram so every node starts within microseconds of the
- * others, which is the premise the ÷√k combine rests on. See elotto_link.h for
+ * others. See elotto_link.h for
  * the framing and why every frame carries the sequence number it answers.
  */
 #pragma once
@@ -22,21 +17,14 @@
 /* Reply window for one measurement round. Public rather than private because
  * sensor.c waits on the round itself, right after its own local run.
  *
- * DERIVED FROM THE RUN LENGTH, not a constant. It used to be a flat 4000 ms
- * "generous headroom" for a ~1 s run — which silently became a *deadline* the
- * moment scoring runs grew to ~3 s: every slave would still be measuring when
- * the window closed, all of them would look silent, and after NODE_MISS_LIMIT
- * rounds they would be DROPPED. The session would then carry on solo and still
- * look like it was working, which is the worst kind of failure this rig has.
+ * DERIVED FROM THE RUN LENGTH, not a constant.
  *
- * ~11.6 segments/ms measured; 11 is used so the estimate errs long. Times three
- * plus a fixed second, which reproduces the old 4 s window at the measurement
- * length (11950 → 4259 ms) and gives ~10.8 s at the scoring length.
+ * 11 segments/ms is used so the estimate errs long; times three plus a fixed
+ * second.
  *
  * Deliberately generous: a dead node is detected a few rounds later than it
- * could be, and that is the right trade here (user decision, 2026-07-30) — there
- * is no deadline on a session, and the cost of a false drop is a whole arm of
- * data measured at √(k−1) without anyone noticing. */
+ * could be — there is no deadline on a session, and the cost of a false drop is
+ * a whole arm of data measured at √(k−1) without anyone noticing. */
 #define LINK_SEG_PER_MS  11
 #define LINK_MEAS_MS_FOR(nseg)  (((nseg) / LINK_SEG_PER_MS) * 3 + 1000)
 
@@ -71,7 +59,7 @@ int  nodes_collect(int timeout_ms, bool critical);
  * answer or replied 'E:' (in which case the camera-fault policy has already
  * run and the node is dropped). The z travels through the out-parameter rather
  * than a struct the caller reaches into, so the per-slave table stays private. */
-/* Wire: Z:<z>[,<h1>,<h2>][,wsig=<σ>][,ac=<Σz_L>] (D65, D97). z is the window
+/* Wire: Z:<z>[,<h1>,<h2>][,wsig=<σ>][,ac=<Σz_L>]. z is the window
  * binomial; h1/h2 are the same bits split at nseg/2. wsig and ac tagged,
  * left on the node (cam_wsig_now / cam_ac_now).
  * Absent halves ≠ 0. */
@@ -84,9 +72,9 @@ bool node_take_z(int k, double *out_z,
 // Broadcast 'K' and sweep the master's own ladder in parallel, then collect
 // each node's chosen setting. Nodes land on different exposures on purpose.
 // Returns true if a sweep actually ran, false if it was skipped (budget 0, no
-// nodes, or the dynamic interval has not run out yet `[D106]`).
+// nodes, or the dynamic interval has not run out yet).
 // If any node's exposure changed, blocks CAL_SETTLE_AFTER_MS more before
-// returning — the settle pause `[D87]`. `why` names the trigger in the event log.
+// returning — the settle pause. `why` names the trigger in the event log.
 bool calibrate_all(const char *why);
 
 // Forget when the last sweep happened, so the next calibrate_all() sweeps
@@ -94,7 +82,7 @@ bool calibrate_all(const char *why);
 // the age of the previous one's calibration.
 void calibrate_forget(void);
 
-// A soft-down trip: the interval falls back to CAL_DYN_MIN_MS `[D106]`.
+// A soft-down trip: the interval falls back to CAL_DYN_MIN_MS.
 void calibrate_shorten(const char *why);
 
 // Per-node camera health via 'D'. Between loops only, never between an 'M' and

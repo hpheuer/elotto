@@ -56,11 +56,8 @@ static void on_ip_event(void *arg, esp_event_base_t base, int32_t id, void *data
 }
 
 /* ── Ethernet link log ────────────────────────────────────────────────
- * The master's own answer to "was it me or was it them?". A node drop alone
- * cannot distinguish a slave that went away from a master that stopped being
- * able to hear anyone, and on 2026-08-20 that ambiguity cost a 4 h session:
- * three slaves hit the miss limit inside the same ~50 s and every one of them
- * was healthy when it was looked at afterwards.
+ * Counts the master's own Ethernet link up/down events, so a node drop can be
+ * told apart from the master losing its own link.
  *
  * Lifetime counters on purpose — see sensor.h. Cheap enough to keep always:
  * two events and four fields, no polling. */
@@ -86,10 +83,8 @@ static void on_eth_event(void *arg, esp_event_base_t base, int32_t id, void *dat
  *
  * ⚠ NEVER name a node from its index in /status nodes[]. That array is in
  * DISCOVERY ORDER (whichever slave answered the boot broadcast first) and it
- * reorders between sessions: on 2026-08-30 the same board read "slave1" in one
- * session and "slave2" in the next, and a soft-down was nearly chased on the
- * wrong box. The addresses are static DHCP leases keyed on MAC, so the address
- * IS the identity; the position is not.
+ * reorders between sessions. The addresses are static DHCP leases keyed on
+ * MAC, so the address IS the identity; the position is not.
  *
  * ⚠ Both pages take the table from here. Two copies drift, and a page that
  * disagrees with /diag about which box is slave0 is worse than no name at all.
@@ -120,7 +115,7 @@ static const char HTML[] =
 ".prog-wrap{background:rgba(255,255,255,.15);border-radius:20px;height:26px;"
 "margin:18px 0 10px;overflow:hidden}"
 ".prog-fill{background:linear-gradient(90deg,#4a9e4a,#90ee90);height:100%;"
-"border-radius:20px;width:0%;transition:width .6s}"
+"border-radius:20px;width:0%;transition:width.6s}"
 ".stats{display:flex;gap:12px;margin-top:8px}"
 ".stats+.stats{margin-top:6px}"
 ".stat{flex:1;text-align:center;background:rgba(0,0,0,.25);border-radius:8px;padding:6px}"
@@ -245,7 +240,7 @@ static const char HTML[] =
 "</select>"
 "</div>"
 "<div class='frow'>"
-"<label for='numPreW' title='Weight of concordance in the ranking key (D65). "
+"<label for='numPreW' title='Weight of concordance in the ranking key. "
 "The key is ((1-p)*z_ctr/\u03c3_z + p*zc_ctr/\u03c3_c)/sqrt((1-p)^2+p^2). 0 is z alone. "
 "Tables mean nothing before the first block closes: uncentred offsets are huge.'>"
 "Concordance weight:</label>"
@@ -268,7 +263,7 @@ static const char HTML[] =
 // margin-bottom, not a margin on what follows: several different things can sit
 // under these buttons (loop badge, progress, message) and each would otherwise
 // need its own spacing rule. Set here, it applies to whichever one appears.
-// JS only ever writes .style.display, so the margin survives show/hide.
+// JS only ever writes.style.display, so the margin survives show/hide.
 "<div class='btns' id='runBtns' style='display:none;margin-bottom:16px'>"
 // Pause holds BETWEEN runs (never inside one). Paused time is excluded from
 // elapsed_ms, so a break does not inflate the session clock.
@@ -286,12 +281,12 @@ static const char HTML[] =
 "text-align:center;margin-bottom:12px;padding:8px 10px;"
 "border:1px solid rgba(144,238,144,.18);border-radius:8px;"
 "background:rgba(144,238,144,.05)'></div>"
-/* The item counter replaced the loop counter (v3): items measured out of the
+/* Items measured out of the
    whole combination space, plus which block the pass is in. Fed from /status
    (the DEVICE's numbers), so a session started by curl still labels itself. */
 "<div id='calArea'>"
-/* Camera exposure sweep only — the baseline phase is deleted (D48). Element
-   ids keep their old cal* names so nothing else has to change. */
+/* Camera exposure sweep only. Element ids keep their old cal* names so
+   nothing else has to change. */
 "<div style='color:#f0c040;font-size:.88em;margin-bottom:4px' "
 "title='Exposure ladder at every block boundary. Parks the pass, re-tunes each "
 "node, then continues. Drift reference is block centring, not a separate "
@@ -299,7 +294,7 @@ static const char HTML[] =
 "<span id='calCheck'></span></div>"
 "<div class='prog-wrap' style='height:18px'>"
 "<div id='pfCal' style='background:linear-gradient(90deg,#a08030,#f0c040);"
-"height:100%;border-radius:20px;width:0%;transition:width .5s'></div></div>"
+"height:100%;border-radius:20px;width:0%;transition:width.5s'></div></div>"
 "<div style='color:#f0c040;font-size:.9em;text-align:center;margin-top:4px'>"
 "<span id='calCount'>-</span></div>"
 "</div>"
@@ -308,7 +303,7 @@ static const char HTML[] =
 "<span id='scoreCheck'></span></div>"
 "<div class='prog-wrap' style='height:18px'>"
 "<div id='pfScore' style='background:linear-gradient(90deg,#206090,#6ab0e8);"
-"height:100%;border-radius:20px;width:0%;transition:width .5s'></div></div>"
+"height:100%;border-radius:20px;width:0%;transition:width.5s'></div></div>"
 "<div style='color:#6ab0e8;font-size:.9em;text-align:center;margin-top:4px'>"
 "<span id='sScoreDone'>0</span> / <span id='sScoreTotal'>-</span> Runs "
 "(<span id='sScoreReps'>-</span>&times; per number"
@@ -358,7 +353,7 @@ static const char HTML[] =
 "<div id='focusBox'></div>"
 "<div id='focusInfo' style='color:#a0c0a0;font-size:.78em;margin-top:10px'></div>"
 "</div>"
-/* The event log [D87]: what the array is doing and when -- sweeps, exposure
+/* The event log: what the array is doing and when -- sweeps, exposure
    changes, the settle pause after them, soft-down. Newest on top. Kept across
    sessions on the master (ring of 48), so a reload still shows the history. */
 "<div class='card' id='evCard' style='display:none'>"
@@ -380,9 +375,8 @@ static const char HTML[] =
 "<table><thead id='resHead'></thead>"
 "<tbody id='resBody'></tbody></table>"
 "</div>"
-/* Bottom card removed (D78): one sortable Top-10 replaces Top-5 + Bottom-5;
-   the low end is a header click away (direction flip). */
-/* The camera-sigma jump board (D62). Deliberately the LAST card and in a
+/* One sortable Top-10; the low end is a header click away (direction flip). */
+/* The camera-sigma jump board. Deliberately the LAST card and in a
    different colour from the ranking table: it is a suspicion list, not a ranking.
    What stands at the top is the item whose bits were least quiet while they
    were taken -- the z that deserves the least trust, not the most interest. */
@@ -392,7 +386,7 @@ static const char HTML[] =
 "<table><thead id='resHeadWsig'></thead>"
 "<tbody id='resBodyWsig'></tbody></table>"
 "</div>"
-/* What a soft-down trip was made of (D63). Hidden when nothing tripped: unlike
+/* What a soft-down trip was made of. Hidden when nothing tripped: unlike
    the jump board, an empty trip list says nothing the node table does not
    already show. */
 "<div class='card' id='resCardTrip' style='display:none'>"
@@ -408,7 +402,7 @@ NODE_NAMES_JS
 // Set by the /status poll; read by pollFocus at 10 Hz. True while calibrating.
 "var preparing=false,settleLeft=0,evSeen=-1;"
 /* Event log: fetched only when /status ev_seq moved, so the 1 Hz poll costs
-   nothing extra on the master's HTTP task [D82]. */
+   nothing extra on the master's HTTP task. */
 "function evPoll(d){"
 "if(d.ev_seq===undefined||d.ev_seq===evSeen)return;"
 "evSeen=d.ev_seq;var up=d.uptime_ms;"
@@ -441,7 +435,7 @@ NODE_NAMES_JS
 "if(ms<90000)return Math.ceil(ms/1000)+' s';"
 "return fmt(ms);}"
 // Passes per number are derived from scoring_total, not hardcoded, so the label
-// cannot drift away from sensor.c the way it did before. It reads 1 now that
+// cannot drift away from sensor.c. It reads 1 now that
 // scoring is a single random sweep, and would still read true if full extra
 // passes were ever added.
 "function setScoreTotal(d){"
@@ -477,12 +471,11 @@ NODE_NAMES_JS
 
    A round is: SCORE_PASSES passes over every number (49 or 62 runs each), the
    pool's combinations once, and TWO camera sweeps — the round boundary and the
-   one before the pass (D85).
+   one before the pass.
 
    ⚠ The split is printed because the parts are wildly unequal: at 20 passes the
    scoring is 1240 of a Eurojackpot round's ~1340 cycles, so `Runs per round`
-   barely moves the total and `?run=` sets it. That is why the old >30 min
-   warning is gone (D85) — it sat under a field that could not clear it. */
+   barely moves the total and `?run=` sets it. */
 /* One measurement cycle, in ms. Model in sensor.h: the bits a run needs over
    the rate the SLOWEST node produces them at, plus the fixed per-run overhead
    and the requested gap. `mbit` is the live minimum from /status when there is
@@ -507,10 +500,9 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "if(runS>" EL_STR(RUN_S_MAX) ")runS=" EL_STR(RUN_S_MAX) ";"
 "var gapS=gapFor(runS);"
 "var cyc=cycleMs(segsFor(runS),gapS,lastSlowMbit);"
-/* Sweeps per round: the round boundary, one mid-scoring per scoring run (D86 —
-   two of them in Eurojackpot, main numbers and euro numbers), and one before
-   the pass (D85). None is a function of elapsed time; there is still no time
-   trigger. */
+/* Sweeps per round: the round boundary, one mid-scoring per scoring run (two
+   of them in Eurojackpot, main numbers and euro numbers), and one before the
+   pass. None is a function of elapsed time; there is still no time trigger. */
 "var ins=(euro?4:3)*" EL_STR(CAL_BUDGET_DEFAULT_MS) ";"
 "return {s:(euro?62:49)*" EL_STR(SCORE_PASSES) "*cyc,m:combos*cyc,i:ins};}"
 "function unlimHint(){"
@@ -518,8 +510,8 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "var h=document.getElementById('unlimHint');"
 "if(!(c>=1)){h.innerHTML='';return;}"
 "var e=unlimPool(true,c),l=unlimPool(false,c);"
-/* A round IS a block (D76), so this preview is also the block length. No
-   warning (D85): every legal value of THIS field predicts a round dominated by
+/* A round IS a block, so this preview is also the block length. No
+   warning: every legal value of THIS field predicts a round dominated by
    the scoring, so the split is the honest thing to show and the length stays
    the operator's call. */
 "var pe=roundParts(true,e.c),pl=roundParts(false,l.c);"
@@ -614,7 +606,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "d.gap_s||0,slowMbit(d))/1000).toFixed(1)+' s est.'));"
 "if(d.focus_win_ms>0)p.push(pItem('window/gap',Math.round(d.focus_win_ms)"
 "+' / '+Math.round(d.focus_gap_ms||0)+' ms'));"
-/* Dynamic interval (D106): 15 min, doubling on every ok sweep up to 2 h. */
+/* Dynamic interval: 15 min, doubling on every ok sweep up to 2 h. */
 "p.push(pItem('Sweep',d.cal_budget_ms>0"
 "?((d.cal_budget_ms/1000)+' s, every '+fmt(d.cal_interval_ms||0)"
 "+((d.cal_due_ms>0)?' (next \u2264 '+fmt(d.cal_due_ms)+')':''))"
@@ -625,11 +617,8 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 ":'z alone';"
 "p.push(pItem('Key',ktxt));"
 "p.push(pItem('Score',d.score_dir||'high'));"
-/* The block count moved here from the item line (2026-08-27). It belongs with
-   the session's structure and not with its progress: what it actually tells
-   the operator is how many /loops rows -- i.e. drift points -- exist so far,
-   which is a property of the run, not a position in it. Counts the OPEN block
-   too while the session is live, because that is the one being filled. */
+/* How many /loops rows -- i.e. drift points -- exist so far. Counts the OPEN
+   block too while the session is live, because that is the one being filled. */
 "if(d.loops_done>0||d.state==='running')"
 "p.push(pItem('Blocks',(d.loops_done||0)+((d.state==='running')?1:0)));"
 "if(d.paused_ms>0)p.push(pItem('Paused',fmt(d.paused_ms)+' (excluded)'));"
@@ -646,7 +635,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "pb.style.display='';"
 "var nn=d.pool_main.length+(d.pool_euro&&d.pool_euro.length?d.pool_euro.length:0);"
 "var cc=d.round_total||0;"
-/* While numbers are scored the pool is marked in the scoring table (D102),
+/* While numbers are scored the pool is marked in the scoring table,
    so the badge carries only its size. */
 "if(d.scoring_pass>0){pb.innerHTML=\"<span style='color:#6ab0e8'>\"+nn+' numbers</span>';return;}"
 "var h=\"<span style='color:#6ab0e8'>\""
@@ -725,14 +714,10 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "b.innerHTML=paused?'\\u25b6 Continue':'\\u23f8 Pause';"
 "b.style.background=paused?'#4a9e4a':'#a08030';"
 "}"
-/* The second half of the flicker was a race, not a repaint. doPause() updates
-   the button immediately (so the click feels responsive) but /pause only takes
-   effect BETWEEN runs — up to ~1.4 s away. Meanwhile the 10 Hz poller kept
-   reporting the device's old state and flipping the button straight back, so a
-   single click produced ~10 alternations of Pause/Continue before the device
-   caught up. Device state is therefore ignored while a request is outstanding,
-   until it agrees with what was asked. The deadline is a self-heal: if the POST
-   is lost, the UI re-syncs to the device rather than lying forever. */
+/* /pause only takes effect BETWEEN runs. Device state is ignored while a
+   request is outstanding, until it agrees with what was asked; the deadline is
+   a self-heal: if the POST is lost, the UI re-syncs to the device rather than
+   lying forever. */
 "function applyPaused(p){"
 "p=!!p;"
 "if(Date.now()<pausePendUntil){if(p!==paused)return;pausePendUntil=0;}"
@@ -869,7 +854,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "document.getElementById('calCheck').innerHTML='';"
 "}else if(d.cal_did_sweep||d.cal_ms>0){"
 /* Finished sweep: greyed out, so it never reads as running beside the
-   scoring bar (D101). */
+   scoring bar. */
 "ca.style.opacity='.45';pc.style.background='#6a7a6a';"
 "document.getElementById('calTitle').innerHTML='\\uD83D\\uDD27 Camera calibration \\u2014 idle';"
 "pc.style.width='100%';"
@@ -944,13 +929,12 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "function showResults(d){"
 "var isEuro=d.mode==='euro';"
 "var sl=document.getElementById('sigLine');"
-/* Pass health is the GCP primary endpoint; ranking is secondary.
-   null_flags / NB / CUSUM are deleted (D47) — the numbers stay, the banner does not. */
+/* Pass health is the GCP primary endpoint; ranking is secondary. */
 "var ph='';"
 /* While numbers are scored the card describes the scoring: its health line is
    the last closed scoring pass's own channel σ (what that pass's keys divide
    by), the twin of the pass line below. */
-/* View (D107): by default the running phase decides — scoring shows the
+/* View: by default the running phase decides — scoring shows the
    numbers, everything else the items. The button over the table overrides it
    until the phase changes; it is offered only when both views have data. */
 "var live=(d.state==='running'&&d.scoring_pass>0);"
@@ -981,7 +965,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "+((d.pass_n_void>0)?(' \\u00b7 void '+d.pass_n_void):'');"
 "}"
 "sl.innerHTML=ph||'';"
-/* Item autocorrelation of the series (D110): lag 1..4 as z, |z|>3 marked. */
+/* Item autocorrelation of the series: lag 1..4 as z, |z|>3 marked. */
 "var acz=SCM?d.score_ac_z:d.item_ac_z,acn=SCM?d.score_ac_n:d.item_ac_n;"
 "if(acn>0&&acz){var t=[];for(var L=0;L<4;L++){var v=acz[L];"
 "t.push('L'+(L+1)+' '+(v>=0?'+':'')+v.toFixed(2)+(Math.abs(v)>3?' \\u26a0':''));}"
@@ -1056,11 +1040,9 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "var ipTxt=(N.ip&&N.ip!=='self')?N.ip:location.hostname;"
 /* ⚠ NAME FROM THE ADDRESS, NEVER FROM THE ROW INDEX. The array position is
    DISCOVERY ORDER (reply arrival) and changes between sessions, so 'slave'+i
-   silently relabels the boxes the day two of them race -- which is exactly what
-   happened on 2026-08-30: the same physical node read 'slave1' in one session
-   and 'slave2' in the next, and a soft-down was nearly chased on the wrong box.
-   /diag has always named from the address (see NAMES there); this is the same
-   table, because the operator has to walk to a physical box. */
+   silently relabels the boxes the day two of them race. /diag names from the
+   address (see NAMES there); this is the same table, because the operator has
+   to walk to a physical box. */
 "var nm=NODE_NAMES[ipTxt]||(i===0?'master':'unnamed');"
 "nm+=(ipTxt?' '+ipTxt:'');"
 // A camera fault is named, not merely reflected in a shrunken node count: the
@@ -1075,19 +1057,18 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "if(N.cam_exp>0)ex=N.cam_exp+(N.cam_cal?'':'!');"
 /* Z = session mean of this node's raw per-run z. Offset from the rung;
    centring removes it. No p-value: with n in the thousands every offset
-   prints as 0 and looks like a result (D57). */
+   prints as 0 and looks like a result. */
 "var zn=N.z_n||0,zm=(zn>0)?N.z:0;"
 "var zTxt=(zn>0)?zm.toFixed(4):'\\u2013';"
 "s3+='<tr style=\"opacity:'+(N.ok?1:.55)+'\"><td>'+nm+st+'</td>'"
 "+'<td title=\"mean raw z over '+zn+' runs\">'+zTxt+'</td>'"
 "+'<td id=\"nodeSig'+i+'\">'+(H.sigma>0?H.sigma.toFixed(3):(N.cam_rsig>0?N.cam_rsig.toFixed(3):(N.sigma>0?N.sigma.toFixed(3):'\\u2013')))+'</td>'"
-/* ⚠ CONSUMPTION, not production. cam_mbit is what extraction wrote into
-   the ring, including everything the ring then threw away -- on 2026-08-30
-   that read 5,71 on the master against 3,34 on the slaves purely because the
-   master's consumer is slower and its ring overflows, which says nothing about
-   device performance. cam_cons_mbit is bits a measurement actually READ per
-   second of reading. Parenthesised production rate only when a node is too old
-   to report the new field. */
+/* ⚠ CONSUMPTION, not production. cam_mbit is what extraction wrote into the
+   ring, including everything the ring then threw away when the consumer is
+   slower and the ring overflows, which says nothing about device performance.
+   cam_cons_mbit is bits a measurement actually READ per second of reading.
+   Parenthesised production rate only when a node is too old to report the new
+   field. */
 "+'<td id=\"nodeMbit'+i+'\" title=\"'+mbitTitle(H,N,d)+'\">'"
 "+mbitTxt(H,N,d)+'</td>'"
 "+'<td title=\"exposure chosen by this loop\\u2019s calibration\">'+ex+'</td>'"
@@ -1131,7 +1112,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "if(d.loops_done>1){"
 "var sgn=d.drift_slope>=0?'+':'';"
 // 6 blocks, not 3: at 3 the regression has one degree of freedom and |t|>3
-// fires on noise (measured: t=+10.30 at 3 points, -0.20 by 10). DRIFT_MIN_LOOPS.
+// fires on noise. DRIFT_MIN_LOOPS.
 "var d4=d.loops_done<6?'':(' \\u00b7 drift '+sgn+d.drift_slope.toFixed(4)+' z/block (t = '"
 "+d.drift_t.toFixed(1)+(Math.abs(d.drift_t)>" EL_STR(DRIFT_FLAG_T) "?' \\u26a0 drifting)':' ok)'));"
 "var s4='offset '+d.off_first.toFixed(3)+' \\u2192 '+d.off_last.toFixed(3)+' z/run'+d4"
@@ -1150,10 +1131,10 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "document.getElementById('resCardWsig').style.display='none';"
 "document.getElementById('resCardTrip').style.display='none';"
 "return;}"
-// Z* IS the ranking key (block-σ units, D68) and the cell prints it as it
-// stands — there is no session moment of the key to rescale it with (D71).
+// Z* IS the ranking key (block-σ units) and the cell prints it as it
+// stands — there is no session moment of the key to rescale it with.
 // The Top-10 is built by renderExtremeTables() from the /extremes set so it
-// can be re-sorted by column (D78); d.top is the fallback until the first
+// can be re-sorted by column; d.top is the fallback until the first
 // /extremes lands.
 "LD=d;"
 "fetchExtremes();"
@@ -1171,8 +1152,8 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
    fallback, and neither may be read alone. Same rule the sigma cell follows.
    Consumption prints bare, production in brackets: a node too old to report
    consumption still shows something, and it stays visibly a different
-   quantity (D60). */
-/* D109: the cell is the USED rate — bits that entered this node's z per
+   quantity. */
+/* The cell is the USED rate — bits that entered this node's z per
    second of session time (z_n windows × run_segs × 224 bits / elapsed_ms). The
    reading rate (consumption while a window reads) and the extraction rate
    (everything the sensor produced, most of it dropped in the gaps) move to the
@@ -1189,7 +1170,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "return 'used: bits entering z per second of session time'"
 "+(c>0?' \\u00b7 reading '+c.toFixed(2)+' Mbit/s while a window reads':'')"
 "+(p>0?' \\u00b7 extraction '+p.toFixed(2)+' Mbit/s (sensor output, mostly dropped in the gaps)':'');}"
-/* ── Sortable Top-10 over the extremes set (D78, D78a, D78b) ──────────────
+/* ── Sortable Top-10 over the extremes set  ──────────────
    The table is the leading 10 of the /extremes set (the ~50 most extreme
    items by |Z*|). A click on a stat header sorts that set by the column; a
    second click flips the direction (largest-first <-> smallest-first), shown
@@ -1213,7 +1194,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 /* desc, and a missing value (Δn on a solo item) always sinks to the end. */
 "function exCmp(a,b){var x=colVal(a,SORTK),y=colVal(b,SORTK);"
 "if(x===null&&y===null)return 0;if(x===null)return 1;if(y===null)return -1;return y-x;}"
-/* The column the pool is summed on (D104): the Σ marker in a header selects
+/* The column the pool is summed on: the Σ marker in a header selects
    it on the device, the selected header is printed in gold. */
 "function curSum(){return (LD&&LD.score_sum)||'key';}"
 "function sumLab(opt,c,t){return (opt&&curSum()===c)?'<span style=\"color:#f0c040\">'+t+'</span>':t;}"
@@ -1233,7 +1214,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "if(SORTK===k)SORTD=-SORTD;else{SORTK=k;SORTD=-1;}renderExtremeTables();}"
 /* The scoring table: every number of this round's scoring, its latest
    measurement and the running sum (/extremes?score=1). 5 s like /extremes —
-   the same HTTP task shares the consumer core (D78b). */
+   the same HTTP task shares the consumer core. */
 "function fetchScore(){"
 "var now=Date.now();"
 "if(now-lastSc<5000){renderScoreTable();return;}"
@@ -1244,7 +1225,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "if(!LD)return;var d=LD,isEuro=d.mode==='euro';"
 "var lab={sum:'\\u03a3',key:'Z*',z_ctr:'Z',zc:'Conc',nsd:'\\u0394n',ac:'AC'};"
 "var s=SC.slice().sort(scCmp);"
-/* Pool members (D102): the numbers the device picked from the sums so far.
+/* Pool members: the numbers the device picked from the sums so far.
    Marked by membership, not by position, so any sort shows them. The table
    runs at least 10 rows and far enough to show every one of them. */
 "var pool={};(d.pool_main||[]).forEach(function(x){pool['m'+x.n]=1;});"
@@ -1258,9 +1239,9 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "renderRunTable('resHead','resBody',top,isEuro,d,{p:d.pre_w||0},{pool:pool});"
 "if(!top.length)document.getElementById('resBody').innerHTML="
 "'<tr><td colspan=\"10\" style=\"color:#d0b0b0;padding:10px\">No number scored yet.</td></tr>';}"
-/* Throttled to 5 s (D78b): /extremes is a ~15 KB streamed scan served on the
+/* Throttled to 5 s: /extremes is a ~15 KB streamed scan served on the
    MASTER's HTTP task, which shares the consumer core with the GCP consumer
-   (D61) — fetching it every 1 s stole extraction CPU from the master alone and
+    — fetching it every 1 s stole extraction CPU from the master alone and
    lowered its mbit/s. Between fetches the cached list is re-rendered, and sort
    clicks run on the cache, so the table stays live at a fraction of the load. */
 "var lastEx=0;"
@@ -1274,7 +1255,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "if(!LD)return;var d=LD,isEuro=d.mode==='euro',st={p:d.pre_w||0};"
 "var lab={key:'Z*',z_ctr:'Z',zc:'Conc',nsd:'\\u0394n',ac:'AC'};"
 "var top,endTxt;"
-/* One table (D78): the leading 10 of the active sort over the extremes set.
+/* One table: the leading 10 of the active sort over the extremes set.
    The other end is one header click away (direction flips), so a second table
    is redundant now that the columns sort. */
 "if(EX.length){"
@@ -1286,14 +1267,14 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "'\\uD83C\\uDFC6 Top '+top.length+' of '+(EX.length||d.comparisons||top.length)"
 "+(isEuro?' \\u2014 Eurojackpot':' \\u2014 6-of-49')+' ('+endTxt+' '+lab[SORTK]+')';"
 "renderRunTable('resHead','resBody',top,isEuro,d,st);"
-/* How the pool being measured was picked (D108), e.g. "9 numbers, scoring
+/* How the pool being measured was picked, e.g. "9 numbers, scoring
    lowest Δn". Items of earlier rounds came from their own pools. */
 "var su={key:'Z*',z:'Z',conc:'Conc',nsd:'\\u0394n',ac:'AC'}[d.pool_used_sum]||'Z*';"
 "var dr=d.score_dir==='low'?'lowest ':d.score_dir==='abs'?'largest |'+su+'|':'highest ';"
 "document.getElementById('resSub').textContent=(d.pool_used_n>0)"
 "?('pool of round '+d.pool_used_round+': '+d.pool_used_n+' numbers, scoring '"
 "+(d.score_dir==='abs'?dr:dr+su)):'';}"
-/* Items and scoring numbers (D103): the same rows, one renderer. `opt` is set
+/* Items and scoring numbers: the same rows, one renderer. `opt` is set
    for the scoring — the Item column becomes the running sum \u03a3 (the number
    stands in Numbers / Bonus), a green # marks a pool member, and a row whose
    pass is still open shows Z* as a dash with Z / Conc dimmed. */
@@ -1329,11 +1310,11 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "\\u0394n does not change which numbers enter the pool; the table can be sorted "
 "by it. Click to sort the 50.\" style=\"cursor:pointer\" onclick=\"sortBy(\\'nsd\\')\">"
 "'+sumLab(opt,'nsd','\\u0394n')+exArrow('nsd')+sumMark(opt,'nsd')+'</th>'"
-/* AC (D97): the window autocorrelation of the bits behind this item. A
+/* AC: the window autocorrelation of the bits behind this item. A
    diagnostic column like Δn: it sorts the 50, it never enters a key. */
 "+'<th title=\"Did this item\\u2019s z follow the items measured just before it?\\n"
 "Autocorrelation of the centred z series in measurement order: this item times "
-"each of the 1 to 4 items before it, in units of pure chance (D110).\\n"
+"each of the 1 to 4 items before it, in units of pure chance.\\n"
 "around 0 (within \\u00b12) = what independent items give\\n"
 "large + = it moved together with its predecessors (a slow drift or a shared state)\\n"
 "large \\u2212 = it alternated against them\\n"
@@ -1366,7 +1347,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
    not a second ranking key. */
 "var nsd=(r.nsd===undefined||r.nsd===null)?null:r.nsd;"
 /* Δn plus, in parentheses, the node count it is taken over — k, the cameras
-   that entered this item's combine (D78). A dash carries no count. */
+   that entered this item's combine. A dash carries no count. */
 "var nsdTxt=(nsd===null)?'\\u2014':(nsd.toFixed(2)+' ('+(r.k===undefined?'?':r.k)+')');"
 "var nsdCol=(nsd===null)?'#9aa':(nsd<0.6?'#90ee90':(nsd>1.0?'#c09090':''));"
 "var acTxt=(r.ac===undefined||r.ac===null)?'\\u2014':r.ac.toFixed(2);"
@@ -1384,7 +1365,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "'+(isEuro?'<td>'+estr+'</td>':'')+cpCell(r.nums,isEuro?r.euro:null)+'</tr>';"
 "}"
 "}"
-/* The camera-sigma jump board (D62). Named by (item/round) plus the drawn
+/* The camera-sigma jump board. Named by (item/round) plus the drawn
    numbers -- the same identity the other two tables use, and copied into the
    event when it happened, because results[] is compacted at every round
    boundary and the row is long gone by the time anyone looks. That is the
@@ -1402,7 +1383,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
    ?maxruns= items and does not exist until the block closes -- so this does
    not name "the measurement that tripped it". It names the measurements that
    carried the spread, captured at block close because one round later
-   compaction has taken the rows. See D63. */
+   compaction has taken the rows. */
 "function showTrip(d){"
 "var tr=d.trips,isEuro=d.mode==='euro';"
 "if(!tr||tr.length===0){document.getElementById('resCardTrip').style.display='none';return;}"
@@ -1506,8 +1487,8 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
  * identify an item in unlimited mode: it is the position within ITS round, and
  * a later round re-uses the same numbers. The identity is (round, index) — see
  * the unlimited-mode notes in sensor.h. The UI prints round because every
- * session is rounds (D67); index alone does not identify an item. */
-/* One row as JSON — an item of the pass or a number of the scoring (D103), the
+ * session is rounds; index alone does not identify an item. */
+/* One row as JSON — an item of the pass or a number of the scoring, the
  * same shape for both so the page renders them with one table. `key` is passed
  * in: an item's comes from rank_key() on its block, a scoring row's from its
  * pass span; NaN → null (a scoring row whose pass is still open). `tail` adds
@@ -1528,7 +1509,7 @@ static int emit_row(char *buf, int cap, const RunResult *r, double key,
         snprintf(nsd, sizeof(nsd), "%.3f", (double)r->node_sd);
     else
         snprintf(nsd, sizeof(nsd), "null");
-    /* `ac`: window autocorrelation (D97), null when no node reported one. */
+    /* `ac`: window autocorrelation, null when no node reported one. */
     char ac[16];
     if (isfinite((double)r->acz))
         snprintf(ac, sizeof(ac), "%.2f", (double)r->acz);
@@ -1542,17 +1523,17 @@ static int emit_row(char *buf, int cap, const RunResult *r, double key,
     nums[0] = eu[0] = '\0';
     for (int m = 0; m < 6; m++)
         if (r->nums[m])
-            pn += snprintf(nums + pn, sizeof(nums) - pn, "%s%d", pn ? "," : "", r->nums[m]);
+            pn += snprintf(nums + pn, sizeof(nums) - pn, "%s%d", pn ? ",": "", r->nums[m]);
     for (int m = 0; m < 2; m++)
         if (r->euro[m])
-            pe += snprintf(eu + pe, sizeof(eu) - pe, "%s%d", pe ? "," : "", r->euro[m]);
+            pe += snprintf(eu + pe, sizeof(eu) - pe, "%s%d", pe ? ",": "", r->euro[m]);
 
     return snprintf(buf, cap,
         "{\"run\":%d,\"round\":%d,\"z\":%.4f,\"z_ctr\":%.4f,"
         "\"zc\":%.3f,\"key\":%s,\"k\":%d,\"nsd\":%s,\"ac\":%s,"
         "\"nums\":[%s],\"euro\":[%s]%s}",
         r->index, (int)r->round, r->z_score, (double)r->z_ctr,
-        (double)r->zc_ctr, ks, (int)r->k, nsd, ac, nums, eu, tail ? tail : "");
+        (double)r->zc_ctr, ks, (int)r->k, nsd, ac, nums, eu, tail ? tail: "");
 }
 
 static int emit_run(char *buf, int cap, const RunResult *r, bool euro)
@@ -1581,7 +1562,7 @@ static int buf_room(int pos, size_t cap)
  * saturates instead of overrunning. */
 static int buf_advance(size_t cap, int *pos, int n)
 {
-    if (!pos || n <= 0) return pos ? *pos : 0;
+    if (!pos || n <= 0) return pos ? *pos: 0;
     if (*pos < 0) *pos = 0;
     if ((size_t)*pos + (size_t)n > cap - 1) *pos = (int)(cap - 1);
     else *pos += n;
@@ -1591,7 +1572,7 @@ static int buf_advance(size_t cap, int *pos, int n)
 /* vsnprintf into a fixed buffer at *pos, clamped to cap-1. Never writes past
  * the buffer; on truncation the append is silently dropped (the alternative —
  * half a JSON value — is worse), and the document simply ends short. */
-static int buf_append(char *buf, size_t cap, int *pos, const char *fmt, ...)
+static int buf_append(char *buf, size_t cap, int *pos, const char *fmt,...)
 {
     int room = buf_room(*pos, cap);
     if (room <= 1) return *pos;   /* no room: drop the write entirely */
@@ -1620,19 +1601,19 @@ static esp_err_t status_handler(httpd_req_t *req)
     static char buf[8192];
     int  pos = 0;
     const char *state_str =
-        g_status.state == ELOTTO_RUNNING ? "running" :
-        g_status.state == ELOTTO_DONE    ? "done"    :
-        g_status.state == ELOTTO_ABORTED ? "aborted" : "idle";
+        g_status.state == ELOTTO_RUNNING ? "running":
+        g_status.state == ELOTTO_DONE    ? "done":
+        g_status.state == ELOTTO_ABORTED ? "aborted": "idle";
     const char *mode_str =
-        g_status.mode == MODE_EUROJACKPOT ? "euro" : "649";
+        g_status.mode == MODE_EUROJACKPOT ? "euro": "649";
 
     const char *phase_str =
-        g_status.phase == PHASE_SCORING      ? "scoring"     :
-        g_status.phase == PHASE_CALIBRATE    ? "calibrating" :
+        g_status.phase == PHASE_SCORING      ? "scoring":
+        g_status.phase == PHASE_CALIBRATE    ? "calibrating":
                                                "measuring";
     const char *score_str =
-        g_status.score_dir == SCORE_DIR_LOW ? "low" :
-        g_status.score_dir == SCORE_DIR_ABS ? "abs" : "high";
+        g_status.score_dir == SCORE_DIR_LOW ? "low":
+        g_status.score_dir == SCORE_DIR_ABS ? "abs": "high";
     pos = buf_append(buf, sizeof(buf), &pos,
         "{\"state\":\"%s\",\"mode\":\"%s\",\"phase\":\"%s\","
         "\"slave\":%s,"
@@ -1646,8 +1627,7 @@ static esp_err_t status_handler(httpd_req_t *req)
         "\"pass_n_excl\":%d,\"pass_n_open\":%d,"
         "\"v_eff\":%.4f,\"flush_timeouts\":%lu,"
         /* No channel σ and no key moments are published: rank_key() divides by
-         * the item's BLOCK σ (D68), the session-wide pre_sig / conc_sig went
-         * with D72 and rank_mean / rank_sigma with D71. */
+         * the item's BLOCK σ. */
         "\"pre_w\":%.3f,"
         "\"pre_n\":%d,"
         "\"score_dir\":\"%s\",\"score_sum\":\"%s\","
@@ -1690,9 +1670,9 @@ static esp_err_t status_handler(httpd_req_t *req)
         "\"round_start_ms\":%lu,"
         "\"pool_need_main\":%d,\"pool_need_euro\":%d,",
         state_str, mode_str, phase_str,
-        g_status.slave_connected ? "true" : "false",
+        g_status.slave_connected ? "true": "false",
         camera_sensor_name(),
-        g_status.noise_stalled ? "true" : "false", g_status.fault,
+        g_status.noise_stalled ? "true": "false", g_status.fault,
         g_status.comparisons,
         g_status.pass_mean, g_status.pass_sigma, g_status.pass_chi2,
         g_status.pass_stouffer, g_status.pass_n_valid, g_status.pass_n_void,
@@ -1702,7 +1682,7 @@ static esp_err_t status_handler(httpd_req_t *req)
         g_status.pre_n,
         score_str,
         SCORE_SUM_NAME[(g_status.score_sum >= 0 && g_status.score_sum < SCORE_SUM_N)
-                       ? g_status.score_sum : 0],
+                       ? g_status.score_sum: 0],
         g_status.loop_sigma,
         g_status.pair_r_max, g_status.pair_n,
         g_status.pair_r_i, g_status.pair_r_j, g_status.pair_count,
@@ -1710,15 +1690,15 @@ static esp_err_t status_handler(httpd_req_t *req)
         (unsigned long)g_status.net_retries, (unsigned long)g_status.net_lost,
         (unsigned long)g_status.net_stale,
         (long long)(esp_timer_get_time() / 1000),
-        g_status.eth_up ? "true" : "false",
+        g_status.eth_up ? "true": "false",
         (unsigned long)g_status.eth_downs,
         (unsigned long)g_status.eth_lost_ips,
         (long long)g_status.eth_last_down_ms,
         (long long)g_status.eth_last_up_ms,
         g_status.drop_node, (long long)g_status.drop_uptime_ms,
-        g_status.drop_eth_up ? "true" : "false",
+        g_status.drop_eth_up ? "true": "false",
         (unsigned long)g_status.drop_eth_downs,
-        g_status.paused ? "true" : "false", (long long)g_status.paused_ms,
+        g_status.paused ? "true": "false", (long long)g_status.paused_ms,
         g_status.focus_win_ms, g_status.focus_gap_ms,
         g_status.run_target_ms / 1000.0, g_status.gap_ms / 1000.0,
         g_status.run_segments,
@@ -1726,17 +1706,17 @@ static esp_err_t status_handler(httpd_req_t *req)
         /* Live sweep progress, 0 when none is in flight. cal_ms is only written
          * when a sweep ENDS, so it cannot drive a bar while one runs. */
         g_status.cal_start_us
-            ? (int)((esp_timer_get_time() - g_status.cal_start_us) / 1000) : 0,
-        g_status.cal_did_sweep ? 1 : 0,
-        /* The post-sweep settle pause [D87], counting down; 0 when none runs. */
+            ? (int)((esp_timer_get_time() - g_status.cal_start_us) / 1000): 0,
+        g_status.cal_did_sweep ? 1: 0,
+        /* The post-sweep settle pause, counting down; 0 when none runs. */
         g_status.settle_end_us > esp_timer_get_time()
-            ? (int)((g_status.settle_end_us - esp_timer_get_time()) / 1000) : 0,
+            ? (int)((g_status.settle_end_us - esp_timer_get_time()) / 1000): 0,
         /* Moves when an event is logged; the page then fetches /loops?ev=1. */
         (unsigned long)evlog_seq(),
         g_status.cal_interval_ms, g_status.cal_due_ms,
         g_status.pool_used_n,
         SCORE_SUM_NAME[(g_status.pool_used_sum >= 0 && g_status.pool_used_sum < SCORE_SUM_N)
-                       ? g_status.pool_used_sum : 0],
+                       ? g_status.pool_used_sum: 0],
         g_status.pool_used_round,
         (double)g_status.item_ac_z[0], (double)g_status.item_ac_z[1],
         (double)g_status.item_ac_z[2], (double)g_status.item_ac_z[3],
@@ -1756,39 +1736,35 @@ static esp_err_t status_handler(httpd_req_t *req)
          * latter is the rows still held and would step backwards. */
         g_status.items_done, g_status.runs_total,
         (long long)g_status.elapsed_ms, g_status.compacted,
-        g_status.unlimited ? "true" : "false", g_status.runs_cap,
+        g_status.unlimited ? "true": "false", g_status.runs_cap,
         g_status.round, g_status.round_base,
         /* round_ITEM_base, not round_base: the latter is an index into
          * results[] and compaction moves the two apart, which read as
          * "item 16184 / 378" on the page. */
         g_status.items_done > g_status.round_item_base
-            ? g_status.items_done - g_status.round_item_base : 0,
+            ? g_status.items_done - g_status.round_item_base: 0,
         g_status.round_total,
         (unsigned long)g_status.round_start_ms,
         g_status.pool_need_main, g_status.pool_need_euro);
 
-    /* The proposed pool, and only while it is actually being asked about: it is
-     * ~150 bytes and /status is polled once a second for the whole session, so
-     * there is no reason to carry it through the other 99 % of the run.
+    /* Served while RUNNING and only while a pool exists. sensor.c clears the
+     * count while a scoring pass is choosing the next one, so a stale pool is
+     * never served under a running bar; the UI shows the pool under the scoring
+     * bar, and in unlimited mode it is re-scored every round.
      *
      * RUNNING is part of the test, not decoration: `phase` keeps its last value
      * after a session ends, so an ended session would otherwise keep serving
      * its last pool. */
-    /* Published for the whole run now, not only while the gate asks about it:
-     * the UI shows the pool under the scoring bar, and in unlimited mode it is
-     * re-scored every round, so "which numbers are being measured" is live
-     * state. sensor.c clears the count while a scoring pass is choosing the
-     * next one, so a stale pool is never served under a running bar. */
     if (g_status.state == ELOTTO_RUNNING && g_status.pool_n_main > 0) {
         buf_append(buf, sizeof(buf), &pos, "\"pool_main\":[");
         for (int i = 0; i < g_status.pool_n_main; i++)
             buf_append(buf, sizeof(buf), &pos, "%s{\"n\":%d,\"z\":%.2f}",
-                       i ? "," : "", g_status.pool_main[i],
+                       i ? ",": "", g_status.pool_main[i],
                        (double)g_status.pool_main_z[i]);
         buf_append(buf, sizeof(buf), &pos, "],\"pool_euro\":[");
         for (int i = 0; i < g_status.pool_n_euro; i++)
             buf_append(buf, sizeof(buf), &pos, "%s{\"n\":%d,\"z\":%.2f}",
-                       i ? "," : "", g_status.pool_euro[i],
+                       i ? ",": "", g_status.pool_euro[i],
                        (double)g_status.pool_euro_z[i]);
         buf_append(buf, sizeof(buf), &pos, "],");
     }
@@ -1803,8 +1779,8 @@ static esp_err_t status_handler(httpd_req_t *req)
     /* Per-node health. A node that quietly degraded —
      * lost its camera, started missing replies, or drifted off σ = 1 — has to be
      * visible individually; the combined z averages exactly that away.
-     * Index 0 is the master. There is no per-node "src" any more: one source
-     * exists, so a node either produced camera bits or it faulted and says so.
+     * Index 0 is the master. One source exists, so a node either produced
+     * camera bits or it faulted and says so.
      */
     buf_append(buf, sizeof(buf), &pos, "\"nodes\":[");
     for (int i = 0; i < g_status.node_count && i < MAX_NODES; i++) {
@@ -1813,7 +1789,7 @@ static esp_err_t status_handler(httpd_req_t *req)
          * the SLAVES. Its temperature comes from its own camera stats, or the
          * master would forever read null while happily reporting 48 °C in
          * /diagjson. */
-        double dt = i ? (double)N->die_temp_c : (double)st_cam.die_temp_c;
+        double dt = i ? (double)N->die_temp_c: (double)st_cam.die_temp_c;
         char dt_txt[16];
         if (isfinite(dt)) snprintf(dt_txt, sizeof(dt_txt), "%.2f", dt);
         else              snprintf(dt_txt, sizeof(dt_txt), "null");
@@ -1824,15 +1800,15 @@ static esp_err_t status_handler(httpd_req_t *req)
             "\"cam_fault\":%d,\"reboots\":%lu,\"die_temp\":%s,"
             "\"cam_exp\":%lu,\"cam_gain\":%d,\"cam_cal\":%d,"
             "\"cam_bias\":%.6f,\"cam_cal_mbit\":%.3f,\"cam_rsig\":%.4f}",
-            i ? "," : "", i, i ? N->ip : "self", N->ok ? "true" : "false",
-            N->soft_down ? "true" : "false",
+            i ? ",": "", i, i ? N->ip: "self", N->ok ? "true": "false",
+            N->soft_down ? "true": "false",
             N->z_mean, (unsigned long)N->z_n, N->sigma,
             (unsigned long)N->lost, N->cam_mbit, N->cam_cons_mbit,
             (unsigned long)N->cam_stalls,
             (int)N->cam_fault, (unsigned long)N->reboots, dt_txt,
             (unsigned long)N->cam_exp, (int)N->cam_gain,
             (int)N->cam_cal_ok, N->cam_bias, N->cam_cal_mbit,
-            i ? N->cam_raw_sigma : (float)st_cam.raw_sigma);
+            i ? N->cam_raw_sigma: (float)st_cam.raw_sigma);
     }
     buf_append(buf, sizeof(buf), &pos, "],");
 
@@ -1845,7 +1821,7 @@ static esp_err_t status_handler(httpd_req_t *req)
         for (int j = i + 1; j < g_status.node_count; j++) {
             buf_append(buf, sizeof(buf), &pos,
                 "%s{\"i\":%d,\"j\":%d,\"r\":%.4f}",
-                first_pair ? "" : ",", i, j, g_status.pair_r[i][j]);
+                first_pair ? "": ",", i, j, g_status.pair_r[i][j]);
             first_pair = false;
         }
     buf_append(buf, sizeof(buf), &pos, "],");
@@ -1876,7 +1852,7 @@ static esp_err_t status_handler(httpd_req_t *req)
                                    &g_status.low[i], euro));
     }
     buf_append(buf, sizeof(buf), &pos, "],");
-    /* What each soft-down trip was made of (D63). Empty when nothing tripped,
+    /* What each soft-down trip was made of. Empty when nothing tripped,
        and then the card is hidden -- unlike the jump board, an empty trip list
        says nothing the node table does not already show. */
     buf_append(buf, sizeof(buf), &pos, "\"trips\":[");
@@ -1885,24 +1861,24 @@ static esp_err_t status_handler(httpd_req_t *req)
         buf_append(buf, sizeof(buf), &pos,
             "%s{\"block\":%d,\"node\":%d,\"sigma\":%.3f,\"mean\":%.3f,"
             "\"t_ms\":%lld,\"items\":[",
-            i ? "," : "", (int)t->block, (int)t->node, t->sigma, t->mean,
+            i ? ",": "", (int)t->block, (int)t->node, t->sigma, t->mean,
             (long long)t->t_ms);
         for (int k = 0; k < t->n; k++) {
             const TripItem *e = &t->it[k];
             buf_append(buf, sizeof(buf), &pos,
                 "%s{\"round\":%d,\"index\":%d,\"z\":%.3f,\"dev\":%.2f,\"nums\":[",
-                k ? "," : "", (int)e->round, (int)e->index, e->z, e->dev);
+                k ? ",": "", (int)e->round, (int)e->index, e->z, e->dev);
             bool g1 = true;
             for (int m = 0; m < 6; m++) {
                 if (!e->nums[m]) continue;
-                buf_append(buf, sizeof(buf), &pos, "%s%d", g1 ? "" : ",", (int)e->nums[m]);
+                buf_append(buf, sizeof(buf), &pos, "%s%d", g1 ? "": ",", (int)e->nums[m]);
                 g1 = false;
             }
             buf_append(buf, sizeof(buf), &pos, "],\"euro\":[");
             bool g2 = true;
             for (int m = 0; m < 2; m++) {
                 if (!e->euro[m]) continue;
-                buf_append(buf, sizeof(buf), &pos, "%s%d", g2 ? "" : ",", (int)e->euro[m]);
+                buf_append(buf, sizeof(buf), &pos, "%s%d", g2 ? "": ",", (int)e->euro[m]);
                 g2 = false;
             }
             buf_append(buf, sizeof(buf), &pos, "]}");
@@ -1913,7 +1889,7 @@ static esp_err_t status_handler(httpd_req_t *req)
     buf_append(buf, sizeof(buf), &pos,
         "\"wsig_sd\":%.4f,\"wsig_sd_n\":%d,\"wsig\":[",
         g_status.wsig_sd, g_status.wsig_sd_n);
-    /* The camera-sigma jump board (D62): biggest |jump| first, session-wide.
+    /* The camera-sigma jump board: biggest |jump| first, session-wide.
      * NOT a ranking -- these are the items whose bits were least quiet while
      * they were taken, i.e. the z that deserve the least trust. `counted`
      * says whether that node was still in the combine, so a reader can tell
@@ -1923,19 +1899,19 @@ static esp_err_t status_handler(httpd_req_t *req)
         buf_append(buf, sizeof(buf), &pos,
             "%s{\"round\":%d,\"index\":%d,\"spass\":%d,\"node\":%d,\"counted\":%d,"
             "\"prev\":%.4f,\"now\":%.4f,\"jump\":%.4f,\"nums\":[",
-            i ? "," : "", (int)e->round, (int)e->index, (int)e->spass, (int)e->node,
+            i ? ",": "", (int)e->round, (int)e->index, (int)e->spass, (int)e->node,
             (int)e->counted, e->prev, e->now, e->jump);
         bool f1 = true;
         for (int m = 0; m < 6; m++) {
             if (!e->nums[m]) continue;
-            buf_append(buf, sizeof(buf), &pos, "%s%d", f1 ? "" : ",", (int)e->nums[m]);
+            buf_append(buf, sizeof(buf), &pos, "%s%d", f1 ? "": ",", (int)e->nums[m]);
             f1 = false;
         }
         buf_append(buf, sizeof(buf), &pos, "],\"euro\":[");
         bool f2 = true;
         for (int m = 0; m < 2; m++) {
             if (!e->euro[m]) continue;
-            buf_append(buf, sizeof(buf), &pos, "%s%d", f2 ? "" : ",", (int)e->euro[m]);
+            buf_append(buf, sizeof(buf), &pos, "%s%d", f2 ? "": ",", (int)e->euro[m]);
             f2 = false;
         }
         buf_append(buf, sizeof(buf), &pos, "]}");
@@ -1966,7 +1942,7 @@ static void send_chunk(httpd_req_t *req, const char *buf, int len, size_t cap)
  * health at that moment. Chunked — the table outgrows any sane single buffer.
  * `raw_m` is the master's own per-run mean of the block — v3 subtracts
  * nothing, so that IS the raw offset the drift regression runs on. */
-/* GET /loops?ev=1 — the event log instead of the blocks `[D87]`. On an existing
+/* GET /loops?ev=1 — the event log instead of the blocks. On an existing
  * handler because the URI-handler cap fails silently. Streamed, oldest first;
  * the page asks only when /status `ev_seq` moved, so it costs nothing at 1 Hz. */
 static esp_err_t evlog_send(httpd_req_t *req)
@@ -1974,7 +1950,7 @@ static esp_err_t evlog_send(httpd_req_t *req)
     /* PSRAM. httpd serialises handlers, so one shared buffer. */
     static EvEntry *ev;
     if (!ev) ev = heap_caps_malloc(EVLOG_N * sizeof(EvEntry), MALLOC_CAP_SPIRAM);
-    int n = ev ? evlog_copy(ev, EVLOG_N) : 0;
+    int n = ev ? evlog_copy(ev, EVLOG_N): 0;
     char buf[EVLOG_TXT + 64];
     int len = snprintf(buf, sizeof(buf), "{\"ev_seq\":%lu,\"ev\":[",
                        (unsigned long)evlog_seq());
@@ -1983,7 +1959,7 @@ static esp_err_t evlog_send(httpd_req_t *req)
         for (char *c = ev[i].txt; *c; c++)          /* JSON-safe: no escapes needed */
             if (*c == '"' || *c == '\\' || (unsigned char)*c < 0x20) *c = '\'';
         len = snprintf(buf, sizeof(buf), "%s{\"seq\":%lu,\"t_ms\":%lu,\"txt\":\"%s\"}",
-                       i ? "," : "", (unsigned long)ev[i].seq,
+                       i ? ",": "", (unsigned long)ev[i].seq,
                        (unsigned long)ev[i].t_ms, ev[i].txt);
         send_chunk(req, buf, len, sizeof(buf));
     }
@@ -2003,7 +1979,7 @@ static esp_err_t loops_handler(httpd_req_t *req)
         httpd_query_key_value(qry, "ev", val, sizeof(val)) == ESP_OK && val[0] == '1')
         return evlog_send(req);
 
-    int n = g_status.loop_hist ? g_status.loop_hist_n : 0;
+    int n = g_status.loop_hist ? g_status.loop_hist_n: 0;
     if (n > LOOP_HIST) n = LOOP_HIST;
     int len = snprintf(buf, sizeof(buf),
         "{\"loops_done\":%d,\"stored\":%d,\"cap\":%d,"
@@ -2016,7 +1992,7 @@ static esp_err_t loops_handler(httpd_req_t *req)
 
     for (int i = 0; i < n; i++) {
         const LoopStat *L = &g_status.loop_hist[i];
-        int nn = L->nodes ? L->nodes : 1;
+        int nn = L->nodes ? L->nodes: 1;
         if (nn > MAX_NODES) nn = MAX_NODES;
         /* clear_sig / quar / the per-node soft flag below are the block's own
          * exclusion verdict. Without them a finished session cannot say when an
@@ -2028,7 +2004,7 @@ static esp_err_t loops_handler(httpd_req_t *req)
             "\"cal_ms\":%d,"
             "\"win_ms\":%.1f,\"gap_ms\":%.1f,\"clear_sig\":%.3f,\"quar\":%d,"
             "\"nodes\":%d,\"n\":[",
-            i ? "," : "", i + 1, (unsigned long)L->t_s,
+            i ? ",": "", i + 1, (unsigned long)L->t_s,
             L->mean_n[0], L->mean, L->sigma, (int)L->cal_ms,
             L->win_ms, L->gap_ms, L->clear_sig, (int)L->quarantined, nn);
         send_chunk(req, buf, len, sizeof(buf));
@@ -2040,13 +2016,13 @@ static esp_err_t loops_handler(httpd_req_t *req)
                 snprintf(lt_txt, sizeof(lt_txt), "null");
             // cam_exp/gain are the operating point this loop was MEASURED AT.
             // cam_sig/cam_rsig/cam_px are what the camera DID during the block
-            // (D50) — not the sweep's stale values above.
+            //  — not the sweep's stale values above.
             len = snprintf(buf, sizeof(buf),
                 "%s{\"mean\":%.4f,\"sigma\":%.4f,\"cam_mbit\":%.3f,\"cam_stalls\":%lu,"
                 "\"cam_exp\":%lu,\"cam_gain\":%d,\"cam_cal\":%d,"
                 "\"cam_bias\":%.6f,\"cam_sig\":%.4f,\"cam_rsig\":%.4f,\"cam_px\":%.2f,"
                 "\"soft\":%d,\"trip\":%d,\"mflag\":%d,\"die_temp\":%s}",
-                k ? "," : "", L->mean_n[k], L->sig_n[k], L->cam_mbit[k],
+                k ? ",": "", L->mean_n[k], L->sig_n[k], L->cam_mbit[k],
                 (unsigned long)L->cam_stalls[k], (unsigned long)L->cam_exp[k],
                 (int)L->cam_gain[k], (int)L->cam_cal_ok[k],
                 L->cam_bias[k], L->cam_sig[k], L->cam_rsig[k], L->cam_px[k],
@@ -2061,7 +2037,7 @@ static esp_err_t loops_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* ── /extremes GET — the ~50 most extreme ranked items by |Z*| (D78/D78b) ──
+/* ── /extremes GET — the ~50 most extreme ranked items by |Z*| ──
  * Same row shape as top/low (emit_run), so the page reuses renderRunTable and
  * sorts them client-side. Streamed and on its OWN fetch, not folded into
  * /status: the set outgrows the 8 KB /status buffer, and /status is polled
@@ -2070,10 +2046,10 @@ static esp_err_t loops_handler(httpd_req_t *req)
  * prefix on every call, so a newly measured item enters it by |Z*| exactly as
  * the compaction survivors do. The scratch lives in PSRAM; on a shortfall
  * it answers an empty set rather than a fault. */
-#define EXTREMES_MAX 50   /* display pool for the Top-10 table (D78b: 100 -> 50,
-                             halves the per-poll scan/serialize on the master).
-                             The compaction archive (PASS_KEEP_EXTREME) is
-                             separate and stays at 100. */
+#define EXTREMES_MAX 50   /* display pool for the Top-10 table (halves the
+                             per-poll scan/serialize on the master). The
+                             compaction archive (PASS_KEEP_EXTREME) is separate
+                             and stays at 100. */
 static esp_err_t extremes_handler(httpd_req_t *req)
 {
     static RunResult *ex;   /* httpd serialises handlers, so one shared buffer */
@@ -2085,14 +2061,14 @@ static esp_err_t extremes_handler(httpd_req_t *req)
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
 
     /* ?score=1: the scoring table — every number of this round's scoring, one
-     * row each, in the item row shape (emit_row, D103) plus `sum`, the running
+     * row each, in the item row shape (emit_row) plus `sum`, the running
      * Σ that picks the pool, and `passes` behind it. A query flag, not a new
      * handler: the URI-handler cap fails silently. */
     char q[32], v[8];
     if (httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK &&
         httpd_query_key_value(q, "score", v, sizeof(v)) == ESP_OK && v[0] == '1') {
         const ScoreItem *R = g_status.score_rows;
-        int nr = R ? g_status.score_rows_n : 0;
+        int nr = R ? g_status.score_rows_n: 0;
         char sb[448];
         int sl = snprintf(sb, sizeof(sb), "{\"n\":%d,\"pass\":%d,\"extremes\":[",
                           nr, g_status.scoring_pass);
@@ -2102,7 +2078,7 @@ static esp_err_t extremes_handler(httpd_req_t *req)
             const ScoreItem *s = &R[i];
             if (s->r.k == 0 && s->passes == 0) continue;   /* not measured yet */
             int  c = (g_status.score_sum >= 0 && g_status.score_sum < SCORE_SUM_N)
-                     ? g_status.score_sum : 0;
+                     ? g_status.score_sum: 0;
             char tail[128];
             snprintf(tail, sizeof(tail),
                      ",\"sum\":%.4f,\"sum_n\":%d,\"passes\":%d,"
@@ -2120,7 +2096,7 @@ static esp_err_t extremes_handler(httpd_req_t *req)
         return ESP_OK;
     }
 
-    int n = ex ? results_extremes(ex, EXTREMES_MAX) : 0;
+    int n = ex ? results_extremes(ex, EXTREMES_MAX): 0;
     bool euro = (g_status.mode == MODE_EUROJACKPOT);
 
     char buf[256];
@@ -2143,7 +2119,7 @@ static esp_err_t extremes_handler(httpd_req_t *req)
  * cannot answer that. Each row carries the gate bitmask it failed, so a sweep
  * that certified nothing says which property was missing instead of only "no".
  *
- * Read-only: the sweep runs at the ROUND BOUNDARY (D76), so this reports the
+ * Read-only: the sweep runs at the ROUND BOUNDARY, so this reports the
  * real code path rather than a separate manual one that could quietly diverge
  * from it. ⚠ `?runs=` / `?loops=` / `?baseline=` answer 400. Start a session,
  * let the opening sweep run, then read this endpoint.
@@ -2182,12 +2158,12 @@ static esp_err_t focus_handler(httpd_req_t *req)
     int  pos = 0;
     buf_append(buf, sizeof(buf), &pos,
         "{\"seq\":%lu,\"on\":%d,\"p\":%d,\"k\":%d,\"n\":[",
-        (unsigned long)f.seq, f.active ? 1 : 0, g_status.paused ? 1 : 0, f.kind);
+        (unsigned long)f.seq, f.active ? 1: 0, g_status.paused ? 1: 0, f.kind);
     for (int i = 0; i < f.n && i < 6; i++)
-        buf_append(buf, sizeof(buf), &pos, "%s%d", i ? "," : "", f.nums[i]);
+        buf_append(buf, sizeof(buf), &pos, "%s%d", i ? ",": "", f.nums[i]);
     buf_append(buf, sizeof(buf), &pos, "],\"e\":[");
     for (int i = 0; i < f.ne && i < 2; i++)
-        buf_append(buf, sizeof(buf), &pos, "%s%d", i ? "," : "", f.euro[i]);
+        buf_append(buf, sizeof(buf), &pos, "%s%d", i ? ",": "", f.euro[i]);
     buf_append(buf, sizeof(buf), &pos, "]}");
 
     httpd_resp_set_type(req, "application/json");
@@ -2203,7 +2179,7 @@ static esp_err_t focus_handler(httpd_req_t *req)
  * always finishes and is kept.
  *
  * Device-side, like the loop itself: closing the browser does not resume it. */
-/* ── /scoresum POST — the column the pool is summed on (D104) ─────────────
+/* ── /scoresum POST — the column the pool is summed on  ─────────────
  * ?c=key|z|conc|nsd|ac. Every column is summed all the way through, so a
  * switch only changes which sum the pick reads; the pick itself happens when
  * the whole scoring ends, on whatever is selected then. 409 outside the
@@ -2249,16 +2225,13 @@ static esp_err_t pause_handler(httpd_req_t *req)
         httpd_query_key_value(qry, "on", val, sizeof(val)) == ESP_OK)
         on = (val[0] == '1');
     g_status.paused = on;
-    httpd_resp_sendstr(req, on ? "paused" : "running");
+    httpd_resp_sendstr(req, on ? "paused": "running");
     return ESP_OK;
 }
 
 /* ── /start POST ──────────────────────────────────────────────────── */
 /* Refuses with 409 while a session runs, rather than answering "ok" and doing
- * nothing. The silent version was a trap: the caller got a success reply and a
- * session still carrying the PREVIOUS run's parameters, so a /start whose
- * loops= or runs= were quietly ignored looked identical to one that worked.
- * Same contract as /update, which has refused mid-measurement since Phase B. */
+ * nothing. Same contract as /update. */
 static esp_err_t start_refuse(httpd_req_t *req, const char *msg)
 {
     httpd_resp_set_status(req, "400 Bad Request");
@@ -2312,7 +2285,7 @@ typedef struct {
 static bool start_parse_mode(const char *val, StartReq *r, httpd_req_t *req)
 {
     (void)req;
-    r->mode = (val[0] == '1') ? MODE_LOTTO_649 : MODE_EUROJACKPOT;
+    r->mode = (val[0] == '1') ? MODE_LOTTO_649: MODE_EUROJACKPOT;
     return true;
 }
 static bool start_parse_run(const char *val, StartReq *r, httpd_req_t *req)
@@ -2480,14 +2453,14 @@ _Static_assert(sizeof(start_keys) / sizeof(start_keys[0]) <= 32,
 static bool start_parse_query(httpd_req_t *req, const char *qry, StartReq *r)
 {
     uint32_t seen = 0;
-    for (const char *p = qry; *p; ) {
+    for (const char *p = qry; *p;) {
         while (*p == '&') p++;
         if (!*p) break;
         const char *eq = p;
         while (*eq && *eq != '=' && *eq != '&') eq++;
         size_t kn = (size_t)(eq - p);
-        /* `?=x` is *p == '='. Refusing it is the D79 answer and the only way
-         * the loop terminates: kn ≥ 1 past this branch, so p strictly grows. */
+        /* `?=x` is *p == '='. Refusing it is the only way the loop terminates:
+         * kn ≥ 1 past this branch, so p strictly grows. */
         if (kn == 0) {
             start_refuse(req, "empty start parameter name");
             return true;
@@ -2540,13 +2513,13 @@ static bool start_parse_query(httpd_req_t *req, const char *qry, StartReq *r)
             if (!spec->parse(val, r, req))
                 return true;
         }
-        p = (*eq == '&') ? eq + 1 : eq;
+        p = (*eq == '&') ? eq + 1: eq;
     }
     return false;
 }
 
 /* Fields /start writes. Restored if the session task cannot be created, so a
- * 500 cannot relabel the finished session the way a 400 used to. */
+ * 500 cannot relabel the finished session. */
 typedef struct {
     ElottoMode   mode;
     int          runs_total;
@@ -2607,19 +2580,16 @@ static esp_err_t start_handler(httpd_req_t *req)
          * Every refusal below is a 400, and a 400 must leave the FINISHED
          * session alone: /status still describes it, and rewriting `pre_w` there
          * would relabel what the page shows about it. Parse into locals, commit
-         * once at the end.
-         * Since D79 made a typo'd key and an out-of-range maxruns/gap/cal/score
-         * all answer 400, this path is reachable by a plain mistake, not only by
-         * a malformed request. */
+         * once at the end. */
         StartReq parsed = {
-            .mode      = MODE_EUROJACKPOT,
-            .runs_cap  = UNLIM_RUNS_DEFAULT,
-            .run_ms    = RUN_S_DEFAULT * 1000,
-            .gap_ms    = -1,
-            .cal_ms    = CAL_BUDGET_DEFAULT_MS,
-            .score_dir = SCORE_DIR_HIGH,
-            .pre_w     = ENT_W_PRE_DEFAULT,
-            .from_form = false,
+.mode      = MODE_EUROJACKPOT,
+.runs_cap  = UNLIM_RUNS_DEFAULT,
+.run_ms    = RUN_S_DEFAULT * 1000,
+.gap_ms    = -1,
+.cal_ms    = CAL_BUDGET_DEFAULT_MS,
+.score_dir = SCORE_DIR_HIGH,
+.pre_w     = ENT_W_PRE_DEFAULT,
+.from_form = false,
         };
 
         char qry[256] = "";
@@ -2641,7 +2611,7 @@ static esp_err_t start_handler(httpd_req_t *req)
         }
         int segments;
         {
-            int ms = parsed.run_ms < 100 ? 100 : parsed.run_ms;
+            int ms = parsed.run_ms < 100 ? 100: parsed.run_ms;
             long long n = ((long long)ms * RUN_SEGS_REF + RUN_MS_REF / 2) / RUN_MS_REF;
             if (n < 500) n = 500;
             if (n > EL_SEG_MAX) n = EL_SEG_MAX;
@@ -2723,29 +2693,22 @@ static esp_err_t pool_handler(httpd_req_t *req)
     if (!origin_ok(req)) return ESP_OK;
     httpd_resp_set_status(req, "400 Bad Request");
     httpd_resp_sendstr(req,
-        "pool confirmation is gone -- sessions are rounds until Abort (D67)");
+        "pool confirmation is gone -- sessions are rounds until Abort ");
     return ESP_OK;
 }
 
 /* GET /diag — the four-camera health page.
  *
- * One row per node, live. Built because per-node optical faults are the thing
- * this rig actually suffers from — a dimming LED, a sensor dispersing more than
- * its neighbours — and until now answering "how are the cameras right now?"
- * meant four separate curl calls and reading JSON by eye.
- *
- * The browser fetches each node directly (every node serves its own stats with
- * an Access-Control-Allow-Origin header) rather than having the master proxy
- * them. Two reasons: the master's UDP 'D' command is only safe between runs, so
- * a proxy could not refresh during a session; and a node that has crashed
- * should show as unreachable on its own row instead of silently reporting a
- * stale value the master cached.
+ * One row per node, live. The browser fetches each node directly (every node
+ * serves its own stats with an Access-Control-Allow-Origin header) rather than
+ * having the master proxy them: the master's UDP 'D' command is only safe
+ * between runs, so a proxy could not refresh during a session; and a node that
+ * has crashed should show as unreachable on its own row instead of silently
+ * reporting a stale value the master cached.
  *
  * Deliberately narrow: the parameters that are tuned (exposure, gain), the ones
  * the calibration gates test (bias, sigma, autocorr, mean_px), throughput, and
- * stall count. Everything else that used to be in the JSON — frame_pairs,
- * drops, waits — is diagnostics for a different question and is still one click
- * away at /diagjson. */
+ * stall count. The rest of the diagnostics is one click away at /diagjson. */
 static const char DIAG_HTML[] =
 "<!DOCTYPE html><html><head><meta charset='utf-8'>"
 "<meta name='viewport' content='width=device-width,initial-scale=1'>"
@@ -2786,7 +2749,7 @@ static const char DIAG_HTML[] =
 "<th title=\"exposure RIGHT NOW. Different rungs per node are normal &mdash; different sensors, different light\">Exp</th>"
 "<th class='l' title=\"halve or double this exposure by hand and reset the statistics, so mean_px answers in ~2 s. Refused while measuring; the next sweep overwrites it\">set exp</th>"
 "<th title=\"analog gain. Left at 1023 &mdash; the light is tuned with exposure and the lamp\">Gain</th>"
-"<th title=\"mean raw pixel byte. Must stay in [5,0 , 100,0]: below = partly frozen frames, above = heading for saturation\">mean_px</th>"
+"<th title=\"mean raw pixel byte. Must stay in [5,0, 100,0]: below = partly frozen frames, above = heading for saturation\">mean_px</th>"
 "<th title=\"ones fraction of the LSB stream minus 0,5. Small by construction &mdash; raw_bias in /diagjson is the front end itself\">bias&minus;0.5</th>"
 "<th title=\"&sigma; of the per-mini-run z (3200 bits each). Gate wants |&sigma;&minus;1| &le; 0,05\">&sigma;</th>"
 "<th title=\"fraction of pixels with frame difference exactly 0. Their LSB is 0, so a high value explains a deficit of ones. Gated at 0,125\">zero_diff</th>"
@@ -2909,24 +2872,24 @@ static esp_err_t diag_handler(httpd_req_t *req)
 
 /* GET /diagjson — this node's own camera statistics, machine-readable.
  *
- * Was /diag until 2026-07-28. /diag is now the human-facing page that renders
- * all four nodes; this is the raw source behind the master's row, and each
- * slave serves the same shape at its own /diag. */
+ * /diag is the human-facing page that renders all four nodes; this is the raw
+ * source behind the master's row, and each slave serves the same shape at its
+ * own /diag. */
 /* GET /diagjson[?all=1]
  *
- * Without `all` this is the master's own camera, as it always was.
+ * Without `all` this is the master's own camera.
  *
  * `?all=1` is the COLLECTOR: it fires the 'D' query at every discovered node
  * and returns one object with the whole array's front-end health, so a session
  * post-mortem is one request instead of one per node plus a note of which IP
  * was which. The per-node block carries `raw_bias`/`raw_sigma` alongside
- * bias/sigma (D43) — same bits `[D65]`.
+ * bias/sigma  — same bits.
  *
  * ⚠ 409 while a session is measuring. slaves_diag() is only safe between
  * loops: firing 'D' between an 'M' and its 'Z:' would collide with the reply
  * the measurement is waiting for.
  * ⚠ A node that answers no `,raw=` reports 0/0 — that is ABSENT, not a raw
- * bias of zero, and it means that node is on an image older than 2026-08-26.
+ * bias of zero.
  * ⚠ This deliberately does NOT run /camtest: it is heavy and already a
  * master-only single call. */
 static esp_err_t diagjson_handler(httpd_req_t *req)
@@ -2964,7 +2927,7 @@ static esp_err_t diagjson_handler(httpd_req_t *req)
         "\"autocorr\":[%.4f,%.4f,%.4f,%.4f],"
         "\"mean_pixel\":%.2f,\"mbit_s\":%.3f,\"consume_mbit_s\":%.3f,"
         "\"zero_diff\":%.4f,"
-        /* Same bits as bias/sigma above `[D65]`. See cam_raw_t in extract.h. */
+        /* Same bits as bias/sigma above. See cam_raw_t in extract.h. */
         "\"raw_bias\":%.6f,\"raw_sigma\":%.4f,\"raw_sigma_n\":%d,"
         "\"raw_runs_z\":%.2f,"
         /* P4 DIE temperature, not the sensor's. null = no driver. */
@@ -2976,7 +2939,7 @@ static esp_err_t diagjson_handler(httpd_req_t *req)
         "\"ms_pair\":%.2f,\"ms_wait\":%.2f,\"ms_extract\":%.2f,\"ms_rest\":%.2f,"
         "\"exposure\":%lu,\"gain\":%lu"
         "}",
-        cam.ready ? "true" : "false",
+        cam.ready ? "true": "false",
         (unsigned long long)cam.frame_pairs, (unsigned long long)cam.bits_extracted,
         (unsigned long)cam.stuck_frame_count,
         cam.bias, cam.sigma, cam.sigma_samples,
@@ -3010,16 +2973,16 @@ static esp_err_t diagjson_handler(httpd_req_t *req)
         for (int i = 0; i < g_status.node_count; i++) {
             const NodeStatus *N = &g_status.nodes[i];
             bool     me = (i == 0);
-            double   mb   = me ? cam.mbit_per_sec : N->cam_mbit;
-            double   cmb  = me ? cam.consume_mbit_per_sec : (double)N->cam_cons_mbit;
-            uint32_t stl  = me ? cam.stalls       : N->cam_stalls;
-            double   rb   = me ? cam.raw_bias     : N->cam_raw_bias;
-            double   rs   = me ? cam.raw_sigma    : N->cam_raw_sigma;
-            double   bi   = me ? cam.bias         : N->cam_bias_now;
-            double   sg   = me ? cam.sigma        : N->cam_sigma_now;
-            uint32_t enow = me ? exp_now          : N->cam_exp_now;
-            uint32_t gnow = me ? gain_now         : N->cam_gain_now;
-            double   ct   = me ? (double)cam.die_temp_c : (double)N->die_temp_c;
+            double   mb   = me ? cam.mbit_per_sec: N->cam_mbit;
+            double   cmb  = me ? cam.consume_mbit_per_sec: (double)N->cam_cons_mbit;
+            uint32_t stl  = me ? cam.stalls: N->cam_stalls;
+            double   rb   = me ? cam.raw_bias: N->cam_raw_bias;
+            double   rs   = me ? cam.raw_sigma: N->cam_raw_sigma;
+            double   bi   = me ? cam.bias: N->cam_bias_now;
+            double   sg   = me ? cam.sigma: N->cam_sigma_now;
+            uint32_t enow = me ? exp_now: N->cam_exp_now;
+            uint32_t gnow = me ? gain_now: N->cam_gain_now;
+            double   ct   = me ? (double)cam.die_temp_c: (double)N->die_temp_c;
             char ct_txt[16];
             if (isfinite(ct)) snprintf(ct_txt, sizeof(ct_txt), "%.2f", ct);
             else              snprintf(ct_txt, sizeof(ct_txt), "null");
@@ -3036,15 +2999,15 @@ static esp_err_t diagjson_handler(httpd_req_t *req)
                 /* ⚠ P4 DIE, not the camera. null = this node did not report it. */
                 "\"die_temp\":%s,"
                 "\"soft_down\":%s,\"lost\":%lu,\"reboots\":%lu,\"fw_sha\":\"%s\"}",
-                i ? "," : "", me ? "master" : N->ip,
-                N->ok ? "true" : "false", mb, cmb, (unsigned long)stl,
-                me ? camera_sensor_name() : "?",
+                i ? ",": "", me ? "master": N->ip,
+                N->ok ? "true": "false", mb, cmb, (unsigned long)stl,
+                me ? camera_sensor_name(): "?",
                 (unsigned long)enow, (unsigned long)gnow,
                 (unsigned long)N->cam_exp, (int)N->cam_cal_ok, N->cam_bias,
                 rb, rs, bi, sg, ct_txt,
-                N->soft_down ? "true" : "false", (unsigned long)N->lost,
+                N->soft_down ? "true": "false", (unsigned long)N->lost,
                 (unsigned long)N->reboots,
-                me ? master_sha : (N->fw_sha[0] ? N->fw_sha : "?"));
+                me ? master_sha: (N->fw_sha[0] ? N->fw_sha: "?"));
         }
         buf_append(buf, sizeof(buf), &pos,
             "],\"node_count\":%d,\"collected\":true", g_status.node_count);
@@ -3084,7 +3047,7 @@ static esp_err_t camtest_handler(httpd_req_t *req)
     return camera_selftest_handle(req, g_status.state == ELOTTO_RUNNING);
 }
 
-/* GET /camlog — this node's own per-window camera log (D64). Deliberately NOT
+/* GET /camlog — this node's own per-window camera log. Deliberately NOT
  * refused while running: the whole reason it exists is that by the time a
  * session ends, compaction has thrown away the rows that would have said what
  * the camera was doing. Pull it mid-session, per node — this endpoint serves
@@ -3094,14 +3057,14 @@ static esp_err_t camlog_handler(httpd_req_t *req)
     return camera_winlog_send_json(req);
 }
 
-/* GET /linearity — steady light or flickering light, in one request (D64).
+/* GET /linearity — steady light or flickering light, in one request.
  * Drives the exposure registers, so it is refused for the whole session. */
 static esp_err_t linearity_handler(httpd_req_t *req)
 {
     return camera_linearity_handle(req, g_status.state == ELOTTO_RUNNING);
 }
 
-/* ── Start-form prefs (D49) ─────────────────────────────────────────
+/* ── Start-form prefs  ─────────────────────────────────────────
  * NVS ns "elstart". Written only on POST /start?confirm=1 (the web UI).
  * Served as a trailing script on GET / so a reload fills the form. API
  * defaults stay compiled-in: omitting a query key still means the default,
@@ -3124,7 +3087,7 @@ static void prefs_save(void)
     nvs_close(h);
 }
 
-/* The pool criterion (D104, D112) is not a form field: the Σ click during the
+/* The pool criterion  is not a form field: the Σ click during the
  * scoring picks it and writes it here at once, whatever started the session.
  * Loaded into g_status.score_sum at boot; a session start keeps it, so the
  * last choice is every following session's criterion until changed. */
@@ -3145,7 +3108,7 @@ static void sum_pref_load(void)
         nvs_get_u8(h, "scoresum", &c);
         nvs_close(h);
     }
-    g_status.score_sum = c < SCORE_SUM_N ? c : SUM_KEY;
+    g_status.score_sum = c < SCORE_SUM_N ? c: SUM_KEY;
 }
 
 static void prefs_send(httpd_req_t *req)
@@ -3175,7 +3138,7 @@ static void prefs_send(httpd_req_t *req)
             (unsigned)maxruns);
     if (score != 0xff) {
         const char *sv = score == SCORE_DIR_LOW ? "low"
-                       : score == SCORE_DIR_ABS ? "abs" : "high";
+: score == SCORE_DIR_ABS ? "abs": "high";
         p += snprintf(js + p, sizeof(js) - p,
             "e=document.getElementById('selScore');if(e)e.value='%s';", sv);
     }
@@ -3220,7 +3183,7 @@ static bool origin_ok(httpd_req_t *req)
 static void start_webserver(void)
 {
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
-    /* 17 here + 5 registered by elotto_ota = 22 against a cap of 25. Keep
+    /* 18 here + 5 registered by elotto_ota = 23 against a cap of 25. Keep
      * headroom: registration past this limit fails, and the return value is not
      * checked at either call site, so an endpoint would simply 404 with nothing
      * logged. Count them when adding one, and raise the cap before it bites. */
@@ -3231,16 +3194,13 @@ static void start_webserver(void)
     cfg.lru_purge_enable  = true;
     /* ⚠ The UI must not be able to lock an external client out of the master.
      * httpd reserves 3 lwIP sockets for itself, so this can never exceed
-     * CONFIG_LWIP_MAX_SOCKETS - 3 (16 - 3 = 13); at the old socket default of 10
-     * the ceiling WAS the httpd default of 7. One open page holds several
-     * keep-alive connections — Chrome allows 6 per origin and two windows share
-     * that pool — which fills a 7-slot table. `lru_purge_enable` above then
-     * serves each new connection by evicting the least recently used session,
-     * and a just-accepted client that has not sent its request yet is always
-     * the victim. The observed symptom is a successful TCP connect followed by
-     * an immediate close, every time, while the page keeps updating on its own
-     * existing sockets. That matters because pulling `/camlog` mid-session
-     * is the documented procedure. `[D82]` */
+     * CONFIG_LWIP_MAX_SOCKETS - 3 (16 - 3 = 13). One open page holds several
+     * keep-alive connections (Chrome allows 6 per origin and two windows share
+     * that pool), which would fill a small socket table. `lru_purge_enable`
+     * then evicts the least recently used session, and a just-accepted client
+     * that has not sent its request yet is always the victim — a successful
+     * TCP connect followed by an immediate close. That matters because pulling
+     * `/camlog` mid-session is the documented procedure. */
     cfg.max_open_sockets  = 13;
     httpd_handle_t srv = NULL;
     ESP_ERROR_CHECK(httpd_start(&srv, &cfg));
@@ -3323,10 +3283,8 @@ static void webserver_task(void *arg)
                                            pdFALSE, pdTRUE, pdMS_TO_TICKS(30000));
     if (bits & ETH_GOT_IP_BIT) {
         start_webserver();
-        /* The slave now lives on the same Ethernet as the browser, so the probe
-         * cannot run before there is an IP the way the UART one did. It follows
-         * the webserver rather than preceding it: mark-valid must not wait on a
-         * peer that may be offline. */
+        /* The probe needs an IP, so it follows the webserver rather than
+         * preceding it: mark-valid must not wait on a peer that may be offline. */
         slave_probe();
     } else {
         ESP_LOGE(TAG, "No Ethernet after 30s");

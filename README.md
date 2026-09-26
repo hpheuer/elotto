@@ -17,11 +17,11 @@ noise** using
 ## Abstract
 
 A home-built GCP/PEAR-style instrument: each node draws bits from its **own** camera (OV5647 or IMX219, never shared).
-Frame-pair diff → LSB → segments of 224 bits → Stouffer z. LSB bits as measured `[D65]`.
+Frame-pair diff → LSB → segments of 224 bits → Stouffer z. LSB bits as measured.
 Up to four nodes combine as `Σz/√k` for the nodes that answered that run. Ranking is
-**block-centred** z plus concordance (`?wpre=`), Z* in units of that block's σ `[D68]`.
-Scoring uses the same per-node centre `[D69]`.
-The HTML page shows the number or combination being measured. Sessions are unattended `[D66]`;
+**block-centred** z plus concordance (`?wpre=`), Z* in units of that block's σ.
+Scoring uses the same per-node centre.
+The HTML page shows the number or combination being measured. Sessions are unattended;
 do not pool with old `focus=on` archives.
 
 > This **cannot predict lottery draws**. Output is an experiment on physical randomness, not a
@@ -36,7 +36,7 @@ do not pool with old `focus=on` archives.
   soft-down at the round boundary.
 - **UI:** parameter line from `/status`, one sortable Top-10 (Z*, Z, Conc, Δn), jump board,
   GCP health line (`pass_σ`, `v_eff`, `|r|√n`). A session is a closed unit: no export, no
-  comparison across sessions `[D94]`.
+  comparison across sessions.
 - **Illumination:** `tools/tune.html` — live per-node linearity/sweep board (idle only).
 
 ## Screenshots
@@ -54,35 +54,35 @@ do not pool with old `focus=on` archives.
 | slave1 | 192.168.178.145 | measure |
 | slave2 | 192.168.178.155 | measure |
 
-All four: Waveshare ESP32-P4-ETH, **PoE**, own OV5647, lit enclosure (not dark) `[D28]`. Never power
-the lamp from a node's VSYS `[D29]`. UDP discovery on port 5000 — addresses are informational.
+All four: Waveshare ESP32-P4-ETH, **PoE**, own OV5647, lit enclosure (not dark). Never power
+the lamp from a node's VSYS. UDP discovery on port 5000 — addresses are informational.
 PSRAM mandatory. USB = recovery only.
 
 ## Build & Flash
 
-```powershell
+`powershell
 cd D:\E-Lotto\elotto
 .\build.ps1 build                        # master
-.\build.ps1 -C ../elotto_slave build     # slave
+.\build.ps1 -C../elotto_slave build     # slave
 .\build.ps1 -C ota_firmware build        # factory updater
 
 curl.exe http://192.168.178.100/update --data-binary @build/elotto.bin
 curl.exe http://192.168.178.103/update --data-binary @../elotto_slave/build/elotto_slave.bin
-# same for .145 / .155 — abort any session first (409 while running)
-```
+# same for.145 /.155 — abort any session first (409 while running)
+`
 
 After OTA, poll `fw_sha` in `/status` until it **changes**. Fresh board: USB erase-flash of
 `ota_firmware`, then Ethernet forever. Details, recovery, diagnostics: [`CLAUDE.md`](CLAUDE.md).
 
 ## Project structure
 
-```
+`
 main/            elotto.c (UI/HTTP), sensor.c/h, nodes.c/h, focus.c
 components/      elotto_camera, elotto_gcp, elotto_link, elotto_ota  (shared with slave)
 ota_firmware/    recovery image (factory)
 tools/           tune.html (live illumination board)
 docs/            DECISIONS.md, STATUS.md; PLAN.md / PLAN_HISTORY.md (stubs → git); data/
-```
+`
 
 Slave repo must sit **next to** this one (`EXTRA_COMPONENT_DIRS=../elotto/components`).
 
@@ -90,4 +90,4 @@ Slave repo must sit **next to** this one (`EXTRA_COMPONENT_DIRS=../elotto/compon
 
 | | |
 |---|---|
-| **v3 / D67** | Rounds until Abort; block = round (D76); LSB z + centred-half concordance (D77); sortable Top-10 (D78). Contract: `CLAUDE.md`. Never pool with prior-instrument sessions or v2.x. |
+| **v3 / D67** | Rounds until Abort; block = round; LSB z + centred-half concordance; sortable Top-10. Contract: `CLAUDE.md`. Never pool with prior-instrument sessions or v2.x. |

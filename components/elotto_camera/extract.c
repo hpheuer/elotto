@@ -7,9 +7,8 @@
 #include "extract.h"
 
 /* ── Reference: the original byte-at-a-time loop ───────────────────────────
- * Moved verbatim out of camera.c's diff_and_extract(). It is not dead code —
- * it is the definition of what the fast path has to reproduce, and the
- * self-test runs it on the target every time it is asked. */
+ * It is not dead code — it is the definition of what the fast path has to
+ * reproduce, and the self-test runs it on the target every time it is asked. */
 /* Close a LSB mini-run and start the next. Integer only: the extractor
  * never calls into soft-float, so the sums go out as sums and camera.c reduces
  * them to a σ at publish time. Called once per 3200 pixels, i.e. 200 times per
@@ -82,7 +81,7 @@ void cam_extract_ref(const uint8_t *a, const uint8_t *b, uint32_t n,
  *    (byte pair 0x01,0x00 reports two zeros). This is the borrow-free form —
  *    adding 0x7F to a 7-bit value cannot carry out of its byte — which is exact
  *    per byte:
- *        ~( ((x & 0x7F7F7F7F) + 0x7F7F7F7F) | x | 0x7F7F7F7F )
+ *        ~( ((x & 0x7F7F7F7F) + 0x7F7F7F7F) | x | 0x7F7F7F7F)
  *    leaves 0x80 in a byte position iff that byte is zero, and nowhere else. */
 #define LSB_MASK   0x01010101u
 #define GATHER_MUL 0x08040201u
@@ -100,16 +99,6 @@ void cam_extract_fast(const uint8_t *a, const uint8_t *b, uint32_t n,
     uint32_t i = 0;
 
     /* ── The LSB monitor, entirely in LOCALS for the duration ───────
-     * It used to run out of *raw directly, and that cost far more than the
-     * arithmetic in it: emit() is an INDIRECT call, so the compiler had to
-     * assume every word emitted might write through `raw` and reloaded all
-     * seven counters afterwards. Four of them are uint64_t, which on RV32 is a
-     * two-word load-modify-store with a carry each — the bulk loop was paying
-     * roughly twenty-five instructions per four pixels for bookkeeping worth
-     * about six, and /camtest measured the whole monitor at +28,6 % of the
-     * extraction loop (ns_raw 68,5 against ns_fast 53,3). After this change,
-     * on hardware: 59,18 against 54,04, i.e. +9,5 %.
-     *
      * Locals are invisible to emit() by construction, so the whole monitor
      * lives in registers and is written back once, at the end.
      *
@@ -117,12 +106,11 @@ void cam_extract_fast(const uint8_t *a, const uint8_t *b, uint32_t n,
      * one frame is 640000 pixels, and the widening happens at write-back. The
      * mini-run sums stay 64-bit — mr_sumsq grows by up to 3200² per term.
      * ⚠ `bits` counts PIXELS CONSUMED and every path below consumes all of
-     * them, so it is not incremented in any loop: it is `n`, added at the end.
-     * That alone removed a 64-bit accumulate per four pixels. */
+     * them, so it is not incremented in any loop: it is `n`, added at the end. */
     uint32_t r_word     = 0;             /* ones since the last emit         */
     uint32_t r_ones     = 0;             /* ones in the words already emitted */
-    uint32_t r_run_ones = raw ? raw->run_ones : 0u;
-    uint32_t r_run_bits = raw ? raw->run_bits : 0u;
+    uint32_t r_run_ones = raw ? raw->run_ones: 0u;
+    uint32_t r_run_bits = raw ? raw->run_bits: 0u;
     uint32_t r_mr_n     = 0;
     uint64_t r_mr_sum   = 0, r_mr_sumsq = 0;
     /* Runs channel, same locals-only treatment as the rest of the monitor.
@@ -132,8 +120,8 @@ void cam_extract_fast(const uint8_t *a, const uint8_t *b, uint32_t n,
      * moment it has consumed a bit. */
     const bool wr       = raw && raw->want_runs;
     uint32_t r_trans    = 0;
-    uint32_t r_prev     = wr ? raw->prev : 0u;
-    uint32_t r_tmask    = (wr && raw->have_prev) ? 0xFu : 0x7u;
+    uint32_t r_prev     = wr ? raw->prev: 0u;
+    uint32_t r_tmask    = (wr && raw->have_prev) ? 0xFu: 0x7u;
 
     /* raw_tick() against the locals. Same test, same moment, same result — the
      * self-test compares mr_n, mr_sum, mr_sumsq, run_ones and run_bits against
@@ -179,11 +167,9 @@ void cam_extract_fast(const uint8_t *a, const uint8_t *b, uint32_t n,
         uint32_t x = aw ^ bw;
         orx |= x;
 
-        /* Byte sum of `aw` without unpacking: two 16-bit lanes, then add the lanes.
-         * Six ops for four pixels, against ~7 ms per pair for the separate
-         * strided pass this replaces — CPU that is really saved, though it buys
-         * no idle bit rate; see extract.h. Max 640000*255 = 1,6e8, so a uint32
-         * accumulator cannot overflow within one frame. */
+        /* Byte sum of `aw` without unpacking: two 16-bit lanes, then add the
+         * lanes. Max 640000*255 = 1,6e8, so a uint32 accumulator cannot
+         * overflow within one frame. */
         uint32_t ps = (aw & 0x00FF00FFu) + ((aw >> 8) & 0x00FF00FFu);
         psum += (ps & 0xFFFFu) + (ps >> 16);
 
@@ -266,7 +252,7 @@ void cam_extract_fast(const uint8_t *a, const uint8_t *b, uint32_t n,
 
 /* ── RAW10 tables ──────────────────────────────────────────────────────────
  * Indexed by x = a[4]^b[4], the XOR of a group's LSB byte.
- *   s_r10_nib[x]     the 4 stream bits, pixel 0 in bit 3 (the D89 table)
+ *   s_r10_nib[x]     the 4 stream bits, pixel 0 in bit 3
  *   s_r10_tab[j][x]  that nibble at the position of group j of four in a
  *                    16-bit chunk (bits 15-4j..12-4j), plus its ones count at
  *                    bit 16. The four entries of a chunk ADD without carries:
@@ -298,11 +284,9 @@ static void r10_tables_init(void)
     s_r10_ok = true;
 }
 
-/* ── RAW10 reference: the D89 loop, verbatim ──────────────────────────────
- * Moved out of camera.c's diff_and_extract_raw10() with its globals turned
- * into the parameters every extractor here takes. It is what every IMX219
- * stream since D89 came out of, so it is the definition the fast path has to
- * reproduce — not a cleaner re-derivation of it.
+/* ── RAW10 reference ────────────────────────────────────────────────────────
+ * The plain loop is the definition the fast path has to reproduce — not a
+ * cleaner re-derivation of it.
  * ⚠ Its 4-bit steps assume bitacc_n and run_bits are multiples of 4 on entry;
  * a misaligned entry is walked bit by bit (and stays bit by bit while the two
  * disagree mod 4 — slow, still correct). */
@@ -324,8 +308,8 @@ void cam_extract_raw10_ref(const uint8_t *a, const uint8_t *b, uint32_t n,
     uint64_t r_mr_sum = 0, r_mr_sumsq = 0;
     const bool wr = raw->want_runs;
     uint32_t r_trans = 0;
-    uint32_t r_prev  = wr ? raw->prev : 0u;
-    uint32_t r_tmask = (wr && raw->have_prev) ? 0xFu : 0x7u;
+    uint32_t r_prev  = wr ? raw->prev: 0u;
+    uint32_t r_tmask = (wr && raw->have_prev) ? 0xFu: 0x7u;
 
     uint32_t groups = n / 5;
     for (uint32_t g = 0; g < groups; g++) {
@@ -398,7 +382,7 @@ void cam_extract_raw10_ref(const uint8_t *a, const uint8_t *b, uint32_t n,
     if (out_psum)  *out_psum  += psum;
 }
 
-/* ── RAW10 fast: four groups (16 pixels, 20 bytes) per step `[D93]` ─────────
+/* ── RAW10 fast: four groups (16 pixels, 20 bytes) per step  ─────────
  * Twenty bytes are five aligned words per frame, and the layout lines up:
  * group k's LSB byte sits in word k+1, lane k. So one XOR per word, and
  *
@@ -446,7 +430,7 @@ void cam_extract_raw10_fast(const uint8_t *a, const uint8_t *b, uint32_t n,
     uint64_t r_mr_sum = 0, r_mr_sumsq = 0;
     const bool wr = raw->want_runs;
     uint32_t r_trans = 0;
-    uint32_t r_prev  = wr ? raw->prev : 0u;
+    uint32_t r_prev  = wr ? raw->prev: 0u;
     bool     r_have  = wr && raw->have_prev;
 
 #define R10_CLOSE_RUN()                                                 \
@@ -531,7 +515,7 @@ void cam_extract_raw10_fast(const uint8_t *a, const uint8_t *b, uint32_t n,
         if (room > 16) {
             r_run_ones += pop; r_run_bits += 16;
         } else {
-            uint32_t head = (room == 16) ? pop : cam_popcount32(v16 >> (16 - room));
+            uint32_t head = (room == 16) ? pop: cam_popcount32(v16 >> (16 - room));
             r_run_ones += head;
             R10_CLOSE_RUN();
             r_run_ones = pop - head; r_run_bits = 16 - room;
@@ -539,7 +523,7 @@ void cam_extract_raw10_fast(const uint8_t *a, const uint8_t *b, uint32_t n,
         if (wr) {
             /* Bit 15 is prev^first, bit i the pair (i+1, i) in stream order;
              * bit 15 is dropped on the very first bit of a window. */
-            uint32_t d = (v16 ^ (((r_prev << 16) | v16) >> 1)) & (r_have ? 0xFFFFu : 0x7FFFu);
+            uint32_t d = (v16 ^ (((r_prev << 16) | v16) >> 1)) & (r_have ? 0xFFFFu: 0x7FFFu);
             r_trans += cam_popcount32(d);
             r_prev = v16 & 1u; r_have = true;
         }
@@ -572,7 +556,7 @@ void cam_extract_raw10_fast(const uint8_t *a, const uint8_t *b, uint32_t n,
     }
 
     if (out_zeros) *out_zeros += zeros;
-    if (out_any)   *out_any   |= (zeros != npix) ? 1u : 0u;
+    if (out_any)   *out_any   |= (zeros != npix) ? 1u: 0u;
     if (out_psum)  *out_psum  += psum;
 }
 #undef R10_GROUP_SLOW
@@ -586,12 +570,10 @@ void cam_extract_raw10_fast(const uint8_t *a, const uint8_t *b, uint32_t n,
  * the only place the claim actually has to hold. A host test would prove
  * something about a different compiler and a different memory system.
  *
- * ⚠ The buffers are the CALLER'S frame size, not a fixed 256 KB. Larger than
- * the L2 cache was never the whole requirement: the number this produces is
- * used to price the live pair loop, so it has to run on the live geometry --
- * 2x640000 B, 64-byte aligned like the DMA buffers -- or the comparison is
- * between two different memory systems. Two micro-optimisations were predicted
- * against the 256 KB figure and both measured 0,0 %.
+ * ⚠ The buffers are the CALLER'S frame size, not a fixed 256 KB: the number
+ * this produces is used to price the live pair loop, so it has to run on the
+ * live geometry -- 2x640000 B, 64-byte aligned like the DMA buffers -- or the
+ * comparison is between two different memory systems.
  *
  * BENCH_MIN/MAX only bound what a caller may ask for; nothing here assumes a
  * particular size. */
@@ -626,7 +608,7 @@ static void count_emit(uint32_t w, uint32_t ro, void *ctx)
  * separately from the extraction: one popcount for the bias, the mini-run sigma
  * accumulation, and the four lag popcounts the autocorrelation gate needs.
  * ⚠ It is the WORD-BY-WORD form with 64-bit counters in memory. The live path
- * batches them with locals (process_words() in camera.c `[D93]`), so ns_stats
+ * batches them with locals (process_words() in camera.c), so ns_stats
  * and ns10_stats now OVER-price it; /diagjson's ms_extract is the live cost. */
 typedef struct {
     uint64_t bits, ones, run_ones, run_bits;
@@ -722,15 +704,15 @@ static bool case_equal_fn(extract_fn ref, extract_fn fast,
         emitted += cam_popcount32(s1.bitacc);
         /* A preset partial word is emitted too, but its bits were never this
          * call's pixels; a preset monitor starts from its own count. */
-        emitted -= pk0 ? cam_popcount32(pk0->bitacc) : 0u;
-        if (emitted != r1.ones - (rw0 ? rw0->ones : 0u)) {
+        emitted -= pk0 ? cam_popcount32(pk0->bitacc): 0u;
+        if (emitted != r1.ones - (rw0 ? rw0->ones: 0u)) {
             rep->what = 8;
             rep->ref_w = (uint32_t)emitted; rep->fast_w = (uint32_t)r1.ones;
             return false;
         }
     }
-    /* The pixel sum feeds mean_px (was CAL_MAX_MEAN_PX gate, now publish-only
-     * D52), so it is held to the same standard as the bits: exactly equal. */
+    /* The pixel sum feeds mean_px, so it is held to the same standard as the
+     * bits: exactly equal. */
     if (p1 != p2) { rep->what = 6; rep->ref_w = p1; rep->fast_w = p2; return false; }
     if ((a1 != 0) != (a2 != 0))      { rep->what = 3; return false; }
     if (s1.bitacc != s2.bitacc || s1.bitacc_n != s2.bitacc_n) {
@@ -798,7 +780,7 @@ static int r10_cases(uint8_t *a, uint8_t *b, uint32_t bytes, uint32_t *wa, uint3
         c++; if (!case_equal_fn(R, F, a, b, bytes, wa, wb, cap, &w, rep, NULL, &rw0)) goto fail;
     }
     {
-        cam_pack_t pk0 = { .bitacc = 0xAu, .bitacc_n = 4 };
+        cam_pack_t pk0 = {.bitacc = 0xAu,.bitacc_n = 4 };
         c++; if (!case_equal_fn(R, F, a + 1, b + 1, 100003, wa, wb, cap, &w, rep, &pk0, NULL)) goto fail;
     }
     heap_caps_free(b_save);
@@ -837,9 +819,9 @@ bool cam_extract_selftest(cam_selftest_t *out, uint32_t bytes)
     }
 
     /* Realistic content: a dark frame plus a small independent perturbation, so
-     * roughly the measured 8 % of pixels come out with diff == 0 like the real
-     * source does. A uniform-random pair would exercise the zero-byte counter
-     * far less than the instrument actually does. */
+     * some pixels come out with diff == 0 like the real source does. A
+     * uniform-random pair would exercise the zero-byte counter far less than
+     * the instrument actually does. */
     uint32_t rs = 0x1234567u;
     for (uint32_t i = 0; i < BENCH_BYTES; i++) {
         uint32_t r = xs32(&rs);
@@ -940,7 +922,7 @@ bool cam_extract_selftest(cam_selftest_t *out, uint32_t bytes)
     /* The LSB monitor priced on its own, against ns_fast directly above.
      * It is the only number that says whether the monitor may stay always-on
      * or has to be gated to calibration and idle: the extraction loop is
-     * compute-bound under measurement load (D25), so a cost here is a cost in
+     * compute-bound under measurement load, so a cost here is a cost in
      * the loaded bit rate, and nowhere is it visible at idle. */
     { cam_raw_t rw; memset(&rw, 0, sizeof(rw));
       st = (cam_pack_t){0}; z = 0; an = 0; sink = 0;
@@ -977,14 +959,12 @@ bool cam_extract_selftest(cam_selftest_t *out, uint32_t bytes)
       out->ns10_stats = (float)((esp_timer_get_time() - t0) * 1000.0 / N);
       sink = (uint32_t)ss.ones; }
 
-    /* ── Cache autoload experiment `[D95]` ──────────────────────────────────
-     * The extractor is memory-bound for ~54 of its ~125 ms per pair: the core
-     * is in-order and stalls on every line it misses. The L1 DCache and the L2
-     * cache can prefetch ("autoload") the following lines of an address section
-     * on their own. The live path arms it per pair (cam_autoload_arm() in
-     * camera.c) and stays off the registers while this runs; here it is priced
-     * on the bench buffers. Nine registers per level (CTRL, then four ADDR/SIZE
-     * pairs), saved and written back exactly. */
+    /* ── Cache autoload experiment  ──────────────────────────────────
+     * The L1 DCache and the L2 cache can prefetch ("autoload") the following
+     * lines of an address section on their own. The live path arms it per pair
+     * (cam_autoload_arm() in camera.c) and stays off the registers while this
+     * runs; here it is priced on the bench buffers. Nine registers per level
+     * (CTRL, then four ADDR/SIZE pairs), saved and written back exactly. */
     {
         const uint32_t base[2] = { CACHE_L1_DCACHE_AUTOLOAD_CTRL_REG,
                                    CACHE_L2_CACHE_AUTOLOAD_CTRL_REG };

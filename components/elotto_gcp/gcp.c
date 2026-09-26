@@ -9,8 +9,7 @@
 #include "freertos/task.h"
 
 /* ⚠ cam_popcount32, not __builtin_popcount: these cores have no Zbb, so the
- * builtin is a CALL to __popcountsi2 and this loop made seven of them per
- * segment — ~913.000 per run at run=5. Identical results by construction, and
+ * builtin is a CALL to __popcountsi2. Identical results by construction, and
  * GET /camtest holds the two against each other on target (`popcount_ok`).
  *
  * ⚠ The SOFT-FLOAT calls per segment below (__floatsidf, __divdf3, __adddf3 —
@@ -20,11 +19,8 @@
  * equivalent and NOT bit-identical: both would shift the last bits of every z
  * this rig records. See GCP_SEGMENT_SD in gcp.h.
  *
- * The mean subtraction is the one that WAS safe to move, and it is taken:
- * ones - GCP_SEGMENT_MEAN_I is an integer subtract, and the result converts to
- * double exactly because ones ∈ [0,200]. That drops __subdf3, one call per
- * segment — ~130.000 per run at ?run=5. It was left out of the popcount change
- * on purpose, so that change could be measured on its own; it is in now.
+ * The mean subtraction is an integer subtract (ones - GCP_SEGMENT_MEAN_I); the
+ * result converts to double exactly because ones ∈ [0,200].
  * ⚠ Bit-identical, so it does NOT split the pooling table. Verify with
  * GET /camtest and by comparing a z against a pre-change run, not by eye. */
 static double z_from_counts(uint64_t ones, uint64_t words)
@@ -34,14 +30,14 @@ static double z_from_counts(uint64_t ones, uint64_t words)
     return ((double)ones - n / 2.0) / (sqrt(n) / 2.0);
 }
 
-/* Segments per ring read `[D92]`: 112 words, 448 B of the caller's stack (the
+/* Segments per ring read: 112 words, 448 B of the caller's stack (the
  * slave's link task has 6 KB). Read word by word, the reader's own overhead —
  * a mutex take/give and four fences per 32 bits — was the session's clock. */
 #define GCP_READ_SEGS 16
 
-/* One stream, LSB bits as measured (D65). Seven words per segment, all 32 bits.
+/* One stream, LSB bits as measured. Seven words per segment, all 32 bits.
  * z is the binomial over the window; h1/h2 are the same bits split at the
- * FRAME-PAIR boundary nearest the middle `[D110]`, so the halves compare two
+ * FRAME-PAIR boundary nearest the middle, so the halves compare two
  * moments in time rather than the top and bottom of one frame. Boundaries come
  * from camera_window_pair_starts(); a boundary is taken at the end of the read
  * block it falls into (<= GCP_READ_SEGS segments late, < 0,2 % of a pair).
@@ -68,7 +64,7 @@ gcp_result_t gcp_zscore_pre(int nseg, bool (*on_yield)(void), double *out,
     if (out_h1) *out_h1 = 0.0;
     if (out_h2) *out_h2 = 0.0;
 
-    for (int seg = 0; seg < nseg; ) {
+    for (int seg = 0; seg < nseg;) {
         /* A block ends wherever the per-segment loop acted: after the midpoint
          * segment (n1 - 1) and after every segment with seg % poll == 0. So the
          * half split and the abort polls fall on the same segments, with the

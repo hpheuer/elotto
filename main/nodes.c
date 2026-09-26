@@ -1,15 +1,4 @@
 /* ── The node array — see nodes.h for what this module is ───────────────
- *
- * Moved out of sensor.c on 2026-07-27 with no functional change: the UDP link,
- * discovery, the calibration handshake, the drop/reboot policy and the
- * diagnostics poll were ~520 lines that shared seven file-scope statics with
- * each other and almost nothing with the GCP statistics around them.
- *
- * The only edits made in the move were the ones the file boundary forced:
- * ten functions lost `static`, node_take_z() now returns its z through an
- * out-parameter instead of the caller reaching into s_link[], and s_slave_ok /
- * s_nslaves are read through accessors. The protocol, the timeouts, the retry
- * and drop rules are untouched.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -57,7 +46,7 @@ void node_camera_failed(int node, const char *why)
         g_status.nodes[node].ok = false;
         g_status.node_ok--;
     }
-    const char *name = node ? g_status.nodes[node].ip : "master";
+    const char *name = node ? g_status.nodes[node].ip: "master";
     printf("node %d (%s): CAMERA FAULT (%s) -- dropped, %d node(s) left\n",
            node, name, why, g_status.node_ok);
 
@@ -73,7 +62,7 @@ void node_camera_failed(int node, const char *why)
     }
     note_first_drop(node);
 
-    int floor_n = (g_status.node_count >= 2) ? 2 : 1;
+    int floor_n = (g_status.node_count >= 2) ? 2: 1;
     if (g_status.node_ok < floor_n) {
         g_status.noise_stalled   = true;
         g_status.abort_requested = true;
@@ -84,15 +73,10 @@ void node_camera_failed(int node, const char *why)
 }
 
 /* ── Slave link — UDP broadcast ───────────────────────────────────────
- * Replaces the UART1 point-to-point pair (was TX=GPIO14 / RX=GPIO15,
- * 460800 baud). A command leaves as ONE broadcast datagram, so every node
- * starts within microseconds of the others instead of N sequential UART
- * writes — the one difference that matters physically, since the premise is
- * that all nodes integrate the *same* window.
  *
  * Commands: 'P' discovery, 'M<seg>' measure, 'K<ms>,<segs>' calibrate,
  * 'D' diagnostics, 'A' abort, 'R' reboot. Replies 'OK' / 'Z:' / 'D:' / 'E:' /
- * 'V:'. Loss is handled explicitly, never assumed away (Risk 3). See
+ * 'V:'. Loss is handled explicitly, never assumed away. See
  * elotto_link.h for why every frame carries the sequence number it answers.
  * ─────────────────────────────────────────────────────────────────── */
 #define LINK_PROBE_TRIES   4      // discovery broadcasts before declaring solo
@@ -106,9 +90,7 @@ void node_camera_failed(int node, const char *why)
  * node that is merely slow is not mistaken for a missing one in either. */
 #define LINK_ACK_SLACK_MS 15000
 
-// Consecutive missed replies before a node leaves the session. Without it an
-// unplugged node would cost every remaining run the full retry budget forever;
-// the Phase D gate wants an unplug to *degrade* the array, not to slow it down.
+// Consecutive missed replies before a node leaves the session.
 #define NODE_MISS_LIMIT 3
 
 /* Stamp the first drop of the session with the master's OWN link state.
@@ -129,7 +111,7 @@ static void note_first_drop(int node)
     printf("drop forensics: node %d at uptime %lld ms, master eth %s, "
            "%lu link down(s) since boot\n",
            node, (long long)g_status.drop_uptime_ms,
-           g_status.drop_eth_up ? "UP" : "DOWN",
+           g_status.drop_eth_up ? "UP": "DOWN",
            (unsigned long)g_status.drop_eth_downs);
 }
 
@@ -161,9 +143,9 @@ static bool link_open(void)
     int on = 1;
     setsockopt(s_sock, SOL_SOCKET, SO_BROADCAST, &on, sizeof(on));
     struct sockaddr_in me = {
-        .sin_family      = AF_INET,
-        .sin_port        = htons(ELOTTO_LINK_MASTER_PORT),
-        .sin_addr.s_addr = htonl(INADDR_ANY),
+.sin_family      = AF_INET,
+.sin_port        = htons(ELOTTO_LINK_MASTER_PORT),
+.sin_addr.s_addr = htonl(INADDR_ANY),
     };
     if (bind(s_sock, (struct sockaddr *)&me, sizeof(me)) < 0) {
         printf("link: bind(%d) failed\n", ELOTTO_LINK_MASTER_PORT);
@@ -182,11 +164,10 @@ static bool link_open(void)
     return true;
 }
 
-/* Discard whatever is queued. Called when a session starts, for the reason the
- * UART path called uart_flush_input(): the OK to the abort that ended the
- * previous session must not be waiting when this one begins. The sequence check
- * would drop it anyway — draining keeps net_stale meaningful as a live
- * indicator rather than a tally of last session's leftovers. */
+/* Discard whatever is queued. Called when a session starts: the OK to the abort
+ * that ended the previous session must not be waiting when this one begins. The
+ * sequence check would drop it anyway — draining keeps net_stale meaningful as a
+ * live indicator rather than a tally of last session's leftovers. */
 static void link_drain(void)
 {
     if (s_sock < 0) return;
@@ -215,16 +196,13 @@ static void link_send(uint32_t seq, const char *cmd)
  * whole milliseconds — ((tv_usec + 500) / 1000) — and a resulting 0 means "no
  * timeout": sys_arch_mbox_fetch() documents zero as "wait infinitely". So a
  * window with under 500 µs left silently turns a bounded wait into a permanent
- * one. That is exactly how discovery hung after it had already found its node,
- * and the same pattern was latent in the Phase C code from the moment it
- * shipped — it would have fired the first time the master booted with no slave
- * powered on. */
+ * one. */
 static bool link_arm_timeout(int64_t deadline)
 {
     int64_t left = deadline - esp_timer_get_time();
     if (left < 1000) return false;
-    struct timeval tv = { .tv_sec  = (time_t)(left / 1000000),
-                          .tv_usec = (suseconds_t)(left % 1000000) };
+    struct timeval tv = {.tv_sec  = (time_t)(left / 1000000),
+.tv_usec = (suseconds_t)(left % 1000000) };
     setsockopt(s_sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     return true;
 }
@@ -269,8 +247,7 @@ static int link_recv_any(uint32_t seq, char *out, int cap, int64_t deadline)
 
 /* Send a command to every node at once. The caller measures locally in parallel
  * and collects with nodes_collect(), so the trigger still goes out *before* the
- * master's own run starts — and one datagram starts all of them, which is the
- * whole reason this is not N sequential writes. */
+ * master's own run starts — and one datagram starts all of them. */
 static void nodes_send(const char *cmd)
 {
     s_pending.seq = ++s_seq;
@@ -327,11 +304,11 @@ int nodes_collect(int timeout_ms, bool critical)
             printf("node %d (%s): %d missed replies -- dropped, %d node(s) left\n",
                    k + 1, g_status.nodes[k + 1].ip, s_link[k].miss_streak,
                    g_status.node_ok);
-            int floor_n = (g_status.node_count >= 2) ? 2 : 1;
+            int floor_n = (g_status.node_count >= 2) ? 2: 1;
             if (g_status.node_ok < floor_n) g_status.abort_requested = true;
         }
     }
-    s_slave_ok = (g_status.node_ok > (g_status.nodes[0].ok ? 1 : 0));
+    s_slave_ok = (g_status.node_ok > (g_status.nodes[0].ok ? 1: 0));
     return got;
 }
 
@@ -424,7 +401,7 @@ static void slave_calibrate_start(int budget_ms, int segments)
 
 /* Exposure each node was running on when the sweep STARTED, 0 = unknown (no
  * reply, or a slave image older than the `,e0=` field). Compared against the
- * chosen exposure to decide whether the settle pause is owed `[D87]`. Taken
+ * chosen exposure to decide whether the settle pause is owed. Taken
  * from the node itself rather than from the previous sweep's cam_exp, because
  * discovery zeroes nodes[] at every session start. */
 static uint32_t s_cal_e0[MAX_NODES];
@@ -453,10 +430,10 @@ static void node_take_cal(int k)
     N->cam_gain     = (uint16_t)g;
     N->cam_bias     = bias;
     N->cam_cal_mbit = mb;
-    N->cam_cal_ok   = (tag == 'G') ? 1 : 0;
+    N->cam_cal_ok   = (tag == 'G') ? 1: 0;
     printf("node %d (%s): cal exposure=%lu gain=%lu bias=%.6f %.2f Mbit/s %s\n",
            k + 1, N->ip, e, g, bias, mb,
-           N->cam_cal_ok ? "" : "(no gated setting -- kept previous)");
+           N->cam_cal_ok ? "": "(no gated setting -- kept previous)");
 }
 
 /* Wait for every node's ack. The timeout is derived from the budget the nodes
@@ -472,14 +449,14 @@ static void slave_calibrate_wait(int budget_ms)
 }
 
 /* The master's own sweep, kept in PSRAM: the table is ~1.2 KB and internal RAM
- * is already full with results[] (adding it as .bss fails the LINK, not the
+ * is already full with results[] (adding it as.bss fails the LINK, not the
  * run). Allocated once and never freed, so GET /calibrate can still serve the
  * last sweep long after the session that produced it finished. */
 static camera_cal_t *s_cal;
 
 const camera_cal_t *elotto_last_calibration(void)
 {
-    return (s_cal && s_cal->nsteps > 0) ? s_cal : NULL;
+    return (s_cal && s_cal->nsteps > 0) ? s_cal: NULL;
 }
 
 static bool cal_abort_cb(void) { return g_status.abort_requested; }
@@ -496,15 +473,15 @@ static void calibrate_master(int budget_ms)
     camera_cal_set_z_scale(gcp_z_per_bias(g_status.run_segments));
     bool ok = camera_calibrate(budget_ms, cal_abort_cb, s_cal);
     /* Step 0 re-measures the setting in force at entry without changing it. */
-    s_cal_e0[0]     = s_cal->nsteps > 0 ? s_cal->step[0].exposure : 0;
+    s_cal_e0[0]     = s_cal->nsteps > 0 ? s_cal->step[0].exposure: 0;
     N->cam_exp      = s_cal->exposure;
     N->cam_gain     = (uint16_t)s_cal->gain;
     N->cam_bias     = (float)s_cal->bias;
     N->cam_cal_mbit = (float)s_cal->mbit_per_sec;
-    N->cam_cal_ok   = ok ? 1 : 0;
+    N->cam_cal_ok   = ok ? 1: 0;
     printf("master: cal exposure=%lu gain=%lu %s (%lu ms, %d steps)\n",
            (unsigned long)s_cal->exposure, (unsigned long)s_cal->gain,
-           ok ? "" : "(no gated setting -- kept previous)",
+           ok ? "": "(no gated setting -- kept previous)",
            (unsigned long)s_cal->elapsed_ms, s_cal->nsteps);
 }
 
@@ -530,28 +507,21 @@ void calibrate_shorten(const char *why)
  * Skipped when the budget is 0 — that is the matched no-calibration control —
  * and when nothing is left to calibrate.
  *
- * Also skipped until the dynamic interval since the last sweep has run out
- * `[D106]`: every caller is a candidate point, and most candidates pass. What
- * the sweep corrects (thermal drift of the sensors) moves on a wall-clock
- * scale, and a clean sweep is evidence it is not moving: 15 min after the
+ * Also skipped until the dynamic interval since the last sweep has run out:
+ * every caller is a candidate point, and most candidates pass. 15 min after the
  * session start, doubling on every ok sweep up to 2 h.
  *
  * ⚠ camera_calibrate() resets the camera statistics, so `mbit_s`/`bias` in
  * /status and /loops are "since the last sweep" — on a skipped loop they now
  * span several loops rather than one. */
-/* The settle pause after a sweep that moved any node's exposure `[D87]`. After a
- * rung change this rig's cameras keep drifting for about a minute (px still
- * climbing, bit bias moving by ~0,002) while the dispersion stays normal — so
- * the sweep's choice is sound, but the items measured in that minute sit off
- * the block mean and can trip soft-down on their own `[D86]`. The whole array
- * waits, because every window is measured by all nodes together. Nothing is
- * measured and nothing is discarded; the time is session wall time like the
- * sweep itself, not a pause (elapsed_ms keeps running). CAL_SETTLE_AFTER_MS
- * lives in sensor.h. */
+/* The settle pause after a sweep that moved any node's exposure: the whole array
+ * waits, nothing measured and nothing discarded. The time is session wall time
+ * like the sweep itself, not a pause (elapsed_ms keeps running).
+ * CAL_SETTLE_AFTER_MS lives in sensor.h. */
 
 static const char *node_label(int i)
 {
-    return i == 0 ? "master" : g_status.nodes[i].ip;
+    return i == 0 ? "master": g_status.nodes[i].ip;
 }
 
 bool calibrate_all(const char *why)
@@ -600,30 +570,30 @@ bool calibrate_all(const char *why)
         n_moved++;
         int w = (s_cal_e0[i] == 0)
             ? snprintf(moved + mpos, sizeof(moved) - mpos, "%s%s ?->%lu",
-                       mpos ? ", " : "", node_label(i), (unsigned long)now_e)
-            : snprintf(moved + mpos, sizeof(moved) - mpos, "%s%s %lu->%lu",
-                       mpos ? ", " : "", node_label(i),
+                       mpos ? ", ": "", node_label(i), (unsigned long)now_e)
+: snprintf(moved + mpos, sizeof(moved) - mpos, "%s%s %lu->%lu",
+                       mpos ? ", ": "", node_label(i),
                        (unsigned long)s_cal_e0[i], (unsigned long)now_e);
         if (w > 0 && mpos + w < (int)sizeof(moved)) mpos += w;
     }
     /* A node whose sweep certified nothing keeps measuring — nothing gates on
      * it — but the operator must see it: in dark operation that is a light
-     * leak or a failing sensor `[D90]`. */
+     * leak or a failing sensor. */
     char unc[EVLOG_TXT] = "";
     int  upos = 0;
     for (int i = 0; i < g_status.node_count && i < MAX_NODES; i++) {
         if (!g_status.nodes[i].ok || g_status.nodes[i].cam_cal_ok) continue;
         int w = snprintf(unc + upos, sizeof(unc) - upos, "%s%s",
-                         upos ? ", " : "", node_label(i));
+                         upos ? ", ": "", node_label(i));
         if (w > 0 && upos + w < (int)sizeof(unc)) upos += w;
     }
     if (upos) evlog("Sweep: NO certified setting on %s - see its /calibrate", unc);
 
-    /* Next interval `[D106]`: an ok sweep — every node certified, nothing
+    /* Next interval: an ok sweep — every node certified, nothing
      * moved — doubles it, anything else puts it back to the minimum. */
     if (n_moved == 0 && upos == 0) {
         int nx = g_status.cal_interval_ms * 2;
-        g_status.cal_interval_ms = nx > CAL_DYN_MAX_MS ? CAL_DYN_MAX_MS : nx;
+        g_status.cal_interval_ms = nx > CAL_DYN_MAX_MS ? CAL_DYN_MAX_MS: nx;
     } else {
         g_status.cal_interval_ms = CAL_DYN_MIN_MS;
     }
@@ -643,7 +613,7 @@ bool calibrate_all(const char *why)
     while (esp_timer_get_time() < end && !g_status.abort_requested)
         vTaskDelay(pdMS_TO_TICKS(100));
     g_status.settle_end_us = 0;
-    evlog(g_status.abort_requested ? "Settle aborted" : "Settle done - measuring resumes");
+    evlog(g_status.abort_requested ? "Settle aborted": "Settle done - measuring resumes");
     return true;
 }
 
@@ -692,7 +662,7 @@ void slave_abort(void)
  *   "E:<reason>" the camera stopped delivering — the node is faulted and
  *                rebooted, not silently omitted
  *
- * ⚠ Trailing fields optional. Z:<z>[,h1,h2][,wsig=] (D65). First comma
+ * ⚠ Trailing fields optional. Z:<z>[,h1,h2][,wsig=]. First comma
  * pair is the half-window split of the SAME bits. Absent ≠ 0. */
 bool node_take_z(int k, double *out_z,
                  bool *out_have_h, double *out_h1, double *out_h2)
@@ -720,19 +690,19 @@ bool node_take_z(int k, double *out_z,
     s_link[k].z = atof(resp + 2);
     if (out_z) *out_z = s_link[k].z;
 
-    /* ,wsig= — the node's camera sigma over THIS window (D62). Stored on the
+    /*,wsig= — the node's camera sigma over THIS window. Stored on the
      * node rather than returned, so the already-seven-argument signature of
      * this function does not grow an eighth: measure_window() reads it right
      * after nodes_collect(), before anything else can trigger another run.
-     * NAN means the node did not report one (an image older than 2026-08-30),
-     * which is not the same as a quiet window. */
+     * NAN means the node did not report one, which is not the same as a quiet
+     * window. */
     g_status.nodes[k + 1].cam_wsig_now = NAN;
     const char *wsg = strstr(resp, ",wsig=");
     if (wsg) {
         double v = atof(wsg + 6);
         if (isfinite(v) && v > 0.0) g_status.nodes[k + 1].cam_wsig_now = (float)v;
     }
-    /* ,ac= — the node's window autocorrelation, Σ of the lag-1..4 z (D97).
+    /*,ac= — the node's window autocorrelation, Σ of the lag-1..4 z.
      * Same handling as wsig: on the node, NAN when absent. */
     g_status.nodes[k + 1].cam_ac_now = NAN;
     const char *acs = strstr(resp, ",ac=");
@@ -742,7 +712,7 @@ bool node_take_z(int k, double *out_z,
     }
 
     /* The halves are the first two fields only if the first comma is followed
-     * by a number: a node without halves sends ,wsig= or ,ac= there. */
+     * by a number: a node without halves sends,wsig= or,ac= there. */
     const char *comma = strchr(resp + 2, ',');
     if (comma && !isalpha((unsigned char)comma[1])) {
         const char *c2 = strchr(comma + 1, ',');
@@ -782,8 +752,8 @@ void slaves_diag(void)
         N->cam_stalls    = (uint32_t)st;
         /* ",cons=" — bits a measurement actually READ per second of reading,
          * against cam_mbit which is what extraction produced including what the
-         * ring threw away. Absent from a slave older than 2026-08-30, and then
-         * it stays 0 — which reads as "not reported", not as "reads nothing". */
+         * ring threw away. Absent it stays 0 — which reads as "not reported",
+         * not as "reads nothing". */
         const char *cons = strstr(resp, ",cons=");
         if (cons) N->cam_cons_mbit = (float)atof(cons + 6);
         N->cam_bias_now  = bias;
@@ -798,8 +768,8 @@ void slaves_diag(void)
             memcpy(N->fw_sha, fw + 4, 16);
             N->fw_sha[16] = '\0';
         }
-        /* ",raw=<bias>,<sigma>" — the LSB pair (D43), tagged for the
-         * same reason ,fw= is. Cleared first: a node that stops reporting it
+        /* ",raw=<bias>,<sigma>" — the LSB pair, tagged for the
+         * same reason,fw= is. Cleared first: a node that stops reporting it
          * must read as absent, not as whatever it said last time. */
         N->cam_raw_bias = 0.0f; N->cam_raw_sigma = 0.0f;
         const char *rw = strstr(resp, ",raw=");
@@ -822,8 +792,8 @@ void slaves_diag(void)
             float t = 0;
             if (sscanf(tp + 3, "%f", &t) == 1) N->die_temp_c = t;
         }
-        /* ",px=<mean pixel level>" — the light covariate (2026-08-28), stamped
-         * into LoopStat.cam_px at every block close. Cleared first, and 0 is
+        /* ",px=<mean pixel level>" — the light covariate, stamped into
+         * LoopStat.cam_px at every block close. Cleared first, and 0 is
          * how "this node does not send it" reads: a slave on older firmware
          * must be absent, not dark. Unlike die_temp this cannot travel as NAN,
          * because the archive column is a float that gets plotted. */
@@ -849,7 +819,6 @@ void slaves_diag(void)
 
 void slave_probe(void) { nodes_discover(); }
 
-/* Accessors, so the transport's state stays inside the transport. Both were
- * read directly from sensor.c before the split. */
+/* Accessors, so the transport's state stays inside the transport. */
 bool nodes_have_slaves(void) { return s_slave_ok; }
 int  nodes_slave_count(void) { return s_nslaves; }

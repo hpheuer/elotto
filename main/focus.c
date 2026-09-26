@@ -1,9 +1,6 @@
 /* ── Focus panel, pause, run gap and the session clock ──────────────────
  *
- * See focus.h for what this module is and why these four belong together.
- * Moved out of sensor.c on 2026-07-27 with no functional change: the block had
- * zero function calls into the GCP statistics around it, and every static it
- * owns is used only by the functions here. */
+ * See focus.h for what this module is and why these four belong together. */
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
@@ -21,55 +18,9 @@
  * The HTML card shows what is being measured, WHILE it is being measured.
  * Panel lit ⟺ this run's bits are being collected: focus_publish() immediately
  * before the trigger, focus_off() immediately after the local run returns.
- * The session is always unattended `[D66]`; the card is a live readout. */
-/* Dark time between targets. Phase 5 asked for this to be *aligned* with
- * overhead that already existed rather than added on top — the estimate was
- * ~190 ms per run spent on the slave round-trip and bookkeeping. Measured on
- * the 4-node array, that overhead is **2.3 ms**: the slaves integrate the same
- * window concurrently and are already answering by the time the master's own
- * run returns, so nodes_collect() costs nothing. The gap therefore has to be
- * paid for, which the plan anticipated ("then pay for it in the run budget"),
- * and `Runs = 850` is what pays for it.
- *
- * It is not only a display concern. At ~100 % duty cycle the measurement loop
- * starves the camera extraction task it consumes from (it runs one priority
- * above it), and the sustained rate collapses from 3.49 to 2.68 Mbit/s —
- * measured, with ring `waits` climbing. The blank period is when the producer
- * gets the CPU back, so the gap buys back most of the throughput it costs.
- *
- * Applied to EVERY run — scoring and measurement. The gap is a duty-cycle
- * property of the instrument, not of the display.
- *
- * **350 ms, not 200** (user decision, 2026-07-25 — "better safe than sorry").
- * The reason is experimental rather than technical: a wider blank guarantees
- * the measurement is coincident with the *right* target. Conscious noticing is
- * itself smeared over ~100–300 ms, comparable to a 200 ms gap, so at 200 ms the
- * tail of attending to target N can still overlap the start of N+1's sampling —
- * which is precisely the mislabeling this phase exists to avoid, and it is not
- * blur: per-combination z feeds the Stouffer accumulation, so a straddled
- * window credits an effect to an unrelated combination.
- *
- * ⚠ The measured figures below (588 ms, 1494 ms, n=16700/17000) are PRE-
- * 2026-08-18, from the ~3,4 Mbit/s instrument, and D65 doubled the word rate
- * again on top of that (~7,4 Mbit/s idle). The duty-cycle ARGUMENT holds; the
- * numbers are two instrument generations old and must be re-measured before
- * they are quoted.
- *
- * It is forced by the hardware too. A 1000 ms window at a 200 ms gap is 83 %
- * duty *by construction* — already past the ~72 % cliff above — so no segment
- * count reaches 1000 ms there: every candidate lands in the collapsed regime
- * and stretches to ~1500 ms instead (measured at 16700 and 17000). At the
- * 200 ms gap the reachable window jumps straight from 588 ms to 1494 ms, with
- * nothing in between — not even within ±30 %. 350 ms puts the same 1000 ms
- * window at 74 % duty, back on the flat part, where a count does solve.
- *
- * Shortening the window instead was rejected: the gap is the soft parameter the
- * plan already marked adjustable ("then pay for it in the run budget"), whereas
- * the hold time is the spec, and buying a display number by running the entropy
- * source in a starved regime trades physics for cosmetics.
- *
- * v3: one window (~5 s) and one gap (SCORE_GAP_MS = 2 s) for every phase, so
- * the fixed-length run_gap() is gone — every caller passes the length. */
+ * The session is always unattended; the card is a live readout. */
+/* Dark time between targets. Applied to EVERY run — scoring and measurement:
+ * the gap is a duty-cycle property of the instrument, not of the display. */
 void run_gap_ms(int ms)
 {
     if (ms < 0) ms = 0;
@@ -117,11 +68,8 @@ void focus_publish(FocusKind kind, const uint8_t *nums, int n,
                           const uint8_t *euro, int ne)
 {
     /* TIMING FIRST, AND UNCONDITIONALLY. The run window is a property of the
-     * INSTRUMENT, not of the display: it is set by a segment count whose
-     * conversion to milliseconds is not stable (open item 4 — the achievable
-     * window moved 1.75x across one afternoon), and per-loop calibration now
-     * changes the camera's rate deliberately, which moves it again (§1.5.3).
-     * So it has to be measured in every session. */
+     * INSTRUMENT, not of the display — so it has to be measured in every
+     * session. */
     int64_t now = esp_timer_get_time();
     // Scoring and measurement are accumulated separately: they are the same
     // 1000 ms window today, but they are different phases and a pooled mean
@@ -180,20 +128,18 @@ void focus_off(void)
 
 /* Take this loop's window/gap means and start a fresh accumulation.
  *
- * Per loop, not per session, and that is the whole point: the window drifts
- * (open item 4 — it crept 474.8 -> 514.4 ms over 1700 runs), and per-loop
- * calibration now moves the camera's rate deliberately, so a session-long mean
- * would average away exactly the effect worth seeing. /status keeps the loop in
- * progress, /loops keeps the completed ones, and the series across loops is the
- * drift record §1.5.3 asks for.
+ * Per loop, not per session: the window drifts and per-loop calibration moves
+ * the camera's rate deliberately, so a session-long mean would average away
+ * exactly the effect worth seeing. /status keeps the loop in progress, /loops
+ * keeps the completed ones.
  *
  * Clearing s_focus_off_us also breaks the gap chain across the block boundary,
  * so the next block's first window is not billed for the sweep and scoring it
  * spent dark. */
 void focus_timing_take(float *win_ms, float *gap_ms)
 {
-    *win_ms = s_win_n ? (float)(s_win_sum / s_win_n / 1000.0) : 0.0f;
-    *gap_ms = s_gap_n ? (float)(s_gap_sum / s_gap_n / 1000.0) : 0.0f;
+    *win_ms = s_win_n ? (float)(s_win_sum / s_win_n / 1000.0): 0.0f;
+    *gap_ms = s_gap_n ? (float)(s_gap_sum / s_gap_n / 1000.0): 0.0f;
     s_win_sum = s_gap_sum = 0.0;
     s_win_n   = s_gap_n   = 0;
     s_focus_off_us = 0;
@@ -229,7 +175,7 @@ static EvEntry     *s_ev;
 static uint32_t     s_ev_seq;          // entries ever written; slot = seq % N
 static portMUX_TYPE s_ev_mux = portMUX_INITIALIZER_UNLOCKED;
 
-void evlog(const char *fmt, ...)
+void evlog(const char *fmt,...)
 {
     if (!s_ev) {
         s_ev = heap_caps_calloc(EVLOG_N, sizeof(EvEntry), MALLOC_CAP_SPIRAM);
@@ -259,7 +205,7 @@ int evlog_copy(EvEntry *dst, int max)
     if (!s_ev || max <= 0) return 0;
     taskENTER_CRITICAL(&s_ev_mux);
     uint32_t end   = s_ev_seq;
-    uint32_t have  = end < EVLOG_N ? end : EVLOG_N;
+    uint32_t have  = end < EVLOG_N ? end: EVLOG_N;
     if (have > (uint32_t)max) have = (uint32_t)max;
     for (uint32_t i = 0; i < have; i++)
         dst[i] = s_ev[(end - have + i) % EVLOG_N];

@@ -6,14 +6,14 @@
 /* Shared network-update endpoint and boot-safety logic.
  *
  * SHARED between the factory updater (ota_firmware/), the master (elotto) and
- * later the slave — one implementation of the code that decides whether a node
+ * the slave — one implementation of the code that decides whether a node
  * can still be reached. Three copies of this would be three chances to get a
  * recovery path subtly wrong on one node only.
  *
  * Typical wiring in app_main():
  *
  *     elotto_ota_boot_check();            // FIRST, before networking
- *     ... bring up Ethernet, start httpd ...
+ *... bring up Ethernet, start httpd...
  *     elotto_ota_register(server, is_busy);
  *     elotto_ota_mark_valid();            // only once the server answers
  */

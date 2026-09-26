@@ -5,13 +5,12 @@
 
 /* ── LSB-diff extraction, as two implementations that MUST agree ───────────
  *
- * The bit stream this produces is the measurement. Every z the rig has ever
- * recorded came out of the loop below, so a faster version is only admissible
- * if it is BIT-IDENTICAL — not "equivalent in distribution", identical. Hence
- * two functions and a self-test that compares them on the target, rather than
- * one function and an argument.
+ * The bit stream this produces is the measurement, so a faster version is only
+ * admissible if it is BIT-IDENTICAL — not "equivalent in distribution",
+ * identical. Hence two functions and a self-test that compares them on the
+ * target, rather than one function and an argument.
  *
- * `cam_extract_ref()` is the original byte-at-a-time loop, moved here unchanged.
+ * `cam_extract_ref()` is the original byte-at-a-time loop.
  * `cam_extract_fast()` is the word-wise version. It rests on one identity:
  *
  *     LSB(b - a) == LSB(a) ^ LSB(b)
@@ -21,7 +20,7 @@
  * XOR of two 32-bit loads.
  *
  * Packing order is preserved exactly: bits go in MSB-first in pixel order,
- * one bit per pixel. LSB bits as measured `[D65]`.
+ * one bit per pixel. LSB bits as measured.
  *
  * State persists ACROSS calls (a frame boundary may land mid-word), so the
  * caller owns it. */
@@ -35,17 +34,16 @@ typedef struct {
 /* `raw_ones` is the number of LSB ones among exactly the pixels that
  * produced this word — 0..32, and 0 when the caller passed no cam_raw_t.
  *
- * ⚠ It is a parameter and not a field the callback reads back out of the
- * cam_raw_t, which is what it used to be. The callback is reached through a
- * function POINTER, so the compiler has to assume every indirect call may
- * write through that struct: the monitor's counters could not stay in
- * registers across an emit and the bulk loop paid a full 64-bit load-modify-
- * store per four pixels for each of them. Handing the count over cuts the
- * dependency, and the extractor keeps the whole monitor in locals. */
+ * ⚠ It is a parameter, not a field the callback reads back out of the
+ * cam_raw_t. The callback is reached through a function POINTER, so the
+ * compiler has to assume every indirect call may write through that struct:
+ * the monitor's counters could not stay in registers across an emit. Handing
+ * the count over cuts the dependency, and the extractor keeps the whole
+ * monitor in locals. */
 typedef void (*cam_emit_fn)(uint32_t word, uint32_t raw_ones, void *ctx);
 
 /* Bit-stream monitor. INTEGER-ONLY: the extractor stays free of soft-float.
- * `bits` counts pixels, one LSB each. The emitted words ARE those bits `[D65]`,
+ * `bits` counts pixels, one LSB each. The emitted words ARE those bits,
  * so ones in the monitor and popcount of the words must agree.
  * NULL disables it at no cost beyond one branch per call. */
 #define CAM_RAW_MINIRUN_BITS 3200u   /* == MINIRUN_BITS in camera.c */
@@ -58,7 +56,7 @@ typedef struct {
     uint32_t mr_n;       /* completed mini-runs                                */
     uint64_t mr_sum;     /* Σ ones over completed mini-runs                    */
     uint64_t mr_sumsq;   /* Σ ones² — max 3200² per term, uint64 cannot wrap   */
-    /* ── The RUNS channel (2026-08-27) ────────────────────────────────────
+    /* ── The RUNS channel ──────────────────────────────────────────────────
      * `trans` counts adjacent LSB bit pairs that DIFFER, over the whole
      * stream and across call boundaries. The NIST runs statistic wants the
      * number of runs V = trans + 1, and camera.c reduces it to a z at publish
@@ -71,7 +69,7 @@ typedef struct {
      *
      * ⚠ `want_runs` gates it because it is NOT free: the bulk loop pays about
      * nine more ops per four pixels, and this loop is compute-bound under
-     * measurement load (D25). Armed at a stats reset, never mid-window. */
+     * measurement load. Armed at a stats reset, never mid-window. */
     uint64_t trans;      /* adjacent LSB bit pairs that differ            */
     uint32_t prev;       /* last LSB bit seen (0/1)                       */
     bool     have_prev;  /* false only before the very first bit of a window   */
@@ -84,18 +82,9 @@ typedef struct {
  *   *out_any    |= non-zero iff ANY pixel differed (feeds the stuck-frame count)
  *   *out_psum   += the sum of every byte of frame `a` (feeds mean_pixel_level)
  *
- * ⚠ The pixel sum rides along HERE rather than in its own pass over the frame.
- * It used to be accumulate_pixel_level(), striding 16 bytes through the first
- * frame — and a stride inside 64-byte cache lines still pulls EVERY line, so
- * 40000 samples cost a full 625 KB of PSRAM traffic, ~7 ms per pair, on top of
- * the two frames the diff already reads. ⚠ The 7 ms is CPU and it is real, but
- * removing it moved the bit rate by 0,0 %: at idle this loop waits on the
- * sensor, so a CPU saving is absorbed in DQBUF (camera_task). It pays under
- * measurement load, where the loop is compute-bound, and nowhere else. Reusing the words the diff has in
- * registers makes it nearly free AND samples every pixel instead of every 16th,
- * so mean_px (and the former CAL_MAX_MEAN_PX reading aid) get a better estimate.
- * ⚠ mean_pixel_level therefore changes slightly in value across this build. It
- * is the same quantity, measured over 16x the samples.
+ * ⚠ The pixel sum rides along HERE rather than in its own pass over the frame:
+ * it reuses words the diff already holds, so it samples every pixel instead of
+ * every 16th and costs no extra PSRAM traffic.
  * ⚠ *out_any is only ever tested against zero. The reference ORs the byte
  * differences and the fast path ORs the XORs; those are different numbers but
  * they are zero on exactly the same frames, which is the whole contract. */
@@ -108,7 +97,7 @@ void cam_extract_fast(const uint8_t *a, const uint8_t *b, uint32_t n,
                       uint32_t *out_zeros, uint32_t *out_any, uint32_t *out_psum,
                       cam_raw_t *raw);
 
-/* ── RAW10 (IMX219): MIPI packed, 4 pixels in 5 bytes `[D89]` ──────────────
+/* ── RAW10 (IMX219): MIPI packed, 4 pixels in 5 bytes  ──────────────
  * Bytes 0..3 of a group are bits 9..2 of pixels 0..3, byte 4 holds their bits
  * 1..0 (pixel k at bits 2k+1..2k). The stream bit of a pixel is the LSB of its
  * 10-bit diff, i.e. bit 2k of a[4]^b[4] — the same identity as above. Same
@@ -120,9 +109,9 @@ void cam_extract_fast(const uint8_t *a, const uint8_t *b, uint32_t n,
  * replaced by a scratch one, so `raw_ones` handed to emit is always the real
  * count. The live path always passes one.
  *
- * `cam_extract_raw10_ref()` is the D89 loop moved verbatim — the definition of
- * every IMX219 stream recorded so far. `cam_extract_raw10_fast()` is the
- * word-wise version `[D93]`; /camtest holds the two against each other. */
+ * `cam_extract_raw10_ref()` is the plain loop — the definition of every IMX219
+ * stream. `cam_extract_raw10_fast()` is the word-wise version; /camtest holds
+ * the two against each other. */
 void cam_extract_raw10_ref (const uint8_t *a, const uint8_t *b, uint32_t n,
                             cam_pack_t *st, cam_emit_fn emit, void *ctx,
                             uint32_t *out_zeros, uint32_t *out_any, uint32_t *out_psum,
@@ -163,19 +152,19 @@ typedef struct {
     bool     popcount_ok;
     uint32_t popcount_n;     // values checked
     uint32_t popcount_bad;   // first value that disagreed, if any
-    /* RAW10 pair `[D93]`, same cases and the same `what` codes as above (10 =
-     * the per-word raw-ones count handed to emit). Kept apart from `equal`, which
-     * stays the RAW8 verdict it always was. Times are per BYTE of a frame, the
-     * unit of ns_read, so ns10_* × frame bytes is the cost of one pair. */
+    /* RAW10 pair, same cases and the same `what` codes as above (10 =
+     * the per-word raw-ones count handed to emit). Kept apart from `equal`,
+     * which stays the RAW8 verdict. Times are per BYTE of a frame, the unit of
+     * ns_read, so ns10_* × frame bytes is the cost of one pair. */
     bool     r10_equal;
     int      r10_cases;
     int      r10_failed_case;
     int      r10_what;
     uint32_t r10_bad_at, r10_ref_w, r10_fast_w;
-    float    ns10_ref;       // D89 loop, monitor on (as live)
+    float    ns10_ref;       // plain loop, monitor on (as live)
     float    ns10_fast;      // word-wise, monitor on (as live)
     float    ns10_stats;     // word-wise + the process_word stand-in
-    /* Cache autoload (hardware prefetch) experiment `[D95]`: the autoload
+    /* Cache autoload (hardware prefetch) experiment: the autoload
      * control registers as found, then ns_read and ns10_fast again with
      * autoload sections over the two bench buffers — [0] L2 cache only,
      * [1] L1 DCache only, [2] both — registers restored after each. */
@@ -186,12 +175,9 @@ typedef struct {
 
 /* `bytes` is the FRAME SIZE to benchmark, and the caller passes the live one.
  *
- * ⚠ It used to be a fixed 256 KB while the real frames are 640000 B, and the
- * per-pixel cost it reported was then used to price the live loop -- two
- * micro-optimisations were predicted off that number and both measured 0,0 %.
- * A harness that does not run on the geometry it is pricing cannot settle that,
- * so the size is now the caller's, and the value used comes back in
- * `bench_bytes` so a reading can never again be mistaken for the wrong one.
+ * ⚠ The size is the caller's: a harness that does not run on the geometry it
+ * is pricing cannot settle the question. The value used comes back in
+ * `bench_bytes` so a reading can never be mistaken for the wrong one.
  *
  * Buffers are 64-byte aligned, like the DMA capture buffers, so alignment is
  * not a difference between the two either.

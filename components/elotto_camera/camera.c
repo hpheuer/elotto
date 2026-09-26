@@ -25,20 +25,17 @@
 #include "camera.h"
 #include "extract.h"
 
-// OV5647 noise source. See include/camera.h on why "dark frame" is a label.
+// OV5647 noise source.
 // Extraction: non-overlapping frame pairs, diff = f[2k+1] - f[2k] per pixel
 // (cancels fixed-pattern noise exactly), LSB of each diff packed into a
-// ring buffer AS MEASURED -- the adjacent-pixel XOR was removed by D65, so a
-// word is 32 pixels. camera_read_words() feeds gcp_zscore_pre() in
-// the shared elotto_gcp component, which is where a z is defined.
+// ring buffer AS MEASURED -- a word is 32 pixels. camera_read_words() feeds
+// gcp_zscore_pre() in the shared elotto_gcp component, which is where a z is
+// defined.
 // SHARED between the master and slave repos -- a change here affects both nodes.
 
 static const char *TAG_CAM = "cam";
 
-/* 4, and raising it does nothing: measured at 8, the pair cycle stayed at
- * 56,0 ms and only the split moved (wait 15,1 -> 11,9 ms, extraction 39,1 ->
- * 42,2 ms). The loop is not short of buffers, it is short of frames -- see the
- * frame-rate probe below. */
+/* The loop is short of frames, not of buffers -- see the frame-rate probe. */
 #define CAM_BUF_COUNT       4
 #define RING_WORDS          16384          // 64 KB of uint32_t words
 #define WORDS_PER_MINIRUN   100            // 3200 bits/mini-run, Var(popcount)=800
@@ -48,8 +45,7 @@ static int      s_fd = -1;
 static bool     s_video_inited = false;   // esp_video_init() succeeded (for fail-path deinit)
 static uint32_t s_frame_size = 0;
 /* Width and height, kept because the ROW length is what a spatial period in
- * the bit stream aliases against (former /specdump). s_frame_size alone cannot
- * give it. */
+ * the bit stream aliases against. s_frame_size alone cannot give it. */
 static uint32_t s_frame_w = 0, s_frame_h = 0;
 /* Bound after camera_init. OV5647 PID 0x5647, IMX219 PID 0x0219. */
 #define CAM_PID_OV5647  0x5647
@@ -57,27 +53,21 @@ static uint32_t s_frame_w = 0, s_frame_h = 0;
 #define IMX219_GAIN_MAX 232u
 #define IMX219_BLACK_PX 16.0        /* pedestal 64 DN (10-bit) on the 8-bit px scale */
 
-/* ── Dark operation `[D90]` ──────────────────────────────────────────────────
+/* ── Dark operation  ──────────────────────────────────────────────────
  * An IMX219 node runs in TOTAL DARKNESS: its entropy is the sensor's own
- * readout noise (pixel source-follower thermal and trap noise, column/ADC
- * chain) at maximum analog gain, not photon shot noise. Measured on slave1,
- * LED off, 300 windows: z mean +0,006, z sigma 1,03 ± 0,04, window
- * autocorrelation within noise; 5,5e9 bits: bias 0,499995, raw_sigma 1,0004.
+ * readout noise at maximum analog gain, not photon shot noise.
  *
  * What changes against the lit OV5647 path, and only for the IMX219:
- *  - exposure is FIXED at IMX_DARK_EXPOSURE — the longest integration the
- *    30 fps frame allows, so any light that leaks in is as visible as it can
- *    be (dark current over 33 ms is ~0: px moved 0,005 from 16 to 1600 lines);
- *  - the sweep measures the entry setting and that one rung: a health check
- *    (autocorr, stuck, bits, dispersion), no longer a choice. The rung never
- *    moves, so the settle pause `[D87]` never fires;
- *  - DARK and ZDIFF are not gated (both exist to demand photons: in the dark
- *    px is 0 and ~20 % of diffs are 0 by construction). In their place LEAK:
- *    px above black must stay <= CAL_DARK_MAX_PX, or the rung is uncertified.
- * CAM_IMX_DARK 0 restores the lit IMX ladder `[D89]`. */
+ *  - exposure is FIXED at IMX_DARK_EXPOSURE;
+ *  - the sweep measures the entry setting and that one rung as a health check
+ *    (autocorr, stuck, bits, dispersion), never a choice -- the rung never
+ *    moves, so the settle pause never fires;
+ *  - DARK and ZDIFF are not gated; in their place LEAK: px above black must
+ *    stay <= CAL_DARK_MAX_PX, or the rung is uncertified.
+ * CAM_IMX_DARK 0 restores the lit IMX ladder. */
 #define CAM_IMX_DARK        1
 #define IMX_DARK_EXPOSURE   1600u
-#define CAL_DARK_MAX_PX     1.0     /* black drifts ±0,4 px; slave1's weakest LED read 7,4 */
+#define CAL_DARK_MAX_PX     1.0     /* px above black; black drifts ±0,4 px */
 
 static uint16_t s_sensor_pid = 0;
 static bool cam_dark(void) { return CAM_IMX_DARK && s_sensor_pid == CAM_PID_IMX219; }
@@ -95,14 +85,10 @@ static volatile bool     s_dump_req, s_dump_done;
 static uint8_t *s_bufs[CAM_BUF_COUNT];
 static uint32_t s_buf_len[CAM_BUF_COUNT];   // mmap length per buffer, for fail-path munmap
 
-/* ── Cache autoload over the frame buffers `[D95]` ────────────────────────────
+/* ── Cache autoload over the frame buffers  ────────────────────────────
  * The L1 DCache and the L2 cache prefetch the following lines of up to four
- * address sections on their own. Bench (/camtest, master, 3 runs): fast RAW10
- * pair 122,8..124,1 ms -> 87,2..88,7 with both levels on; L1 alone 98..100; L2
- * alone erratic (88..214), so never L2 alone.
- * ⚠ Armed PER PAIR, over the two buffers of that pair: set once at init, the L2
- * dropped its ENA on its own (CTRL read 0x...12, bit 1 set) and only the L1 kept
- * prefetching — live ms_extract 127 -> 119,6 instead of the bench's -30 %.
+ * address sections on their own. Never L2 alone.
+ * ⚠ Armed PER PAIR, over the two buffers of that pair.
  * Coherence with the CSI DMA: the driver invalidates each finished buffer (M2C)
  * before handing it over, and the sections are exactly the two buffers this task
  * owns until it queues them back. */
@@ -143,15 +129,13 @@ static camera_stats_t    s_stats = { 0 };
 
 // Producer-only running state (camera_task is the sole writer; publish_stats()
 // copies a snapshot into s_stats under s_mutex for readers).
-/* Word ring in internal RAM [D91], 64 KB. Where it lives does NOT set the
- * session rate: moved out of PSRAM, the reader stayed at 6,2 Mbit/s. What did
- * was the per-word overhead of the reader itself [D92].
- * s_ring_raw stays in PSRAM — camera_read_words() does not touch it. */
+/* Word ring in internal RAM, 64 KB. s_ring_raw stays in PSRAM —
+ * camera_read_words() does not touch it. */
 static uint32_t *s_ring;
 // Single-producer (camera_task) / single-consumer (GCP task) ring. head is
 // written only by the producer, tail only by the consumer, so no lock is
 // needed -- but both must be volatile so neither side caches the other's index.
-/* LSB ones for the pixels behind each emitted word (2026-08-26).
+/* LSB ones for the pixels behind each emitted word.
  *
  * The word and the raw bits that produced it must be consumed as ONE
  * unit, or the two z values describe different windows and cannot be paired.
@@ -160,8 +144,7 @@ static uint32_t *s_ring;
  * one advances with the producer and includes bits the consumer never saw
  * (ring drops).
  *
- * One byte per word: 32 pixels per 32-bit word since D65, so the count is
- * 0..32. (It was 0..64 while the adjacent-pixel XOR was on.) Both fit.
+ * One byte per word: 32 pixels per 32-bit word, so the count is 0..32.
  * ⚠ Same indices as s_ring, written by the same producer under the same
  * head/tail discipline. Never index one without the other. */
 static uint8_t *s_ring_raw;
@@ -180,9 +163,8 @@ static volatile uint32_t s_stalls = 0;
 /* ── Ring-tail reset guard ────────────────────────────────────────────────
  * s_ring_tail is owned by the consumer, but two PRODUCER paths reset it to
  * s_ring_head: stats_reset_locked() (calibration) and the pre-window flush.
- * Both are documented (camera.h) to run only between measurements, when the
- * consumer is not reading, so the race is excluded by call structure — this
- * flag makes it true mechanically instead of by contract.
+ * Both run only between measurements, when the consumer is not reading; this
+ * flag makes that true mechanically instead of by contract.
  *
  * `s_consumer_active` is set around ONLY the short window that reads the tail,
  * reads the word and bumps the tail. It is deliberately NOT held across the
@@ -192,19 +174,7 @@ static volatile uint32_t s_stalls = 0;
  * producer's wait below is bounded to microseconds and can never deadlock.
  *
  * ⚠ It must be raised BEFORE the tail is read, and the tail read exactly ONCE
- * into a local. Until 2026-08-26 it was raised after the reads, which left two
- * holes that the comment above claimed were closed:
- *
- *   1. A reset landing between the read and the bump was UNDONE by the bump:
- *      the consumer had captured tail T, the producer set tail = head, and the
- *      consumer then wrote back T+1. The window carried on over the words the
- *      flush existed to discard, silently — nothing counts it, and it is not
- *      what flush_timeouts reports.
- *   2. camera_read_word_raw() indexed the volatile tail TWICE, once per ring.
- *      A reset in between decoupled the word from its LSB count: the two
- *      came from different slots, which is exactly the pairing the raw ring
- *      exists to guarantee. camera_read_word() could not do this — one read,
- *      nothing to tear — so this one was new with the raw ring, not inherited.
+ * into a local.
  *
  * After raising the flag the emptiness test has to be REPEATED, because a
  * reset may have landed just before it went up; a reset always leaves
@@ -226,15 +196,13 @@ static void ring_reset_tail(void)
 #define CAM_YIELD_PAIRS       4
 static uint64_t s_bits_extracted = 0, s_ones_count = 0;
 
-/* LSB monitor (2026-08-26). Same bits as the emitted stream `[D65]`.
+/* LSB monitor. Same bits as the emitted stream.
  * See the note on cam_raw_t in extract.h. */
-/* ── Die temperature (2026-08-26) ──────────────────────────────────────────
- * The CUSUM offset monitor on the raw channel is an INSTRUMENT monitor, and an
- * instrument monitor without a covariate only ever says "something moved". This
- * is the covariate: the P4's own die sensor, read once per stats publish and
- * carried per block in /loops so an offset shift can be regressed on it.
+/* ── Die temperature ────────────────────────────────────────────────────────
+ * The P4's own die sensor, read once per stats publish and carried per block
+ * in /loops.
  *
- * ⚠ It is the P4 DIE, not the OV5647. They share an enclosure and track each
+ * ⚠ It is the P4 DIE, not the sensor. They share an enclosure and track each
  * other, but this is a proxy — do not report it as sensor temperature.
  * ⚠ NAN when the driver did not install; every consumer must handle that rather
  * than printing a plausible 0,0 °C. */
@@ -252,52 +220,25 @@ static void tsens_start(void)
 }
 
 static cam_raw_t s_raw;
-/* Runs channel on/off, read only at a stats reset. OFF outside a sweep, and
- * that is the whole design (2026-08-27, measured).
+/* Runs channel on/off, read only at a stats reset. OFF outside a sweep.
  *
- * It was armed permanently for one session. Two things came out of it:
- *
- *  - On the FAILING rungs the statistic is enormous — .103 read -157 at
- *    exposure 128 and -416 at 256, where negative means the bits clump. As a
- *    detector of a bad operating point it is far sharper than bias.
- *  - Among the CERTIFIED rungs, i.e. where the choice is actually made, all
- *    four nodes sat between -1,4 and +1,7. It does not order them.
- *
- * So it is a GATE candidate and not a ranking key, and a gate only has to run
- * where the gating happens: in the sweep. That also removes its cost from the
- * measurement, where the loop is compute-bound (D25) — /camtest measured the
- * LSB monitor at +5,9 % of the extraction loop with it armed, and the
- * array read 5,38 Mbit/s idle against 5,66 before.
- *
- * ⚠ Armed only inside a sweep (D46, restored D55). Permanently on it cost
- * measurable bit rate and the ranking channel that used the per-window z
- * was deleted. Sweep still resets via stats_reset_locked().
+ * ⚠ Armed only inside a sweep. Permanently on it costs measurable bit rate.
+ * Sweep still resets via stats_reset_locked().
  * ⚠ Read only by stats_reset_locked() for the flag. Do not flip mid-window. */
 static volatile bool s_raw_runs_on = false;
 /* s_raw is static; want_runs follows s_raw_runs_on at every stats reset. */
 static void raw_runs_arm_initial(void) { s_raw.want_runs = s_raw_runs_on; }
 
-/* ⚠ The monitor is not free, but it is no longer expensive. /camtest on
- * hardware 2026-08-27: ns_raw 59,18 against ns_fast 54,04 ns/pixel, i.e.
- * +9,5 % on the extraction loop. It was +28,6 % (68,5 vs 53,3) until the
- * counters moved into locals — see cam_extract_fast(). At idle either figure is
- * invisible, because the loop waits on the sensor and the cost is absorbed in
- * DQBUF — the same asymmetry the pixel-sum note in extract.h documents. Under
- * MEASUREMENT load the loop is compute-bound (D25) and it comes off the rate.
+/* ⚠ The monitor is not free: under MEASUREMENT load the loop is
+ * compute-bound, so its cost comes off the rate.
  *
- * ⛔ Sampling it is not the answer. CAM_RAW_EVERY ran it on one frame pair in
- * eight for exactly that reason, and it was deleted when the LSB z became
- * a measurement channel: a channel that is scored, combined and archived has
- * to cover every bit the LSB one covers, or the two are not the same
- * window. It runs on every pair.
+ * ⛔ Sampling it is not the answer. It runs on every pair: a channel that is
+ * scored must cover every bit the LSB one covers, or the two are not the same
+ * window.
  *
- * What was done instead is to make it cheap. The +28,6 % was never the
- * arithmetic — three ops per four pixels — it was the seven counters living in
- * a struct the emit callback could alias, reloaded across every indirect call
- * and four of them 64-bit on a 32-bit machine. They are locals now; see the
- * note in cam_extract_fast(). ⚠ Re-measure with ns_raw vs ns_fast in
- * /camtest, and the live cost with ms_extract UNDER LOAD — at idle this loop
- * waits on the sensor and any CPU saving vanishes into DQBUF. */
+ * ⚠ Re-measure with ns_raw vs ns_fast in /camtest, and the live cost with
+ * ms_extract UNDER LOAD — at idle this loop waits on the sensor and any CPU
+ * saving vanishes into DQBUF. */
 
 static uint64_t s_run_ones = 0, s_run_bits = 0;
 static double   s_z_mean = 0.0, s_z_m2 = 0.0;
@@ -315,13 +256,9 @@ static int64_t  s_stream_start_us = 0;
 /* ── Where a frame pair's wall time actually goes ──────────────────────────
  * Producer-only, published per pair by publish_stats().
  *
- * ⚠ This exists because the extraction cost and the pair cycle stopped adding
- * up: /camtest priced extraction+statistics at ~40 ms per pair while the live
- * cycle was 55,9 ms, and two changes that removed real CPU work from the loop
- * moved the rate by 0,0 %. Either answer is worth having and neither can be
- * inferred from a microbenchmark -- a loop waiting on frames absorbs any CPU
- * saving without changing its rate, and looks exactly like a loop that is
- * compute-bound at a cost the benchmark underestimates.
+ * ⚠ A loop waiting on frames absorbs any CPU saving without changing its rate,
+ * and looks exactly like a loop that is compute-bound at a cost the benchmark
+ * underestimates — measure ms_extract under load.
  *
  * s_us_cycle is measured pair-completion to pair-completion, so it is the
  * ground truth the three components have to add up to; whatever is left over is
@@ -334,31 +271,19 @@ static uint64_t s_acct_pairs = 0;
 static int64_t  s_last_pair_us = 0;
 
 /* ── Frame-rate probe ──────────────────────────────────────────────────────
- * The accounting above says how the pair cycle is SPENT; it cannot say what
- * the cycle would be if the CPU were free. Waiting in DQBUF is produced both
- * by a sensor that is genuinely slower than assumed AND by a sensor that is
- * fast but cannot get its frames written while the CPU is reading PSRAM. Those
- * two have opposite consequences -- one is a wall, the other is headroom -- and
- * no amount of staring at ms_wait separates them.
- *
- * So measure the cadence with the extraction stopped: every buffer queued,
- * dequeue and requeue, time nothing else. That is the sensor's own rate. The
- * capture task performs it (it owns the fd), triggered by a flag. */
+ * Measure the sensor's cadence with the extraction stopped: every buffer
+ * queued, dequeue and requeue, time nothing else. That is the sensor's own
+ * rate. The capture task performs it (it owns the fd), triggered by a flag. */
 /* ── Ring flush: drop pending words, then wait for fresh frames ────────────
- * Separate from camera_stats_reset() ON PURPOSE, and the separation is the
- * point. Both empty the ring, but the reset ALSO zeroes bias / sigma /
- * autocorr / mean_pixel and restarts the rate clock — which is right before a
- * calibration candidate and wrong before a measurement item, because those
- * accumulators are what /loops publishes as the block's camera health.
- *
- * Until 2026-08-19 the per-item settle called camera_stats_reset(1), so in an
- * ATTENDED session every block's cam_bias / cam_mbit described only its last
- * item. That is the number this rig uses to decide whether an arm is healthy.
- * A flush must not cost it. */
+ * Separate from camera_stats_reset() ON PURPOSE: both empty the ring, but the
+ * reset ALSO zeroes bias / sigma / autocorr / mean_pixel and restarts the rate
+ * clock — which is right before a calibration candidate and wrong before a
+ * measurement item, because those accumulators are what /loops publishes as
+ * the block's camera health. A flush must not cost it. */
 static volatile int    s_flush_pairs = 0;   // fresh pairs still owed
-static volatile int    s_flush_discard = 0; // pairs to throw away first [D105]
+static volatile int    s_flush_discard = 0; // pairs to throw away first 
 
-/* Where each frame pair starts in the current window's word stream `[D110]`.
+/* Where each frame pair starts in the current window's word stream.
  * Word index = words ENQUEUED since the window's flush, which is exactly the
  * order the consumer reads them in (a dropped word never enters the ring, so
  * it has no index). Entry 0 is the window's first pair, at 0.
@@ -381,16 +306,16 @@ static double          s_probe_fps = 0.0;
 
 static esp_err_t cam_reg_write(uint32_t regaddr, uint32_t value)
 {
-    esp_cam_sensor_reg_val_t regval = { .regaddr = regaddr, .value = value };
+    esp_cam_sensor_reg_val_t regval = {.regaddr = regaddr,.value = value };
     struct v4l2_ext_control ctrl = {
-        .id   = ESP_CAM_SENSOR_IOC_S_REG,
-        .p_u8 = (uint8_t *)&regval,
-        .size = sizeof(regval),
+.id   = ESP_CAM_SENSOR_IOC_S_REG,
+.p_u8 = (uint8_t *)&regval,
+.size = sizeof(regval),
     };
     struct v4l2_ext_controls ctrls = {
-        .ctrl_class = V4L2_CTRL_CLASS_ESP_CAM_IOCTL,
-        .count      = 1,
-        .controls   = &ctrl,
+.ctrl_class = V4L2_CTRL_CLASS_ESP_CAM_IOCTL,
+.count      = 1,
+.controls   = &ctrl,
     };
     if (ioctl(s_fd, VIDIOC_S_EXT_CTRLS, &ctrls) != 0) {
         ESP_LOGW(TAG_CAM, "reg write 0x%04x=0x%02x failed", (unsigned)regaddr, (unsigned)value);
@@ -401,16 +326,16 @@ static esp_err_t cam_reg_write(uint32_t regaddr, uint32_t value)
 
 static esp_err_t cam_reg_read(uint32_t regaddr, uint32_t *value)
 {
-    esp_cam_sensor_reg_val_t regval = { .regaddr = regaddr, .value = 0 };
+    esp_cam_sensor_reg_val_t regval = {.regaddr = regaddr,.value = 0 };
     struct v4l2_ext_control ctrl = {
-        .id   = ESP_CAM_SENSOR_IOC_G_REG,
-        .p_u8 = (uint8_t *)&regval,
-        .size = sizeof(regval),
+.id   = ESP_CAM_SENSOR_IOC_G_REG,
+.p_u8 = (uint8_t *)&regval,
+.size = sizeof(regval),
     };
     struct v4l2_ext_controls ctrls = {
-        .ctrl_class = V4L2_CTRL_CLASS_ESP_CAM_IOCTL,
-        .count      = 1,
-        .controls   = &ctrl,
+.ctrl_class = V4L2_CTRL_CLASS_ESP_CAM_IOCTL,
+.count      = 1,
+.controls   = &ctrl,
     };
     if (ioctl(s_fd, VIDIOC_G_EXT_CTRLS, &ctrls) != 0) return ESP_FAIL;
     *value = regval.value;
@@ -425,14 +350,14 @@ static void cam_identify(void)
 {
     esp_cam_sensor_id_t id = {0};
     struct v4l2_ext_control ctrl = {
-        .id   = ESP_CAM_SENSOR_IOC_G_CHIP_ID,
-        .p_u8 = (uint8_t *)&id,
-        .size = sizeof(id),
+.id   = ESP_CAM_SENSOR_IOC_G_CHIP_ID,
+.p_u8 = (uint8_t *)&id,
+.size = sizeof(id),
     };
     struct v4l2_ext_controls ctrls = {
-        .ctrl_class = V4L2_CTRL_CLASS_ESP_CAM_IOCTL,
-        .count      = 1,
-        .controls   = &ctrl,
+.ctrl_class = V4L2_CTRL_CLASS_ESP_CAM_IOCTL,
+.count      = 1,
+.controls   = &ctrl,
     };
     if (ioctl(s_fd, VIDIOC_G_EXT_CTRLS, &ctrls) != 0) {
         ESP_LOGW(TAG_CAM, "G_CHIP_ID failed -- assuming OV5647 registers");
@@ -452,7 +377,7 @@ uint16_t    camera_sensor_pid(void)  { return s_sensor_pid; }
 
 static uint32_t cam_gain_max(void)
 {
-    return (s_sensor_pid == CAM_PID_IMX219) ? IMX219_GAIN_MAX : 0x3FFu;
+    return (s_sensor_pid == CAM_PID_IMX219) ? IMX219_GAIN_MAX: 0x3FFu;
 }
 
 static void cam_verify_regs(const char *when)
@@ -465,7 +390,7 @@ static void cam_verify_regs(const char *when)
              (unsigned long)gain, CONFIG_ELOTTO_CAM_REG_GAIN);
 }
 
-/* Welford over the mini-run z of ONE measurement window (D62). Separate from
+/* Welford over the mini-run z of ONE measurement window. Separate from
  * s_z_* above, which is cumulative since the last camera_stats_reset() and so
  * spans whole sweep intervals. Owned by the capture task exactly like s_z_*:
  * written here, read only through publish_stats() under s_mutex.
@@ -473,7 +398,7 @@ static void cam_verify_regs(const char *when)
  * camera_task), not where a caller asks for it. */
 static uint32_t s_win_z_n;
 static double   s_win_z_mean, s_win_z_m2;
-/* Autocorrelation over the same window (D97): the lag-1..4 counts process_words()
+/* Autocorrelation over the same window: the lag-1..4 counts process_words()
  * already takes, kept a second time window-scoped, plus the window's own ones
  * and bits so the estimator is centred on the window's bias. Zeroed with
  * s_win_z_* and nowhere else. */
@@ -485,7 +410,7 @@ static uint64_t s_win_ones, s_win_bits;
  * A 0,5 s window (the shortest ?run= allows) still yields ~800. */
 #define WIN_SIGMA_MIN_N   200u
 
-/* Words of the current pair, handed on in batches `[D93]`. The extractor
+/* Words of the current pair, handed on in batches. The extractor
  * emits one word per 32 pixels through a callback; appending it here is a
  * store, and process_words() then runs the ring and the statistics over the
  * batch with every counter in a LOCAL — word by word they were a dozen 64-bit
@@ -499,9 +424,7 @@ static uint8_t  s_wb_raw[WORD_BATCH];
 static uint32_t s_wb_n;
 
 /* Ring push, bias, per-mini-run sigma and lag-1..4 bit autocorrelation across
- * the word stream (see PLAN Phase 0 gate), for the batch in s_wb. Every sum is
- * an integer and the mini-run z sequence is the same, so the published numbers
- * are identical to the word-by-word version it replaces. */
+ * the word stream, for the batch in s_wb. */
 static void process_words(void)
 {
     const uint32_t n = s_wb_n;
@@ -521,17 +444,14 @@ static void process_words(void)
             if (next == tail) { drops++; continue; }
         }
         s_ring[head] = s_wb[i];
-        /* The LSB ones of the pixels behind this word, from the extractor.
-         * It used to be read back out of s_raw.ones as a delta against the
-         * previous emit — correct, but it forced the whole monitor to be
-         * memory-live inside the bulk loop (see cam_extract_fast). */
+        /* The LSB ones of the pixels behind this word, from the extractor. */
         if (s_ring_raw) s_ring_raw[head] = s_wb_raw[i];
         head = next;
     }
     __sync_synchronize();
     s_ring_head = head;
     s_ring_drops += drops;
-    s_win_enq += n - drops;      /* [D110] the window's word index */
+    s_win_enq += n - drops;      /*  the window's word index */
 
     // Statistics cover every extracted word, including dropped ones: /diag must
     // characterise the source itself, not whichever subset got consumed.
@@ -550,7 +470,7 @@ static void process_words(void)
             double delta = z - s_z_mean;
             s_z_mean += delta / s_z_n;
             s_z_m2 += delta * (z - s_z_mean);
-            /* Same z, second accumulator, window-scoped (D62). Once per mini-run,
+            /* Same z, second accumulator, window-scoped. Once per mini-run,
              * i.e. once per 100 words -- not in the per-word path. */
             s_win_z_n++;
             double wd = z - s_win_z_mean;
@@ -590,13 +510,6 @@ static void win_stats_zero(void)
     s_win_ones = 0; s_win_bits = 0;
 }
 
-/* accumulate_pixel_level() is GONE. It walked the first frame of every pair
- * with a stride of 16 to sample 40000 pixels for mean_pixel_level — but a
- * stride inside 64-byte cache lines still pulls every line, so those samples
- * cost a full 625 KB of PSRAM traffic (~7 ms per pair, ~13 % of the budget) on
- * top of the two frames the diff already reads. The sum now rides along inside
- * the extractor, out of words it has in registers anyway (extract.h). */
-
 // diff = b - a per pixel (mod 256), LSB packed. Non-overlapping: caller never
 // reuses a or b as the other side of the next pair.
 /* Packer state, owned by the extractor (components/elotto_camera/extract.h).
@@ -615,7 +528,7 @@ static void emit_word_cb(uint32_t w, uint32_t ro, void *ctx)
 {
     (void)ctx;
     s_wb[s_wb_n] = w;
-    s_wb_raw[s_wb_n] = (uint8_t)(ro > 255 ? 255 : ro);   /* cannot exceed 32 */
+    s_wb_raw[s_wb_n] = (uint8_t)(ro > 255 ? 255: ro);   /* cannot exceed 32 */
     if (++s_wb_n == WORD_BATCH) process_words();
 }
 
@@ -629,28 +542,19 @@ static void diff_and_extract(const uint8_t *a, const uint8_t *b, uint32_t n)
      * the definition of correct: GET /camtest runs both over the cases on this
      * silicon and compares the emitted words, the zero count, the stuck verdict
      * and the leftover packer state. Do not switch this line without it. */
-    /* ⚠ ALWAYS ON since 2026-08-26, and the duty cycle is gone with it. It was
-     * 1-in-8 while the LSB stream was only a DIAGNOSTIC, to keep its cost off
-     * the loaded bit rate. Since D65 that stream IS the measurement — the
-     * emitted words and the monitored bits are the same bits — and a
-     * measurement cannot be sampled: every bit the consumer sees must be
-     * counted, or the z is over a window nobody can name.
-     * ⚠ The cost is +9,5 % of the extraction loop (/camtest 2026-08-27), down
-     * from +28,6 % before the counters moved into locals. Still priced at IDLE
-     * only, where the loop waits on the sensor — the loaded cost remains
-     * unmeasured. Watch ms_extract and cam_mbit on a SLAVE during a session.
-     * ⚠ A note here used to claim ms_extract depends on the exposure -- 45,7 ms
-     * at exp 16 against 59,1 at exp 64, same node, same build (2026-08-27).
-     * It does NOT. The whole ladder was walked on three slaves, 30 s per rung,
-     * on 2026-08-30: 46,15..46,21 ms across all eight rungs, at mean_px 3,1 to
-     * 110,6 and zero_diff 0,036 to 0,178. The bulk loop has no data-dependent
-     * branch at all, so a frame costs the same whatever is in it. The old pair
-     * was an idle reading against a loaded one. What DOES move ms_extract is
-     * which core this task runs on -- see ELOTTO_CAM_TASK_CORE in camera.h and
-     * D61. Compare ms_extract only between nodes in the same LOAD state. */
-    /* An IMX219 frame is MIPI RAW10, 4 pixels in 5 bytes `[D89]`: the
-     * word-wise RAW10 path `[D93]`, held by /camtest against the D89 loop
-     * (cam_extract_raw10_ref), which is the definition of every IMX stream.
+    /* ⚠ ALWAYS ON: the LSB stream IS the measurement — the emitted words and
+     * the monitored bits are the same bits — and a measurement cannot be
+     * sampled: every bit the consumer sees must be counted, or the z is over a
+     * window nobody can name.
+     * ⚠ The loaded cost is unmeasured. Watch ms_extract and cam_mbit on a
+     * SLAVE during a session.
+     * ⚠ ms_extract does NOT depend on the exposure — the bulk loop has no
+     * data-dependent branch, so a frame costs the same whatever is in it. What
+     * DOES move ms_extract is which core this task runs on — see
+     * ELOTTO_CAM_TASK_CORE in camera.h. Compare ms_extract only between nodes
+     * in the same LOAD state. */
+    /* An IMX219 frame is MIPI RAW10, 4 pixels in 5 bytes: the word-wise RAW10
+     * path. cam_extract_raw10_ref() is the definition of every IMX stream.
      * mean_px is the high 8 bits, so it shares the OV5647's 0..255 scale. */
     uint32_t npix;
     if (s_packed_raw10) {
@@ -677,16 +581,16 @@ static void diff_and_extract(const uint8_t *a, const uint8_t *b, uint32_t n)
 
 static void publish_stats(void)
 {
-    double bias  = s_bits_extracted ? (double)s_ones_count / (double)s_bits_extracted : 0.0;
-    double sigma = (s_z_n > 1) ? sqrt(s_z_m2 / (s_z_n - 1)) : 0.0;
+    double bias  = s_bits_extracted ? (double)s_ones_count / (double)s_bits_extracted: 0.0;
+    double sigma = (s_z_n > 1) ? sqrt(s_z_m2 / (s_z_n - 1)): 0.0;
     double elapsed_s = (esp_timer_get_time() - s_stream_start_us) / 1e6;
-    double mbps = (elapsed_s > 0) ? (s_bits_extracted / 1e6) / elapsed_s : 0.0;
-    /* ABOVE BLACK on the IMX219 `[D89]`: it outputs a pedestal of 64 DN
-     * (10-bit), 16 on this 8-bit scale — measured 15,90 with no light. Left in,
-     * a sensor in total darkness would read px 16 and clear the CAL_MIN_MEAN_PX
-     * dark gate, whose whole point is that photons, not read noise, whiten the
-     * LSB [D18]. The OV5647 path is unchanged. */
-    double mean_px = s_pixel_n ? (double)s_pixel_sum / (double)s_pixel_n : 0.0;
+    double mbps = (elapsed_s > 0) ? (s_bits_extracted / 1e6) / elapsed_s: 0.0;
+    /* ABOVE BLACK on the IMX219: it outputs a pedestal of 64 DN
+     * (10-bit), 16 on this 8-bit scale. Left in, a sensor in total darkness
+     * would read px 16 and clear the CAL_MIN_MEAN_PX dark gate, whose whole
+     * point is that photons, not read noise, whiten the LSB. The OV5647 path
+     * is unchanged. */
+    double mean_px = s_pixel_n ? (double)s_pixel_sum / (double)s_pixel_n: 0.0;
     if (s_sensor_pid == CAM_PID_IMX219 && s_pixel_n) mean_px -= IMX219_BLACK_PX;
 
     /* Cheap: an SAR read, no bus traffic, once per publish and not per frame. */
@@ -699,7 +603,7 @@ static void publish_stats(void)
      * publishes. The mini-run z is (ones - BITS/2)/sqrt(BITS/4) — linear in
      * `ones` — so sd(z) = sd(ones)/sqrt(BITS/4) and the integer sums are
      * sufficient. Var over the completed mini-runs, n-1. */
-    double raw_bias = s_raw.bits ? (double)s_raw.ones / (double)s_raw.bits : 0.0;
+    double raw_bias = s_raw.bits ? (double)s_raw.ones / (double)s_raw.bits: 0.0;
     double raw_sigma = 0.0;
     if (s_raw.mr_n > 1) {
         double n  = (double)s_raw.mr_n;
@@ -736,25 +640,25 @@ static void publish_stats(void)
     s_stats.sigma_samples     = s_z_n;
     /* Published as 0/0 until the window has enough mini-runs to mean anything;
      * the reader treats 0 samples as "no value", not as a quiet window. */
-    s_stats.win_sigma_samples = (s_win_z_n >= WIN_SIGMA_MIN_N) ? (int)s_win_z_n : 0;
+    s_stats.win_sigma_samples = (s_win_z_n >= WIN_SIGMA_MIN_N) ? (int)s_win_z_n: 0;
     s_stats.win_sigma         = (s_win_z_n >= WIN_SIGMA_MIN_N)
-        ? sqrt(s_win_z_m2 / (double)(s_win_z_n - 1)) : 0.0;
+        ? sqrt(s_win_z_m2 / (double)(s_win_z_n - 1)): 0.0;
     /* Same Pearson r as autocorr_lag below, centred on the WINDOW's bias, then
      * times √pairs: for independent bits r has SE 1/√pairs (the centring takes
      * the bias fluctuation out of E[xy] - p²), so this is a unit-normal z. */
     {
-        double wb = s_win_bits ? (double)s_win_ones / (double)s_win_bits : 0.0;
+        double wb = s_win_bits ? (double)s_win_ones / (double)s_win_bits: 0.0;
         double wv = wb * (1.0 - wb);
         bool ok = (s_win_z_n >= WIN_SIGMA_MIN_N) && wv > 0.0;
         for (int L = 0; L < 4; L++) {
             double np = (double)s_win_ac_pairs[L];
             s_stats.win_ac_z[L] = (ok && np > 0.0)
-                ? ((double)s_win_ac_both1[L] / np - wb * wb) / wv * sqrt(np) : 0.0;
+                ? ((double)s_win_ac_both1[L] / np - wb * wb) / wv * sqrt(np): 0.0;
         }
     }
     s_stats.mean_pixel_level  = mean_px;
     s_stats.mbit_per_sec      = mbps;
-    s_stats.zero_diff_frac    = s_diff_n ? (double)s_zero_diffs / (double)s_diff_n : 0.0;
+    s_stats.zero_diff_frac    = s_diff_n ? (double)s_zero_diffs / (double)s_diff_n: 0.0;
     s_stats.raw_bias          = raw_bias;
     s_stats.raw_sigma         = raw_sigma;
     s_stats.raw_sigma_samples = s_raw.mr_n;
@@ -766,9 +670,9 @@ static void publish_stats(void)
     s_stats.consumer_waits    = s_consumer_waits;
     s_stats.consume_mbit_per_sec = (s_cons_us > 0)
         ? (double)s_cons_bits / (double)s_cons_us   /* bit/us == Mbit/s */
-        : 0.0;
+: 0.0;
     s_stats.stalls            = s_stalls;
-    double np = (double)(s_acct_pairs ? s_acct_pairs : 1);
+    double np = (double)(s_acct_pairs ? s_acct_pairs: 1);
     s_stats.ms_pair           = s_us_cycle / np / 1000.0;
     s_stats.ms_wait           = s_us_wait  / np / 1000.0;
     s_stats.ms_extract        = s_us_ext   / np / 1000.0;
@@ -778,19 +682,13 @@ static void publish_stats(void)
     for (int L = 0; L < 4; L++) {
         s_stats.autocorr_lag[L] = (s_autocorr_pairs[L] && var > 0.0)
             ? (((double)s_autocorr_both1[L] / (double)s_autocorr_pairs[L]) - bias * bias) / var
-            : 0.0;
+: 0.0;
     }
     xSemaphoreGive(s_mutex);
 }
 
 /* Zero every accumulator that describes the entropy and restart the rate clock,
  * so camera_get_stats() from here on describes ONLY the window that starts now.
- *
- * This is the prerequisite for calibration, not a convenience. Every statistic
- * in this file was cumulative since stream start: bias, sigma, autocorrelation,
- * mean pixel level, zero-diff fraction, and mbit_per_sec (which divided by total
- * stream time). Measure setting A, switch to B, read again, and the second
- * number is still mostly A — so no candidate setting could be scored at all.
  *
  * The ring is emptied too: it holds words extracted under the previous setting,
  * and a consumer draining them would be measuring the old configuration.
@@ -804,7 +702,7 @@ static void stats_reset_locked(void)
     s_run_ones = 0; s_run_bits = 0;
     s_z_mean = 0.0; s_z_m2 = 0.0; s_z_n = 0;
     /* A sweep or a /expose opens a new window too, so the window-scoped
-     * accumulator goes with it (D62). Without this a sweep would leave the
+     * accumulator goes with it. Without this a sweep would leave the
      * previous window's mini-runs standing in front of the next one. */
     win_stats_zero();
     for (int L = 0; L < 4; L++) { s_autocorr_both1[L] = 0; s_autocorr_pairs[L] = 0; }
@@ -827,11 +725,6 @@ static void stats_reset_locked(void)
      * is computed from. publish_stats() only refreshes it after a pair has been
      * extracted, so a reader polling in the gap between the reset and the next
      * pair would be served the pre-reset window — and would have no way to tell.
-     *
-     * That is not theoretical: it made the first calibration sweep score every
-     * one of its ten candidates on the same stale cumulative snapshot. Each
-     * window passed its bit target the instant it opened, so all ten rows came
-     * back byte-identical and the sweep "chose" in 2.4 s of a 30 s budget.
      * Zeroing here makes an unmeasured window look empty, which is what it is.
      *
      * The health counters stay cumulative on purpose: ring_drops, consumer_waits
@@ -871,8 +764,8 @@ static void camera_task(void *arg)
 
     while (1) {
         struct v4l2_buffer buf = {
-            .type   = V4L2_BUF_TYPE_VIDEO_CAPTURE,
-            .memory = V4L2_MEMORY_MMAP,
+.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE,
+.memory = V4L2_MEMORY_MMAP,
         };
         if (s_probe_req > 0) {
             /* Give the driver every buffer first: the point is to measure the
@@ -884,8 +777,8 @@ static void camera_task(void *arg)
             int64_t tp0 = 0;
             while (got <= n) {
                 struct v4l2_buffer pb = {
-                    .type   = V4L2_BUF_TYPE_VIDEO_CAPTURE,
-                    .memory = V4L2_MEMORY_MMAP,
+.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE,
+.memory = V4L2_MEMORY_MMAP,
                 };
                 if (ioctl(s_fd, VIDIOC_DQBUF, &pb) != 0) break;
                 if (pb.flags & V4L2_BUF_FLAG_DONE) {
@@ -895,7 +788,7 @@ static void camera_task(void *arg)
                 ioctl(s_fd, VIDIOC_QBUF, &pb);
             }
             int64_t dtp = esp_timer_get_time() - tp0;
-            s_probe_fps = (got > 1 && dtp > 0) ? (double)(got - 1) * 1e6 / (double)dtp : 0.0;
+            s_probe_fps = (got > 1 && dtp > 0) ? (double)(got - 1) * 1e6 / (double)dtp: 0.0;
             s_probe_req = 0;
             /* The probe extracted nothing for ~n frame times, which would sit
              * in mbit_s and in the pair accounting as a hole. Start the window
@@ -946,7 +839,7 @@ static void camera_task(void *arg)
         }
 
         /* The first pair after a flush request is not extracted at all
-         * `[D105]`: both its frames may predate the request (queued in the
+         *: both its frames may predate the request (queued in the
          * driver, or finished while the previous pair was extracted). Its
          * buffers go straight back; the NEXT pair opens the window below. */
         if (s_flush_pairs > 0 && s_flush_discard > 0) {
@@ -967,7 +860,7 @@ static void camera_task(void *arg)
             ring_reset_tail();
             memset(&s_pack, 0, sizeof(s_pack));
             /* The window's first bit starts HERE, so the window sigma does too
-             * (D62). This is the only place that knows it: the consumer asks
+             *. This is the only place that knows it: the consumer asks
              * for a flush and then waits, and everything produced before this
              * line belongs to the previous window. */
             win_stats_zero();
@@ -977,7 +870,7 @@ static void camera_task(void *arg)
             s_flush_dropped = true;
         }
 
-        /* [D110] Record where this pair starts in the window's stream. */
+        /*  Record where this pair starts in the window's stream. */
         if (s_win_on && s_win_npair < WIN_PAIRS_MAX) {
             s_win_pair_start[s_win_npair] = s_win_enq;
             __sync_synchronize();
@@ -1023,30 +916,17 @@ static void camera_task(void *arg)
         if (s_flush_pairs > 0 && s_flush_dropped && --s_flush_pairs == 0)
             s_flush_done = true;
 
-        /* ⚠ "Frames arrive faster than the diff can consume them, so this loop
-         * never blocks on DQBUF" stood here until 2026-08-19 and is FALSE. The
-         * accounting a few lines up measures it: at idle the loop sits ~14,6 ms
-         * of every 56,0 ms pair blocked in DQBUF, because the sensor delivers
-         * 36,1 fps and not the 50 the datasheet was read for. Believing the old
-         * sentence cost a day: two changes that removed real CPU work from this
-         * loop were predicted at ~22 % and measured 0,0 %, since a loop waiting
-         * on frames absorbs a CPU saving without changing its rate.
+        /* ⚠ This loop DOES block on DQBUF at idle — the sensor delivers fewer
+         * fps than the datasheet implies, and a loop waiting on frames absorbs
+         * a CPU saving without changing its rate.
+         * ⚠ Under measurement LOAD the picture inverts: extraction is
+         * preempted, so the loop misses frames instead of waiting for them and
+         * CPU spent here is not free during a session.
          *
-         * The yield still has to exist — the idle task would starve otherwise —
-         * and thinning it is still right: vTaskDelay(1) sleeps to the next TICK,
-         * 0..10 ms at CONFIG_FREERTOS_HZ = 100, ~5 ms average, and once per pair
-         * that is ~1,4 ms of every pair at CAM_YIELD_PAIRS = 4. But it bought
-         * 0,0 % of the bit rate, and the honest reason is that there was no
-         * headroom to spend, not that the arithmetic was wrong.
-         *
-         * ⚠ Under measurement LOAD the picture inverts — extraction is preempted
-         * and costs ~69,8 ms instead of 39,5, so the loop misses frames instead
-         * of waiting for them. CPU spent here is not free during a session.
-         *
-         * So yield every CAM_YIELD_PAIRS pairs instead. ~200 ms between yields
-         * is nowhere near the 5 s task watchdog, and every task that matters
-         * runs ABOVE this one (elotto_task at 5, the network stack far higher);
-         * only the idle task is below, and it has nothing to do but exist. */
+         * Yield every CAM_YIELD_PAIRS pairs: ~200 ms between yields is nowhere
+         * near the 5 s task watchdog, every task that matters runs ABOVE this
+         * one (elotto_task at 5, the network stack far higher), and only the
+         * idle task is below. */
         if (++yield_ctr >= CAM_YIELD_PAIRS) { yield_ctr = 0; vTaskDelay(1); }
     }
 }
@@ -1059,7 +939,7 @@ esp_err_t camera_init(void)
     return ESP_ERR_NOT_SUPPORTED;
 #else
     tsens_start();          /* covariate for the offset monitor; NAN if unavailable */
-    raw_runs_arm_initial(); /* off at boot; sweep arms it (D46/D55) */
+    raw_runs_arm_initial(); /* off at boot; sweep arms it */
     esp_err_t ret;
 
     /* Do-not-double-init: the boot path calls this once, but a defensive guard
@@ -1085,9 +965,9 @@ esp_err_t camera_init(void)
 
 #if CONFIG_ELOTTO_CAM_XCLK_PIN > 0
     esp_cam_sensor_xclk_config_t xclk_cfg = {
-        .esp_clock_router_cfg = {
-            .xclk_pin     = CONFIG_ELOTTO_CAM_XCLK_PIN,
-            .xclk_freq_hz = CONFIG_ELOTTO_CAM_XCLK_FREQ,
+.esp_clock_router_cfg = {
+.xclk_pin     = CONFIG_ELOTTO_CAM_XCLK_PIN,
+.xclk_freq_hz = CONFIG_ELOTTO_CAM_XCLK_FREQ,
         },
     };
     ret = esp_cam_sensor_xclk_allocate(ESP_CAM_SENSOR_XCLK_ESP_CLOCK_ROUTER, &s_xclk_handle);
@@ -1105,19 +985,19 @@ esp_err_t camera_init(void)
 #endif
 
     static const esp_video_init_csi_config_t csi_config = {
-        .sccb_config = {
-            .init_sccb = true,
-            .i2c_config = {
-                .port    = CONFIG_ELOTTO_CAM_SCCB_I2C_PORT,
-                .scl_pin = CONFIG_ELOTTO_CAM_SCL_PIN,
-                .sda_pin = CONFIG_ELOTTO_CAM_SDA_PIN,
+.sccb_config = {
+.init_sccb = true,
+.i2c_config = {
+.port    = CONFIG_ELOTTO_CAM_SCCB_I2C_PORT,
+.scl_pin = CONFIG_ELOTTO_CAM_SCL_PIN,
+.sda_pin = CONFIG_ELOTTO_CAM_SDA_PIN,
             },
-            .freq = CONFIG_ELOTTO_CAM_SCCB_I2C_FREQ,
+.freq = CONFIG_ELOTTO_CAM_SCCB_I2C_FREQ,
         },
-        .reset_pin = CONFIG_ELOTTO_CAM_RESET_PIN,
-        .pwdn_pin  = CONFIG_ELOTTO_CAM_PWDN_PIN,
+.reset_pin = CONFIG_ELOTTO_CAM_RESET_PIN,
+.pwdn_pin  = CONFIG_ELOTTO_CAM_PWDN_PIN,
     };
-    const esp_video_init_config_t cam_config = { .csi = &csi_config };
+    const esp_video_init_config_t cam_config = {.csi = &csi_config };
 
     ret = esp_video_init(&cam_config);
     if (ret != ESP_OK) {
@@ -1136,13 +1016,13 @@ esp_err_t camera_init(void)
     // Use the sensor's default/native format (index 0) instead of hardcoding
     // a fourcc+resolution -- keeps this independent of the OV5647 Kconfig
     // format choice (RAW8 800x800 by default).
-    struct v4l2_fmtdesc fmtdesc = { .index = 0, .type = V4L2_BUF_TYPE_VIDEO_CAPTURE };
+    struct v4l2_fmtdesc fmtdesc = {.index = 0,.type = V4L2_BUF_TYPE_VIDEO_CAPTURE };
     if (ioctl(s_fd, VIDIOC_ENUM_FMT, &fmtdesc) != 0) {
         ESP_LOGE(TAG_CAM, "ENUM_FMT failed");
         ret = ESP_FAIL;
         goto fail;
     }
-    struct v4l2_frmsizeenum frmsize = { .index = 0, .pixel_format = fmtdesc.pixelformat };
+    struct v4l2_frmsizeenum frmsize = {.index = 0,.pixel_format = fmtdesc.pixelformat };
     if (ioctl(s_fd, VIDIOC_ENUM_FRAMESIZES, &frmsize) != 0) {
         ESP_LOGE(TAG_CAM, "ENUM_FRAMESIZES failed");
         ret = ESP_FAIL;
@@ -1150,10 +1030,10 @@ esp_err_t camera_init(void)
     }
 
     struct v4l2_format fmt = {
-        .type = V4L2_BUF_TYPE_VIDEO_CAPTURE,
-        .fmt.pix.width       = frmsize.discrete.width,
-        .fmt.pix.height      = frmsize.discrete.height,
-        .fmt.pix.pixelformat = fmtdesc.pixelformat,
+.type = V4L2_BUF_TYPE_VIDEO_CAPTURE,
+.fmt.pix.width       = frmsize.discrete.width,
+.fmt.pix.height      = frmsize.discrete.height,
+.fmt.pix.pixelformat = fmtdesc.pixelformat,
     };
     if (ioctl(s_fd, VIDIOC_S_FMT, &fmt) != 0) {
         ESP_LOGE(TAG_CAM, "S_FMT failed");
@@ -1163,17 +1043,15 @@ esp_err_t camera_init(void)
     s_frame_w = fmt.fmt.pix.width;
     s_frame_h = fmt.fmt.pix.height;
     s_fourcc  = fmt.fmt.pix.pixelformat;
-    /* The layout follows the FOURCC, not sizeimage `[D89]`. esp_video leaves
+    /* The layout follows the FOURCC, not sizeimage. esp_video leaves
      * sizeimage 0 for the IMX219's BG10, and the old w*h fallback made a packed
-     * RAW10 frame look like RAW8: the byte extractor then ran over MIPI-packed
-     * bytes (4 MSB bytes + 1 LSB byte per 4 pixels) and read only 80 % of the
-     * frame — zero_diff ~0,5, bias 0,36, exposure apparently without effect. */
+     * RAW10 frame look like RAW8. */
     uint32_t pf = fmt.fmt.pix.pixelformat;
     s_packed_raw10 = (pf == V4L2_PIX_FMT_SBGGR10 || pf == V4L2_PIX_FMT_SGBRG10 ||
                       pf == V4L2_PIX_FMT_SGRBG10 || pf == V4L2_PIX_FMT_SRGGB10);
     uint32_t need = s_frame_w * s_frame_h;
     if (s_packed_raw10) need = need / 4 * 5;
-    s_frame_size = (fmt.fmt.pix.sizeimage >= need) ? fmt.fmt.pix.sizeimage : need;
+    s_frame_size = (fmt.fmt.pix.sizeimage >= need) ? fmt.fmt.pix.sizeimage: need;
     ESP_LOGI(TAG_CAM, "format " V4L2_FMT_STR " %ux%u size=%u",
              V4L2_FMT_STR_ARG(fmt.fmt.pix.pixelformat),
              (unsigned)fmt.fmt.pix.width, (unsigned)fmt.fmt.pix.height, (unsigned)s_frame_size);
@@ -1183,17 +1061,17 @@ esp_err_t camera_init(void)
     uint32_t boot_g = (uint32_t)CONFIG_ELOTTO_CAM_REG_GAIN;
     if (boot_g > cam_gain_max()) boot_g = cam_gain_max();
     /* Dark operation boots ON its fixed rung, so the first sweep of a session
-     * finds nothing to change and owes no settle pause `[D90]`. */
+     * finds nothing to change and owes no settle pause. */
     uint32_t boot_e = cam_dark() ? IMX_DARK_EXPOSURE
-                                 : (uint32_t)CONFIG_ELOTTO_CAM_REG_EXPOSURE;
+: (uint32_t)CONFIG_ELOTTO_CAM_REG_EXPOSURE;
     if (!camera_set_exposure(boot_e, boot_g))
         ESP_LOGW(TAG_CAM, "boot exposure/gain did not latch");
     cam_verify_regs("after-write");
 
     struct v4l2_requestbuffers req = {
-        .count  = CAM_BUF_COUNT,
-        .type   = V4L2_BUF_TYPE_VIDEO_CAPTURE,
-        .memory = V4L2_MEMORY_MMAP,
+.count  = CAM_BUF_COUNT,
+.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE,
+.memory = V4L2_MEMORY_MMAP,
     };
     if (ioctl(s_fd, VIDIOC_REQBUFS, &req) != 0) {
         ESP_LOGE(TAG_CAM, "REQBUFS failed");
@@ -1203,9 +1081,9 @@ esp_err_t camera_init(void)
 
     for (int i = 0; i < CAM_BUF_COUNT; i++) {
         struct v4l2_buffer buf = {
-            .type   = V4L2_BUF_TYPE_VIDEO_CAPTURE,
-            .memory = V4L2_MEMORY_MMAP,
-            .index  = i,
+.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE,
+.memory = V4L2_MEMORY_MMAP,
+.index  = i,
         };
         if (ioctl(s_fd, VIDIOC_QUERYBUF, &buf) != 0) {
             ESP_LOGE(TAG_CAM, "QUERYBUF[%d] failed", i);
@@ -1225,7 +1103,7 @@ esp_err_t camera_init(void)
         if (buf.length < s_frame_size) {
             ESP_LOGE(TAG_CAM, "buffer %d is %lu B, frame needs %lu -- clamped",
                      i, (unsigned long)buf.length, (unsigned long)s_frame_size);
-            s_frame_size = s_packed_raw10 ? buf.length / 5 * 5 : buf.length;
+            s_frame_size = s_packed_raw10 ? buf.length / 5 * 5: buf.length;
         }
         if (ioctl(s_fd, VIDIOC_QBUF, &buf) != 0) {
             ESP_LOGE(TAG_CAM, "QBUF[%d] failed", i);
@@ -1293,13 +1171,11 @@ bool camera_is_ready(void)
 
 /* The one implementation of the tail protocol: n words, in ring order, plus
  * (if out_raw) the LSB ones count of the very pixels each word came from, so
- * the word and its count stay one unit (2026-08-26).
+ * the word and its count stay one unit.
  *
- * Block-wise `[D92]`: the readiness check (a take and give of s_mutex) runs
+ * Block-wise: the readiness check (a take and give of s_mutex) runs
  * once per call, and the fences once per contiguous run of the ring, not once
- * per word. Word by word the reader paid both for every 32 bits and ran at
- * ~1870 cycles per word against a producer 40 % faster. The words, their order
- * and the stall/flush semantics are unchanged.
+ * per word.
  *
  * ⚠ *out_raw is 0 and the return still true when the parallel ring is missing
  * — the node measures, it just has no LSB channel. Callers must treat a
@@ -1346,12 +1222,12 @@ static bool read_words(uint32_t *out, uint32_t *out_raw, uint32_t n)
 
         /* The contiguous stretch from t: up to head, or to the array's end
          * when head has wrapped (the next pass starts at slot 0). */
-        uint32_t k = (h > t ? h : RING_WORDS) - t;
+        uint32_t k = (h > t ? h: RING_WORDS) - t;
         if (k > n) k = n;
         memcpy(out, &s_ring[t], k * sizeof(uint32_t));
         if (out_raw) {
             for (uint32_t i = 0; i < k; i++)
-                out_raw[i] = s_ring_raw ? s_ring_raw[t + i] : 0u;
+                out_raw[i] = s_ring_raw ? s_ring_raw[t + i]: 0u;
             out_raw += k;
         }
         __sync_synchronize();
@@ -1391,10 +1267,8 @@ void camera_note_consumed(uint64_t bits, int64_t us)
 }
 
 /* Every reader is read_words() with a count and an optional side array.
- * Forwarders rather than copies of the sequence above: the tail protocol is
- * subtle enough that two hand-kept copies is how one of them ends up a fix
- * behind — which is precisely what happened to the flag ordering the word and
- * raw readers used to share. */
+ * Forwarders rather than copies of the sequence above, so the tail protocol
+ * has one implementation. */
 bool camera_read_word(uint32_t *out)
 {
     return read_words(out, NULL, 1);
@@ -1483,7 +1357,7 @@ void camera_ring_flush(int pairs)
     if (pairs < 1) pairs = 1;
     s_flush_done    = false;
     s_flush_dropped = false;
-    s_flush_discard = 1;          /* [D105] the first pair after the request */
+    s_flush_discard = 1;          /*  the first pair after the request */
     s_flush_pairs   = pairs;      /* last, so the capture task sees a full request */
 }
 
@@ -1516,32 +1390,26 @@ double camera_fps_probe(int frames, int timeout_ms)
 /* ── The sweep ─────────────────────────────────────────────────────────────
  *
  * Exposure ladder, in sensor line units (the integer part of regs
- * 0x3500-0x3502). Geometric, and spanning BOTH sides of the power-on default
- * (16): the premise under test is that more light means more shot noise means a
- * more uniform LSB, and a ladder that only went up could not tell a real
- * response from a plateau. The Task 1 gate asks for exactly that curve — "if
- * bias does not respond to exposure, the premise is wrong and the task stops
- * there" — so the downward rungs are the control, not padding.
+ * 0x3500-0x3502). Geometric, spanning BOTH sides of the power-on default (16),
+ * so the downward rungs are the control, not padding.
  *
  * Capped at 512 lines: past roughly the frame's own line count the sensor
  * stretches the frame instead of just integrating longer, and frame time is
- * what pays for the bit rate. Coarse on purpose — §1.5.1 budgets the whole
- * sweep at about 5 % of a ~10 min loop. */
+ * what pays for the bit rate. */
 static const uint32_t s_cal_ladder[] = { 4, 8, 16, 32, 64, 128, 256, 512 };
 #define CAL_LADDER_N  (sizeof(s_cal_ladder) / sizeof(s_cal_ladder[0]))
-/* IMX219 `[D89]`: same number of rungs, shifted up. Its 1640x1232 mode runs
+/* IMX219: same number of rungs, shifted up. Its 1640x1232 mode runs
  * VTS 1763 lines at 18,9 us per line (33 ms, 30 fps), so exposure up to ~1759
- * lines costs no frame rate — and the node extracts ~4 pairs/s against 15 on
- * offer, so the frame rate is not what limits it anyway. At gain 232 (its
- * maximum, ~10,7x) it needs the long end: 4 and 8 lines read black. */
+ * lines costs no frame rate. At gain 232 (its maximum) it needs the long end:
+ * 4 and 8 lines read black. */
 static const uint32_t s_cal_ladder_imx[] = { 16, 32, 64, 128, 256, 512, 1024, 1600 };
 _Static_assert(sizeof(s_cal_ladder_imx) == sizeof(s_cal_ladder),
                "both ladders split the sweep budget into the same slices");
 
-/* Hard gates, inherited from the original Phase 0 gate these cameras have met
- * before. Quality first; rate is only the tie-break among candidates that pass. */
+/* Hard gates. Quality first; rate is only the tie-break among candidates that
+ * pass. */
 #define CAL_BIAS_TOL        1e-3
-#define CAL_AUTOC_TOL       0.03   /* LSB; 0,01 was the LSB bar (D65) */
+#define CAL_AUTOC_TOL       0.03   /* LSB */
 /* A window has to be long enough that the gate tests the SETTING and not the
  * sampling error of the window: SE(bias) = 0.5/sqrt(bits), so 2 Mbit gives
  * 3.5e-4 against a 1e-3 gate — about 3 sigma of headroom — and the 8 Mbit target
@@ -1551,183 +1419,65 @@ _Static_assert(sizeof(s_cal_ladder_imx) == sizeof(s_cal_ladder),
 #define CAL_MIN_BITS        2000000ULL
 #define CAL_TARGET_BITS     8000000ULL
 #define CAL_MIN_MINIRUNS    200
-/* Over-illumination ceiling — PUBLISH ONLY since 2026-08-28 (D52). Was a hard
- * gate (LIGHT-LEAK floor at 64, then 100). Lit enclosure: high mean_px is the
- * lamp, not a leak [D20]. Measured: exp 64 at mean_px 68,7 was the best rung
- * and failed LIGHT alone; saturation at 118+ already fails SIGMA/AUTOC. The
- * constant stays as a reading aid on /calibrate; cal_gate() no longer ORs it. */
+/* Over-illumination ceiling — PUBLISH ONLY. The constant stays as a reading
+ * aid on /calibrate; cal_gate() no longer ORs it. */
 #define CAL_MAX_MEAN_PX     100.0
-/* ── The DARK end of the ladder (2026-08-19) ──────────────────────────────
- * CAL_MAX_MEAN_PX has had a partner missing since the enclosure was lit. The
- * premise of this instrument is that photons do the whitening (§1.13),
- * and the bottom rungs of the ladder do not have any: at exposure 4 the frame
- * sits at mean_px 3,1-3,3 and 14,5-17,4 % of pixel differences come back
- * exactly ZERO, against 6,9 % at exposure 128. A zero difference has a
- * deterministic LSB, so those rungs are not a dimmer version of the same
- * source, they are a partly frozen one.
+/* ── The DARK end of the ladder ────────────────────────────────────────────
+ * The bottom rungs have too little light: pixel differences come back exactly
+ * ZERO, and a zero difference has a deterministic LSB, so those rungs are a
+ * partly frozen source, not a dimmer one.
  *
- * Measured on the 2026-08-19 four-node session, per-block offset by the rung
- * the sweep chose for that block:
- *
- *     exp     4       8      16      32      64     128
- *     off  -1,864  -0,781  -0,051  +0,093  -0,074  -0,039
- *
- * exp <= 8: -1,106 over 10 node-blocks (SE 0,267) against -0,030 over 106
- * (SE 0,032), t = -4,0. Five of the master's six |mean| > 1,2 blocks sat on
- * exposure 4 or 8, which is what put it soft-down for half that session.
- *
- * Both gates are cut BELOW the lowest rung that behaves (16: mean_px 5,3-5,4,
- * zero_diff 0,114-0,120) and above the highest that does not (8: 3,8-4,0 and
- * 0,130-0,151), and they are deliberately redundant -- mean_px is the physical
- * quantity, zero_diff is the mechanism, and a rung has to clear both. If the
- * lamp is ever dimmed these will start rejecting rungs that used to pass, which
- * is the correct behaviour and not a regression: the answer is light, not a
- * lower floor. */
+ * Both gates are cut below the lowest rung that behaves and above the highest
+ * that does not, and they are deliberately redundant -- mean_px is the
+ * physical quantity, zero_diff is the mechanism, and a rung has to clear both.
+ * If the lamp is ever dimmed these will start rejecting rungs that used to
+ * pass, which is the correct behaviour and not a regression: the answer is
+ * light, not a lower floor. */
 #define CAL_MIN_MEAN_PX       5.0
 #define CAL_MAX_ZERO_DIFF     0.125
-/* ── What the bias gate is actually protecting (2026-08-19) ───────────────
- * CAL_BIAS_TOL is a bar on the wrong quantity. A run of `nseg` 200-bit segments
- * turns a bias b into a per-run z offset of
- *
- *     (b - 0,5) * GCP_SEGMENT_BITS * sqrt(nseg) / GCP_SEGMENT_SD
- *
- * = (b - 0,5) * 28,28 * sqrt(nseg). At the 52174 segments of a run=2 session
- * the 1e-3 constant therefore admits an offset of 6,5, and at run=5's 130435 it
- * admits 10,2 -- against a NODE_MEAN_SOFT of 1,5. The sweep was certifying
- * exactly the rungs the node-health gate then tripped on, and the same physical
- * camera passed or failed depending on ?run=.
- *
- * So the bar is stated as a z offset and converted with the segment count the
+/* ── What the bias gate is actually protecting ─────────────────────────────
+ * A bias b turns into a per-run z offset proportional to sqrt(nseg), so the
+ * bar is stated as a z offset and converted with the segment count the
  * session will run (camera_cal_set_z_scale). Two limits keep it honest:
  *
- *  - never TIGHTER than CAL_BIAS_SE_K sigma of the window's OWN sampling error.
- *    SE(bias) = 0,5/sqrt(bits), which at the 4,8 Mbit a 10 s budget buys per
- *    rung is 2,3e-4 -- an implied z offset of +-1,5 at run=2. A gate below its
- *    own noise floor rejects at random, and a 1,0-z bar would be one. ⚠ This
- *    means the bias gate is NOISE-LIMITED, not tight: it cannot resolve the
- *    health bar it feeds. That is a property of the 10 s budget, and the way to
- *    change it is more bits per rung, not a smaller number here.
+ *  - never TIGHTER than CAL_BIAS_SE_K sigma of the window's OWN sampling
+ *    error (SE(bias) = 0,5/sqrt(bits)): a gate below its own noise floor
+ *    rejects at random. ⚠ The bias gate is NOISE-LIMITED, not tight: the way
+ *    to change that is more bits per rung, not a smaller number here.
  *  - never LOOSER than CAL_BIAS_TOL, so this can only ever tighten the gate.
  *
  * Both limits are reported per step, so a sweep says which one bound it. */
 #define CAL_MAX_Z_OFFSET      1.0
 #define CAL_BIAS_SE_K         3.0
-/* ── The bias gate moves BEFORE adjacent-pixel XOR (2026-08-27) ─────────────────────
- * ⚠ READ THIS BLOCK AND THE TWO BELOW IT HISTORICALLY. D65 deleted the XOR
- * altogether, so "raw / before XOR" is simply THE stream today and "after
- * XOR" is the pre-D65 comparison arm. The conclusions are still the live
- * rules — selection on |raw_bias-0,5|, never a gate; a RELATIVE sigma bar —
- * and they are why the gates survived D65 unchanged.
- * Everything above this block is still true and is the reason the gate had to
- * move: the bar is noise-limited, it cannot resolve the health bar it feeds.
- * What the 2026-08-27 session showed is that it is worse than noise-limited —
- * measured on the LSB stream there is nothing left to resolve.
- *
- * Adjacent-pixel XOR maps a raw bias e to ~2e^2 (see gcp_zscore_pre). The master's
- * ladder that day, as distance from 0,5 in units of 1e-3:
- *
- *     exp        4      8     16     32     64    128    256    512
- *     raw     11,7    8,4    5,4    2,4    0,5    5,5   10,3   26,8
- *       ...          0,03   0,21   0,04
- *
- * Squaring 5,4e-3 gives 5,9e-5, and the window's own SE(bias) is 2,3e-4. The
- * pushes every certified rung four times below the noise floor of the
- * measurement, so |bias-0,5| after it is a coin toss: the sweep picked
- * exposure 16 over 64 by 6e-6, a fortieth of its own standard error, and the
- * two rungs then differed by a factor of TEN in the offset they actually
- * produced (-0,64 against -0,06 z per run over 50 blocks).
- *
- * The raw column is the same physical quantity BEFORE adjacent-pixel XOR squashes it: a
- * clean U with one minimum, ~20x its own noise between neighbouring rungs, and
- * it orders the rungs exactly as their measured offsets do. It is also the
- * monobit test, i.e. the first-order term of the entropy deficit — the
- * quantity this instrument is trying to maximise in the first place.
- *
- * So both the SELECTION and the GATE run on raw_bias, and the LSB bias is
- * kept as a published diagnostic only.
- *
- * ⚠ The old bar CANNOT be carried over. CAL_MAX_Z_OFFSET converts through
- * gcp_z_per_bias, which is the LSB coupling; applied to a raw bias it would
- * reject the entire ladder including the best rung. The bar below is set the
- * way CAL_MIN_MEAN_PX and CAL_MAX_ZERO_DIFF were — cut between the lowest rung
- * that behaves and the highest that does not, on measured evidence:
- *
- *   behaves : exp 16/32/64, raw distance 5,4 / 2,4 / 0,5 e-3
- *   does not: exp 8 at 8,4e-3 (and it already fails DARK), 128 at 5,5e-3
- *             (and it already fails SIGMA at 1,208)
- *
- * ⛔ There is NO absolute bar on the raw bias, and the attempt to set one is
- * why this paragraph exists. A 6,0e-3 bar was fitted to the ladder above and
- * failed on the very next sweep 25 minutes later: every node's raw distance
- * had roughly TRIPLED — master exp 64 from 1,13e-3 to 3,42e-3, .155's best
- * rung from 1,94e-3 to 7,63e-3 — and .155 came back with CAM_CAL_FAIL_BIAS on
- * all nine rungs, i.e. CERTIFIED-EMPTY while its camera was fine.
- *
- * The raw bias is NON-STATIONARY on the timescale of a session. This file
- * already records that for the LSB-as-is case further down ("+8,4e-4 at
- * calibration to -1,3e-3 during the baseline minutes later"); it holds with the
- * on too, and it was a large part of why the adjacent-pixel XOR existed at all.
- *
- * What survives is that the raw bias is an excellent RELATIVE key: across two
- * sweeps 25 minutes apart it ordered each node's ladder the same way both
- * times, even as the level moved under it — master 64 best on both, .145 32/64
- * best on both. So it SELECTS and it does not GATE. A relative key cannot
- * certify a node empty, which is precisely the failure an absolute bar walked
- * into.
- *
- * The LSB bias bar stays the gate: toothless, as the paragraph above says,
- * but bounded, and it cannot blank a node. */
-/* Standard errors of the CHALLENGER's own bias measurement that it must beat
- * the incumbent by before the rung is changed. 3 is the same "outside its own
- * noise" convention CAL_BIAS_SE_K uses, and on the master's ladder it is worth
- * about 5e-4 in raw-bias units — wide enough to stop the 16-vs-64 coin toss
- * (6e-6 apart), narrow enough that the genuine 5e-3 spread across the ladder
- * still moves the rung when the light really changes.
+/* ── Bias selection ────────────────────────────────────────────────────────
+ * Selection is on |raw_bias−0,5|, never a gate.
+ * ⛔ There is NO absolute bar on the raw bias: it is NON-STATIONARY on the
+ * timescale of a session, so an absolute bar certified a healthy node empty.
+ * What is stable is its SHAPE across the ladder, so it SELECTS and it does not
+ * GATE.
+ * The LSB bias bar stays the gate: toothless but bounded, and it cannot blank
+ * a node. */
+/* Standard errors of the CHALLENGER's own measurement that it must beat the
+ * incumbent by before the rung is changed. 3 is the same "outside its own
+ * noise" convention CAL_BIAS_SE_K uses.
  * ⚠ Raising this makes the array slower to follow a lamp that is actually
  * drifting, which is the failure mode on the other side. */
 #define CAL_KEEP_MARGIN_K     3.0
-/* ── The dispersion gate moves BEFORE adjacent-pixel XOR too (2026-08-27) ───────────
- * Same disease as the bias gate, found in the same sweep. The old |σ−1| ≤ 0,05
- * gate read the mini-run sigma, and adjacent-pixel XOR pulls dispersion in as it
- * pulls bias in. Rungs that gate CERTIFIED, with their raw figure beside it:
+/* ── The dispersion gate ────────────────────────────────────────────────────
+ * ⛔ RELATIVE, not absolute: the raw dispersion moves with the front end's
+ * operating point, so only its SHAPE across the ladder is stable, and an
+ * absolute bar would blank a healthy node.
  *
- *     .155 exp 256   raw 1,3405   1,0202
- *     .145 exp  64   raw 1,2964   0,9741
+ * The bar is CAL_RAW_SIGMA_K times the lowest raw_sigma among the rungs that
+ * cleared every other gate — the node's own best front end, this sweep. It
+ * travels with the level and, by construction, can never reject the rung it is
+ * computed from: certifying-empty is impossible.
  *
- * A front end dispersed by a third reads clean after adjacent-pixel XOR. That matters
- * more than it used to: the LSB z is a scored channel (D45), it is what
- * `?wpre=` weights, and its sigma IS this number.
- *
- * ⛔ RELATIVE, not absolute, and for the same reason the raw bias does not
- * gate at all. An absolute 1,20 bar was fitted to one sweep; on the next one
- * 25 minutes later .103 read raw_sigma 1,24-1,37 across its ENTIRE certified
- * ladder — 1,00 to 1,08 on the sweep before, same node, same rungs, nothing
- * touched. The bar would have blanked it. The raw dispersion moves with the
- * front end's operating point, so only its SHAPE across the ladder is stable.
- *
- * So the bar is CAL_RAW_SIGMA_K times the lowest raw_sigma among the rungs
- * that cleared every other gate — the node's own best front end, this sweep.
- * It travels with the level and, by construction, can never reject the rung it
- * is computed from: certifying-empty is impossible.
- *
- * ⚠ ONE-SIDED. A two-sided |σ−1| bar treated under-dispersed and
- * over-dispersed streams the same. The raw stream is not
- * symmetric: every physical failure here — clumped zeros at the dark end,
- * correlated structure at the bright one — inflates it.
- *
- * K = 1,35 against both measured sweeps: it rejects .103 exp 64 (2,40 against
- * a 1,24 best), .145 exp 128 (1,45 against 1,02), master exp 128 (1,49 against
- * 1,04) and every rung above them, and it rejects nothing any node chose.
- * ⚠ Honestly stated: on these two sweeps it rejects nothing the sigma
- * gate did not already reject, so its value then was prospective — the gate
- * that would see a front end degrading while the XOR still hid it. Since D65
- * nothing hides it any more, and this bar is simply the sigma gate on the one
- * stream there is. It does NOT catch the two rungs that motivated it (.155/256 at 1,31 against a
- * 1,05 best is a ratio of 1,25, inside K). Tightening K to catch them would
- * put the bar under the drift measured above. That is the trade, and it is
- * made in favour of never blanking a node.
- * ⚠ Since D65 this is the ONLY dispersion gate: there is one stream, and the
- * |σ−1| ≤ 0,05 bar that used to sit beside it is gone with the other one. */
+ * ⚠ ONE-SIDED. A two-sided |σ−1| bar treats under-dispersed and
+ * over-dispersed streams the same. The raw stream is not symmetric: every
+ * physical failure — clumped zeros at the dark end, correlated structure at
+ * the bright one — inflates it.
+ * ⚠ This is the ONLY dispersion gate: there is one stream. */
 #define CAL_RAW_SIGMA_K       1.35
 /* Frame pairs discarded before a window opens. Up to CAM_BUF_COUNT/2 pairs
  * already captured under the OLD setting can be sitting in the driver's queue,
@@ -1736,28 +1486,23 @@ _Static_assert(sizeof(s_cal_ladder_imx) == sizeof(s_cal_ladder),
  * than written out, because raising one and forgetting the other would let a
  * candidate be scored on its predecessor's frames. */
 #define CAL_SETTLE_PAIRS    (CAM_BUF_COUNT / 2 + 2)
-/* Between two rungs of the sweep: 4 more pairs on top (~0,22 s at 36 fps),
- * as margin for the sensor to apply the new exposure before the rung is scored
- * `[D87]`. Costs rung measuring time — the step deadline is fixed — so at the
- * 10 s default each rung scores ~0,7 s instead of ~0,9 s. Not the ~1 min drift
- * after a rung change: that moves the bias, not the dispersion the sweep
+/* Between two rungs of the sweep: 4 more pairs on top, as margin for the
+ * sensor to apply the new exposure before the rung is scored. The ~1 min
+ * drift after a rung change moves the bias, not the dispersion the sweep
  * selects on, and is handled by the settle pause after the sweep. */
 #define CAL_STEP_SETTLE_PAIRS (CAL_SETTLE_PAIRS + 4)
 #define CAL_SETTLE_TIMEOUT_MS 4000
 
-/* z per unit of bias for the session's run length; 0 = legacy fixed bar. */
+/* z per unit of bias for the session's run length; 0 = fixed bar. */
 static double s_cal_z_scale = 0.0;
 
 void camera_cal_set_z_scale(double z_per_bias)
 {
-    s_cal_z_scale = (z_per_bias > 0.0) ? z_per_bias : 0.0;
+    s_cal_z_scale = (z_per_bias > 0.0) ? z_per_bias: 0.0;
 }
 
-/* The LSB bias bar for ONE window. Publish/audit only since 2026-08-28
- * (D52) — cal_gate() no longer fails on it. It was noise-limited even with the
- * XOR on, every certified rung sitting near the window's own SE [D19][D46];
- * selection is |raw_bias−0,5|. Kept so /calibrate and old sweep CSVs stay
- * comparable. */
+/* The LSB bias bar for ONE window. Publish/audit only — cal_gate() no longer
+ * fails on it; selection is |raw_bias−0,5|. */
 static double cal_bias_bar(uint64_t bits)
 {
     if (s_cal_z_scale <= 0.0 || bits == 0) return CAL_BIAS_TOL;
@@ -1769,23 +1514,13 @@ static double cal_bias_bar(uint64_t bits)
 }
 
 /* ── The selection key and its noise ──────────────────────────────────────
- * ⛔ The key is the STREAM DISPERSION `raw_sigma`, not the bias `[D83]`. Lower
- * is a better rung. The bias is still measured, published per rung and in
- * `/loops`, and it still gates nothing — it is simply not what the rung is
- * chosen on any more.
- *
- * Why: `center_block()` subtracts each node's per-block mean, so the bias costs
- * the measurement nothing — that is the same argument by which the gain ladder
- * was rejected `[D74]`. Dispersion costs everything: `rank_key()` divides by
- * the block σ, soft-down trips on it, and the combined σ is what sets how much
- * measuring time buys how much evidence. Selecting on the harmless quantity
- * while merely gating the harmful one optimised the wrong thing.
+ * ⛔ The key is the STREAM DISPERSION `raw_sigma`, not the bias. Lower is a
+ * better rung. The bias is still measured, published per rung and in `/loops`,
+ * and it still gates nothing.
  *
  * cal_key_se() is that key's own standard error. For a sample σ over m
  * mini-runs it is σ/sqrt(2(m−1)) — so the hysteresis margin scales with the
- * measurement, exactly as it did for the bias, and a longer sweep window makes
- * the rule pickier by itself. Worked: σ 1,111 over 2000 mini-runs gives
- * SE 0,0176, so CAL_KEEP_MARGIN_K 3 asks a challenger to be 0,053 narrower.
+ * measurement, and a longer sweep window makes the rule pickier by itself.
  *
  * ⚠ What this trades away, and how it would show: a rung with a larger bias
  * carries a larger per-block offset for the centring to remove, and if that
@@ -1794,14 +1529,14 @@ static double cal_bias_bar(uint64_t bits)
  * work this reasoning does not credit it with — replay against `/loops`. */
 static double cal_key(const camera_cal_step_t *s)
 {
-    return (s->raw_bits > 0 && s->raw_sigma > 0.0) ? s->raw_sigma : s->sigma;
+    return (s->raw_bits > 0 && s->raw_sigma > 0.0) ? s->raw_sigma: s->sigma;
 }
 
 static double cal_key_se(const camera_cal_step_t *s)
 {
     double k = cal_key(s);
     int    m = s->minirun_n;
-    if (!(k > 0.0) || m < 2) return k > 0.0 ? k : 1.0;   /* unmeasurable: never decisive */
+    if (!(k > 0.0) || m < 2) return k > 0.0 ? k: 1.0;   /* unmeasurable: never decisive */
     return k / sqrt(2.0 * (double)(m - 1));
 }
 
@@ -1809,19 +1544,19 @@ static uint32_t cal_gate(const camera_cal_step_t *s)
 {
     uint32_t f = 0;
     if (s->bits < CAL_MIN_BITS || s->minirun_n < CAL_MIN_MINIRUNS) f |= CAM_CAL_FAIL_BITS;
-    /* ⛔ The bias gates nothing and selects nothing `[D52]``[D83]`. σ selects;
+    /* ⛔ The bias gates nothing and selects nothing. σ selects;
      * autocorr / dark / zero_diff / stuck / bits reject. cal_bias_bar() and
      * CAL_MAX_MEAN_PX are computed for /calibrate readability only. */
     if (s->autocorr_max >= CAL_AUTOC_TOL)       f |= CAM_CAL_FAIL_AUTOC;
-    /* |σ−1|≤0,05 was the LSB gate (D65). LSB σ is not ~1; RSIG is
-     * the dispersion gate, relative to this ladder's own best. */
+    /* LSB σ is not ~1; RSIG is the dispersion gate, relative to this
+     * ladder's own best. */
     if (s->stuck_frames != 0)                   f |= CAM_CAL_FAIL_STUCK;
     /* The dark end. Both, and only when the window actually measured something:
      * a candidate that never got frames already fails BITS, and adding DARK to
      * it would report a light level that was never sampled. */
     if (s->bits >= CAL_MIN_BITS) {
         if (cam_dark()) {
-            /* Dark operation `[D90]`: light is the fault, not its absence. */
+            /* Dark operation: light is the fault, not its absence. */
             if (s->mean_pixel_level > CAL_DARK_MAX_PX) f |= CAM_CAL_FAIL_LEAK;
         } else {
             if (s->mean_pixel_level < CAL_MIN_MEAN_PX) f |= CAM_CAL_FAIL_DARK;
@@ -1905,7 +1640,7 @@ static bool cal_step(camera_cal_step_t *st, uint32_t exposure, uint32_t gain,
              (st->bias - 0.5) * s_cal_z_scale,
              st->sigma, st->autocorr_max,
              st->mean_pixel_level, st->zero_diff_frac, st->mbit_per_sec,
-             st->bits / 1e6, st->fail ? "FAIL " : "pass ", (unsigned)st->fail);
+             st->bits / 1e6, st->fail ? "FAIL ": "pass ", (unsigned)st->fail);
     return true;
 }
 
@@ -1917,7 +1652,7 @@ bool camera_calibrate(int budget_ms, bool (*abort_cb)(void), camera_cal_t *out)
     out->z_scale = s_cal_z_scale;   // what the bias gate was scaled to, for the record
     if (s_fd < 0 || !camera_is_ready()) return false;
 
-    /* Runs arm ON for the sweep only (D46). Disarmed again on the way out. */
+    /* Runs arm ON for the sweep only. Disarmed again on the way out. */
     s_raw_runs_on = true;
 
     int64_t t0 = esp_timer_get_time();
@@ -1929,24 +1664,22 @@ bool camera_calibrate(int budget_ms, bool (*abort_cb)(void), camera_cal_t *out)
     camera_get_exposure(&e0, &g0);
 
     if (budget_ms < 2000) budget_ms = 2000;
-    // Steps: the entry setting, then the ladder. No XOR trial — see below.
-    /* Dark operation measures one rung after the entry setting `[D90]`. */
+    // Steps: the entry setting, then the ladder.
+    /* Dark operation measures one rung after the entry setting. */
     static const uint32_t dark_ladder[] = { IMX_DARK_EXPOSURE };
     const uint32_t *ladder = cam_dark() ? dark_ladder
-                           : (s_sensor_pid == CAM_PID_IMX219) ? s_cal_ladder_imx : s_cal_ladder;
-    int ladder_n = cam_dark() ? 1 : (int)CAL_LADDER_N;
+: (s_sensor_pid == CAM_PID_IMX219) ? s_cal_ladder_imx: s_cal_ladder;
+    int ladder_n = cam_dark() ? 1: (int)CAL_LADDER_N;
     int planned = 1 + ladder_n;
     if (planned > CAM_CAL_MAX_STEPS) planned = CAM_CAL_MAX_STEPS;
     int64_t slice_us = (int64_t)budget_ms * 1000 / planned;
 
     int n = 0;
-    /* Step 0 re-measures the setting already in force, WITHOUT changing it.
-     * Two things fall out of one slice. Against the same exposure appearing
-     * later in the ladder it is the reset proof the Task 1 gate asks for — two
-     * consecutive windows at the same setting must agree within sampling error.
-     * And from loop 2 onward the entry setting is the previous loop's winner, so
-     * this rung measures drift at a FIXED operating point, which is the only way
-     * to tell a genuinely moving optimum from a noisy sweep. */
+    /* Step 0 re-measures the setting already in force, WITHOUT changing it:
+     * two consecutive windows at the same setting must agree within sampling
+     * error, and from loop 2 onward this rung measures drift at a FIXED
+     * operating point — the only way to tell a genuinely moving optimum from a
+     * noisy sweep. */
     if (!cal_step(&out->step[n], e0, g0, t0 + slice_us, abort_cb)) goto aborted;
     n++;
 
@@ -1985,7 +1718,7 @@ bool camera_calibrate(int budget_ms, bool (*abort_cb)(void), camera_cal_t *out)
 
     /* ── Selection ────────────────────────────────────────────────────────
      * Only rungs with fail == 0 are eligible; among them the LOWEST
-     * `raw_sigma` wins `[D83]`. See cal_key() above for why dispersion and not
+     * `raw_sigma` wins. See cal_key() above for why dispersion and not
      * the bias.
      *
      * The incumbent rung is KEPT unless a challenger beats it by
@@ -2046,10 +1779,10 @@ bool camera_calibrate(int budget_ms, bool (*abort_cb)(void), camera_cal_t *out)
 
     /* Dark operation stays on its rung even uncertified: the fallback to the
      * entry setting exists to keep a working LIT rung, and in the dark there is
-     * no other rung to keep `[D90]`. The failure is reported, not hidden. */
+     * no other rung to keep. The failure is reported, not hidden. */
     uint32_t use_e   = (pick >= 0) ? out->step[pick].exposure
-                     : cam_dark()  ? IMX_DARK_EXPOSURE : e0;
-    uint32_t use_g   = (pick >= 0) ? out->step[pick].gain     : g0;
+: cam_dark()  ? IMX_DARK_EXPOSURE: e0;
+    uint32_t use_g   = (pick >= 0) ? out->step[pick].gain: g0;
 
     bool applied = camera_set_exposure(use_e, use_g);
     if (!applied && pick >= 0) {
@@ -2070,12 +1803,9 @@ bool camera_calibrate(int budget_ms, bool (*abort_cb)(void), camera_cal_t *out)
 
     /* Report the measurements of the setting the camera is ACTUALLY on, whether
      * or not a gate certified it. When nothing passed we revert to the entry
-     * setting, and step 0 measured exactly that — so its numbers are the honest
-     * answer. Leaving the fields zeroed (as this first did) put `bias 0.000000`
-     * into the /loops table, which reads like a catastrophic bias rather than
-     * "not certified": a node that kept a perfectly good previous setting looked
-     * broken. `ok` is what says certified or not; these are just what was seen. */
-    int rep = (pick >= 0) ? pick : 0;
+     * setting, and step 0 measured exactly that. `ok` is what says certified or
+     * not; these are just what was seen. */
+    int rep = (pick >= 0) ? pick: 0;
     if (rep < n && out->step[rep].bits >= CAL_MIN_BITS) {
         out->bias             = out->step[rep].bias;
         out->sigma            = out->step[rep].sigma;
@@ -2087,7 +1817,7 @@ bool camera_calibrate(int budget_ms, bool (*abort_cb)(void), camera_cal_t *out)
         out->raw_runs_z       = out->step[rep].raw_runs_z;
     }
 
-    s_raw_runs_on = false;   /* measurement does not rank runs (D55) */
+    s_raw_runs_on = false;   /* measurement does not rank runs  */
 
     /* Open a clean window on the setting the session will actually run, so the
      * per-loop bias/rate in /status and /loops describe THIS loop's operating
@@ -2102,13 +1832,13 @@ bool camera_calibrate(int budget_ms, bool (*abort_cb)(void), camera_cal_t *out)
 
     out->elapsed_ms = (uint32_t)((esp_timer_get_time() - t0) / 1000);
     ESP_LOGI(TAG_CAM, "cal: %s exposure=%lu gain=%lu (%d/%d passed, %lu ms)",
-             out->ok ? "chose" : "NO gated setting -- kept",
+             out->ok ? "chose": "NO gated setting -- kept",
              (unsigned long)use_e, (unsigned long)use_g,
-             pick >= 0 ? 1 : 0, n, (unsigned long)out->elapsed_ms);
+             pick >= 0 ? 1: 0, n, (unsigned long)out->elapsed_ms);
     return out->ok;
 
 aborted:
-    s_raw_runs_on = false;  /* measurement does not rank runs (D55) */
+    s_raw_runs_on = false;  /* measurement does not rank runs  */
     out->nsteps = n;
     camera_set_exposure(e0, g0);
     // Re-arm rather than clear: nobody waits for it now, but the ring still holds
@@ -2135,9 +1865,8 @@ void camera_get_stats(camera_stats_t *out)
 
 /* ── GET /calibrate payload, shared by master and slave ─────────────────
  *
- * Moved here from the master's handler so both firmwares emit the same shape.
  * Takes void* rather than httpd_req_t* to keep esp_http_server out of this
- * component's public header — the .c includes it, callers pass their request
+ * component's public header — the.c includes it, callers pass their request
  * straight through.
  *
  * Chunked on purpose: 12 steps of ~200 bytes overflows any sane stack buffer,
@@ -2163,11 +1892,11 @@ esp_err_t camera_cal_send_json(void *httpd_req, const camera_cal_t *c)
         "\"raw_bias\":%.6f,\"raw_sigma\":%.4f,\"raw_runs_z\":%.2f,"
         "\"kept\":%s,"
         "\"autocorr\":%.4f,\"mean_px\":%.2f,\"ms\":%lu,\"steps\":[",
-        c->ok ? "true" : "false", c->chosen,
+        c->ok ? "true": "false", c->chosen,
         (unsigned long)c->exposure, (unsigned long)c->gain,
         c->bias, c->sigma, c->mbit_per_sec,
         c->raw_bias, c->raw_sigma, c->raw_runs_z,
-        c->kept ? "true" : "false",
+        c->kept ? "true": "false",
         c->autocorr_max, c->mean_pixel_level, (unsigned long)c->elapsed_ms);
     httpd_resp_send_chunk(req, buf, len);
 
@@ -2180,14 +1909,14 @@ esp_err_t camera_cal_send_json(void *httpd_req, const camera_cal_t *c)
             "\"miniruns\":%d,\"bias\":%.6f,\"sigma\":%.4f,\"mbit_s\":%.3f,"
             "\"autocorr\":%.4f,\"mean_px\":%.2f,\"zero_diff\":%.4f,"
             "\"stuck\":%lu,\"fail\":%lu,\"pass\":%s}",
-            i ? "," : "", (unsigned long)s->exposure, (unsigned long)s->gain,
+            i ? ",": "", (unsigned long)s->exposure, (unsigned long)s->gain,
             (unsigned long long)s->bits,
             s->raw_bias, s->raw_sigma, s->raw_runs_z,
             (unsigned long long)s->raw_bits, cal_key(s), s->minirun_n,
             s->bias, s->sigma, s->mbit_per_sec, s->autocorr_max,
             s->mean_pixel_level, s->zero_diff_frac,
             (unsigned long)s->stuck_frames, (unsigned long)s->fail,
-            s->fail ? "false" : "true");
+            s->fail ? "false": "true");
         httpd_resp_send_chunk(req, buf, len);
     }
     httpd_resp_send_chunk(req, "]}", 2);
@@ -2252,19 +1981,19 @@ esp_err_t camera_expose_handle(void *httpd_req, bool busy)
     camera_get_exposure(&got_e, &got_g);
     snprintf(buf, sizeof(buf),
         "{\"ok\":%s,\"exposure\":%lu,\"gain\":%lu,\"asked\":%lu}",
-        applied ? "true" : "false",
+        applied ? "true": "false",
         (unsigned long)got_e, (unsigned long)got_g, (unsigned long)want_e);
     if (!applied) httpd_resp_set_status(req, "500 Internal Server Error");
     httpd_resp_sendstr(req, buf);
     ESP_LOGI(TAG_CAM, "expose: set exposure=%lu gain=%lu -> read back %lu/%lu %s",
              (unsigned long)want_e, (unsigned long)want_g,
              (unsigned long)got_e, (unsigned long)got_g,
-             applied ? "" : "(DID NOT LATCH)");
+             applied ? "": "(DID NOT LATCH)");
     return ESP_OK;
 }
 
 /* GET /camtest?dump=<offset> — what the frame buffer actually holds, for a
- * sensor whose byte layout is in question (IMX219 RAW10 `[D89]`). Copies
+ * sensor whose byte layout is in question (IMX219 RAW10). Copies
  * CAM_DUMP_N bytes of both frames of one pair and scores them under the two
  * layouts a 10-bit sample can arrive in:
  *   packed — MIPI RAW10, 4 pixels in 5 bytes, byte 4 carries the 2-bit LSBs
@@ -2334,7 +2063,7 @@ static esp_err_t cam_dump_send(httpd_req_t *req, uint32_t off)
         (char)(s_fourcc & 0xFF), (char)((s_fourcc >> 8) & 0xFF),
         (char)((s_fourcc >> 16) & 0xFF), (char)((s_fourcc >> 24) & 0xFF),
         (unsigned long)s_frame_w, (unsigned long)s_frame_h, (unsigned long)s_frame_size,
-        s_packed_raw10 ? "true" : "false", (unsigned long)s_buf_len[0],
+        s_packed_raw10 ? "true": "false", (unsigned long)s_buf_len[0],
         (unsigned long)off, CAM_DUMP_N,
         p_sum / p_n, (double)p_zero / p_n, (double)p_one / p_n,
         u_sum / u_n, (double)u_zero / u_n, (double)u_one / u_n, (double)u_big / u_n,
@@ -2381,14 +2110,13 @@ esp_err_t camera_selftest_handle(void *httpd_req, bool busy)
         return ESP_OK;
     }
     /* ns_* are nanoseconds per PIXEL; cyc_* the same at the configured CPU
-     * clock, which is the number that compares against "an XOR and a shift". */
+     * clock. */
     double mhz = (double)CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ;
     snprintf(buf, sizeof(buf),
         "{\"equal\":%s,\"cases\":%d,\"failed_case\":%d,\"words\":%lu,"
         "\"ns_read\":%.3f,\"ns_ref\":%.3f,\"ns_fast\":%.3f,\"ns_stats\":%.3f,"
         /* ns_raw is the word-wise path WITH the LSB monitor, against
-         * ns_fast without it -- the price of D43's front-end diagnostics,
-         * measured rather than assumed. */
+         * ns_fast without it. */
         "\"ns_raw\":%.3f,"
         "\"cyc_read\":%.1f,\"cyc_ref\":%.1f,\"cyc_fast\":%.1f,\"cyc_stats\":%.1f,"
         "\"speedup\":%.2f,\"cpu_mhz\":%d,\"bench_bytes\":%lu,"
@@ -2397,22 +2125,22 @@ esp_err_t camera_selftest_handle(void *httpd_req, bool busy)
         "\"popcount_ok\":%s,\"popcount_n\":%lu,\"popcount_bad\":\"%08lx\","
         "\"what\":%d,\"bad_at\":%lu,\"ref_w\":\"%08lx\",\"fast_w\":\"%08lx\","
         "\"ref_z\":%lu,\"fast_z\":%lu,"
-        /* The RAW10 pair `[D93]`, per BYTE. `equal` above stays the RAW8
+        /* The RAW10 pair, per BYTE. `equal` above stays the RAW8
          * verdict; an IMX219 node runs these. */
         "\"r10_equal\":%s,\"r10_cases\":%d,\"r10_failed_case\":%d,\"r10_what\":%d,"
         "\"r10_bad_at\":%lu,\"r10_ref_w\":\"%08lx\",\"r10_fast_w\":\"%08lx\","
         "\"ns10_ref\":%.3f,\"ns10_fast\":%.3f,\"ns10_stats\":%.3f,"
         "\"ms_pair_r10_ref\":%.1f,\"ms_pair_r10_fast\":%.1f,\"ms_pair_r10_stats\":%.1f,"
         "\"ms_pair_read\":%.1f,"
-        /* Cache autoload experiment `[D95]`: [L2, L1, both]. */
+        /* Cache autoload experiment: [L2, L1, both]. */
         "\"al_l1_ctrl\":\"%08lx\",\"al_l2_ctrl\":\"%08lx\","
         "\"ns_read_al\":[%.3f,%.3f,%.3f],\"ns10_fast_al\":[%.3f,%.3f,%.3f],"
         "\"ms_pair_r10_fast_al\":[%.1f,%.1f,%.1f]}",
-        t.equal ? "true" : "false", t.cases, t.failed_case, (unsigned long)t.words,
+        t.equal ? "true": "false", t.cases, t.failed_case, (unsigned long)t.words,
         t.ns_read, t.ns_ref, t.ns_fast, t.ns_stats, t.ns_raw,
         t.ns_read * mhz / 1000.0, t.ns_ref * mhz / 1000.0,
         t.ns_fast * mhz / 1000.0, t.ns_stats * mhz / 1000.0,
-        t.ns_stats > 0.0f ? t.ns_ref / t.ns_stats : 0.0, (int)mhz,
+        t.ns_stats > 0.0f ? t.ns_ref / t.ns_stats: 0.0, (int)mhz,
         (unsigned long)t.bench_bytes, (unsigned long)s_frame_size,
         /* What the benchmark says one live pair of extraction+statistics should
          * cost. Held next to /diagjson's measured ms_extract, this is the whole
@@ -2421,13 +2149,13 @@ esp_err_t camera_selftest_handle(void *httpd_req, bool busy)
         /* The sensor's own cadence with the CPU idle, and what one PAIR would
          * cost at it. If ms_pair_raw is close to the live ms_pair, the sensor
          * is the wall and no amount of faster extraction moves the bit rate. */
-        fps_raw, fps_raw > 0.0 ? 2000.0 / fps_raw : 0.0,
-        t.popcount_ok ? "true" : "false", (unsigned long)t.popcount_n,
+        fps_raw, fps_raw > 0.0 ? 2000.0 / fps_raw: 0.0,
+        t.popcount_ok ? "true": "false", (unsigned long)t.popcount_n,
         (unsigned long)t.popcount_bad,
         t.what, (unsigned long)t.bad_at,
         (unsigned long)t.ref_w, (unsigned long)t.fast_w,
         (unsigned long)t.ref_z, (unsigned long)t.fast_z,
-        t.r10_equal ? "true" : "false", t.r10_cases, t.r10_failed_case, t.r10_what,
+        t.r10_equal ? "true": "false", t.r10_cases, t.r10_failed_case, t.r10_what,
         (unsigned long)t.r10_bad_at, (unsigned long)t.r10_ref_w,
         (unsigned long)t.r10_fast_w,
         t.ns10_ref, t.ns10_fast, t.ns10_stats,
@@ -2446,7 +2174,7 @@ esp_err_t camera_selftest_handle(void *httpd_req, bool busy)
     return ESP_OK;
 }
 
-/* ── The per-window log (D64) ──────────────────────────────────────────
+/* ── The per-window log  ──────────────────────────────────────────
  *
  * See camera.h for why this is here rather than on the master. The ring itself
  * is internal RAM, not PSRAM: 512 * 56 B = 28 KB, and it is written from the
@@ -2458,14 +2186,14 @@ typedef struct {
     uint32_t t_ms;        /* node uptime when the window was pushed */
     uint32_t tag;         /* caller's label; 0 = no item (a scoring run) */
     uint32_t ses;         /* session ordinal at the push; see new_session */
-    float    wsig;        /* per-window sigma -- the D62 number */
+    float    wsig;        /* per-window sigma */
     int32_t  wn;          /* mini-runs behind wsig; 0 = below WIN_SIGMA_MIN_N */
     float    rsig, rbias; /* LSB sigma/bias, cumulative since the sweep */
     float    sig, bias;   /* likewise cumulative */
     float    px;          /* mean pixel level -- the light */
     float    ac1;         /* lag-1 autocorrelation, cumulative since the sweep */
     float    zdiff;       /* zero-diff fraction */
-    float    wac[4];      /* lag-1..4 autocorrelation over THIS window, as z (D97) */
+    float    wac[4];      /* lag-1..4 autocorrelation over THIS window, as z  */
 } cam_winlog_t;
 
 static cam_winlog_t *s_winlog;
@@ -2492,8 +2220,7 @@ void camera_winlog_push(uint32_t tag)
     if (!s_winlog) {
         /* calloc, not malloc: a partially written ring read by /camlog before
          * the first push completes would serve uninitialised floats as camera
-         * statistics, which is exactly the class of plausible-looking wrong
-         * number this whole file argues against. */
+         * statistics. */
         s_winlog = calloc(CAM_WINLOG_N, sizeof(cam_winlog_t));
         if (!s_winlog) {
             ESP_LOGW(TAG_CAM, "winlog: %d entries would not allocate -- log off",
@@ -2564,7 +2291,7 @@ esp_err_t camera_winlog_send_json(void *httpd_req)
         xSemaphoreTake(s_mutex, portMAX_DELAY);
         e = s_winlog[(start + i) % CAM_WINLOG_N];
         xSemaphoreGive(s_mutex);
-        /* `wlo` (D97): wsig more than 3 SE BELOW 1, SE = 1/√(2(wn−1)). Negative
+        /* `wlo`: wsig more than 3 SE BELOW 1, SE = 1/√(2(wn−1)). Negative
          * serial correlation shrinks the mini-run spread, and nothing else in
          * the project looks downward — soft-down and the sweep gate are
          * one-sided. A flag to read, never an exclusion. */
@@ -2575,7 +2302,7 @@ esp_err_t camera_winlog_send_json(void *httpd_req)
             "\"wlo\":%d,\"wac\":[%.2f,%.2f,%.2f,%.2f],"
             "\"rsig\":%.4f,\"rbias\":%.6f,\"sig\":%.4f,\"bias\":%.6f,"
             "\"px\":%.2f,\"ac1\":%.4f,\"zdiff\":%.4f}",
-            i ? "," : "", (unsigned long)e.ses,
+            i ? ",": "", (unsigned long)e.ses,
             (unsigned long)e.t_ms, (unsigned long)e.tag,
             (double)e.wsig, (long)e.wn, wlo,
             (double)e.wac[0], (double)e.wac[1], (double)e.wac[2], (double)e.wac[3],
@@ -2589,7 +2316,7 @@ esp_err_t camera_winlog_send_json(void *httpd_req)
     return ESP_OK;
 }
 
-/* ── GET /linearity — steady light or flickering light (D64) ───────────
+/* ── GET /linearity — steady light or flickering light  ───────────
  *
  * Four exposures, mean_px at each. The RATIO between consecutive rungs is the
  * answer and the absolute level is not, which is precisely why a single
@@ -2665,7 +2392,7 @@ esp_err_t camera_linearity_handle(void *httpd_req, bool busy)
     bool   applied[LIN_MAX_STEPS] = {false};
 
     for (int i = 0; i < nexp; i++) {
-        /* Gain is carried, never laddered -- same rule the sweep follows (D59):
+        /* Gain is carried, never laddered -- same rule the sweep follows:
          * CONFIG_ELOTTO_CAM_REG_GAIN is the board's operating point, and a test
          * that quietly moved it would answer about a different instrument. */
         applied[i] = camera_set_exposure(exps[i], g0);
@@ -2697,14 +2424,14 @@ esp_err_t camera_linearity_handle(void *httpd_req, bool busy)
          * actually doubled-ish -- the caller may pass any ladder. Steady light
          * gives ratio ~= exp[i]/exp[i-1]; flicker gives less. px_per_exp is the
          * scale-free form, constant under steady light whatever the ladder. */
-        double ratio  = (i > 0 && px[i - 1] > 0.0) ? px[i] / px[i - 1] : 0.0;
-        double eratio = (i > 0) ? (double)exps[i] / (double)exps[i - 1] : 0.0;
+        double ratio  = (i > 0 && px[i - 1] > 0.0) ? px[i] / px[i - 1]: 0.0;
+        double eratio = (i > 0) ? (double)exps[i] / (double)exps[i - 1]: 0.0;
         len = snprintf(buf, sizeof(buf),
             "%s{\"exposure\":%lu,\"applied\":%s,\"mean_px\":%.3f,"
             "\"px_per_exp\":%.4f,\"ratio\":%.3f,\"exp_ratio\":%.3f,"
             "\"raw_sigma\":%.4f,\"ac1\":%.4f}",
-            i ? "," : "", (unsigned long)exps[i],
-            applied[i] ? "true" : "false", px[i],
+            i ? ",": "", (unsigned long)exps[i],
+            applied[i] ? "true": "false", px[i],
             px[i] / (double)exps[i], ratio, eratio, rs[i], ac[i]);
         httpd_resp_send_chunk(req, buf, len);
     }

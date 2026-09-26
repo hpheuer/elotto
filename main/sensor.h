@@ -4,19 +4,19 @@
 #include "camera.h"
 #include "elotto_link.h"
 
-/* v3 (D67): rounds until Abort. Inside a round every combination is measured
+/* v3: rounds until Abort. Inside a round every combination is measured
  * exactly ONCE; results[] holds it in MEASUREMENT order and ACCUMULATES across
  * rounds, so NUM_RUNS is the hard cap on the buffer, not on the session.
- * 500 rows [D100]. A row is 48 B (the double in RunResult forces 8-byte
+ * 500 rows. A row is 48 B (the double in RunResult forces 8-byte
  * alignment). Compaction keeps at most PASS_KEEP_EXTREME rows (100) and the
  * next round is appended after them, so the resident peak is 100 + ?maxruns=;
  * UNLIM_RUNS_MAX 400 is what keeps every round whole. A combination space
  * larger than NUM_RUNS aborts — the shuffle buffer is this wide. */
 #define NUM_RUNS       500
 #define TOP_N            5
-/* ── Round-boundary compaction (D56) ──────────────────────────────────────
+/* ── Round-boundary compaction  ──────────────────────────────────────
  * Unlimited rounds keep the 100 most extreme RANKED items by |rank_key| (both
- * tails). Quarantined rows are not kept `[D100]`: nothing reads them once their
+ * tails). Quarantined rows are not kept: nothing reads them once their
  * block is closed. Everything else merges into pass moments. Offline re-analysis of the dropped
  * rows is not a goal. Since D67 every session is rounds, so every round
  * boundary calls pass_compact() (no-op while n ≤ 100). */
@@ -25,16 +25,16 @@
 #define POOL_MAIN_50    12   // C(12,5) =  792 combinations
 #define POOL_EURO_12     5   // C(5,2)  =   10 combinations
 /* Phase-0 scoring: every number this many times, fresh shuffle each pass,
- * keys summed, then the pool is the top by that sum (D81). Not back-to-back
- * (D5).
- * ⚠ 20 since `[D86]`, and a camera sweep runs after pass SCORE_PASSES/2 of
+ * keys summed, then the pool is the top by that sum. Not back-to-back
+ *.
+ * ⚠ 20 since, and a camera sweep runs after pass SCORE_PASSES/2 of
  * EVERY scoring run — which in Eurojackpot is two runs, the main numbers and
  * the euro numbers. Each pass is centred and scaled on its own (score_build_keys
  * runs per pass), so the sweep lands on a centring boundary, not inside one.
  * ⚠ It doubles the scoring, which already dominates the round: 20 passes put a
- * Eurojackpot round near 2,5 h at ?run=5. That is the operator's call `[D76]`. */
+ * Eurojackpot round near 2,5 h at ?run=5. That is the operator's call. */
 #define SCORE_PASSES    20
-#define SCORE_START_PAUSE_MS 2000   // idle break before each round's scoring [D101]
+#define SCORE_START_PAUSE_MS 2000   // idle break before each round's scoring 
 // Eurojackpot: C(12,5)·C(5,2) = 7920 — the largest configuration under the
 // ~10000 the user set as the ceiling (13+5 would be 12870). 6-of-49: 5005.
 
@@ -42,9 +42,7 @@
  *
  * Every value below is defined HERE and nowhere else. The HTML input
  * attribute, the JavaScript clamp and the C validator in the /start handler all
- * read from this one place, because three copies nothing forces to agree do not
- * stay in agreement: a default was once 50 in the form and 100 in the handler,
- * so a curl session ran a different experiment from a browser one.
+ * read from this one place.
  *
  * The page is a C string literal, so the UI copies are made to reference these
  * through EL_STR() rather than being written out again. A limit changed here
@@ -52,15 +50,12 @@
  *
  * ⚠ Defaults only. Every one is overridable per session on /start, so
  * changing a default here does not describe a session that overrode it. */
-/* ⛔ No round-length warning `[D85]`. It used to fire above 30 min, but since
- * `SCORE_PASSES` 20 the scoring is 1240 of a Eurojackpot round's ~1340 cycles, so
- * the shortest legal round (`UNLIM_RUNS_MIN` 10) exceeds any 30-minute bar at
- * the default `?run=`: the warning sat under "Runs per round" and no value of
- * that field could clear it. The form prints the scoring/pass split instead —
- * which names `?run=`, the parameter that actually sets the length. */
+/* ⛔ No round-length warning. The form prints the scoring/pass split
+ * instead — which names `?run=`, the parameter that actually sets the
+ * length. */
 #define CAL_BUDGET_DEFAULT_MS 10000      // exposure-sweep CAP, split over 9 rungs
 #define CAL_BUDGET_MAX_MS   120000
-/* Dynamic sweep interval `[D106]`. A sweep runs at a CANDIDATE point — the end
+/* Dynamic sweep interval. A sweep runs at a CANDIDATE point — the end
  * of every scoring pass, before the pass, the round boundary: the only places
  * no centring mean straddles — once the interval since the last sweep has run
  * out. An ok sweep (every node certified, no exposure moved) doubles the
@@ -68,49 +63,42 @@
  * back to the min. The session-start sweep always runs. */
 #define CAL_DYN_MIN_MS      (15 * 60 * 1000)
 #define CAL_DYN_MAX_MS      (120 * 60 * 1000)
-/* The settle pause after a sweep that moved any node's exposure `[D87]`: the
+/* The settle pause after a sweep that moved any node's exposure: the
  * whole array waits this long before the next window. calibrate_all() owns it;
  * here so the page's countdown bar reads the same number. */
 #define CAL_SETTLE_AFTER_MS  60000
-/* ⛔ ONE BLOCK IS ONE ROUND, and there is no time trigger `[D76]`. The round
+/* ⛔ ONE BLOCK IS ONE ROUND, and there is no time trigger. The round
  * boundary parks the pass, closes the block and runs the camera sweep; the block
  * is the unit that carries the drift point, the pairwise close and the /loops
  * row. `?cal=0` turns the sweep off; nothing else changes the boundary.
  *
- * ⚠ The sweep runs TWICE per round since `[D85]` — at the boundary and again
+ * ⚠ The sweep runs TWICE per round since  — at the boundary and again
  * between the scoring and the pass — but the BLOCK boundary is still only the
  * round boundary. The second sweep sits between two spans that are already
  * separate blocks (the scoring span and the pass), so it moves no operating
  * point underneath a centring and leaves n untouched.
  *
  * Why: `rank_key()` divides by the block's own σ, and the largest value a block
- * can produce is (n-1)/√n with n its item count. A wall-clock trigger made n
- * depend on where the 15-minute mark happened to fall, so two blocks of ONE
- * session had different ceilings and their Z* did not compare. Round = block
- * makes n the same in every round, because every round measures the same
- * `maxruns`-sized space.
+ * can produce is (n-1)/√n with n its item count. Round = block makes n the same
+ * in every round, because every round measures the same `maxruns`-sized space.
  * ⚠ The last round is cut short by Abort, so its block is the one exception. */
 /* Per-run window (one continuous window per item) and the
  * intentional blank after it. Both are session parameters on /start (?run= &
- * ?gap=), defaults match the 2026-08-02 live cal. Gap defaults to 40 % of the
+ * ?gap=). Gap defaults to 40 % of the
  * window (5 s → 2 s, 7 s → 2.8 s ≈ 3 s) so duty stays ~70 % of the intentional
  * cycle; measured focus_gap_ms is larger because it also includes slave collect.
  * Segment count is derived from run_s via the segs↔ms cal — wall time can stretch
  * if the camera rate collapses at long windows (that IS the limit). */
-/* ⚠ 0,2..5 s (user, 2026-09-25 [D111]): 0,2 s is ~10435 segs / ~2,3 Mbit, the
- * window's ~0,52 Mbit first-pair fragment plus about one whole pair. Capped at five — RUN_S_MAX was
- * 15, which after the 08-18 recalibration could not be delivered: 15 s asks for
- * 391304 segments against a wire limit of 200000, and the request came back as
- * a silent 7,7 s window. Capping the input removes that failure mode by
- * construction rather than reporting it.
+/* ⚠ 0,2..5 s: 0,2 s is ~10435 segs / ~2,3 Mbit, the
+ * window's ~0,52 Mbit first-pair fragment plus about one whole pair.
  * Auto-gap is 40 % of the window with no floor above GAP_S_MIN 0, and an
  * explicit ?gap= may be 0: the item boundary is the flush on M, not the gap
- * [D105], so a short gap never credits one item's bits to the next [D111]. */
+ *, so a short gap never credits one item's bits to the next. */
 #define RUN_S_DEFAULT            5
 /* Cap on the per-item ring flush (sensor.c onset_settle). A fresh pair costs
  * ~56 ms idle and ~85 ms under load, so the wait is normally well under this;
  * the cap only bounds the damage if the camera has stopped delivering. */
-#define ONSET_SETTLE_MS        700   // two pairs now: one discarded [D105]
+#define ONSET_SETTLE_MS        700   // two pairs now: one discarded 
 
 #define RUN_S_MIN              0.2
 #define RUN_S_MAX                5
@@ -120,17 +108,8 @@
  * after anything that changes the extraction rate — otherwise the window the
  * operator asks for and the window the observer actually gets drift apart
  * silently, which is the one thing the Focus protocol cannot tolerate.
- *
- *   2026-08-02: 66000 segs ↔ 4680 ms  (extraction at ~3,4 Mbit/s)
- *   2026-08-18: 70513 segs ↔ 2703 ms  (word-wise extraction, ~5,7 Mbit/s)
- *
- * The 08-18 pair was measured the same way as the first: a live 4-node session
- * at ?run=5, reading focus_win_ms off /status after a dozen runs. At the new
- * rate a 5 s window buys ~130500 segments instead of ~70500 — 1,85× the bits
- * per item, i.e. √1,85 ≈ 1,36× the sensitivity at the SAME wall time.
- *
- * ⚠ Sessions before and after 2026-08-18 are not the same instrument: same
- * nominal ?run=, different bit count per item. Do not pool them. */
+ * ⚠ Do not pool sessions measured against different pairs: same nominal
+ * ?run=, different bit count per item. */
 #define RUN_SEGS_REF        141026
 #define RUN_MS_REF            2703
 /* The wire caps the segment count at EL_SEG_MAX, and a receiver does NOT clamp
@@ -151,42 +130,24 @@ _Static_assert(((long long)RUN_S_MAX * 1000 * RUN_SEGS_REF) / RUN_MS_REF <= EL_S
  * it needs a model; once a session is live, /status carries the measured pace
  * and the ETA comes from that instead.
  *
- * The model was `cycle_ms ~= 1,36 * run_ms + gap_ms`, fitted to two live 4-node
- * points. It broke on 2026-08-19, measuring 4,43 s at run=2/gap=0,8 where it
- * predicted 3,52 — 21 % short. The fit was not merely stale: a percentage OF
- * THE REQUESTED WINDOW is the wrong shape. What a run costs is the time the
- * SLOWEST node needs to produce its bits, and the bits are set by the segment
- * count while the rate is a property of the hardware — so the two must appear
- * separately or a change to either silently invalidates the constant.
- *
  *   run_bits  = GCP_SEGMENT_BITS * segments      (segments from run_s)
  *   cycle_ms ~= run_bits / rate + CYCLE_FIXED_MS + gap_ms
  *
- * CYCLE_LOAD_MBIT_X100 is the per-node rate UNDER LOAD, which is NOT the idle
- * 5,71: during a session the GCP consumer outranks the extraction task and a
- * frame pair costs ~70 ms instead of 39,5 (see CLAUDE.md). Measured 2026-08-19,
- * all three slaves in agreement at 3,66-3,68; the master is not the constraint
- * (it runs at the idle rate and waits ~1 s per run for the slaves), which is
- * exactly why the model must use the SLOWEST node and not an average.
+ * CYCLE_LOAD_MBIT_X100 is the per-node rate UNDER LOAD, not the idle rate:
+ * during a session the GCP consumer outranks the extraction task. The model
+ * must use the SLOWEST node, not an average — the slowest node sets how long a
+ * run takes.
  *
  * CYCLE_FIXED_MS is what is left over per run and does not scale with the
  * window: the ring flush, the trigger, the reply collect and the publish.
- * Solved from the 08-19 point — 4433 measured, 800 requested gap, 52174
- * segments at 3,66 Mbit/s = 2851 ms of bits, leaving 782.
- *
- * Cross-check against the OTHER instrument generation, which the old constant
- * could not fit at all: at run=5/gap=2 and the ~3,48 Mbit/s the slower nodes
- * ran at before 2026-08-18, this gives 7,50 + 0,78 + 2,00 = 10,3 s against a
- * measured ~10,6-10,8. The form of the model is what carries across; only the
- * rate moved.
  *
  * ⚠ Still an ESTIMATE, and the live UI prefers the measured pace wherever it
  * has one — including the slowest node's own cam_mbit from /status, which makes
  * the constant a cold-start value rather than the answer. */
-#define CYCLE_LOAD_MBIT_X100   732   // per-node rate under load x100; 2x words, LSB-as-is (D65)
+#define CYCLE_LOAD_MBIT_X100   732   // per-node rate under load x100; 2x words, LSB-as-is 
 #define CYCLE_FIXED_MS         780   // per-run overhead that does not scale
 
-/* ── Unlimited mode (user, 2026-08-18) ────────────────────────────────────
+/* ── Unlimited mode ───────────────────────────────────────────────────────
  * A session that does not end with the combination space. Instead of measuring
  * ONE pool exhaustively, the pass runs in ROUNDS: score every number, keep only
  * as many of the best as fit `runs_cap` measurement runs, measure that whole
@@ -205,29 +166,15 @@ _Static_assert(((long long)RUN_S_MAX * 1000 * RUN_SEGS_REF) / RUN_MS_REF <= EL_S
 _Static_assert(UNLIM_RUNS_MAX + PASS_KEEP_EXTREME <= NUM_RUNS,
                "a round of ?maxruns= must fit beside the compaction survivors");
 #define UNLIM_RUNS_STEP         10
-/* ⚠ The pool split is NOT a free choice, and a weighted one was tried and
- * withdrawn (2026-08-18, same day). The probability that a round's pool even
- * CONTAINS the real draw is
- *
- *     P = C(p,5)/C(50,5) · C(q,2)/C(12,2) = [C(p,5)·C(q,2)] / 139838160
- *       = (combinations measured) / (combinations that exist)
- *
- * — the split cancels completely, leaving only the product, and the product IS
- * the run count. So a pool rule is neutral exactly when it SPENDS THE BUDGET,
- * and harmful exactly in proportion to the runs it leaves unspent. The first
- * attempt maximised universe coverage p/50 + q/12 (a bonus number weighted ~4×
- * because there are only 12 of them); it pinned q at 5 and measured 210 of a
- * 500-run budget where 462 were available — a 2.2× loss of coverage, and a
- * shorter round, so proportionally MORE scoring overhead per measured item.
- *
- * The rule is therefore: maximise the combinations measured. The bonus-number
- * preference survives only as the TIE-BREAK, where P is identical and it is
- * free. No weights — see unlimited_pool_sizes(). */
+/* ⚠ The pool split is NOT a free choice: maximise the combinations measured.
+ * A pool rule is neutral exactly when it spends the whole run budget. The
+ * bonus-number preference survives only as the TIE-BREAK, where it is free.
+ * No weights — see unlimited_pool_sizes(). */
 
 /* Diagnostic thresholds that appear in more than one place. */
 #define PAIR_FLAG_T            3.0   // |r|·√n above this = nodes not independent
 #define DRIFT_FLAG_T           3.0   // |drift_t| above this = real cross-block drift
-/* ── When the OPEN block joins the ranking (2026-08-28) ────────────────────
+/* ── When the OPEN block joins the ranking ────────────────────────────────
  * Items are ranked on z_ctr, and z_ctr only means anything once each node's own
  * offset has been subtracted. For a closed block that mean comes from ~100
  * items; for the open block it comes from however many it holds so far. Below
@@ -235,65 +182,27 @@ _Static_assert(UNLIM_RUNS_MAX + PASS_KEEP_EXTREME <= NUM_RUNS,
  * mean IS that item and centring zeroes it — so the open block stays out and
  * the tables say so. Above it, the open block is centred live at every publish
  * and ranks alongside the closed ones.
- *
- * 4 because that is where a per-node mean stops being dominated by the single
- * value it is meant to be removed from (the variance of the correction falls as
- * 1/n, so 1 → 4 items already cuts it by a factor of four) and because at ~5 s per item it
- * is under half a minute of waiting. The alternative — an empty table for a
- * whole round — was rejected by the user.
  * ⚠ A block-centred value is deflated by √(1−1/n) per node, which at n = 4 is
  * 13 %. That is real but it is the SAME bargain every closed block already
- * makes (D8), only noisier, and it shrinks as the block fills. */
+ * makes, only noisier, and it shrinks as the block fills. */
 #define PASS_OPEN_MIN_N        4    // items in the open block before it is ranked
-#define NODE_SOFT_TRIP_K       1.35  // trip if block σ > K × peer-median σ (D65)
+#define NODE_SOFT_TRIP_K       1.35  // trip if block σ > K × peer-median σ 
 #define NODE_SIGMA_SOFT        NODE_SOFT_TRIP_K  /* alias: old absolute 1.25 is gone */
-/* ── |block mean| REPORTS, it no longer excludes (2026-08-19) ──────────────
+/* ── |block mean| REPORTS, it no longer excludes ──────────────────────────
  *
- * This was a trip wire at the same value until the 2026-08-19 session, where it
- * put the master soft-down for half the run and the array measured 50 % of its
- * items at k < 4 — the last 3,4 h at k = 2 — with the pass health clean, fault empty and
- * `ok` true throughout. Three findings, in the order they matter:
- *
- * 1. The offsets it fired on are made by the CALIBRATION SWEEP, not by the node.
- *    Per-block offset against the rung chosen for that block: exp 4 → −1,86,
- *    exp 8 → −0,78, exp 16..128 → −0,05…+0,09. exp ≤ 8 averages −1,11 over 10
- *    node-blocks against −0,03 over 106, t = −4,0. Five of the master's six
- *    excursions sat on exposure 4 or 8. CAL_MIN_MEAN_PX / CAL_MAX_ZERO_DIFF
- *    remove those rungs at the source; this bar was punishing the symptom.
- * 2. CENTRING ALREADY REMOVES IT. center_block() subtracts each node's own mean
- *    over the block and everything that is ranked reads z_ctr through rank_z().
- *    A constant offset inside a block is gone from every number a result is
- *    drawn from, so excluding the arm buys nothing and costs √k: keeping a
- *    +0,5-offset arm costs 0 after centring, dropping it costs 13 %.
- *    ⚠ This is precisely why the σ-only rule was WRONG on 2026-08-11 (master
- *    mean −7, .145 +4,6, σ ≈ 1, all kept) and is right now: that pass had no
- *    block centring. Do not read the 08-11 argument as still standing.
- * 3. The bar was not run-length invariant. A fixed 1,50 in z is a bias of
- *    2,3e-4 at run=2 and 1,5e-4 at run=5, so the same camera tripped or passed
- *    depending on ?run= (see gcp_z_per_bias).
- *
- * What survives: the value, as a REPORTING threshold. An arm over it is flagged
- * in the block's /loops row and printed, because a big offset is still worth
- * seeing — it is how the exposure story above was found. It does not exclude,
- * it does not quarantine, and it does not block a clear.
- * ⚠ σ remains a trip wire and must: σ is what the 08-13 pass failed on, it is
- * invariant to the run length by construction, and centring does NOT fix it. */
+ * Centring (center_block()) removes each node's own block mean, so a constant
+ * offset is already gone from every ranked number; excluding the arm buys
+ * nothing. An arm over this is still flagged in the block's /loops row and
+ * printed, because a big offset is worth seeing. It does not exclude, does not
+ * quarantine, and does not block a clear.
+ * ⚠ σ remains a trip wire and must: it is invariant to the run length by
+ * construction, and centring does NOT fix it. */
 #define NODE_MEAN_REPORT       1.50  // |block mean z| above this → flagged, not excluded
 #define NODE_SOFT_MIN_N       20     // min runs in the block before soft-exclude
 /* ── Clearing a soft-down: bars RELATIVE to the peers in the same block ────
  *
- * These were fixed constants until 2026-08-19, and the fixed value was the
- * bug. Measured over a 6,5 h four-node session: the per-block σ of a HEALTHY
- * arm on this rig sits at 1,02–1,05, so `σ ≤ 1,05` was not a health threshold,
- * it was the array's own median. Meeting it is a coin flip per block and
- * meeting it four times running is ~6–15 %, so a node that tripped once was
- * down for the rest of the session whatever its condition: slave1 tripped on a
- * single block (σ 1,290) 40 min in and was still excluded 5,9 h later, having
- * reached 3 of the required 4 at best, with a running z of +0,0025 — i.e. it
- * looked healthy the whole time. 90 % of that session combined over √3.
- *
- * So the bar is now the peers' own median for that block, times a factor. That
- * is real hysteresis (trip and clear stay far apart) AND it makes a common-mode
+ * The bar is the peers' own median σ for that block, times a factor. That is
+ * real hysteresis (trip and clear stay far apart) AND it makes a common-mode
  * bad block stop punishing the node that is down — every arm is noisy in the
  * same block, so the reference moves with them.
  *
@@ -306,39 +215,17 @@ _Static_assert(UNLIM_RUNS_MAX + PASS_KEEP_EXTREME <= NUM_RUNS,
 #define NODE_SOFT_CLEAR_SIG    1.10  // floor: σ bar is never tighter
 #define NODE_SOFT_CLEAR_SIG_K  1.15  // σ bar = K x peer median σ
 #define NODE_SOFT_CLEAR_MARGIN 0.95  // cap, as a fraction of the TRIP bar
-/* ⚠ There is no |mean| clear bar any more, and removing it was NOT tidying: a
- * criterion that cannot trip a node must not be able to keep it down either.
- * The pair that stood here (floor 0,50, K 2,00) was the second instance of the
- * defect the σ floor already had — the peer median |mean| runs 0,02–0,30, so the
- * floor bound in almost every block, and slave2 broke its streak three times on
- * |mean| 0,52 / 0,65 / 0,74 while its σ never left 0,93–1,06. Replayed over the
- * 29 blocks of 2026-08-19 with σ alone: slave2 clears 4 blocks after tripping
- * instead of never, and the master — which under the old rule was down for 14 of
- * 29 blocks — never trips at all (its σ peaked at 1,109 against the 1,25 bar). */
+/* ⚠ There is no |mean| clear bar. A criterion that cannot trip a node must
+ * not be able to keep it down either. */
 
-/* ⚠ The σ FLOOR is 1,10 and NOT the old 1,05. Keeping the old value as a floor
- * was tried first and changed nothing at all — replayed over the same 29 blocks
- * it still left slave1 down for 27 of them, because 1,05 IS the value that was
- * too tight and a floor pins the bar exactly there. Replay before believing a
- * threshold change: at floor 1,10 slave1 clears after 11 blocks, at 1,10 with
- * K 1,15 after 5, and no other node is ever put down by any of them.
- *
- * Why tolerating a slightly hot arm is right: measured per-block σ over those
- * 29 blocks was master 0,999 · slave1 1,040 · slave0 1,010 · slave2 0,996, so
- * slave1 really does run ~4 % hot. Keeping it inflates the COMBINED σ by
- * sqrt(3·1,00² + 1,04²)/2 = 1,010, i.e. 1 %. Dropping it costs √3 against √4,
- * i.e. 13 % of the sensitivity. A 1 % cost against a 13 % one is not a close
- * call, and the trip bar at 1,25 still removes an arm that is genuinely bad. */
+/* ⚠ The σ FLOOR is 1,10 and NOT the old 1,05. */
 #define NODE_SOFT_CLEAR_BLOCKS 4     // consecutive clean blocks required to lift soft-down
-/* Never soft-exclude below this many live nodes. ⚠ 1, not 3 (2026-08-13): at
- * four nodes a floor of 3 allowed exactly ONE exclusion, so when two nodes
- * misbehaved at once the second stayed in the combine. The 08-13 full pass is
- * the proof — .145 was excluded, the master (block means down to −6.33) was
- * kept, and blocks 4/14/33 landed in the results at −3.4 with the master's
- * offset intact: (−6.33 + 0.27 + 0.22)/√3 = −3.38, exactly the published value.
- * A bad arm in the combine costs more than a small k does (user, 2026-08-13). */
+/* Never soft-exclude below this many live nodes. ⚠ 1, not 3: at four nodes a
+ * floor of 3 allows exactly one exclusion, so when two nodes misbehave at once
+ * the second would stay in the combine. A bad arm in the combine costs more
+ * than a small k does. */
 #define NODE_SOFT_MIN_COMBINE  1     // never soft-exclude below this many live nodes
-/* Concordance weight of the ranking key (D65), ?wpre=<0..1>.
+/* Concordance weight of the ranking key, ?wpre=<0..1>.
  * DEFAULT 0: z alone. The form pre-fills 0,8. Curl must not silently pick a
  * weight; the page does, and /status `pre_w` says which one ran. */
 #define ENT_W_PRE_DEFAULT    0.0
@@ -366,11 +253,10 @@ typedef enum { ELOTTO_IDLE, ELOTTO_RUNNING, ELOTTO_DONE, ELOTTO_ABORTED } Elotto
 typedef enum { PHASE_SCORING, PHASE_MEASURING,
                PHASE_CALIBRATE } ElottoPhase;
 
-/* v3: NO ranking modes any more (user decision, 2026-08-02).
- * Each item's published Z is its own single raw measurement, stored in
- * results[] untouched: no rewrite, no subtraction, no cross-item
- * normalization. A recurrence in a later round is a separate row, never an
- * average — which is what leaves the four old rules nothing to differ ABOUT. */
+/* v3: NO ranking modes. Each item's published Z is its own single raw
+ * measurement, stored in results[] untouched: no rewrite, no subtraction, no
+ * cross-item normalization. A recurrence in a later round is a separate row,
+ * never an average. */
 
 /* Entropy is photons. A node whose camera stops is reported and rebooted. */
 
@@ -379,13 +265,7 @@ typedef struct {
     double     z_score;    // RAW combined Stouffer z (Σz_i/√k) — never rewritten
     /* BLOCK-CENTRED combine: Σ(z_i − m_i,block)/√k over the same nodes that
      * entered z_score, where m_i,block is node i's own mean over this block.
-     * This is what the ranking and pass mean/σ run on (2026-08-13).
-     *
-     * Why: the 08-13 pass showed per-node σ ≈ 1.0 INSIDE every block while the
-     * per-block offsets jumped (master −6.33, .145 +24.13 in single blocks).
-     * The noise was fine; the zero point moved. Centring removes exactly that
-     * and left the pass at σ 0.995 with max|z| 3.92 against the 4.13 expected
-     * for 5005 draws — a clean null instead of a table of block artefacts.
+     * This is what the ranking and pass mean/σ run on.
      *
      * ⚠ It also removes any real effect that is CONSTANT across a whole block,
      * which is a pre-registration decision, not a detail: what this instrument
@@ -403,23 +283,21 @@ typedef struct {
     uint8_t    skip_rank;  // 1 = exclude from pass mean/σ/Top-Bottom (trigger block)
     uint8_t    nums[6];
     uint8_t    euro[2];
-    /* ⛔ `zp_ctr`, the second LSB channel of D45, was DELETED on 2026-09-02:
-     * D65 left one stream, so it had become a bit-for-bit alias of z_ctr and
-     * its per-node archive a copy of the per-node z. Nothing was lost.
+    /* ⛔ `zp_ctr` (the old second LSB channel) was DELETED: it had become a
+     * bit-for-bit alias of z_ctr and its per-node archive a copy of the
+     * per-node z. Nothing was lost.
      * ⚠ `raw_sigma` in /diag is a DIFFERENT number: the per-mini-run sigma of
-     * one node's stream, 1,06..1,28 across the four nodes on certified rungs
-     * (2026-08-27) and degrading hard outside them — 1,69 at mean_px 5, above
-     * 10 when over-lit. rank_key() divides by the item's BLOCK σ (D68),
+     * one node's stream. rank_key() divides by the item's BLOCK σ,
      * s_bsig[block].sig_p, never by raw_sigma. */
-    /* Concordance z (D56): leave-one-out Stouffer of per-node half-window z.
+    /* Concordance z: leave-one-out Stouffer of per-node half-window z.
      * Each HALF is centred on its own per-node block mean BEFORE the sign
-     * test (D77) — on raw halves the node offset (11..76 σ per half) made
+     * test  — on raw halves the node offset makes
      * both halves always agree and the channel was z plus noise. 0 = halves
      * disagreed on every surviving node, or fewer than two nodes to
      * corroborate; under H₀ that is about half of all items.
-     * ⚠ This is the ONLY channel beside z (D65) — `?wpre=` is its weight p and
+     * ⚠ This is the ONLY channel beside z  — `?wpre=` is its weight p and
      * the key is ((1-p)·z_ctr/σ_z + p·zc_ctr/σ_c)/√((1-p)²+p²), each term on
-     * that item's own BLOCK σ (D68). Not a half-and-half split of pre_w. */
+     * that item's own BLOCK σ. Not a half-and-half split of pre_w. */
     float      zc_ctr;
     /* NODE AGREEMENT on this item: sample σ across the contributing nodes of
      * their own block-centred z, each standardised by that NODE's own σ over
@@ -427,10 +305,10 @@ typedef struct {
      * one node carried the combined z alone.
      *
      * Why standardise per node before comparing: the per-node LSB σ is NOT 1
-     * and differs between nodes (D17, D65), so the raw spread of z_i would
+     * and differs between nodes, so the raw spread of z_i would
      * mostly measure which nodes happened to contribute. After the division the
      * null is ≈ 1 for independent nodes whatever their scale, which is the same
-     * bargain rank_key() makes with the block σ (D68).
+     * bargain rank_key() makes with the block σ.
      *
      * The mean the spread is taken around IS the combined z: Σz_i/√k = √k·mean,
      * so "deviation from the combined Z*" and "deviation from each other" are
@@ -444,20 +322,20 @@ typedef struct {
      * confidence column beside Z*, not a second ranking key. Nothing selects,
      * excludes or reorders on it. */
     float      node_sd;
-    /* WINDOW AUTOCORRELATION of the bits this item was scored from (D97):
+    /* WINDOW AUTOCORRELATION of the bits this item was scored from:
      * Σ over the combined nodes of Σ_{L=1..4} z_L, divided by √(4·n), n = nodes
      * that reported one. z_L = r_L·√pairs_L is a node's lag-L autocorrelation
      * over the window, unit normal for independent bits, so this is unit normal
      * too. Sign: + = neighbouring pixels agree too often (mini-run spread
      * inflated), − = they alternate (spread deflated).
      * ⚠ A diagnostic column, not a key: nothing ranks, selects or excludes on it.
-     * NaN = no node reported one (VOID, or firmware without ,ac=). */
+     * NaN = no node reported one (VOID, or firmware without,ac=). */
     float      acz;
 } RunResult;
 _Static_assert(sizeof(RunResult) == 48, "results[] row is the internal-RAM budget");
 
 // Current-item display: what is on screen right now, for exactly the window
-// its bits are collected in. The session is unattended `[D66]`; the one
+// its bits are collected in. The session is unattended; the one
 // property that must hold is `active` ⟺ a run is sampling.
 typedef enum { FOCUS_NONE = 0, FOCUS_NUMBER = 1, FOCUS_DRAW = 2 } FocusKind;
 
@@ -521,7 +399,7 @@ typedef struct {
     uint8_t  cam_cal_ok;    // 1 = a candidate passed every gate; 0 = the node
                             // kept its previous setting because none did
     float    cam_bias;      // bias of the window that chose it
-    /* LSB health from the last 'D' query (D43). 0 = this node did not
+    /* LSB health from the last 'D' query. 0 = this node did not
      * report it, which is NOT the same as a raw bias of zero. */
     float    cam_raw_bias;
     float    cam_raw_sigma;
@@ -532,11 +410,11 @@ typedef struct {
     uint16_t cam_gain_now;
     /* The bias/sigma pair from the same 'D' query, i.e. this node's own /diag
      * values. The wire always carried them; they were parsed and dropped
-     * until the collector needed them. Same bits as cam_raw_* `[D65]`. */
+     * until the collector needed them. Same bits as cam_raw_*. */
     float    cam_bias_now;
     float    cam_sigma_now;
-    /* The camera sigma of the LAST MEASUREMENT WINDOW on this node (D62),
-     * from ,wsig= on the 'Z' reply — not from the 'D' query the two fields
+    /* The camera sigma of the LAST MEASUREMENT WINDOW on this node,
+     * from,wsig= on the 'Z' reply — not from the 'D' query the two fields
      * above come from.
      * ⚠ cam_sigma_now spans everything since the last sweep, up to three
      * blocks on this rig, and therefore cannot localise anything. This one
@@ -544,12 +422,11 @@ typedef struct {
      * per-item jump meaningful.
      * ⚠ NAN = the node did not report one, NOT a quiet window. */
     float    cam_wsig_now;
-    /* The same window's autocorrelation, ,ac= on the 'Z' reply (D97): the sum
+    /* The same window's autocorrelation,,ac= on the 'Z' reply: the sum
      * of the lag-1..4 z, variance 4 under independence. NAN = not reported. */
     float    cam_ac_now;
-    /* Mean raw pixel level from that same 'D' query (,px=, 2026-08-28). The one
-     * covariate that separates a light change from a sensor change, which D46
-     * named as missing and nothing recorded until LoopStat.cam_px.
+    /* Mean raw pixel level from that same 'D' query (,px=). The one covariate
+     * that separates a light change from a sensor change.
      * ⚠ 0 = this node did not report it (firmware older than 2026-08-28), not
      * a dark frame. */
     float    cam_mean_px;
@@ -561,8 +438,7 @@ typedef struct {
      * Empty for the master (its own identity comes from esp_app_get_description)
      * and for a node whose firmware predates the field. /diagjson?all=1 shows
      * it per node because "all four run the same code" is a policy, not a
-     * fact: on 2026-08-19 the master ran a -dirty build from 10:57 and the
-     * slaves one from 09:59. */
+     * fact. */
     char     fw_sha[17];
 } NodeStatus;
 
@@ -573,14 +449,10 @@ typedef struct {
 // /loops serves the whole table, one row per block. With raw z published,
 // slow drift is the one thing that widens the extremes, so this table and the
 // drift regression on it matter because raw values remain uncorrected.
-/* ⚠ Raised from 128 on 2026-08-19, because compaction removed the stop that was
- * hiding this one. At 52 blocks in 11,6 h —
- * 128 was ~28 h, so the FIRST session able to run longer than the buffer would
- * have gone blind here instead: the drift regression survives (running sums,
- * exact past the table) but /loops, the per-block camera settings and the
- * exclusion verdicts simply stop being recorded. 1024 is ~9 days at that rate,
- * and costs 1024 x ~180 B = ~185 KB of PSRAM, which the same session already
- * has spare. */
+/* ⚠ 1024 blocks: the drift regression survives beyond the table (running sums,
+ * exact past it) but /loops, the per-block camera settings and the exclusion
+ * verdicts simply stop being recorded once it is full. Costs 1024 x ~180 B =
+ * ~185 KB of PSRAM. */
 #define LOOP_HIST 1024           // blocks kept in the table; the drift regression
                                  // runs on running sums and is exact beyond it
 typedef struct {
@@ -608,24 +480,17 @@ typedef struct {
     uint16_t cam_gain[MAX_NODES];
     uint8_t  cam_cal_ok[MAX_NODES]; // 0 = kept its previous setting, no gate passed
     float    cam_bias[MAX_NODES];   // bias of the window that chose it
-    /* ── What the camera actually did DURING this block (2026-08-28) ───────
+    /* ── What the camera actually did DURING this block ───────────────────
      * Everything above is what the last SWEEP measured — `cam_bias` is the bias
      * of the window that chose the rung, so two consecutive blocks on the same
      * setting carry byte-identical values and say nothing about either. These
      * three are read at block CLOSE, from the master's own camera_get_stats()
      * and each slave's 'D' reply, i.e. they describe the block's own bits.
-     *
-     * Why it had to change: on 2026-08-28 slave2 produced a block at per-run
-     * σ 6,94 with mean −3,25, and the archive could not say whether the front
-     * end was disturbed or not — every camera figure in the row was the stale
-     * sweep value. A block like that has to be ATTRIBUTABLE, not merely
-     * conspicuous.
-     * ⚠ `cam_px` is the covariate D46 asked for and never got: it is what
-     * separates "the lamp moved" from "the sensor moved". 0 = not reported
-     * (a slave on firmware older than 2026-08-28 sends no ,px= field), which
-     * is NOT the same as a dark frame.
+     * ⚠ `cam_px` separates "the lamp moved" from "the sensor moved". 0 = not
+     * reported (a slave on firmware older than 2026-08-28 sends no,px= field),
+     * which is NOT the same as a dark frame.
      * ⚠ `cam_rsig` is the LSB σ. It has no null of 1 to be read against
-     * and is non-stationary per node minute to minute (D46) — record it, plot
+     * and is non-stationary per node minute to minute  — record it, plot
      * it against its own history, never gate on its absolute level. */
     float    cam_sig[MAX_NODES];    // per-mini-run σ during the block
     float    cam_rsig[MAX_NODES];   // LSB per-mini-run σ during the block
@@ -641,13 +506,7 @@ typedef struct {
     // series across loops is the only way to see the window drift rather than
     // average it away. Measured in every session.
     float    win_ms, gap_ms;
-    /* ── Who was in the combine, and why (2026-08-19) ──────────────────────
-     * The exclusion state was published only as a live flag in /status and
-     * printed to a console nobody reads, so a finished session could not say
-     * WHEN an arm went down or what bar it was judged against. On 2026-08-19
-     * that had to be reconstructed by replaying the rule against the block
-     * table — which works only as long as the rule has not changed since, i.e.
-     * exactly when it is least useful. A block row now carries its own verdict.
+    /* ── Who was in the combine, and why ──────────────────────────────────
      *
      * soft_mask  bit i = node i was soft-down at the close of THIS block
      * trip_mask  bit i = node i tripped IN this block (σ over the bar)
@@ -665,7 +524,7 @@ typedef struct {
 
 /* One camera-sigma JUMP: a single measurement on a single node, where that
  * node's window sigma moved furthest from what the same node measured on the
- * item before it (D62).
+ * item before it.
  *
  * Why the jump and not the level: the level drifts slowly with the operating
  * point, so an absolute bar would flag one node's rung rather than an event.
@@ -680,19 +539,14 @@ typedef struct {
  * ⚠ nums/euro are copied in rather than looked up later, because results[]
  * is compacted at every round boundary and the row would be gone. This board
  * has to survive that — it exists precisely because the rows do not. */
-/* What a soft-down trip was MADE OF (D63).
+/* What a soft-down trip was MADE OF.
  *
  * A trip is a property of a whole block: sigma is the spread of one node's z
- * over that round's ?maxruns= items, and it does not exist until the block closes. The
- * question a reader actually has — which measurements made that spread big
- * — was unanswerable, because the block's rows are compacted away one round
- * later. Twice in two days they were asked for hours afterwards and every one
- * of them was gone.
- *
- * So the answer is taken at the only moment it exists: inside record_loop(),
- * where the block's items are still in results[] and their per-node z is still
- * in the archive. Same trick as the jump board — copy what names the
- * measurement, do not hope the row survives.
+ * over that round's ?maxruns= items, and it does not exist until the block
+ * closes. The answer is taken at the only moment it exists: inside
+ * record_loop(), where the block's items are still in results[] and their
+ * per-node z is still in the archive. Same trick as the jump board — copy what
+ * names the measurement, do not hope the row survives.
  *
  * ⚠ `dev` is (z - block mean) / block sigma: how far that item sat from the
  * middle of the very spread it helped create. It is NOT a z-score against the
@@ -737,7 +591,7 @@ typedef struct {
     float    jump;       // now - prev; the board ranks |jump|
 } WsigEvent;
 
-/* One number of the scoring, in the pass's own row type `[D103]`: `r` is filled
+/* One number of the scoring, in the pass's own row type: `r` is filled
  * exactly as a results[] row would be — index = the number, the number in
  * nums[0] (euro[0] for a bonus number), round, k, have_mask, z_score (raw),
  * z_ctr / zc_ctr (provisional raw until the pass closes, then centred on the
@@ -752,7 +606,7 @@ typedef struct {
  * The pool is picked from score_and_build_pool()'s own `acc`. Written by the
  * sensor task, read unlocked by the HTTP task: a torn row shows mixed values
  * for one poll, nothing else. */
-/* What the pool is picked on `[D104]`: the running sum of ONE column over the
+/* What the pool is picked on: the running sum of ONE column over the
  * closed scoring passes, chosen by the operator on the page (POST /scoresum)
  * and read when the whole scoring ends. SUM_KEY (Z*) is the default. */
 typedef enum { SUM_KEY = 0, SUM_Z, SUM_CONC, SUM_NSD, SUM_AC, SCORE_SUM_N } ScoreSum;
@@ -771,23 +625,18 @@ typedef struct {
 #define SCORE_ROWS_MAX 62   // 50 main + 12 bonus (Eurojackpot)
 
 #define WSIG_TOP_N 5
-/* ⚠ There is deliberately NO minimum jump. A floor of 0,05 stood here and was
- * removed on 2026-08-30: at the measured jump noise (wsig_sd, 0,0155) it was
- * only 3,2 sigma, so it fired about once every 700 node-measurements and the
- * card stayed hidden through a whole healthy session — which reads as a broken
- * feature, not as a quiet instrument. The job a floor was meant to do — keep
- * noise from looking like a finding — is done properly by wsig_sd and the
- * x-sigma column: five rows at 2..3 sigma ARE the quiet session, stated in the
- * units that say so, and a real event pushes one of them into double digits.
- * Publish the number, draw no verdict (D47). */
+/* ⚠ There is deliberately NO minimum jump. Noise-vs-finding is decided by
+ * wsig_sd and the x-sigma column: five rows at 2..3 sigma ARE the quiet
+ * session, stated in the units that say so, and a real event pushes one of
+ * them into double digits. Publish the number, draw no verdict. */
 
 typedef struct {
     ElottoState      state;
     ElottoPhase      phase;
     ElottoMode       mode;
     /* ROWS CURRENTLY IN results[] — not the session's item count. The two were
-     * the same number until round-boundary compaction (2026-08-19) made
-     * results[] a subset rather than a prefix. Everything that walks the array
+     * the same number until round-boundary compaction made results[] a subset
+     * rather than a prefix. Everything that walks the array
      * bounds itself with this; everything that reports PROGRESS uses
      * items_done. ⚠ Using this one for progress makes the counter go backwards
      * the first time a compaction runs. */
@@ -841,21 +690,21 @@ typedef struct {
      * scoring, cleared at every round start. score_sig_z / score_sig_c are the
      * last closed scoring pass's own channel σ (the span σ its keys divide by),
      * score_span_n the numbers in that pass — the scoring's health line. */
-    /* How the pool now being measured was picked `[D108]`: its size (main +
+    /* How the pool now being measured was picked: its size (main +
      * bonus), the column its sum was on and the round. Set at the pick, kept
      * until the next one — unlike pool_main/_euro, which the next scoring
      * replaces live. 0 before the first pick. */
     int              pool_used_n, pool_used_sum, pool_used_round;
-    volatile int     score_sum;           // ScoreSum picking the pool [D104]; loaded
+    volatile int     score_sum;           // ScoreSum picking the pool; loaded
                                           // from NVS at boot, kept across sessions,
                                           // set + stored by POST /scoresum
     ScoreItem       *score_rows;          // SCORE_ROWS_MAX, PSRAM (internal RAM is the
-                                          // ring's [D91]); NULL = allocation failed
+                                          // ring's); NULL = allocation failed
     int              score_rows_n;
     double           score_sig_z, score_sig_c;
     int              score_span_n;
     int              score_conc_n;        // numbers of that pass carrying a concordance
-    /* Item autocorrelation `[D110]`: z_L = r_L·√(n−L) of the centred, block-σ
+    /* Item autocorrelation: z_L = r_L·√(n−L) of the centred, block-σ
      * scaled z series in MEASUREMENT order, lags 1..4 — the last closed pass
      * block (item_ac_*) and the last closed scoring pass (score_ac_*). Unit
      * normal for independent items; Bancel's lag-1 test on the GCP series. */
@@ -868,7 +717,7 @@ typedef struct {
      * Under H₀ with a working instrument: mean ≈ 0, σ ≈ 1, Σz² ≈ n.
      * Ranking is secondary: read these three before any table. Updated after
      * every valid item from the valid prefix.
-     * ⚠ They are PUBLISHED, not enforced (2026-08-28). The software draws no
+     * ⚠ They are PUBLISHED, not enforced. The software draws no
      * verdict from them and excludes nothing on them — exclusion is soft-down
      * and block quarantine, and neither reads this block. */
     double           pass_mean;           // mean of valid rank_z() (z_ctr) so far
@@ -879,32 +728,30 @@ typedef struct {
                                           // every pass statistic is computed over
     /* Ranked items whose block is still OPEN. Measured and archived, but not yet
      * assessable: z_ctr holds the provisional RAW value until close_block()
-     * centres it (D8), so these carry the per-node offsets and belong in no
+     * centres it, so these carry the per-node offsets and belong in no
      * statistic. They join pass_n_valid at the next block close. ⚠ Published so
      * "measured" and "assessed" can be told apart — they differ by up to one
      * block, and a reader who assumes they are the same will misread n. */
     int              pass_n_open;
     int              pass_n_void;         // incomplete combines (k=0), archived only
     int              pass_n_excl;         // k>0 but skip_rank (trigger-block quarantine)
-    /* The camera-sigma jump board (D62). Biggest |jump| first, session-wide.
+    /* The camera-sigma jump board. Biggest |jump| first, session-wide.
      * ⚠ This is a SUSPICION list, not a ranking: what stands at the top is
      * the item whose bits were least quiet while they were taken, i.e. the
      * one whose z deserves the least trust. It must never be read like
      * top[]/low[], and it excludes nothing by itself — the software
-     * publishes the number and draws no verdict (D47). */
-    /* What each soft-down trip was made of (D63). Oldest kept, newest dropped
+     * publishes the number and draws no verdict. */
+    /* What each soft-down trip was made of. Oldest kept, newest dropped
      * once full: the FIRST trip of a session is the one worth keeping — a
      * sticky node that keeps failing its gate produces all the rest. */
     TripRec          trip_hist[TRIPX_MAX];
     int              trip_n;
     WsigEvent        wsig_top[WSIG_TOP_N];
     int              wsig_n;              // entries in use, 0..WSIG_TOP_N
-    /* Measured spread of the jump itself, over every node-item of this session
-     * (D62). It is what turns a jump into a judgement: on this rig it came out
-     * 0,0177, so WSIG_MIN_JUMP 0,05 is about 2,8 of these and a board entry at
-     * 0,05 is ordinary sampling noise while one at 0,20 is not.
+    /* Measured spread of the jump itself, over every node-item of this
+     * session. It is what turns a jump into a judgement.
      * ⚠ Published so the READER can scale, not so the software can: nothing
-     * gates on it (D47). Without it a board full of 3-sigma noise looks exactly
+     * gates on it. Without it a board full of 3-sigma noise looks exactly
      * like a board holding one real event. */
     double           wsig_sd;
     int              wsig_sd_n;           // node-items behind wsig_sd
@@ -912,7 +759,7 @@ typedef struct {
                                           // (1.0 = independent unit nodes)
     /* ── Concordance ranking weight ────────────────────────────────
      * ⚠ It RANKS. It does not test. pass_mean/pass_sigma/pass_chi2 stay
-     * on z alone (D45, D65). */
+     * on z alone. */
     double           pre_w;               // concordance weight, ?wpre=
                                           // (0 = pure-z ranking)
     int              pre_n;               // ranked items carrying a CONCORDANCE
@@ -983,10 +830,7 @@ typedef struct {
 
     /* ── Which side went quiet ─────────────────────────────────────────
      * A drop says a node stopped answering. It does NOT say whether the node
-     * went away or the master's own link did, and on 2026-08-20 that cost a
-     * 4 h session: all three slaves missed their limit inside the same ~50 s,
-     * every node was healthy afterwards, and nothing on the master recorded
-     * whether its own Ethernet had been up at the time.
+     * went away or the master's own link did.
      *
      * eth_* are LIFETIME, deliberately: the link event that ends a session is
      * often the one that happened before it started, and a per-session counter
@@ -1015,7 +859,7 @@ typedef struct {
                                           // is the matched control this change
                                           // has to be compared against, so it is
                                           // a session parameter, not a #define
-    int              cal_interval_ms;     // current dynamic interval [D106]
+    int              cal_interval_ms;     // current dynamic interval 
     int              cal_due_ms;          // until the next sweep is due, 0 = due
                                           // (refreshed at every candidate point)
     int              cal_ms;              // what the last sweep actually cost,
@@ -1034,7 +878,7 @@ typedef struct {
                                           // only written when the sweep ENDS, so it
                                           // cannot drive progress while one runs
     volatile int64_t settle_end_us;       // the post-sweep settle pause ends here,
-                                          // 0 when none is running `[D87]`.
+                                          // 0 when none is running.
                                           // Published as settle_left_ms
     volatile bool    noise_stalled;      // the array lost too many cameras to carry
                                           // on. There is no substitute source to fall
@@ -1049,11 +893,9 @@ typedef struct {
                                           // policy exists to prevent
     /* ── The pool scoring proposed ─────────────────────────────────────
      * Scoring picks a pool and publishes it here for /status and the UI.
-     * ⛔ There is NO confirmation gate (D66/D67): the pass starts on the
-     * proposal and `POST /pool` answers 400. The gate, its PHASE_POOL_CONFIRM
-     * state and the `pool_confirm` flag were deleted on 2026-09-02; the web
-     * form's `confirm=1` is now only a "save my form values" marker, handled
-     * as a local in the /start handler.
+     * ⛔ There is NO confirmation gate: the pass starts on the proposal and
+     * `POST /pool` answers 400. The web form's `confirm=1` is only a "save my
+     * form values" marker, handled as a local in the /start handler.
      *
      * Keeping fewer numbers is legitimate and shrinks the combination space
      * exactly: at pool_n_main == pool_need_main (and, for Eurojackpot,
@@ -1072,7 +914,7 @@ typedef struct {
                                           // which case only the drift/σ aggregates exist)
     /* The pass, in MEASUREMENT order: results[j] is the j-th item measured
      * (its combination id is results[j].index). Compact by construction, so
-     * the prefix [0 .. runs_completed) is always the complete record — an
+     * the prefix [0.. runs_completed) is always the complete record — an
      * abort needs no compaction. */
     RunResult        results[NUM_RUNS];
 } ElottoStatus;
@@ -1101,14 +943,14 @@ const camera_cal_t *elotto_last_calibration(void);
 void results_archive_init(void);
 
 /* The combined ranking key of one row, in units of that item's own block σ
- * (D68): block-centred z and concordance, weighted by pre_w. The ONE accessor
+ *: block-centred z and concordance, weighted by pre_w. The ONE accessor
  * every table and every survivor choice goes through, for the same reason
  * rank_z() is the only reader of z_ctr. */
 double rank_key(const RunResult *r);
 
 /* The up-to `max` most extreme ranked & centred rows by |rank_key| (both
  * tails), copied into out[0..return) under the archive lock. The live form of
- * the compaction survivors, for the sortable Top-10 (D78). The
+ * the compaction survivors, for the sortable Top-10. The
  * caller sorts on whichever column it displays; selection here is by |Z*|
  * only, so a newly measured item joins the set exactly as it did before. */
 int results_extremes(RunResult *out, int max);
