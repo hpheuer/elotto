@@ -65,7 +65,7 @@ run's gain, not the session.
 transistor thermal and trap noise, column/ADC chain — at maximum analog gain. The old rule
 "photons, and only photons" holds for the OV5647 only. One camera per node, never shared.
 Non-overlapping frame pairs, diff = f[2k+1]−f[2k] per pixel (cancels FPN exactly), LSB packed.
-⛔ LSB bits as measured. Fisher–Yates uses an xorshift32 seeded from the camera; it never enters a z.
+⛔ LSB bits as measured, the dark IMX219 included — the higher diff bits are biased or sign-dominated (`GET /camtest?bitscan=<s>`, docs/BITSCAN.md). Fisher–Yates uses an xorshift32 seeded from the camera; it never enters a z.
 
 **The ×√n gain is NOT established** — it assumes node independence. Judge a session on per-block
 combined σ **and** the full pairwise matrix, never on `pair_r` alone: **σ, not correlation, is
