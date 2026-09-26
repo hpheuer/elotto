@@ -131,9 +131,9 @@ across rounds a combination can recur — identity is **(round, index)**.
 **Phase 0 — scoring.** It starts 2 s after the sweep before it (`SCORE_START_PAUSE_MS`, a visible
 break for the operator). Each number 1..N is measured **`SCORE_PASSES` (20) times**, each pass a
 full session window in a fresh Fisher–Yates order (never the same number back-to-back).
-After each pass every column — Z\*, Z, Conc, Δn, AC — is added to that number's own running sum;
+After each pass every column — Z\*, Z, Conc, Δn, AC, bAC — is added to that number's own running sum;
 the pool is the top by ONE of those sums, the one selected on the page (Σ marker in a column
-header, `POST /scoresum?c=key|z|conc|nsd|ac`) **when the whole scoring
+header, `POST /scoresum?c=key|z|conc|nsd|ac|bac`) **when the whole scoring
 ends** — in Eurojackpot both pools at once. The pool criterion is **freely
 selectable and remembered**: a Σ click writes it to NVS at once (any start, not only
 `confirm=1`), boot loads it (Z\* if none stored), a session start keeps it — it holds for the whole
@@ -255,7 +255,7 @@ not fault.
 i.e. sensitivity, which is the harm that matters when the effect being hunted is small.
 
 Wire: `Z:<z>[,<h1>,<h2>][,wsig=<σ>][,ac=<Σz_L>]`. `,wsig=` and `,ac=` TAGGED.
-`,ac=` (pixel AC) is still sent and no longer read. Every node measures the commanded `nseg`.
+`,ac=` (window bit AC) feeds the `bAC` column; the master takes its own from `win_ac_z`. Every node measures the commanded `nseg`.
 
 ## Stored z is RAW; ranking is block-centred
 - **`z_score` is the raw combined Stouffer z and is never rewritten.** It stays beside `z_ctr` in
@@ -279,19 +279,18 @@ what remains visible is an effect varying **between items inside a block**.
 - **A view button over the table** switches items ↔ number scoring whenever both have data;
   default follows the phase.
 - **One sortable table of ten**: Top-10, item counter + block badge. Columns: `Z*` (key
-  in that item's block-σ units), `Z`, `Conc`, `Δn`, `AC`.
+  in that item's block-σ units), `Z`, `Conc`, `Δn`, `AC`, `bAC`.
   ⚠ **The table is the leading 10 of the ~50 most extreme items by `|Z*|`, sorted by whichever
   column header was clicked**. `GET /extremes` (streamed JSON, `emit_run` row shape,
   polled every **5 s** — it is a ~15 KB scan on the master's HTTP task, which shares the consumer
   core, so a 1 s poll stole the master's extraction CPU) carries the set; the page sorts client-side
-  and shows the top 10 of the active sort. Click `Z*`/`Z`/`Conc`/`Δn`/`AC` to sort; a second click on the
+  and shows the top 10 of the active sort. Click `Z*`/`Z`/`Conc`/`Δn`/`AC`/`bAC` to sort; a second click on the
   same header flips direction (arrow ▾/▴, ⇅ on the inactive ones), so the low end is one click away —
   which is why the old Bottom-5 table is gone. ⛔ Items still ENTER the set by `|Z*|` only — the sort
   reorders the view, never the display pool of 50 or the compaction archive of 100. A missing `Δn` (solo item) sinks to the
   bottom of a `Δn` sort. `Δn` prints the node count it is taken over in parentheses — `0,79 (3)` is
   three cameras. Until the first `/extremes` reply lands the table falls back to `/status` `top`.
-  **`AC` is the ITEM autocorrelation** (it replaced the pixel AC, which
-  stays only in `/camlog` `wac`): u = centred combined z / block σ in MEASUREMENT order,
+  **`AC` is the ITEM autocorrelation**: u = centred combined z / block σ in MEASUREMENT order,
   AC_j = Σ_{L=1..4} u_j·u_{j−L} / √m (m = lags available) — **unit variance for independent
   items**, read against 0. + = it moved with its predecessors, − = it alternated. Coloured at
   |AC| > 3. **—** until the block (scoring: the pass) closes, and for its first item. The
@@ -300,6 +299,14 @@ what remains visible is an effect varying **between items inside a block**.
   SUM may pick the pool when selected (research).
   ⚠ It only sorts the ~50 extremes by `|Z*|` — the items with the largest `AC` session-wide are
   not necessarily in that set.
+  **`bAC` is the BIT autocorrelation of the item's own window**: per node a = Σ_{L=1..4} z_L of
+  its LSB stream over that window (`,ac=`, `/camlog` `wac`), centred on that node's block mean
+  (scoring: pass mean; a node with < 2 values stays out), Stouffer over the combined nodes, divided
+  by the block's own σ of that combine — unit variance, read against 0, coloured at |bAC| > 3.
+  z counts ones and is blind to their order; bAC sees only the order. Research hypothesis: it never
+  enters Z\*, its scoring SUM may pick the pool when selected. **—** until centred.
+  ⚠ The camera's own bit structure is a per-node constant and the centring removes it; what is
+  left is item-to-item variation of that structure.
   **`Δn` is node agreement**: σ across the contributing nodes of their block-centred z,
   each node divided by ITS OWN σ over that block. Small = the cameras moved together on this
   item; **≈ 1 is what independent nodes give**, so read it against 1, not against 0.

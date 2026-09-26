@@ -245,6 +245,7 @@ static void nth_combination(const uint8_t *pool, int n, int r, int k, uint8_t *o
 // random passes; it must NOT go back to repeats in place (onset is the payload).
 static void score_one_run(bool *ok, float znode[MAX_NODES],
                           float h1[MAX_NODES], float h2[MAX_NODES],
+                          float acn[MAX_NODES],
                           uint8_t *mask, float *ac, ScoreItem *row,
                           float wsig[MAX_NODES]);
 static void score_build_keys(const float zn[][MAX_NODES],
@@ -267,6 +268,8 @@ static float *s_node_z;   // [NUM_RUNS * MAX_NODES], NaN = did not contribute
  * the centre is not known until the block closes. */
 static float *s_node_h1;
 static float *s_node_h2;
+/* Per-node window bit autocorrelation Σ_{L=1..4} z_L, NaN = none (bAC). */
+static float *s_node_ac;
 
 /* The previous window sigma each node reported, for the jump. NaN
  * until a node has reported once. Reset with the session, not per round:
@@ -362,6 +365,59 @@ static void node_z_move(int from, int to)
         memcpy(s_node_h2 + (size_t)to   * MAX_NODES,
                s_node_h2 + (size_t)from * MAX_NODES,
                MAX_NODES * sizeof(float));
+    if (s_node_ac)
+        memcpy(s_node_ac + (size_t)to   * MAX_NODES,
+               s_node_ac + (size_t)from * MAX_NODES,
+               MAX_NODES * sizeof(float));
+}
+
+static void node_ac_store(int j, const double *ac, const bool *have)
+{
+    if (!s_node_ac || j < 0 || j >= NUM_RUNS) return;
+    float *row = s_node_ac + (size_t)j * MAX_NODES;
+    for (int i = 0; i < MAX_NODES; i++)
+        row[i] = (have && have[i]) ? (float)ac[i] : NAN;
+}
+
+/* bAC over one centring span (a block, or a scoring pass). Item t has the
+ * per-node values vals[idx[t]*MAX_NODES + i] and the combine mask mask[t].
+ * Each node is centred on its own mean over the span (n >= 2, otherwise it
+ * stays out: an uncentred camera AC offset would rank nodes), the rest
+ * Stouffer-combined, and the combine divided by its own σ over the span
+ * (n >= 3). out[t] = NaN where there is nothing to say. */
+static void bac_span(const float *vals, const int *idx, const uint8_t *mask,
+                     int n, double *out)
+{
+    double m[MAX_NODES] = {0};
+    int    c[MAX_NODES] = {0};
+    for (int t = 0; t < n; t++) {
+        const float *row = vals + (size_t)idx[t] * MAX_NODES;
+        for (int i = 0; i < MAX_NODES; i++)
+            if ((mask[t] & (1u << i)) && isfinite((double)row[i])) {
+                m[i] += (double)row[i]; c[i]++;
+            }
+    }
+    for (int i = 0; i < MAX_NODES; i++) if (c[i] >= 2) m[i] /= (double)c[i];
+    double s = 0.0, ss = 0.0;
+    int    ns = 0;
+    for (int t = 0; t < n; t++) {
+        const float *row = vals + (size_t)idx[t] * MAX_NODES;
+        double sum = 0.0;
+        int    kk  = 0;
+        for (int i = 0; i < MAX_NODES; i++)
+            if ((mask[t] & (1u << i)) && c[i] >= 2 && isfinite((double)row[i])) {
+                sum += (double)row[i] - m[i]; kk++;
+            }
+        out[t] = kk ? sum / sqrt((double)kk) : NAN;
+        if (kk) { s += out[t]; ss += out[t] * out[t]; ns++; }
+    }
+    double sd = 0.0;
+    if (ns >= 3) {
+        double mu = s / ns, v = (ss - ns * mu * mu) / (ns - 1);
+        if (v > 0.0) sd = sqrt(v);
+    }
+    for (int t = 0; t < n; t++)
+        out[t] = (sd > 0.0 && isfinite(out[t])) ? out[t] / sd : NAN;
 }
 
 /* Running pass sums over RANKED items only (k > 0, !skip_rank). Ranking and
@@ -540,7 +596,7 @@ static bool score_pick_pool(int ix, uint8_t *pool, float *out_z)
                      "scoring: only %d of %d candidates carry a %s sum "
                      "— session aborted", i, A->pool_size,
                      ch == SUM_KEY ? "Z*" : ch == SUM_Z ? "Z" : ch == SUM_CONC ? "Conc"
-                     : ch == SUM_NSD ? "dn" : "AC");
+                     : ch == SUM_NSD ? "dn" : ch == SUM_AC ? "AC" : "bAC");
             printf("pass: %s\n", g_status.fault);
             g_status.abort_requested = true;
             return false;
@@ -582,6 +638,7 @@ static void score_rows_begin(int main_max, bool euro)
         else   s->r.nums[0] = (uint8_t)num;
         s->r.node_sd = NAN;
         s->r.acz     = NAN;
+        s->r.bac     = NAN;
         s->key       = NAN;
     }
     g_status.score_sig_z = g_status.score_sig_c = 0.0;
@@ -610,6 +667,7 @@ static void score_run(int max_val, int pool_size, bool euro_pool)
     static float zn[51][MAX_NODES];
     static float h1[51][MAX_NODES];
     static float h2[51][MAX_NODES];
+    static float an[51][MAX_NODES];   /* window bit AC per node (bAC) */
     uint8_t smask[51];
     /* The health line describes THIS scoring run's closed passes only — the
      * euro-number run must not show the main run's last span as its own. */
@@ -632,7 +690,7 @@ static void score_run(int max_val, int pool_size, bool euro_pool)
         for (int i = 0; i < 51; i++) {
             smask[i] = 0;
             for (int n = 0; n < MAX_NODES; n++)
-                zn[i][n] = h1[i][n] = h2[i][n] = NAN;
+                zn[i][n] = h1[i][n] = h2[i][n] = an[i][n] = NAN;
         }
         for (int i = n_order - 1; i > 0; i--) {
             int j = (int)(fast_rng() % (uint32_t)(i + 1));
@@ -649,7 +707,7 @@ static void score_run(int max_val, int pool_size, bool euro_pool)
             focus_show_number(k, euro_pool);
             bool ok = false;
             float wsig[MAX_NODES];
-            score_one_run(&ok, zn[k], h1[k], h2[k], &smask[k], &acp[k],
+            score_one_run(&ok, zn[k], h1[k], h2[k], an[k], &smask[k], &acp[k],
                           score_row(euro_pool, k), wsig);
             /* The jump board sees every window, scoring included: a camera
              * that moves during the hour of scoring is the same camera that
@@ -703,6 +761,18 @@ static void score_run(int max_val, int pool_size, bool euro_pool)
                 }
             }
         }
+        /* bAC over this pass: the pass is its own centring span. */
+        double bacp[51];
+        {
+            int     idx[51], nb = 0;
+            uint8_t bm[51];
+            double  bo[51];
+            for (int k = 0; k < 51; k++) bacp[k] = NAN;
+            for (int k = 1; k <= max_val; k++)
+                if (scored[k]) { idx[nb] = k; bm[nb] = smask[k]; nb++; }
+            bac_span(&an[0][0], idx, bm, nb, bo);
+            for (int t = 0; t < nb; t++) bacp[idx[t]] = bo[t];
+        }
         for (int k = 1; k <= max_val; k++) {
             if (!scored[k]) continue;
             ScoreItem *row = score_row(euro_pool, k);
@@ -714,6 +784,7 @@ static void score_run(int max_val, int pool_size, bool euro_pool)
             v[SUM_CONC] = isnan(conc[k]) ? 0.0 : conc[k];
             v[SUM_NSD]  = nsd[k];
             v[SUM_AC]   = (double)acp[k];   /* this pass's own, not the display row's */
+            v[SUM_BAC]  = bacp[k];
             for (int c = 0; c < SCORE_SUM_N; c++) {
                 if (!isfinite(v[c])) continue;
                 A->acc[c][k] += v[c];
@@ -725,6 +796,7 @@ static void score_run(int max_val, int pool_size, bool euro_pool)
             row->r.z_ctr   = isnan(zc_ctr[k]) ? 0.0f : (float)zc_ctr[k];
             row->r.zc_ctr  = isnan(conc[k])   ? 0.0f : (float)conc[k];
             row->r.node_sd = (float)nsd[k];
+            row->r.bac     = (float)bacp[k];
             row->key       = (float)scores[k];
             for (int c = 0; c < SCORE_SUM_N; c++) {
                 row->sums[c] = (float)A->acc[c][k];
@@ -895,7 +967,8 @@ static int gather_and_combine(double z_master, bool master_ok,
 typedef struct {
     double  z, zc;                      // zc 0 when fewer than two arms to corroborate
     double  znode[MAX_NODES], h1[MAX_NODES], h2[MAX_NODES];   /* RAW halves */
-    bool    have[MAX_NODES], haveh[MAX_NODES];
+    double  ac[MAX_NODES];              /* window bit AC Σz_L, raw (bAC) */
+    bool    have[MAX_NODES], haveh[MAX_NODES], haveac[MAX_NODES];
     uint8_t mask;
     int     k;
 } WindowMeas;
@@ -908,6 +981,15 @@ static int measure_window(WindowMeas *w)
     double zm = 0.0, h1m = 0.0, h2m = 0.0;
     bool   hok = false;
     bool   zok = fresh && gcp_zscore_ok(nseg, &zm, &hok, &h1m, &h2m);
+    /* The master's own window bit AC, read before the collect: the window
+     * accumulator keeps counting pairs until the next flush. */
+    double acm = NAN;
+    if (zok) {
+        camera_stats_t cs;
+        camera_get_stats(&cs);
+        if (cs.win_sigma_samples > 0)
+            acm = cs.win_ac_z[0] + cs.win_ac_z[1] + cs.win_ac_z[2] + cs.win_ac_z[3];
+    }
     focus_off();
     if (fresh && !zok) node_camera_failed(0, "stalled mid-run");
     if (nodes_have_slaves()) nodes_collect(LINK_MEAS_MS_FOR(nseg), true);
@@ -917,6 +999,12 @@ static int measure_window(WindowMeas *w)
                               w->h1, w->h2, w->haveh,
                               h1m, h2m, hok,
                               &w->z, &w->mask);
+    for (int i = 0; i < MAX_NODES; i++) {
+        double a = (i == 0) ? acm
+                 : (i < g_status.node_count ? (double)g_status.nodes[i].cam_ac_now : NAN);
+        w->haveac[i] = w->have[i] && isfinite(a);
+        w->ac[i]     = w->haveac[i] ? a : 0.0;
+    }
     for (int i = 0; i < MAX_NODES; i++) {
         if (!w->have[i]) { w->h1[i] = w->h2[i] = 0.0; continue; }
         if (!w->haveh[i]) {
@@ -949,6 +1037,7 @@ static int measure_window(WindowMeas *w)
  * candidates from selection instead. */
 static void score_one_run(bool *ok, float znode[MAX_NODES],
                           float h1[MAX_NODES], float h2[MAX_NODES],
+                          float acn[MAX_NODES],
                           uint8_t *mask, float *ac, ScoreItem *row,
                           float wsig[MAX_NODES])
 {
@@ -970,6 +1059,7 @@ static void score_one_run(bool *ok, float znode[MAX_NODES],
         r->z_ctr     = (k > 0) ? (float)m.z  : 0.0f;
         r->zc_ctr    = (k > 0) ? (float)m.zc : 0.0f;
         r->acz       = acv;
+        r->bac       = NAN;   /* set when the pass closes */
         r->node_sd   = NAN;
         row->key     = NAN;
     }
@@ -994,6 +1084,7 @@ static void score_one_run(bool *ok, float znode[MAX_NODES],
         znode[i] = m.have[i]  ? (float)m.znode[i] : NAN;
         h1[i]    = m.haveh[i] ? (float)m.h1[i]    : NAN;
         h2[i]    = m.haveh[i] ? (float)m.h2[i]    : NAN;
+        acn[i]   = m.haveac[i] ? (float)m.ac[i]   : NAN;
     }
 }
 
@@ -2452,6 +2543,20 @@ static void center_block(int block_idx)
         }
         r->zc_ctr = (float)conc_halves(hv1, hv2, mh1, mh2, hwh, MAX_NODES);
     }
+    /* bAC over the same items, centred and scaled on this block alone. */
+    if (s_node_ac) {
+        static int     bidx[NUM_RUNS];
+        static uint8_t bmask[NUM_RUNS];
+        static double  bout[NUM_RUNS];
+        int nb = 0;
+        for (int j = 0; j < ntot; j++) {
+            const RunResult *r = &g_status.results[j];
+            if ((int)r->block != block_idx || r->k == 0) continue;
+            bidx[nb] = j; bmask[nb] = r->have_mask; nb++;
+        }
+        bac_span(s_node_ac, bidx, bmask, nb, bout);
+        for (int t = 0; t < nb; t++) g_status.results[bidx[t]].bac = (float)bout[t];
+    }
     if (n > 0)
         printf("block %d: centred %d items (node means %+.3f %+.3f %+.3f %+.3f)\n",
                block_idx, n, m[0], m[1], m[2], m[3]);
@@ -2602,6 +2707,14 @@ void elotto_task(void *pvParam)
     if (s_node_h1 && s_node_h2) {
         for (size_t i = 0; i < (size_t)NUM_RUNS * MAX_NODES; i++)
             s_node_h1[i] = s_node_h2[i] = NAN;
+    }
+    /* Window bit AC per node (bAC), ~8 KB. Missing costs that column only. */
+    if (!s_node_ac)
+        s_node_ac = heap_caps_malloc((size_t)NUM_RUNS * MAX_NODES * sizeof(float),
+                                     MALLOC_CAP_SPIRAM);
+    if (s_node_ac) {
+        for (size_t i = 0; i < (size_t)NUM_RUNS * MAX_NODES; i++)
+            s_node_ac[i] = NAN;
     }
     /* The board and the per-node history behind it start empty every session:
      * a jump across a reboot or a parameter change is not an event. */
@@ -2931,6 +3044,7 @@ void elotto_task(void *pvParam)
              * so post-hoc recombine is possible. */
             node_z_store(slot, w.znode, w.have);
             node_h_store(slot, w.h1, w.h2, w.haveh);
+            node_ac_store(slot, w.ac, w.haveac);
             /* The instrument's own noise while THIS item was measured.
              * Read before anything can trigger the next window: cam_wsig_now
              * holds one window and the next 'M' overwrites it. */
@@ -2954,6 +3068,7 @@ void elotto_task(void *pvParam)
              * without results[], which compaction will have taken. */
             wsig_note(r, wsig, mask, 0);
             r->acz = NAN;   /* item AC, filled at block close */
+            r->bac = NAN;   /* bAC, filled by center_block() */
             if (k > 0) {
                 r->z_score = z;
                 /* Provisional: the block's node means are not known until it

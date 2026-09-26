@@ -262,7 +262,17 @@ typedef enum { PHASE_SCORING, PHASE_MEASURING,
 
 typedef struct {
     int        index;      // combination id (1-based slot in the enumeration)
-    double     z_score;    // RAW combined Stouffer z (Σz_i/√k) — never rewritten
+    /* BIT AUTOCORRELATION of the bits this item was measured from (bAC):
+     * per node a = Σ_{L=1..4} z_L over its window (,ac= on the wire, the
+     * master's own win_ac_z), centred on that node's mean over the block,
+     * Stouffer over the combined nodes, then divided by the block's own σ of
+     * that combine — unit variance within the block, read against 0.
+     * + = the bits clumped more than in the rest of the block, − = alternated.
+     * Never enters Z*; its scoring SUM may pick the pool (research).
+     * NaN until the block (scoring: the pass) is centred, or no node reported.
+     * Sits here to fill the padding before z_score: the row stays 48 bytes. */
+    float      bac;
+    double     z_score;   // RAW combined Stouffer z (Σz_i/√k) — never rewritten
     /* BLOCK-CENTRED combine: Σ(z_i − m_i,block)/√k over the same nodes that
      * entered z_score, where m_i,block is node i's own mean over this block.
      * This is what the ranking and pass mean/σ run on.
@@ -322,14 +332,9 @@ typedef struct {
      * confidence column beside Z*, not a second ranking key. Nothing selects,
      * excludes or reorders on it. */
     float      node_sd;
-    /* WINDOW AUTOCORRELATION of the bits this item was scored from:
-     * Σ over the combined nodes of Σ_{L=1..4} z_L, divided by √(4·n), n = nodes
-     * that reported one. z_L = r_L·√pairs_L is a node's lag-L autocorrelation
-     * over the window, unit normal for independent bits, so this is unit normal
-     * too. Sign: + = neighbouring pixels agree too often (mini-run spread
-     * inflated), − = they alternate (spread deflated).
-     * ⚠ A diagnostic column, not a key: nothing ranks, selects or excludes on it.
-     * NaN = no node reported one (VOID, or firmware without ,ac=). */
+    /* ITEM AUTOCORRELATION (AC): this item's centred z times the 1..4 items
+     * measured before it, / √m — see series_ac(). NaN until the block closes
+     * and for its first item. Never enters Z*. */
     float      acz;
 } RunResult;
 _Static_assert(sizeof(RunResult) == 48, "results[] row is the internal-RAM budget");
@@ -595,7 +600,7 @@ typedef struct {
  * exactly as a results[] row would be — index = the number, the number in
  * nums[0] (euro[0] for a bonus number), round, k, have_mask, z_score (raw),
  * z_ctr / zc_ctr (provisional raw until the pass closes, then centred on the
- * pass span, like an item on its block), node_sd (Δn), acz (AC). What a
+ * pass span, like an item on its block), node_sd (Δn), acz (AC), bac. What a
  * results[] row gets from its block instead is carried beside it: `key` (Z*,
  * the pass key in span-σ units — rank_key() would read s_bsig[] of a block
  * this row has none of) and `sum`, the running Σ the pool is picked on.
@@ -609,7 +614,7 @@ typedef struct {
 /* What the pool is picked on: the running sum of ONE column over the
  * closed scoring passes, chosen by the operator on the page (POST /scoresum)
  * and read when the whole scoring ends. SUM_KEY (Z*) is the default. */
-typedef enum { SUM_KEY = 0, SUM_Z, SUM_CONC, SUM_NSD, SUM_AC, SCORE_SUM_N } ScoreSum;
+typedef enum { SUM_KEY = 0, SUM_Z, SUM_CONC, SUM_NSD, SUM_AC, SUM_BAC, SCORE_SUM_N } ScoreSum;
 
 typedef struct {
     RunResult r;
