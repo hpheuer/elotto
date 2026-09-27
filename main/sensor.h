@@ -237,7 +237,6 @@ _Static_assert(UNLIM_RUNS_MAX + PASS_KEEP_EXTREME <= NUM_RUNS,
 typedef enum {
     SCORE_DIR_HIGH = 0,   // pick largest rank_key
     SCORE_DIR_LOW  = 1,   // pick smallest rank_key
-    SCORE_DIR_ABS  = 2,   // pick largest |rank_key|
 } ScoreDir;
 
 /* Stringify, so the HTML/JS copies of the numbers above are the SAME token the

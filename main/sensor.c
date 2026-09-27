@@ -235,7 +235,7 @@ static void nth_combination(const uint8_t *pool, int n, int r, int k, uint8_t *o
 
 // Scores each number 1..max_val with exactly ONE node-combined run (÷√k, like
 // Phase 2), sweeping the numbers in random order, then picks pool_size numbers
-// by the pre-registered score_dir (high / low / |z|). The pool is locked for
+// by the pre-registered score_dir (high / low). The pool is locked for
 // the whole pass, so this is where selection confidence matters most.
 //
 // ⚠ Under H₀ the combined z is already N(0,1): its SE is 1.0, not 1/√k.
@@ -568,12 +568,8 @@ static int score_pick_best(const ScoreAcc *A, int ch, const bool *used)
     bool first = true;
     for (int j = 1; j <= A->max_val; j++) {
         if (used[j] || !A->ok[ch][j]) continue;
-        double s = A->acc[ch][j], key;
-        switch (g_status.score_dir) {
-        case SCORE_DIR_LOW: key = -s;      break;
-        case SCORE_DIR_ABS: key = fabs(s); break;
-        default:            key = s;       break;
-        }
+        double s = A->acc[ch][j];
+        double key = g_status.score_dir == SCORE_DIR_LOW ? -s : s;
         if (first || key > bs) { b = j; bs = key; first = false; }
     }
     return b;
@@ -652,8 +648,7 @@ static void pool_log(const uint8_t *pm, int nm, const uint8_t *pe, int ne)
     for (int i = 0; i < ne && np < (int)sizeof(nums) - 4; i++)
         np += snprintf(nums + np, sizeof(nums) - np, " %d", pe[i]);
     evlog("Pool by %s sum of %s:%s",
-          g_status.score_dir == SCORE_DIR_LOW ? "lowest"
-          : g_status.score_dir == SCORE_DIR_ABS ? "largest |.|" : "highest",
+          g_status.score_dir == SCORE_DIR_LOW ? "lowest" : "highest",
           score_sum_label(score_sum_sel()), nums);
 }
 

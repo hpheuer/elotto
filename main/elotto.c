@@ -232,15 +232,6 @@ static const char HTML[] =
 "</span>"
 "</div>"
 "<div class='frow'>"
-"<label for='selScore' title='Pre-registered scoring direction. Picks the pool only, never the "
-"measurement pass.'>Num-Score direction:</label>"
-"<select id='selScore' class='fin' style='padding:4px 6px' onchange='setDir(this.value)'>"
-"<option value='high' selected>High</option>"
-"<option value='low'>low</option>"
-"<option value='abs'>|Z|</option>"
-"</select>"
-"</div>"
-"<div class='frow'>"
 "<label for='numPreW' title='Weight of concordance in the ranking key. "
 "The key is ((1-p)*z_ctr/\u03c3_z + p*zc_ctr/\u03c3_c)/sqrt((1-p)^2+p^2). 0 is z alone. "
 "Tables mean nothing before the first block closes: uncentred offsets are huge.'>"
@@ -249,9 +240,9 @@ static const char HTML[] =
 "value='" EL_STR(ENT_W_PRE_FORM) "'>"
 "</div>"
 "<div class='frow'>"
-"<label title='The column whose running sum picks the pool. Chosen with the Σ marker "
-"in the number-scoring table header; the last choice is stored and used by every "
-"following session.'>Pool criterion:</label>"
+"<label title='The column whose running sum picks the pool, and from which end. Column: the Σ marker "
+"in the number-scoring table header; end: the sort arrow of the Σ column (▾ highest, ▴ lowest). "
+"The last choice is stored and used by every following session.'>Pool criterion:</label>"
 "<span id='sumPref' style='color:#f0c040;font-weight:700'>Σ Z*</span>"
 "</div>"
 "<button class='btn btn-euro' style='width:100%' onclick='doStart(0)'>&#127808; Euro-Lotto</button>"
@@ -520,16 +511,16 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "+'/round ('+fmt(p.s)+' scoring + '+fmtEta(p.m)+' pass)';}"
 "h.innerHTML=rl('Euro '+e.p+'+'+e.q,pe,e.c)+'<br>'"
 "+rl('6of49 '+l.p,pl,l.c);}"
-/* Pool criterion with the form's direction: "highest Σ Δn", "largest |Σ Z*|".
-   Called without an argument when the direction select changes. */
-"var sumPrefC='key';"
+/* Pool criterion with its direction: "highest Σ Δn", "lowest Σ Z*".
+   DIR is the stored direction (NVS, set by prefs_send()); the Σ column's
+   sort arrow in the scoring table flips it. */
+"var sumPrefC='key',DIR='high';"
 /* The direction is remembered at once, like the pool column (Σ click). */
-"function setDir(v){fetch('/scoresum?dir='+v,{method:'POST'}).catch(function(){});"
+"function setDir(v){DIR=v;fetch('/scoresum?dir='+v,{method:'POST'}).catch(function(){});"
 "if(LD&&LD.state==='running'&&LD.scoring_pass>0)LD.score_dir=v;showSumPref();}"
 "function showSumPref(c){if(c)sumPrefC=c;var e=document.getElementById('sumPref');"
 "if(!e)return;var t='\\u03a3 '+({key:'Z*',z:'Z',conc:'Conc',nsd:'\\u0394n',ac:'AC',bac:'bAC',tr:'Tr'}[sumPrefC]||'Z*');"
-"var v=(document.getElementById('selScore')||{}).value;"
-"e.textContent=v==='low'?'lowest '+t:v==='abs'?'largest |'+t+'|':'highest '+t;}"
+"e.textContent=(DIR==='low'?'lowest ':'highest ')+t;}"
 "function setMode(mode){"
 "document.getElementById('subtitle').textContent="
 "mode===0?'Eurojackpot • 5 of 50 + 2 bonus numbers':'6 of 49 Lotto';}"
@@ -669,7 +660,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "||" EL_STR(UNLIM_RUNS_DEFAULT) ";"
 "if(mxr<" EL_STR(UNLIM_RUNS_MIN) ")mxr=" EL_STR(UNLIM_RUNS_MIN) ";"
 "if(mxr>" EL_STR(UNLIM_RUNS_MAX) ")mxr=" EL_STR(UNLIM_RUNS_MAX) ";"
-"var score=document.getElementById('selScore').value||'high';"
+"var score=DIR;"
 // Clamped here as well as validated in C: /start answers 400 for anything
 // outside 0..1 rather than falling back, so the form must not be able to send
 // a value that gets the session refused. parseFloat of '' is NaN -> default.
@@ -1192,9 +1183,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "function toggleView(){VIEW=SCM?'item':'num';lastEx=0;lastSc=0;if(LD)showResults(LD);}"
 "function colVal(r,k){var v;"
 "if(k==='key')v=r.key;"
-/* Σ sorts in the direction that picks the pool (?score=): largest first is
-   then always the pool end, also for low and |Z|. */
-"else if(k==='sum'){var dir=LD&&LD.score_dir;v=(r.sum==null)?null:(dir==='abs'?Math.abs(r.sum):(dir==='low'?-r.sum:r.sum));}"
+"else if(k==='sum')v=r.sum;"
 "else if(k==='z_ctr')v=(r.z_ctr===undefined||r.z_ctr===null)?r.z:r.z_ctr;"
 "else if(k==='zc')v=r.zc;"
 "else if(k==='ac')v=r.ac;"
@@ -1220,7 +1209,13 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "function exArrow(k){var K=SCM?SSK:SORTK,D=SCM?SSD:SORTD;"
 "if(K!==k)return ' <span style=\"color:#667\">\\u21c5</span>';"
 "return D<0?' \\u25be':' \\u25b4';}"
+/* While the scoring runs, the Σ column's arrow IS the pool direction:
+   ▾ = highest, ▴ = lowest. A second click on Σ flips the pool, a first
+   click only sorts on it in the direction the pool already has. */
+"function liveSc(){return LD&&LD.state==='running'&&LD.scoring_pass>0;}"
 "function sortBy(k){"
+"if(SCM&&k==='sum'&&liveSc()){if(SSK==='sum')setDir(LD.score_dir==='low'?'high':'low');"
+"SSK='sum';SSD=LD.score_dir==='low'?1:-1;renderScoreTable();return;}"
 "if(SCM){if(SSK===k)SSD=-SSD;else{SSK=k;SSD=-1;}renderScoreTable();return;}"
 "if(SORTK===k)SORTD=-SORTD;else{SORTK=k;SORTD=-1;}renderExtremeTables();}"
 /* The scoring table: every number of this round's scoring, its latest
@@ -1234,6 +1229,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "SC=(x&&x.extremes)?x.extremes:[];renderScoreTable();}).catch(function(){});}"
 "function renderScoreTable(){"
 "if(!LD)return;var d=LD,isEuro=d.mode==='euro';"
+"if(SSK==='sum'&&liveSc())SSD=d.score_dir==='low'?1:-1;"
 "var lab={sum:'\\u03a3 '+({key:'Z*',z:'Z',conc:'Conc',nsd:'\\u0394n',ac:'AC',bac:'bAC',tr:'Tr'}[curSum()]||'Z*'),"
 "key:'Z*',z_ctr:'Z',zc:'Conc',nsd:'\\u0394n',ac:'AC',bac:'bAC',tr:'Tr'};"
 "var s=SC.slice().sort(scCmp);"
@@ -1247,7 +1243,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "document.getElementById('resTitle').innerHTML="
 "'\\uD83C\\uDFC6 Top '+top.length+' of '+SC.length+' \\u2014 scoring '"
 "+(d.scoring_pass>0?'pass '+d.scoring_pass+'/'+(d.scoring_passes||" EL_STR(SCORE_PASSES) "):'done, round '+(d.round||1))"
-"+' \\u00b7 pool: '+(d.score_dir==='low'?'lowest '+lab.sum:d.score_dir==='abs'?'largest |'+lab.sum+'|':'highest '+lab.sum);"
+"+' \\u00b7 pool: '+(d.score_dir==='low'?'lowest ':'highest ')+lab.sum;"
 "renderRunTable('resHead','resBody',top,isEuro,d,{p:d.pre_w||0},{pool:pool});"
 "if(!top.length)document.getElementById('resBody').innerHTML="
 "'<tr><td colspan=\"12\" style=\"color:#d0b0b0;padding:10px\">No number scored yet.</td></tr>';}"
@@ -1282,10 +1278,10 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 /* How the pool being measured was picked, e.g. "9 numbers, scoring
    lowest Δn". Items of earlier rounds came from their own pools. */
 "var su={key:'Z*',z:'Z',conc:'Conc',nsd:'\\u0394n',ac:'AC',bac:'bAC',tr:'Tr'}[d.pool_used_sum]||'Z*';"
-"var dr=d.score_dir==='low'?'lowest ':d.score_dir==='abs'?'largest |'+su+'|':'highest ';"
+"var dr=d.score_dir==='low'?'lowest ':'highest ';"
 "document.getElementById('resSub').textContent=(d.pool_used_n>0)"
 "?('pool of round '+d.pool_used_round+': '+d.pool_used_n+' numbers, scoring '"
-"+(d.score_dir==='abs'?dr:dr+su)):'';}"
+"+dr+su):'';}"
 /* Items and scoring numbers: the same rows, one renderer. `opt` is set
    for the scoring — the Item column becomes the running sum \u03a3 (the number
    stands in Numbers / Bonus), a green # marks a pool member, and a row whose
@@ -1303,7 +1299,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "if(navigator.clipboard&&window.isSecureContext)navigator.clipboard.writeText(t).then(done,old);else old();}"
 "function renderRunTable(headId,bodyId,res,isEuro,d,st,opt){"
 "document.getElementById(headId).innerHTML="
-"'<tr><th>#</th>'+(opt?'<th style=\"cursor:pointer\" title=\"running sum of this number\\u2019s pass keys \\u2014 the pool is picked on it; sorts in the ?score= direction (high / low / |\\u03a3|). A green # marks a pool member.\" onclick=\"sortBy(\\'sum\\')\">\\u03a3 '+{key:'Z*',z:'Z',conc:'Conc',nsd:'\\u0394n',ac:'AC',bac:'bAC',tr:'Tr'}[curSum()]+exArrow('sum')+'</th>':'<th>Item</th>')"
+"'<tr><th>#</th>'+(opt?'<th style=\"cursor:pointer\" title=\"running sum of this number\\u2019s pass keys \\u2014 the pool is picked on it. While the scoring runs the arrow is the pool direction: \\u25be highest, \\u25b4 lowest; a second click flips it. A green # marks a pool member.\" onclick=\"sortBy(\\'sum\\')\">\\u03a3 '+{key:'Z*',z:'Z',conc:'Conc',nsd:'\\u0394n',ac:'AC',bac:'bAC',tr:'Tr'}[curSum()]+exArrow('sum')+'</th>':'<th>Item</th>')"
 "+(st?'<th style=\"cursor:pointer\" title=\"ranking key in units of its own block σ. Click to sort the 50\" onclick=\"sortBy(\\'key\\')\">'+sumLab(opt,'key','Z*')+exArrow('key')+sumMark(opt,'key')+'</th>'"
 "+'<th style=\"cursor:pointer\" title=\"block-centred combined z. Click to sort the 50\" onclick=\"sortBy(\\'z_ctr\\')\">'+sumLab(opt,'z','Z')+exArrow('z_ctr')+sumMark(opt,'z')+'</th>'"
 "+'<th style=\"cursor:pointer\" title=\"leave-one-out half-window concordance. Click to sort the 50\" onclick=\"sortBy(\\'zc\\')\">'+sumLab(opt,'conc','Conc')+exArrow('zc')+sumMark(opt,'conc')+'</th>'"
@@ -1669,8 +1665,7 @@ static esp_err_t status_handler(httpd_req_t *req)
         g_status.phase == PHASE_CALIBRATE    ? "calibrating" :
                                                "measuring";
     const char *score_str =
-        g_status.score_dir == SCORE_DIR_LOW ? "low" :
-        g_status.score_dir == SCORE_DIR_ABS ? "abs" : "high";
+        g_status.score_dir == SCORE_DIR_LOW ? "low" : "high";
     pos = buf_append(buf, sizeof(buf), &pos,
         "{\"state\":\"%s\",\"mode\":\"%s\",\"phase\":\"%s\","
         "\"slave\":%s,"
@@ -2245,18 +2240,17 @@ static esp_err_t focus_handler(httpd_req_t *req)
 static esp_err_t scoresum_handler(httpd_req_t *req)
 {
     if (!origin_ok(req)) return ESP_OK;
-    /* ?dir=high|low|abs — the pool direction, remembered like the column:
+    /* ?dir=high|low — the pool direction, remembered like the column:
      * written to NVS at once (the start form's value from then on), and
      * applied to a running session only while its scoring runs. */
     {
         char q[32] = "", v[8] = "";
         if (httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK &&
             httpd_query_key_value(q, "dir", v, sizeof(v)) == ESP_OK) {
-            int d = v[0] == 'l' ? SCORE_DIR_LOW : v[0] == 'a' ? SCORE_DIR_ABS
-                  : v[0] == 'h' ? SCORE_DIR_HIGH : -1;
+            int d = v[0] == 'l' ? SCORE_DIR_LOW : v[0] == 'h' ? SCORE_DIR_HIGH : -1;
             if (d < 0) {
                 httpd_resp_set_status(req, "400 Bad Request");
-                httpd_resp_sendstr(req, "dir= must be high, low or abs");
+                httpd_resp_sendstr(req, "dir= must be high or low");
                 return ESP_OK;
             }
             dir_pref_save(d);
@@ -2392,10 +2386,9 @@ static bool start_parse_gap(const char *val, StartReq *r, httpd_req_t *req)
 static bool start_parse_score(const char *val, StartReq *r, httpd_req_t *req)
 {
     if (val[0] == 'l' || val[0] == 'L')      r->score_dir = SCORE_DIR_LOW;
-    else if (val[0] == 'a' || val[0] == 'A') r->score_dir = SCORE_DIR_ABS;
     else if (val[0] == 'h' || val[0] == 'H') r->score_dir = SCORE_DIR_HIGH;
     else {
-        start_refuse(req, "score= must be high, low or abs");
+        start_refuse(req, "score= must be high or low");
         return false;
     }
     return true;
@@ -3225,10 +3218,8 @@ static void prefs_send(httpd_req_t *req)
             "e=document.getElementById('numUnlimRuns');if(e)e.value='%u';",
             (unsigned)maxruns);
     if (score != 0xff) {
-        const char *sv = score == SCORE_DIR_LOW ? "low"
-                       : score == SCORE_DIR_ABS ? "abs" : "high";
-        p += snprintf(js + p, sizeof(js) - p,
-            "e=document.getElementById('selScore');if(e)e.value='%s';", sv);
+        p += snprintf(js + p, sizeof(js) - p, "DIR='%s';showSumPref();",
+                      score == SCORE_DIR_LOW ? "low" : "high");
     }
     if (wpre != 0xff)
         p += snprintf(js + p, sizeof(js) - p,
