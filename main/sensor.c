@@ -634,6 +634,23 @@ static bool score_pick_pool(int ix, uint8_t *pool, float *out_z)
     return true;
 }
 
+/* TEST ?fakepool=1: n distinct numbers of 1..max_val, sorted ascending. */
+static void fake_pick_pool(int max_val, int n, uint8_t *pool, float *out_z)
+{
+    uint8_t v[51];
+    for (int i = 0; i < max_val; i++) v[i] = (uint8_t)(i + 1);
+    for (int i = 0; i < n; i++) {
+        int j = i + (int)(fast_rng() % (uint32_t)(max_val - i));
+        uint8_t t = v[i]; v[i] = v[j]; v[j] = t;
+    }
+    for (int i = 1; i < n; i++) {
+        uint8_t key = v[i]; int j = i - 1;
+        while (j >= 0 && v[j] > key) { v[j+1] = v[j]; j--; }
+        v[j+1] = key;
+    }
+    for (int i = 0; i < n; i++) { pool[i] = v[i]; if (out_z) out_z[i] = 0.0f; }
+}
+
 /* One Log line for the whole pool: main and bonus numbers are picked on the
  * same criterion. */
 static void pool_log(const uint8_t *pm, int nm, const uint8_t *pe, int ne)
@@ -2940,14 +2957,21 @@ void elotto_task(void *pvParam)
         memset(pool_euro, 0, sizeof(pool_euro));
         s_sacc[0].active = s_sacc[1].active = false;
         s_live_sum = -1;
-        score_run(mx, pool_nm, false);
-        if (g_status.abort_requested) goto done;
-        if (euro) score_run(12, pool_ne, true);
-        if (g_status.abort_requested) goto done;
-        /* The pick, on the column selected at the END of the scoring 
-         * — main and bonus pool alike. */
-        if (!score_pick_pool(0, pool_main, g_status.pool_main_z)) goto done;
-        if (euro && !score_pick_pool(1, pool_euro, g_status.pool_euro_z)) goto done;
+        if (g_status.fake_pool) {
+            /* TEST ?fakepool=1: no scoring, a random pool — straight to the pass. */
+            fake_pick_pool(mx, pool_nm, pool_main, g_status.pool_main_z);
+            if (euro) fake_pick_pool(12, pool_ne, pool_euro, g_status.pool_euro_z);
+            evlog("Pool FAKE (random, test)");
+        } else {
+            score_run(mx, pool_nm, false);
+            if (g_status.abort_requested) goto done;
+            if (euro) score_run(12, pool_ne, true);
+            if (g_status.abort_requested) goto done;
+            /* The pick, on the column selected at the END of the scoring 
+             * — main and bonus pool alike. */
+            if (!score_pick_pool(0, pool_main, g_status.pool_main_z)) goto done;
+            if (euro && !score_pick_pool(1, pool_euro, g_status.pool_euro_z)) goto done;
+        }
         pool_log(pool_main, pool_nm, pool_euro, euro ? pool_ne : 0);
         g_status.pool_used_n     = pool_nm + (euro ? pool_ne : 0);
         g_status.pool_used_sum   = score_sum_sel();

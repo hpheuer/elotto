@@ -791,6 +791,7 @@ typedef struct {
     double           off_first, off_last; // master raw per-run z offset, first / latest block
     double           sigma_lo, sigma_hi;  // min / max per-block combined σ across the session
     ScoreDir         score_dir;           // Phase-0 pool selection rule (pre-registered)
+    bool             fake_pool;           // TEST ?fakepool=1: no scoring, random pool
     // Independence check across ALL node pairs (6 of them at n=4). Only the
     // worst is published as a scalar: the √n gain fails if ANY pair correlates,
     // so the maximum is the number that decides, not an average that would

@@ -2350,6 +2350,7 @@ typedef struct {
     int        gap_ms;      /* <0 = omitted, derive from run_ms after the walk */
     int        cal_ms;
     ScoreDir   score_dir;
+    bool       fake_pool;
     double     pre_w;
     bool       from_form;
 } StartReq;
@@ -2420,6 +2421,17 @@ static bool start_parse_confirm(const char *val, StartReq *r, httpd_req_t *req)
 {
     (void)req;
     r->from_form = (val[0] == '1');
+    return true;
+}
+/* TEST ONLY: skip the scoring and draw the pool at random, to reach the
+ * item pass at once. The pool means nothing in such a session. */
+static bool start_parse_fakepool(const char *val, StartReq *r, httpd_req_t *req)
+{
+    if (val[0] != '0' && val[0] != '1') {
+        start_refuse(req, "fakepool= must be 0 or 1");
+        return false;
+    }
+    r->fake_pool = (val[0] == '1');
     return true;
 }
 static bool start_parse_cal(const char *val, StartReq *r, httpd_req_t *req)
@@ -2516,6 +2528,7 @@ static const StartKey start_keys[] = {
     { "confirm",   NULL, start_parse_confirm },
     { "cal",       NULL, start_parse_cal },
     { "unlimited", NULL, start_parse_unlimited },
+    { "fakepool",  NULL, start_parse_fakepool },
 };
 _Static_assert(sizeof(start_keys) / sizeof(start_keys[0]) <= 32,
                "start_parse_query seen-bitmask is uint32_t");
@@ -2704,6 +2717,7 @@ static esp_err_t start_handler(httpd_req_t *req)
         g_status.run_segments   = segments;
         g_status.cal_budget_ms  = parsed.cal_ms;
         g_status.score_dir      = parsed.score_dir;
+        g_status.fake_pool      = parsed.fake_pool;
         g_status.pre_w          = parsed.pre_w;
         g_status.pre_n          = 0;
         g_status.state          = ELOTTO_RUNNING;
