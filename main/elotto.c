@@ -175,7 +175,7 @@ static const char HTML[] =
 ".frow>label,.frow>span:first-child{color:#f0c040;font-size:.9em;text-align:right}"
 ".fin{width:80px;padding:5px 8px;border-radius:6px;border:1px solid #a08030;"
 "background:#0a2e0a;color:#fff;font-size:1em;text-align:center}"
-"#btnPause,#btnAbort{min-width:168px}"
+"#btnPause,#btnAbort,#btnSave{min-width:168px}"
 ".tblwrap{overflow-x:auto}"
 "@media(max-width:520px){"
 "body{padding:12px}"
@@ -183,7 +183,7 @@ static const char HTML[] =
 "#subtitle{font-size:.9em;margin-bottom:16px}"
 ".card{padding:14px;border-radius:11px}"
 ".btn{padding:11px 16px;font-size:.95em}"
-"#btnPause,#btnAbort{min-width:126px}"
+"#btnPause,#btnAbort,#btnSave{min-width:126px}"
 ".frow{grid-template-columns:128px 1fr;gap:6px}"
 ".frow>label,.frow>span:first-child{font-size:.8em}"
 ".sv{font-size:.85em}"
@@ -262,6 +262,10 @@ static const char HTML[] =
 "<button class='btn' id='btnPause' onclick='doPause()' "
 "style='background:#a08030;color:#fff'>&#9208; Pause</button>"
 "<button class='btn btn-abort' id='btnAbort' onclick='doAbort()'>&#9632; Abort</button>"
+// Save: the 100 most extreme items by |Z*| (/extremes?n=100) as a CSV for Excel.
+// Stays on screen after Done/Abort, when Pause and Abort are hidden.
+"<button class='btn' id='btnSave' onclick='doSave()' "
+"style='background:#2e6b9e;color:#fff'>&#128190; Save</button>"
 "</div>"
 "<div id='progArea' style='display:none'>"
 /* The parameters this session is actually running on. The form is hidden while a
@@ -531,7 +535,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "curMode=d.mode==='euro'?0:1;setMode(curMode);"
 "document.getElementById('runsRow').style.display='none';"
 "document.getElementById('startBtns').style.display='none';"
-"document.getElementById('runBtns').style.display='flex';"
+"showRunBtns(true);"
 "document.getElementById('progArea').style.display='block';"
 "startFocus();"
 "applyPaused(d.paused);"
@@ -549,7 +553,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "showResults(d);"
 "if(timer)clearInterval(timer);timer=setInterval(poll,1000);"
 "}}else if(d.state==='done'||d.state==='aborted'){"
-"curMode=d.mode==='euro'?0:1;setMode(curMode);"
+"curMode=d.mode==='euro'?0:1;setMode(curMode);showRunBtns(false);"
 "document.getElementById('msg').textContent="
 "d.state==='done'?'✅ Done! ('+fmt(d.elapsed_ms)+')'"
 ":'⚠️ Aborted after '+d.completed+' items — partial results:';"
@@ -685,7 +689,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "if(timer)clearInterval(timer);stopFocus();}}).catch(function(){});"
 "document.getElementById('runsRow').style.display='none';"
 "document.getElementById('startBtns').style.display='none';"
-"document.getElementById('runBtns').style.display='flex';"
+"showRunBtns(true);"
 "document.getElementById('progArea').style.display='block';"
 // NOT `paused=false` first — setPauseBtn is idempotent now, so pre-assigning the
 // state would make it skip the DOM update and a session started right after a
@@ -702,6 +706,30 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "if(timer)clearInterval(timer);"
 "timer=setInterval(poll,1000);"
 "}"
+"function showRunBtns(run){"
+"document.getElementById('runBtns').style.display='flex';"
+"document.getElementById('btnPause').style.display=run?'':'none';"
+"document.getElementById('btnAbort').style.display=run?'':'none';}"
+/* CSV for a German Excel: ';' separator, decimal comma, UTF-8 BOM. Rows in
+   |Z*| order, as /extremes selects them. */
+"function doSave(){"
+"fetch('/extremes?n=" EL_STR(PASS_KEEP_EXTREME) "').then(function(r){return r.json();}).then(function(x){"
+"var R=(x&&x.extremes)?x.extremes:[];"
+"R.sort(function(a,b){return Math.abs(b.key||0)-Math.abs(a.key||0);});"
+"function f(v){return v===null||v===undefined?'':String(v).replace('.',',');}"
+"var L=['Rank;Round;Comb;Numbers;Euro;Z*;Z;Z_raw;Conc;Δn;AC;bAC;Tr;k'];"
+"R.forEach(function(r,i){L.push([i+1,r.round,r.run,(r.nums||[]).join(' '),(r.euro||[]).join(' '),"
+"f(r.key),f(r.z_ctr),f(r.z),f(r.zc),f(r.nsd),f(r.ac),f(r.bac),f(r.tr),r.k].join(';'));});"
+"var b=new Blob(['﻿'+L.join('
+')+'
+'],{type:'text/csv;charset=utf-8'});"
+"var d=new Date(),p=function(n){return (n<10?'0':'')+n;};"
+"var a=document.createElement('a');a.href=URL.createObjectURL(b);"
+"a.download='elotto_top'+R.length+'_'+d.getFullYear()+p(d.getMonth()+1)+p(d.getDate())"
+"+'_'+p(d.getHours())+p(d.getMinutes())+'.csv';"
+"document.body.appendChild(a);a.click();a.remove();"
+"setTimeout(function(){URL.revokeObjectURL(a.href);},1000);"
+"}).catch(function(){document.getElementById('msg').textContent='⚠ Save failed';});}"
 "function doAbort(){"
 "fetch('/abort',{method:'POST'});"
 "document.getElementById('msg').textContent='Aborting...';"
@@ -899,7 +927,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "if(d.state==='running')showResults(d);"
 "if(d.state==='done'||d.state==='aborted'){"
 "clearInterval(timer);stopFocus();"
-"document.getElementById('runBtns').style.display='none';"
+"showRunBtns(false);"
 "document.getElementById('measCheck').innerHTML=\" <span style='color:#90ee90;font-size:1.1em'>&#10004;</span>\";"
 "document.getElementById('runsRow').style.display='grid';"
 "var done=d.state==='done';"
@@ -2102,11 +2130,13 @@ static esp_err_t loops_handler(httpd_req_t *req)
                              per-poll scan/serialize on the master). The
                              compaction archive (PASS_KEEP_EXTREME) is separate
                              and stays at 100. */
+/* ?n=1..PASS_KEEP_EXTREME widens the set for the page's CSV save; out of range
+ * answers 400. The page's 5 s poll stays at the default. */
 static esp_err_t extremes_handler(httpd_req_t *req)
 {
     static RunResult *ex;   /* httpd serialises handlers, so one shared buffer */
     if (!ex)
-        ex = heap_caps_malloc((size_t)EXTREMES_MAX * sizeof(RunResult),
+        ex = heap_caps_malloc((size_t)PASS_KEEP_EXTREME * sizeof(RunResult),
                               MALLOC_CAP_SPIRAM);
 
     httpd_resp_set_type(req, "application/json");
@@ -2117,7 +2147,20 @@ static esp_err_t extremes_handler(httpd_req_t *req)
      * Σ that picks the pool, and `passes` behind it. A query flag, not a new
      * handler: the URI-handler cap fails silently. */
     char q[32], v[8];
-    if (httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK &&
+    bool have_q = httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK;
+    int  want = EXTREMES_MAX;
+    if (have_q && httpd_query_key_value(q, "n", v, sizeof(v)) == ESP_OK) {
+        char *end;
+        long nv = strtol(v, &end, 10);
+        if (end == v || *end || nv < 1 || nv > PASS_KEEP_EXTREME) {
+            httpd_resp_set_status(req, "400 Bad Request");
+            httpd_resp_set_type(req, "text/plain");
+            httpd_resp_sendstr(req, "n= must be 1.." EL_STR(PASS_KEEP_EXTREME));
+            return ESP_OK;
+        }
+        want = (int)nv;
+    }
+    if (have_q &&
         httpd_query_key_value(q, "score", v, sizeof(v)) == ESP_OK && v[0] == '1') {
         const ScoreItem *R = g_status.score_rows;
         int nr = R ? g_status.score_rows_n : 0;
@@ -2149,7 +2192,7 @@ static esp_err_t extremes_handler(httpd_req_t *req)
         return ESP_OK;
     }
 
-    int n = ex ? results_extremes(ex, EXTREMES_MAX) : 0;
+    int n = ex ? results_extremes(ex, want) : 0;
     bool euro = (g_status.mode == MODE_EUROJACKPOT);
 
     char buf[256];

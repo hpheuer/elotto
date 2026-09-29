@@ -289,7 +289,9 @@ what remains visible is an effect varying **between items inside a block**.
   column header was clicked**. `GET /extremes` (streamed JSON, `emit_run` row shape,
   polled every **5 s** — it is a ~15 KB scan on the master's HTTP task, which shares the consumer
   core, so a 1 s poll stole the master's extraction CPU) carries the set; the page sorts client-side
-  and shows the top 10 of the active sort. Click any stat header to sort; a second click on the
+  and shows the top 10 of the active sort. `?n=1..100` widens the set (default 50, else
+  **400**); the **Save** button beside Abort (also shown after Done/Abort) writes
+  `/extremes?n=100` as a CSV for a German Excel (`;`, decimal comma, BOM). Click any stat header to sort; a second click on the
   same header flips direction (arrow ▾/▴, ⇅ on the inactive ones), so the low end is one click away —
   which is why the old Bottom-5 table is gone. ⛔ Items still ENTER the set by `|Z*|` only — the sort
   reorders the view, never the display pool of 50 or the compaction archive of 100. A missing `Δn` (solo item) sinks to the
