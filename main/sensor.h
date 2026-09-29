@@ -640,6 +640,22 @@ typedef struct {
 
 #define SCORE_ROWS_MAX 62   // 50 main + 12 bonus (Eurojackpot)
 
+/* One finished scoring (main numbers, or the euro numbers, each their own
+ * snap): the seven column sums for every number, kept until the next session
+ * start. The live ScoreItem rows are wiped at the next round. PSRAM, earliest
+ * SCORE_SNAP_MAX kept; anything past that is counted, not stored. Index 0 of
+ * sum[]/cnt[] is unused — numbers are 1..nnum. cnt 0 means that column added
+ * nothing (a missing Δn must not read as a measured 0). */
+#define SCORE_SNAP_MAX 128
+typedef struct {
+    uint16_t round;
+    uint8_t  euro;                       /* 0 = main, 1 = euro */
+    uint8_t  nnum;                       /* 50, 49 or 12 */
+    uint8_t  passes;                     /* closed passes in the sum; less if aborted */
+    float    sum[51][SCORE_SUM_N];
+    uint8_t  cnt[51][SCORE_SUM_N];
+} ScoreSnap;
+
 #define WSIG_TOP_N 5
 /* ⚠ There is deliberately NO minimum jump. Noise-vs-finding is decided by
  * wsig_sd and the x-sigma column: five rows at 2..3 sigma ARE the quiet
@@ -971,3 +987,10 @@ double rank_key(const RunResult *r);
  * caller sorts on whichever column it displays; selection here is by |Z*|
  * only, so a newly measured item joins the set exactly as it did before. */
 int results_extremes(RunResult *out, int max);
+
+/* Scoring-sum archive (ScoreSnap). Written by the sensor task, read by HTTP.
+ * count is the number of snaps published; a snap is visible only after it is
+ * filled. dropped is scorings past SCORE_SNAP_MAX (or an alloc failure). */
+int score_snap_count(void);
+int score_snap_dropped(void);
+const ScoreSnap *score_snap_at(int i);

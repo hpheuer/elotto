@@ -262,8 +262,9 @@ static const char HTML[] =
 "<button class='btn' id='btnPause' onclick='doPause()' "
 "style='background:#a08030;color:#fff'>&#9208; Pause</button>"
 "<button class='btn btn-abort' id='btnAbort' onclick='doAbort()'>&#9632; Abort</button>"
-// Save: the 100 most extreme items by |Z*| (/extremes?n=100) as a CSV for Excel.
-// Stays on screen after Done/Abort, when Pause and Abort are hidden.
+// Save: two CSVs for Excel. /extremes?n=100 is the 100 most extreme items by
+// |Z*|; /extremes?sums=1 is every number's seven column sums for every scoring
+// still in RAM. Stays on screen after Done/Abort, when Pause and Abort are hidden.
 "<button class='btn' id='btnSave' onclick='doSave()' "
 "style='background:#2e6b9e;color:#fff'>&#128190; Save</button>"
 "</div>"
@@ -710,23 +711,40 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "document.getElementById('runBtns').style.display='flex';"
 "document.getElementById('btnPause').style.display=run?'':'none';"
 "document.getElementById('btnAbort').style.display=run?'':'none';}"
-/* CSV for a German Excel: ';' separator, decimal comma, UTF-8 BOM. Rows in
-   |Z*| order, as /extremes selects them. */
+/* Two CSVs for a German Excel: ';' separator, decimal comma, UTF-8 BOM.
+   First: the |Z*| extremes. Second: every number's seven signed column sums
+   for every scoring still in RAM (high and low are the same numbers, sorted
+   either way). Both fetches start in the click, then both files download. */
 "function doSave(){"
-"fetch('/extremes?n=" EL_STR(PASS_KEEP_EXTREME) "').then(function(r){return r.json();}).then(function(x){"
+"function f(v){return v===null||v===undefined?'':String(v).replace('.',',');}"
+"function dl(name,lines){"
+"var b=new Blob(['\\ufeff'+lines.join('\\r\\n')+'\\r\\n'],{type:'text/csv;charset=utf-8'});"
+"var a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=name;"
+"document.body.appendChild(a);a.click();a.remove();"
+"setTimeout(function(){URL.revokeObjectURL(a.href);},1500);}"
+"var d=new Date(),p=function(n){return (n<10?'0':'')+n;};"
+"var stamp=d.getFullYear()+p(d.getMonth()+1)+p(d.getDate())+'_'+p(d.getHours())+p(d.getMinutes());"
+"Promise.all(["
+"fetch('/extremes?n=" EL_STR(PASS_KEEP_EXTREME) "').then(function(r){return r.json();}),"
+"fetch('/extremes?sums=1').then(function(r){return r.json();}).catch(function(){return null;})"
+"]).then(function(pair){"
+"var x=pair[0],s=pair[1];"
 "var R=(x&&x.extremes)?x.extremes:[];"
 "R.sort(function(a,b){return Math.abs(b.key||0)-Math.abs(a.key||0);});"
-"function f(v){return v===null||v===undefined?'':String(v).replace('.',',');}"
 "var L=['Rank;Round;Comb;Numbers;Euro;Z*;Z;Z_raw;Conc;\\u0394n;AC;bAC;Tr;k'];"
 "R.forEach(function(r,i){L.push([i+1,r.round,r.run,(r.nums||[]).join(' '),(r.euro||[]).join(' '),"
 "f(r.key),f(r.z_ctr),f(r.z),f(r.zc),f(r.nsd),f(r.ac),f(r.bac),f(r.tr),r.k].join(';'));});"
-"var b=new Blob(['\\ufeff'+L.join('\\r\\n')+'\\r\\n'],{type:'text/csv;charset=utf-8'});"
-"var d=new Date(),p=function(n){return (n<10?'0':'')+n;};"
-"var a=document.createElement('a');a.href=URL.createObjectURL(b);"
-"a.download='elotto_top'+R.length+'_'+d.getFullYear()+p(d.getMonth()+1)+p(d.getDate())"
-"+'_'+p(d.getHours())+p(d.getMinutes())+'.csv';"
-"document.body.appendChild(a);a.click();a.remove();"
-"setTimeout(function(){URL.revokeObjectURL(a.href);},1000);"
+"dl('elotto_top'+R.length+'_'+stamp+'.csv',L);"
+"var snaps=(s&&s.snaps)?s.snaps:[];"
+"if(snaps.length){"
+"var L2=['Round;Kind;Number;Passes;Z*;nZ*;Z;nZ;Conc;nConc;\\u0394n;n\\u0394n;AC;nAC;bAC;nbAC;Tr;nTr'];"
+"snaps.forEach(function(sn){(sn.rows||[]).forEach(function(row){"
+"var c=[sn.round,sn.euro?'euro':'main',row.n,sn.passes];"
+"var sum=row.sum||[],kk=row.k||[];"
+"for(var i=0;i<7;i++){var nk=kk[i]|0;c.push(nk?f(sum[i]):'');c.push(nk?String(nk):'');}"
+"L2.push(c.join(';'));});});"
+"setTimeout(function(){dl('elotto_sums_'+stamp+'.csv',L2);},400);}"
+"else if(!s) document.getElementById('msg').textContent='⚠ Sums save failed';"
 "}).catch(function(){document.getElementById('msg').textContent='⚠ Save failed';});}"
 "function doAbort(){"
 "fetch('/abort',{method:'POST'});"
@@ -2129,7 +2147,57 @@ static esp_err_t loops_handler(httpd_req_t *req)
                              compaction archive (PASS_KEEP_EXTREME) is separate
                              and stays at 100. */
 /* ?n=1..PASS_KEEP_EXTREME widens the set for the page's CSV save; out of range
- * answers 400. The page's 5 s poll stays at the default. */
+ * answers 400. The page's 5 s poll stays at the default.
+ * ?sums=1 is the scoring-sum archive (every number, every scoring still in
+ * RAM), not a new URI — the handler cap fails silently. */
+static esp_err_t extremes_sums(httpd_req_t *req)
+{
+    int nsnap = score_snap_count();
+    int drop  = score_snap_dropped();
+    char sb[512];
+    int sl = snprintf(sb, sizeof(sb),
+        "{\"n\":%d,\"dropped\":%d,"
+        "\"cols\":[\"Z*\",\"Z\",\"Conc\",\"dn\",\"AC\",\"bAC\",\"Tr\"],\"snaps\":[",
+        nsnap, drop);
+    send_chunk(req, sb, sl, sizeof(sb));
+    for (int i = 0; i < nsnap; i++) {
+        const ScoreSnap *S = score_snap_at(i);
+        if (!S) continue;
+        if (i) httpd_resp_send_chunk(req, ",", 1);
+        int mv = S->nnum;
+        if (mv > 50) mv = 50;
+        sl = snprintf(sb, sizeof(sb),
+                      "{\"round\":%u,\"euro\":%u,\"passes\":%u,\"rows\":[",
+                      (unsigned)S->round, (unsigned)S->euro, (unsigned)S->passes);
+        send_chunk(req, sb, sl, sizeof(sb));
+        for (int k = 1; k <= mv; k++) {
+            if (k > 1) httpd_resp_send_chunk(req, ",", 1);
+            char cell[SCORE_SUM_N][24];
+            char kn[SCORE_SUM_N][8];
+            for (int c = 0; c < SCORE_SUM_N; c++) {
+                if (S->cnt[k][c] == 0) {
+                    memcpy(cell[c], "null", 5);
+                    memcpy(kn[c], "0", 2);
+                } else {
+                    snprintf(cell[c], sizeof(cell[c]), "%.4f", (double)S->sum[k][c]);
+                    snprintf(kn[c], sizeof(kn[c]), "%u", (unsigned)S->cnt[k][c]);
+                }
+            }
+            sl = snprintf(sb, sizeof(sb),
+                "{\"n\":%d,\"sum\":[%s,%s,%s,%s,%s,%s,%s],"
+                "\"k\":[%s,%s,%s,%s,%s,%s,%s]}",
+                k,
+                cell[0], cell[1], cell[2], cell[3], cell[4], cell[5], cell[6],
+                kn[0], kn[1], kn[2], kn[3], kn[4], kn[5], kn[6]);
+            send_chunk(req, sb, sl, sizeof(sb));
+        }
+        httpd_resp_send_chunk(req, "]}", 2);
+    }
+    httpd_resp_send_chunk(req, "]}", 2);
+    httpd_resp_send_chunk(req, NULL, 0);
+    return ESP_OK;
+}
+
 static esp_err_t extremes_handler(httpd_req_t *req)
 {
     static RunResult *ex;   /* httpd serialises handlers, so one shared buffer */
@@ -2144,8 +2212,11 @@ static esp_err_t extremes_handler(httpd_req_t *req)
      * row each, in the item row shape (emit_row) plus `sum`, the running
      * Σ that picks the pool, and `passes` behind it. A query flag, not a new
      * handler: the URI-handler cap fails silently. */
-    char q[32], v[8];
+    char q[48], v[8];
     bool have_q = httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK;
+    if (have_q &&
+        httpd_query_key_value(q, "sums", v, sizeof(v)) == ESP_OK && v[0] == '1')
+        return extremes_sums(req);
     int  want = EXTREMES_MAX;
     if (have_q && httpd_query_key_value(q, "n", v, sizeof(v)) == ESP_OK) {
         char *end;

@@ -534,6 +534,7 @@ static bool onset_settle(void)
 typedef struct {
     double acc[SCORE_SUM_N][51];
     bool   ok[SCORE_SUM_N][51];
+    uint8_t n[SCORE_SUM_N][51];   /* passes that added to acc; 0 = column missing */
     int    max_val, pool_size;
     bool   active;
 } ScoreAcc;
@@ -708,6 +709,68 @@ static ScoreItem *score_row(bool euro_pool, int k)
     return &g_status.score_rows[i];
 }
 
+/* ── Scoring-sum archive ───────────────────────────────────────────────
+ * One snap per score_run, main and euro separately. The live rows and
+ * s_sacc are cleared at the next round; this is what Save reads after Abort.
+ * Cleared at the next session start, not on abort. Earliest snaps stay —
+ * a later scoring past the cap is counted in s_snap_drop. */
+static ScoreSnap     *s_snaps;
+static volatile int   s_snap_n;
+static volatile int   s_snap_drop;
+
+_Static_assert(SCORE_PASSES <= 255, "ScoreSnap.passes is one byte");
+_Static_assert(sizeof(ScoreSnap) <= 2048, "ScoreSnap");
+
+static void score_snap_reset(void)
+{
+    if (!s_snaps) {
+        s_snaps = heap_caps_calloc(SCORE_SNAP_MAX, sizeof(ScoreSnap), MALLOC_CAP_SPIRAM);
+        if (!s_snaps)
+            printf("score snap alloc failed (%u bytes)\n",
+                   (unsigned)(SCORE_SNAP_MAX * sizeof(ScoreSnap)));
+    }
+    s_snap_n = 0;
+    s_snap_drop = 0;
+    __sync_synchronize();
+}
+
+/* passes = closed passes already added to A. 0 stores nothing. */
+static void score_snap_store(const ScoreAcc *A, bool euro, int passes)
+{
+    if (!A || passes <= 0) return;
+    if (!s_snaps) { s_snap_drop++; return; }
+    int n = s_snap_n;
+    if (n >= SCORE_SNAP_MAX) { s_snap_drop++; return; }
+    int mv = A->max_val;
+    if (mv < 1) return;
+    if (mv > 50) mv = 50;
+    if (passes > 255) passes = 255;
+    ScoreSnap *S = &s_snaps[n];
+    S->round  = (uint16_t)g_status.round;
+    S->euro   = euro ? 1 : 0;
+    S->nnum   = (uint8_t)mv;
+    S->passes = (uint8_t)passes;
+    for (int k = 1; k <= mv; k++) {
+        for (int c = 0; c < SCORE_SUM_N; c++) {
+            S->cnt[k][c] = A->n[c][k];
+            S->sum[k][c] = A->n[c][k] ? (float)A->acc[c][k] : 0.0f;
+        }
+    }
+    __sync_synchronize();
+    s_snap_n = n + 1;
+}
+
+int score_snap_count(void)   { return s_snap_n; }
+int score_snap_dropped(void) { return s_snap_drop; }
+
+const ScoreSnap *score_snap_at(int i)
+{
+    int n = s_snap_n;
+    __sync_synchronize();
+    if (!s_snaps || i < 0 || i >= n) return NULL;
+    return &s_snaps[i];
+}
+
 // `euro_pool` selects the bonus-number pool; it only reaches the Focus panel,
 // which styles a euro candidate differently from a main one.
 /* One scoring run: every number SCORE_PASSES times, every column summed into
@@ -737,6 +800,7 @@ static void score_run(int max_val, int pool_size, bool euro_pool)
     /* scoring_total is set by the caller to SCORE_PASSES × (main+bonus). */
 
     uint8_t last = 0;
+    int closed = 0;   /* passes whose sums are already in A */
     for (int pass = 0; pass < SCORE_PASSES; pass++) {
         g_status.scoring_pass = pass + 1;
         bool scored[51] = {false};
@@ -756,9 +820,9 @@ static void score_run(int max_val, int pool_size, bool euro_pool)
             uint8_t t = order[0]; order[0] = order[1]; order[1] = t;
         }
         for (int idx = 0; idx < n_order; idx++) {
-            if (g_status.abort_requested) return;
+            if (g_status.abort_requested) goto snap;
             pause_gate();
-            if (g_status.abort_requested) return;
+            if (g_status.abort_requested) goto snap;
             int k = order[idx];
             focus_show_number(k, euro_pool);
             bool ok = false;
@@ -848,6 +912,7 @@ static void score_run(int max_val, int pool_size, bool euro_pool)
                 if (!isfinite(v[c])) continue;
                 A->acc[c][k] += v[c];
                 A->ok[c][k]   = true;
+                if (A->n[c][k] < 255) A->n[c][k]++;
             }
             if (!row) continue;
             /* The pass closed: centred values, as center_block() writes an
@@ -864,6 +929,7 @@ static void score_run(int max_val, int pool_size, bool euro_pool)
             }
             row->passes++;
         }
+        closed++;
         score_publish_live(ix);
 
         /* ── Sweep candidate after every scoring pass   ────────
@@ -885,11 +951,12 @@ static void score_run(int max_val, int pool_size, bool euro_pool)
         if (pass + 1 < SCORE_PASSES) {
             if (calibrate_all(euro_pool ? "scoring pass, euro numbers" : "scoring pass"))
                 g_status.cal_did_sweep = true;
-            if (g_status.abort_requested) return;
+            if (g_status.abort_requested) goto snap;
             g_status.phase = PHASE_SCORING;
         }
     }
-
+snap:
+    score_snap_store(A, euro_pool, closed);
 }
 
 /* Per-node half-window LSB z.
@@ -2814,6 +2881,9 @@ void elotto_task(void *pvParam)
         g_status.score_rows = heap_caps_calloc(SCORE_ROWS_MAX, sizeof(ScoreItem),
                                                MALLOC_CAP_SPIRAM);
     g_status.score_rows_n = 0;
+    /* Previous session's sums must not survive into this one. Abort does not
+     * come through here — Save still reads them after Abort. */
+    score_snap_reset();
     /* score_sum is NOT reset: it holds the stored pool criterion (NVS,
      * loaded at boot, rewritten by POST /scoresum) for the whole session. */
     memset(g_status.item_ac_z, 0, sizeof(g_status.item_ac_z));

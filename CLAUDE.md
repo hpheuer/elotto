@@ -107,8 +107,9 @@ across rounds a combination can recur — identity is **(round, index)**.
   not the wall time you get — actual is `focus_win_ms`, set by the **slowest** node's bit rate
 .
 - **`results[]` is in MEASUREMENT order** (`.index` = combination id, `.block` stamped), so the
-  prefix is always complete: aborts need no compaction. ⚠ RAM only — a master reboot ends the
-  session and loses it; nothing is exported.
+  prefix is always complete: aborts need no compaction. ⚠ RAM only — a master reboot or the
+  next session start ends it. Save writes the extremes CSV and the scoring-sum CSV while it is
+  still in RAM.
 - **Blocks are the statistics unit, and ONE BLOCK IS ONE ROUND**. The round boundary is the
   only block boundary: the pass parks there → `/loops` row, drift point, pairwise close, block
   centring, then a sweep candidate before the next round scores. The sweep timing is the dynamic
@@ -152,6 +153,10 @@ a scoring health line (last closed pass's own σ), stat cards, node table and bo
 numbers each camera actually answered, then concordance (loudest **centred** node dropped), then
 the same mix as the pass. σ is that span's own. Uncentred LSB ranks nodes.
 ⚠ `?wpre=0` is z alone.
+The seven sums of every number (main and euro each their own record) are kept for every scoring
+of the session until the next session start: `SCORE_SNAP_MAX` 128 earliest, PSRAM,
+`GET /extremes?sums=1`. A scoring aborted before any pass closed stores nothing; one aborted
+after closed passes stores those passes. Abort does not clear it. Save writes it.
 ⛔ Never repeat a target in place, in any form.
 
 **Phase 2 — the pass.** One Fisher–Yates order over the whole space, each item measured once.
@@ -291,7 +296,10 @@ what remains visible is an effect varying **between items inside a block**.
   core, so a 1 s poll stole the master's extraction CPU) carries the set; the page sorts client-side
   and shows the top 10 of the active sort. `?n=1..100` widens the set (default 50, else
   **400**); the **Save** button beside Abort (also shown after Done/Abort) writes
-  `/extremes?n=100` as a CSV for a German Excel (`;`, decimal comma, BOM). Click any stat header to sort; a second click on the
+  `/extremes?n=100` as a CSV for a German Excel (`;`, decimal comma, BOM) and, as a second file
+  `elotto_sums_…`, `/extremes?sums=1`: every number's seven signed column sums for every scoring
+  still in RAM (high and low are that column sorted either way; an empty count is a missing value).
+  Click any stat header to sort; a second click on the
   same header flips direction (arrow ▾/▴, ⇅ on the inactive ones), so the low end is one click away —
   which is why the old Bottom-5 table is gone. ⛔ Items still ENTER the set by `|Z*|` only — the sort
   reorders the view, never the display pool of 50 or the compaction archive of 100. A missing `Δn` (solo item) sinks to the
@@ -361,9 +369,9 @@ what remains visible is an effect varying **between items inside a block**.
 
 ## ⛔ A session is a closed unit 
 Everything is judged **inside one session**: its blocks, its pairwise matrix, its tables. Sessions
-are never compared, pooled or merged, and nothing is exported — there is no CSV and no session
-archive. A session ends with its data (RAM only). Parameters, firmware and instrument may change
-freely between sessions for exactly that reason; what must hold is that they do not change
+are never compared, pooled or merged. Save writes two CSVs of the session still in RAM (the |Z*|
+extremes, and every number's seven scoring sums). A reboot or the next start drops them. Parameters,
+firmware and instrument may change freely between sessions; what must hold is that they do not change
 **within** one.
 
 ---
@@ -598,7 +606,8 @@ floor is load-bearing.
 
 ### Resources
 - **PSRAM is mandatory**: capture buffers, the LSB-ones side ring (`s_ring_raw`), `loop_hist`,
-  per-item per-node archives (`s_node_z` and the half-window copies, sized to `NUM_RUNS`).
+  per-item per-node archives (`s_node_z` and the half-window copies, sized to `NUM_RUNS`),
+  and the scoring-sum log (`SCORE_SNAP_MAX` 128 snaps, ~225 KB).
   The word ring `s_ring` (64 KB) is **internal RAM**; `results[]` stays internal too:
   `NUM_RUNS` 500.
 - ⚠ **The measurement path reads the ring in BLOCKS** — `camera_read_words()`, 112 words per call
