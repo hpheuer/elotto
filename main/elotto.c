@@ -102,7 +102,7 @@ static const char HTML[] =
 "body{font-family:sans-serif;"
 "background:linear-gradient(160deg,#0a2e0a 0%,#1a5c1a 45%,#0a2e0a 100%);"
 "min-height:100vh;color:#fff;padding:20px}"
-".wrap{max-width:860px;margin:0 auto}"
+".wrap{max-width:1060px;margin:0 auto}"
 "h1{text-align:center;font-size:2.5em;margin:16px 0 4px;text-shadow:0 2px 8px rgba(0,0,0,.5)}"
 "#subtitle{text-align:center;color:#90ee90;font-size:1.1em;margin-bottom:28px;min-height:1.4em}"
 ".card{background:rgba(0,0,0,.38);border-radius:14px;padding:24px;margin-bottom:18px;"
