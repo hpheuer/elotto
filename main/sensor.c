@@ -1926,10 +1926,10 @@ static void wsig_note(const RunResult *r, const float *wsig, uint8_t mask,
         g_status.wsig_sd_n = s_wsig_jn;
         g_status.wsig_sd   = (s_wsig_jn > 1) ? sqrt(s_wsig_jsq / (double)s_wsig_jn) : 0.0;
 
-        /* No floor: the board keeps the five largest of whatever happened, and
+        /* No floor: the board keeps the largest of whatever happened, and
          * the x-sigma column says whether they matter. See WSIG_TOP_N. */
 
-        /* Insertion sort on |jump|, biggest first. WSIG_TOP_N is 5, so the
+        /* Insertion sort on |jump|, biggest first. WSIG_TOP_N is 10, so the
          * linear scan is cheaper than anything cleverer and runs once per
          * node per item. */
         int at = g_status.wsig_n;
@@ -1938,7 +1938,7 @@ static void wsig_note(const RunResult *r, const float *wsig, uint8_t mask,
             if (e < 0.0f) e = -e;
             if (mag > e) { at = j; break; }
         }
-        if (at >= WSIG_TOP_N) continue;           /* smaller than all five */
+        if (at >= WSIG_TOP_N) continue;           /* smaller than every kept row */
 
         for (int j = (g_status.wsig_n < WSIG_TOP_N ? g_status.wsig_n
                                                    : WSIG_TOP_N - 1); j > at; j--)
@@ -3180,6 +3180,10 @@ void elotto_task(void *pvParam)
             int ei = euro ? (i / main_combos) : 0;
             int slot = g_status.round_base + j;       // measurement order, session-wide
             RunResult *r = &g_status.results[slot];
+            /* ⚠ The slot is reused (compaction, earlier sessions) and
+             * Eurojackpot writes only 5 of the 6 nums: clear the tail, or a
+             * stale nums[5] shows up as a sixth number. */
+            memset(r->nums, 0, sizeof(r->nums));
             nth_combination(pool_main, pool_nm, nm, mi, r->nums);
             if (euro)
                 nth_combination(pool_euro, pool_ne, 2, ei, r->euro);
