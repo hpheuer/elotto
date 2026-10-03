@@ -60,10 +60,10 @@ discovered by broadcast at every session start — no IP table, no node count co
 z = **Σ z_node / √k** over the k nodes that answered *that* run, so a missing reply costs that
 run's gain, not the session.
 
-**Entropy source by chip** (user decision): an OV5647 runs LIT and its entropy is photons; an
-**IMX219 runs in total DARKNESS** and its entropy is the sensor's own readout noise — pixel
-transistor thermal and trap noise, column/ADC chain — at maximum analog gain. The old rule
-"photons, and only photons" holds for the OV5647 only. One camera per node, never shared.
+**Entropy source** (user decision): **every node runs in total DARKNESS** and its entropy is the
+sensor's own readout noise — pixel transistor thermal and trap noise, column/ADC chain — at maximum
+analog gain. ⚠ A dark OV5647 needs RAW10: on RAW8 its readout noise spans too few steps and the LSB
+is biased and over-dispersed. One camera per node, never shared.
 Non-overlapping frame pairs, diff = f[2k+1]−f[2k] per pixel (cancels FPN exactly), LSB packed.
 ⛔ LSB bits as measured, the dark IMX219 included — the higher diff bits are biased or sign-dominated (`GET /camtest?bitscan=<s>`, docs/BITSCAN.md). Fisher–Yates uses an xorshift32 seeded from the camera; it never enters a z.
 
@@ -451,8 +451,8 @@ Gates a rung must clear: autocorr < `CAL_AUTOC_TOL` 0,03 (⚠ never subsample �
 ladder), no stuck frames, `mean_px` ≥ 5,0,
 `zero_diff` ≤ `CAL_MAX_ZERO_DIFF` 0,125. ⛔ `CAL_MAX_MEAN_PX` 100 is publish-only.
 
-- **The dark end is gated because photons do the whitening**  — OV5647 only. Dim the lamp and
-  more rungs fail; the answer is light, not a lower floor. An IMX219 is gated the other way.
+- A dark OV5647 still ladders the exposure and keeps the `mean_px` ≥ 5,0 floor; the fixed dark
+  rung and the LEAK gate are IMX219 only.
 - `raw_runs_z` is published per sweep rung and gates nothing. ⚠ 0,0 in a measurement window means
   NOT ARMED, not "perfectly random" (`raw_trans` says which).
 - The budget is a **cap, not a target** (default 10 s, `?cal=<ms>`, 0 = off). **When** is the
@@ -528,9 +528,8 @@ releases it — ⚠ `SESSION_IDLE_MS` must stay above the 60 s settle pause, whi
   someone rebooted it. (The pool-confirmation park that motivated it is gone.)
 
 ## Illumination — standing rules
-An OV5647 enclosure is **LIT, not dark**; an IMX219 enclosure is **totally dark, LEDs off**
- (its entropy is readout noise). The array is IMX219, so the lit-OV rules below apply
-only to a lit OV node.
+Every enclosure is **totally dark, LEDs off** (the entropy is readout noise). The light rules
+below apply only to a lit OV node, which the array no longer has.
 - ⛔ **Never power illumination from a node's VSYS pin**.
 - ⚠ **After physical work, let the light settle ~30 min** before a long run.
 - ⚠ **Do not judge the light by one `mean_px` reading** — sweep, or take a time series.
@@ -646,7 +645,7 @@ working node.
 Addresses are informational: the master finds slaves by UDP broadcast.
 
 ### Extraction — where the rate stands
-Idle production is **~7,4 Mbit/s** (adjacent-pixel XOR off, 2× words) on an OV5647, and
+Idle production is **~7,4 Mbit/s** on an OV5647 at RAW8, **~20,5 Mbit/s** at RAW10 1920×1080, and
 **~20 Mbit/s on an IMX219** (1640×1232, `ms_extract` ~89 ms per pair idle and loaded, a pair
 every ~100 ms = 3 frames, against 66 on offer). On the IMX219 that is also the **loaded** rate:
 since the block reader  the consumer outruns production (`waits` > 0), so the RAW10 extractor
