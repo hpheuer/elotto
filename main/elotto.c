@@ -1692,10 +1692,10 @@ static esp_err_t status_handler(httpd_req_t *req)
     /* The master's own camera, for the fields nodes[0] cannot get from
      * slaves_diag() — see the note at the node loop below. */
     camera_stats_t st_cam; camera_get_stats(&st_cam);
-    // top[]/low[] (5 each, ~110 B) on top of the fixed head. A measured
-    // 4-node /status is ~3 KB against this 8 KB buffer. /extremes is a
-    // separate stream because 50 rows would overflow this one.
-    static char buf[8192];
+    // Fixed head, top[]/low[], the jump board (WSIG_TOP_N) and up to
+    // TRIPX_MAX trip records. /extremes is a separate stream because 50
+    // rows would overflow this one.
+    static char buf[12288];
     int  pos = 0;
     const char *state_str =
         g_status.state == ELOTTO_RUNNING ? "running" :

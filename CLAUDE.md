@@ -54,7 +54,7 @@ change. The page's **Log** card shows every sweep, change,
 pause and soft-down with wall time (`GET /loops?ev=1`).
 
 ## Concept
-Four-node ESP32-P4 array. The master scores lottery numbers via GCP methodology; up to three slaves
+Five-node ESP32-P4 array. The master scores lottery numbers via GCP methodology; up to four slaves
 measure the same window in parallel, triggered by one UDP broadcast (port 5000). Slaves are
 discovered by broadcast at every session start — no IP table, no node count configured. Combined
 z = **Σ z_node / √k** over the k nodes that answered *that* run, so a missing reply costs that
@@ -336,14 +336,14 @@ what remains visible is an effect varying **between items inside a block**.
   two nodes have a block σ. Never 0 for "unknown": 0 would read as perfect agreement.
   ⚠ Small Δn is agreement, not evidence — centring has already removed the block-wide common
   mode that would otherwise produce it.
-- **A third table, the camera-sigma jump board**: the five largest changes in a node's
+- **A third table, the camera-sigma jump board**: the ten largest changes in a node's
   own camera noise from its previous measurement to this one, session-wide, named by
   (item/round) plus the drawn numbers. ⛔ **It is a SUSPICION list, not a ranking** — the top row
   is the measurement whose z deserves the LEAST trust. It excludes nothing.
   ⚠ One row per NODE: two nodes on the same item is the light, one node alone is that camera.
   ⚠ Read the **×σ** column, not the raw jump: it scales against `wsig_sd`, the session's own
   measured jump noise (~0,016 on this rig). There is deliberately **no minimum jump** — on a
-  quiet session the board holds five rows at 2..3 σ and says so, and the card is shown even
+  quiet session the board holds ten rows at 2..3 σ and says so, and the card is shown even
   when empty.
   ⚠ Scoring windows enter it too, named `scoring <pass>/<round>` with the number in the
   Numbers column — not an item identity.
@@ -415,7 +415,7 @@ The session is always unattended.
   window, so the UI counts *missed* windows — a skipped window names the wrong numbers.
 - `POST /pause?on=1|0` holds **between** runs only; state stays `running`, paused time is excluded
   from `elapsed_ms`.
-- **Every window starts on fresh bits** (`onset_settle()`, all four nodes flush in parallel on `M`;
+- **Every window starts on fresh bits** (`onset_settle()`, all nodes flush in parallel on `M`;
   the first pair after `M` is discarded unextracted)
 . ⚠ A flush that does not finish **voids the run** (`flush_timeouts`).
 - ⚠ `?focus=` answers **400**.
@@ -538,7 +538,7 @@ only to a lit OV node.
   /linearity` on the node  — it ladders exp 32/64/128/256, reports `mean_px`, `px_per_exp`
   and the ratio per rung, and restores the entry exposure; steady light doubles `mean_px` each rung.
   409 while a session runs; abort first.
-- ⛔ **All four nodes on PoE, permanently** (user decision).
+- ⛔ **All nodes on PoE, permanently** (user decision).
 
 ---
 
@@ -636,6 +636,7 @@ floor is load-bearing.
 | slave0 | 192.168.178.103 (static lease) | 80:f1:b2:d2:e3:e5 | — | factory = updater, ota_0 = slave app |
 | slave1 | 192.168.178.145 (static lease) | e8:f6:0a:e0:ce:a8 | — | factory = updater, ota_0/ota_1 = slave app |
 | slave2 | 192.168.178.155 | e8:f6:0a:e0:c7:a1 | — | factory = updater, ota_0 = slave app |
+| slave3 | 192.168.178.83 (DHCP) | e8:f6:0a:e0:d9:53 | COM10 | factory = updater, ota_0 = slave app · OV5647 |
 
 **Say master/slave0/slave1/slave2, never the IP ending.**
 ⚠ **Node order is DISCOVERY order**, not the slave number, and changes between sessions — the IP
@@ -716,7 +717,7 @@ put back on a known-good image without USB.
   Check `/status` `state` — if `running` (or not clearly idle/done/aborted), **ask** before
   aborting or flashing. Do not silently abort a live measurement to push firmware.
 - ⚠ **After every OTA, poll `fw_sha` in `/status` until it CHANGES**.
-  ⚠ "All four run the same code" is a policy, not a fact — `fw_sha` per node is in
+  ⚠ "All nodes run the same code" is a policy, not a fact — `fw_sha` per node is in
   `/diagjson?all=1`.
 - ⚠ **A node that pings but refuses port 80 is not dead** — check `/otainfo` before USB.
   ⚠ An *immediate* close on every endpoint (connect succeeds, no response) is socket-table

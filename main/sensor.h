@@ -368,8 +368,8 @@ typedef struct {
 } FocusState;
 
 // Nodes in the array, master included as index 0.
-// 4 nodes → C(4,2) = 6 pairwise correlations, which is what the gate checks.
-#define MAX_NODES   4
+// 5 nodes → C(5,2) = 10 pairwise correlations.
+#define MAX_NODES   5
 #define MAX_SLAVES  (MAX_NODES - 1)
 #define MAX_PAIRS   (MAX_NODES * (MAX_NODES - 1) / 2)
 
@@ -656,9 +656,9 @@ typedef struct {
     uint8_t  cnt[51][SCORE_SUM_N];
 } ScoreSnap;
 
-#define WSIG_TOP_N 5
+#define WSIG_TOP_N 10
 /* ⚠ There is deliberately NO minimum jump. Noise-vs-finding is decided by
- * wsig_sd and the x-sigma column: five rows at 2..3 sigma ARE the quiet
+ * wsig_sd and the x-sigma column: ten rows at 2..3 sigma ARE the quiet
  * session, stated in the units that say so, and a real event pushes one of
  * them into double digits. Publish the number, draw no verdict. */
 
