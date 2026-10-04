@@ -24,16 +24,16 @@
 #define POOL_MAIN_49    15   // C(15,6) = 5005 combinations
 #define POOL_MAIN_50    12   // C(12,5) =  792 combinations
 #define POOL_EURO_12     5   // C(5,2)  =   10 combinations
-/* Phase-0 scoring: every number this many times, fresh shuffle each pass,
- * keys summed, then the pool is the top by that sum. Not back-to-back
- *.
- * ⚠ 20 since, and a camera sweep runs after pass SCORE_PASSES/2 of
- * EVERY scoring run — which in Eurojackpot is two runs, the main numbers and
- * the euro numbers. Each pass is centred and scaled on its own (score_build_keys
- * runs per pass), so the sweep lands on a centring boundary, not inside one.
- * ⚠ It doubles the scoring, which already dominates the round: 20 passes put a
- * Eurojackpot round near 2,5 h at ?run=5. That is the operator's call. */
-#define SCORE_PASSES    20
+/* Phase-0 scoring: every number `?passes=` times (g_status.scoring_passes),
+ * fresh shuffle each pass, keys summed, then the pool is the top by that sum.
+ * Not back-to-back. Each pass is centred and scaled on its own
+ * (score_build_keys runs per pass), so a sweep at a pass boundary lands on a
+ * centring boundary, not inside one.
+ * ⚠ The scoring dominates the round: 20 passes put a Eurojackpot round near
+ * 2,5 h at ?run=5. That is the operator's call. */
+#define SCORE_PASSES_DEFAULT 20
+#define SCORE_PASSES_MIN      1
+#define SCORE_PASSES_MAX    100
 #define SCORE_START_PAUSE_MS 2000   // idle break before each round's scoring 
 // Eurojackpot: C(12,5)·C(5,2) = 7920 — the largest configuration under the
 // ~10000 the user set as the ceiling (13+5 would be 12870). 6-of-49: 5005.
@@ -597,7 +597,7 @@ typedef struct {
     uint8_t  node;       // discovery order, 0 = master
     uint8_t  nums[6];
     uint8_t  euro[2];
-    /* 0 = an item of the pass; 1..SCORE_PASSES = a scoring run in that pass,
+    /* 0 = an item of the pass; 1..scoring_passes = a scoring run in that pass,
      * `index` is then the scored number (in nums[0], or euro[0] for a bonus
      * number) and (round, index) is NOT an item identity. */
     uint8_t  spass;
@@ -716,8 +716,8 @@ typedef struct {
     int64_t          elapsed_ms;
     volatile int     scoring_done;
     int              scoring_total;
-    int              scoring_pass;        // 1..SCORE_PASSES while scoring, else 0
-    int              scoring_passes;      // SCORE_PASSES, published so the UI does not hardcode it
+    int              scoring_pass;        // 1..scoring_passes while scoring, else 0
+    int              scoring_passes;      // ?passes=, a session parameter written by /start
     uint32_t         scoring_start_ms;    // elapsed_ms when this round's scoring began,
                                           // for the scoring's own Time / ETA card
     /* The scoring table (see ScoreItem): one row per number of this round's

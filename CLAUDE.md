@@ -86,7 +86,7 @@ across rounds a combination can recur — identity is **(round, index)**.
 - **No loops, no Runs cap, no ranking modes.** `/start` is a **whitelist**: an unknown
   key answers **400**. Deleted keys (`loops`, `runs`, `rank`, `focus`, `went`, `wruns`,
   `baseline`, `calint`, `unlimited=0`) keep a specific 400. Allowed: `mode`, `run`, `gap`,
-  `score`, `wpre`, `maxruns`, `confirm`, `cal`, `unlimited`. An empty key (`?=x`), a value over
+  `score`, `wpre`, `maxruns`, `passes`, `confirm`, `cal`, `unlimited`. An empty key (`?=x`), a value over
   `START_VAL_MAX` 31 characters and a query string over 255 characters each answer **400** as well
   — a truncated value or query must never read as "key absent" and resolve to the default.
   ⚠ **A refused /start changes nothing**: parameters are parsed into locals and committed to
@@ -122,7 +122,7 @@ across rounds a combination can recur — identity is **(round, index)**.
   the pass block is its own. No operating point ever moves underneath a mean being subtracted.
   ⚠ **The block length is `?maxruns=`**, so every round holds the same item count and its `Z*`
   values compare — the largest key a block can produce is `(n−1)/√n` in that block's n. The form
-  predicts the round length and **no longer warns**: with `SCORE_PASSES` 20 the scoring is
+  predicts the round length and **no longer warns**: with 20 scoring passes the scoring is
   1240 of a Eurojackpot round's ~1340 cycles, so no legal `?maxruns=` could clear a 30-minute bar.
   It prints the scoring/pass split instead, which names `?run=` — the parameter that sets the
   length. A long round stays the operator's call.
@@ -130,7 +130,8 @@ across rounds a combination can recur — identity is **(round, index)**.
 
 ### Phases
 **Phase 0 — scoring.** It starts 2 s after the sweep before it (`SCORE_START_PAUSE_MS`, a visible
-break for the operator). Each number 1..N is measured **`SCORE_PASSES` (20) times**, each pass a
+break for the operator). Each number 1..N is measured **`?passes=` times** (1..`SCORE_PASSES_MAX` 100, default 20; form
+"Scoring passes"), each pass a
 full session window in a fresh Fisher–Yates order (never the same number back-to-back).
 After each pass every column — Z\*, Z, Conc, Δn, AC, bAC, Tr — is added to that number's own running sum;
 the pool is the top by ONE of those sums, the one selected on the page (Σ marker in a column
@@ -143,7 +144,7 @@ session and the following ones until the next click. The start form shows it rea
 picks the pool. Remembered like the column: the form's select writes it to NVS at once
 (`POST /scoresum?dir=`), and during the scoring it also applies to the running session.
 ⚠ Δn is never negative, so `abs` on Σ Δn picks the same pool as `high`. The scoring table's
-title names the pool criterion; the column arrows show the table sort. The UI shows pass k/20 and the current top of the pool with the running sum, and
+title names the pool criterion; the column arrows show the table sort. The UI shows pass k/n and the current top of the pool with the running sum, and
 **everything the pass shows**: a Top-10 of the numbers (Σ, Z\*, Z, Conc, Δn, AC — `GET
 /extremes?score=1`, `RunResult` rows in their own buffer, never in `results[]`; display
 only, the pool is picked from the sum in `score_and_build_pool()`; pool members: `#` in green),
@@ -208,7 +209,7 @@ as backstop for a compaction that cannot allocate.
 - The **Runs per round** field previews pool size and round length from the rate model in
   `sensor.h`: `cycle_ms ≈ 224·segments/rate + CYCLE_FIXED_MS + gap_ms`; the live ETA uses
   measured pace. ⚠ It prints the length **split into scoring and pass** and warns about nothing
-   — the field moves only the pass, which at `SCORE_PASSES` 20 is under 1 % of a Eurojackpot
+   — the field moves only the pass, which at 20 scoring passes is under 1 % of a Eurojackpot
   round.
 
 ---
@@ -360,7 +361,7 @@ what remains visible is an effect varying **between items inside a block**.
   block was simply wide.
   ⚠ The block number shown is 1-based like `/loops`; `results[].block` is 0-based.
 - **The start form remembers its last values** (NVS, survives reboot and OTA): measuring time,
-  runs per round, direction, concordance weight. `/` serves them as a script chunk
+  runs per round, scoring passes, direction, concordance weight. `/` serves them as a script chunk
   appended to the page. ⚠ **Only a start carrying `confirm=1` writes them** — i.e. only the
   web UI. A curl start sends no `wpre=` and would otherwise replace the operator's weight with the
   API default. ⚠ It changes **no** API default: an omitted parameter still resolves to the

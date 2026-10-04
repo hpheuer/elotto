@@ -232,6 +232,13 @@ static const char HTML[] =
 "</span>"
 "</div>"
 "<div class='frow'>"
+"<label for='numPasses' title='How often every number is measured in each round\u2019s scoring. "
+"The pool is picked from the sum over all passes.'>Scoring passes:</label>"
+"<input id='numPasses' class='fin' type='number'"
+" value='" EL_STR(SCORE_PASSES_DEFAULT) "' min='" EL_STR(SCORE_PASSES_MIN) "'"
+" max='" EL_STR(SCORE_PASSES_MAX) "' step='1' oninput='unlimHint()'>"
+"</div>"
+"<div class='frow'>"
 "<label for='numPreW' title='Weight of concordance in the ranking key. "
 "The key is ((1-p)*z_ctr/\u03c3_z + p*zc_ctr/\u03c3_c)/sqrt((1-p)^2+p^2). 0 is z alone. "
 "Tables mean nothing before the first block closes: uncentred offsets are huge.'>"
@@ -438,7 +445,7 @@ NODE_NAMES_JS
 "function setScoreTotal(d){"
 "document.getElementById('sScoreTotal').textContent=d.scoring_total||0;"
 "var nn=(d.mode==='euro')?62:49;"
-"var passes=d.scoring_passes||" EL_STR(SCORE_PASSES) ";"
+"var passes=d.scoring_passes||" EL_STR(SCORE_PASSES_DEFAULT) ";"
 "document.getElementById('sScoreReps').textContent=passes;"
 "document.getElementById('sScorePass').textContent="
 "(d.scoring_pass>0)?d.scoring_pass:'-';"
@@ -466,7 +473,7 @@ NODE_NAMES_JS
    sensor.h (CYCLE_LOAD_MBIT_X100) is all there is before a session is live;
    after that the ETA comes from the device's measured pace instead.
 
-   A round is: SCORE_PASSES passes over every number (49 or 62 runs each), the
+   A round is: `Scoring passes` passes over every number (49 or 62 runs each), the
    pool's combinations once, and TWO camera sweeps — the round boundary and the
    one before the pass.
 
@@ -501,7 +508,9 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
    of them in Eurojackpot, main numbers and euro numbers), and one before the
    pass. None is a function of elapsed time; there is still no time trigger. */
 "var ins=(euro?4:3)*" EL_STR(CAL_BUDGET_DEFAULT_MS) ";"
-"return {s:(euro?62:49)*" EL_STR(SCORE_PASSES) "*cyc,m:combos*cyc,i:ins};}"
+"return {s:(euro?62:49)*formPasses()*cyc,m:combos*cyc,i:ins};}"
+"function formPasses(){var n=parseInt(document.getElementById('numPasses').value)||" EL_STR(SCORE_PASSES_DEFAULT) ";"
+"if(n<" EL_STR(SCORE_PASSES_MIN) ")n=" EL_STR(SCORE_PASSES_MIN) ";if(n>" EL_STR(SCORE_PASSES_MAX) ")n=" EL_STR(SCORE_PASSES_MAX) ";return n;}"
 "function unlimHint(){"
 "var c=parseInt(document.getElementById('numUnlimRuns').value)||0;"
 "var h=document.getElementById('unlimHint');"
@@ -665,6 +674,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "||" EL_STR(UNLIM_RUNS_DEFAULT) ";"
 "if(mxr<" EL_STR(UNLIM_RUNS_MIN) ")mxr=" EL_STR(UNLIM_RUNS_MIN) ";"
 "if(mxr>" EL_STR(UNLIM_RUNS_MAX) ")mxr=" EL_STR(UNLIM_RUNS_MAX) ";"
+"var passes=formPasses();document.getElementById('numPasses').value=passes;"
 "var score=DIR;"
 // Clamped here as well as validated in C: /start answers 400 for anything
 // outside 0..1 rather than falling back, so the form must not be able to send
@@ -680,7 +690,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "+'&run='+runS"
 "+'&score='+score"
 "+'&wpre='+wPre"
-"+'&maxruns='+mxr+'&confirm=1',{method:'POST'})"
+"+'&maxruns='+mxr+'&passes='+passes+'&confirm=1',{method:'POST'})"
 ".then(function(r){if(!r.ok){"
 "document.getElementById('runsErr').textContent="
 "'\\u26a0 a session is already running \\u2014 abort it first';"
@@ -1292,7 +1302,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "var top=s.slice(0,Math.max(10,last+1));"
 "document.getElementById('resTitle').innerHTML="
 "'\\uD83C\\uDFC6 Top '+top.length+' of '+SC.length+' \\u2014 scoring '"
-"+(d.scoring_pass>0?'pass '+d.scoring_pass+'/'+(d.scoring_passes||" EL_STR(SCORE_PASSES) "):'done, round '+(d.round||1))"
+"+(d.scoring_pass>0?'pass '+d.scoring_pass+'/'+(d.scoring_passes||" EL_STR(SCORE_PASSES_DEFAULT) "):'done, round '+(d.round||1))"
 "+' \\u00b7 pool: '+(d.score_dir==='low'?'lowest ':'highest ')+lab.sum;"
 "renderRunTable('resHead','resBody',top,isEuro,d,{p:d.pre_w||0},{pool:pool});"
 "if(!top.length)document.getElementById('resBody').innerHTML="
@@ -2465,6 +2475,7 @@ static bool start_key_eq(const char *k, size_t n, const char *lit)
 typedef struct {
     ElottoMode mode;
     int        runs_cap;
+    int        passes;
     int        run_ms;
     int        gap_ms;      /* <0 = omitted, derive from run_ms after the walk */
     int        cal_ms;
@@ -2534,6 +2545,17 @@ static bool start_parse_maxruns(const char *val, StartReq *r, httpd_req_t *req)
         return false;
     }
     r->runs_cap = m;
+    return true;
+}
+static bool start_parse_passes(const char *val, StartReq *r, httpd_req_t *req)
+{
+    int m;
+    if (!parse_int_all(val, &m) || m < SCORE_PASSES_MIN || m > SCORE_PASSES_MAX) {
+        start_refuse(req, "passes= must be between " EL_STR(SCORE_PASSES_MIN)
+                     " and " EL_STR(SCORE_PASSES_MAX));
+        return false;
+    }
+    r->passes = m;
     return true;
 }
 static bool start_parse_confirm(const char *val, StartReq *r, httpd_req_t *req)
@@ -2644,6 +2666,7 @@ static const StartKey start_keys[] = {
     { "score",     NULL, start_parse_score },
     { "wpre",      NULL, start_parse_wpre },
     { "maxruns",   NULL, start_parse_maxruns },
+    { "passes",    NULL, start_parse_passes },
     { "confirm",   NULL, start_parse_confirm },
     { "cal",       NULL, start_parse_cal },
     { "unlimited", NULL, start_parse_unlimited },
@@ -2729,6 +2752,7 @@ typedef struct {
     int          runs_total;
     bool         unlimited;
     int          runs_cap;
+    int          scoring_passes;
     int          run_target_ms;
     int          gap_ms;
     int          run_segments;
@@ -2745,6 +2769,7 @@ static void start_snap_save(StartSnap *s)
     s->runs_total    = g_status.runs_total;
     s->unlimited     = g_status.unlimited;
     s->runs_cap      = g_status.runs_cap;
+    s->scoring_passes = g_status.scoring_passes;
     s->run_target_ms = g_status.run_target_ms;
     s->gap_ms        = g_status.gap_ms;
     s->run_segments  = g_status.run_segments;
@@ -2761,6 +2786,7 @@ static void start_snap_restore(const StartSnap *s)
     g_status.runs_total    = s->runs_total;
     g_status.unlimited     = s->unlimited;
     g_status.runs_cap      = s->runs_cap;
+    g_status.scoring_passes = s->scoring_passes;
     g_status.run_target_ms = s->run_target_ms;
     g_status.gap_ms        = s->gap_ms;
     g_status.run_segments  = s->run_segments;
@@ -2788,6 +2814,7 @@ static esp_err_t start_handler(httpd_req_t *req)
         StartReq parsed = {
             .mode      = MODE_EUROJACKPOT,
             .runs_cap  = UNLIM_RUNS_DEFAULT,
+            .passes    = SCORE_PASSES_DEFAULT,
             .run_ms    = RUN_S_DEFAULT * 1000,
             .gap_ms    = -1,
             .cal_ms    = CAL_BUDGET_DEFAULT_MS,
@@ -2831,6 +2858,7 @@ static esp_err_t start_handler(httpd_req_t *req)
         g_status.runs_total     = 0;
         g_status.unlimited      = true;
         g_status.runs_cap       = parsed.runs_cap;
+        g_status.scoring_passes = parsed.passes;
         g_status.run_target_ms  = parsed.run_ms;
         g_status.gap_ms         = parsed.gap_ms;
         g_status.run_segments   = segments;
@@ -3286,6 +3314,7 @@ static void prefs_save(void)
     if (w100 > 100) w100 = 100;
     nvs_set_u16(h, "run10", run10);
     nvs_set_u16(h, "maxruns", mx);
+    nvs_set_u8(h,  "passes", (uint8_t)g_status.scoring_passes);
     nvs_set_u8(h,  "score", (uint8_t)g_status.score_dir);
     nvs_set_u8(h,  "wpre", w100);
     nvs_commit(h);
@@ -3330,10 +3359,11 @@ static void prefs_send(httpd_req_t *req)
     nvs_handle_t h;
     if (nvs_open(PREF_NS, NVS_READONLY, &h) != ESP_OK) return;
     uint16_t run10 = 0, maxruns = 0;
-    uint8_t score = 0xff, wpre = 0xff;
+    uint8_t score = 0xff, wpre = 0xff, passes = 0;
     bool any = false;
     if (nvs_get_u16(h, "run10", &run10) == ESP_OK) any = true;
     if (nvs_get_u16(h, "maxruns", &maxruns) == ESP_OK) any = true;
+    if (nvs_get_u8(h,  "passes", &passes) == ESP_OK) any = true;
     if (nvs_get_u8(h,  "score", &score) == ESP_OK) any = true;
     if (nvs_get_u8(h,  "wpre", &wpre) == ESP_OK) any = true;
     nvs_close(h);
@@ -3350,6 +3380,10 @@ static void prefs_send(httpd_req_t *req)
         p += snprintf(js + p, sizeof(js) - p,
             "e=document.getElementById('numUnlimRuns');if(e)e.value='%u';",
             (unsigned)maxruns);
+    if (passes > 0)
+        p += snprintf(js + p, sizeof(js) - p,
+            "e=document.getElementById('numPasses');if(e)e.value='%u';",
+            (unsigned)passes);
     if (score != 0xff) {
         p += snprintf(js + p, sizeof(js) - p, "DIR='%s';showSumPref();",
                       score == SCORE_DIR_LOW ? "low" : "high");

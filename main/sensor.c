@@ -718,7 +718,7 @@ static ScoreSnap     *s_snaps;
 static volatile int   s_snap_n;
 static volatile int   s_snap_drop;
 
-_Static_assert(SCORE_PASSES <= 255, "ScoreSnap.passes is one byte");
+_Static_assert(SCORE_PASSES_MAX <= 255, "ScoreSnap.passes is one byte");
 _Static_assert(sizeof(ScoreSnap) <= 2048, "ScoreSnap");
 
 static void score_snap_reset(void)
@@ -773,7 +773,7 @@ const ScoreSnap *score_snap_at(int i)
 
 // `euro_pool` selects the bonus-number pool; it only reaches the Focus panel,
 // which styles a euro candidate differently from a main one.
-/* One scoring run: every number SCORE_PASSES times, every column summed into
+/* One scoring run: every number scoring_passes times, every column summed into
  * s_sacc[euro_pool]. It picks nothing — score_pick_pool() does, once the whole
  * scoring is over. */
 static void score_run(int max_val, int pool_size, bool euro_pool)
@@ -797,11 +797,12 @@ static void score_run(int max_val, int pool_size, bool euro_pool)
     int     n_order = 0;
     for (int i = 1; i <= max_val; i++)
         order[n_order++] = (uint8_t)i;
-    /* scoring_total is set by the caller to SCORE_PASSES × (main+bonus). */
+    /* scoring_total is set by the caller to scoring_passes × (main+bonus). */
 
     uint8_t last = 0;
     int closed = 0;   /* passes whose sums are already in A */
-    for (int pass = 0; pass < SCORE_PASSES; pass++) {
+    const int passes = g_status.scoring_passes;
+    for (int pass = 0; pass < passes; pass++) {
         g_status.scoring_pass = pass + 1;
         bool scored[51] = {false};
         double scores[51] = {0};
@@ -948,7 +949,7 @@ static void score_run(int max_val, int pool_size, bool euro_pool)
          * caller's job to restore it, and here the scoring is not over. */
         /*: every closed scoring pass is a candidate; calibrate_all()
          * sweeps only once the dynamic interval has run out. */
-        if (pass + 1 < SCORE_PASSES) {
+        if (pass + 1 < passes) {
             if (calibrate_all(euro_pool ? "scoring pass, euro numbers" : "scoring pass"))
                 g_status.cal_did_sweep = true;
             if (g_status.abort_requested) goto snap;
@@ -2775,7 +2776,7 @@ void elotto_task(void *pvParam)
     s_drop_sum = s_drop_sumsq = 0.0;
     s_drop_n = s_drop_void = s_drop_excl = 0;
     s_drop_pn = 0;
-    // unlimited / runs_cap are session parameters from /start and are NOT reset
+    // unlimited / runs_cap / scoring_passes are session parameters from /start and are NOT reset
     // here — they tag the session.
     g_status.round           = 0;
     g_status.round_base      = 0;
@@ -2784,7 +2785,6 @@ void elotto_task(void *pvParam)
     g_status.round_total     = 0;
     g_status.scoring_done    = 0;
     g_status.scoring_pass    = 0;
-    g_status.scoring_passes  = SCORE_PASSES;
     g_status.abort_requested = false;
     g_status.elapsed_ms      = 0;
     g_status.slave_connected = false;
@@ -2932,8 +2932,9 @@ void elotto_task(void *pvParam)
     int  nm      = euro ? 5 : 6;
     int  mx      = euro ? 50 : 49;
 
-    g_status.scoring_total = SCORE_PASSES * (mx + (euro ? 12 : 0));
-    g_status.scoring_passes = SCORE_PASSES;
+    if (g_status.scoring_passes < SCORE_PASSES_MIN || g_status.scoring_passes > SCORE_PASSES_MAX)
+        g_status.scoring_passes = SCORE_PASSES_DEFAULT;
+    g_status.scoring_total = g_status.scoring_passes * (mx + (euro ? 12 : 0));
 
     uint8_t pool_main[POOL_MAIN_49] = {0};   // 15 slots, enough for both modes
     uint8_t pool_euro[POOL_EURO_12] = {0};
@@ -3004,10 +3005,9 @@ void elotto_task(void *pvParam)
             if (g_status.abort_requested) { slave_abort(); goto done; }
         }
 
-        /* ── Phase 0: SCORE_PASSES over every number, keys summed  ── */
+        /* ── Phase 0: scoring_passes over every number, keys summed  ── */
         g_status.phase = PHASE_SCORING;
-        g_status.scoring_total  = SCORE_PASSES * (mx + (euro ? 12 : 0));
-        g_status.scoring_passes = SCORE_PASSES;
+        g_status.scoring_total  = g_status.scoring_passes * (mx + (euro ? 12 : 0));
         g_status.scoring_done   = 0;
         g_status.scoring_pass   = 0;
         score_rows_begin(mx, euro);
