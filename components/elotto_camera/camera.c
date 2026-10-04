@@ -57,14 +57,14 @@ static uint32_t s_frame_w = 0, s_frame_h = 0;
  * An IMX219 node runs in TOTAL DARKNESS: its entropy is the sensor's own
  * readout noise at maximum analog gain, not photon shot noise.
  *
- * What changes against the lit OV5647 path, and only for the IMX219:
+ * What changes against the OV5647 path (exposure ladder), only for the IMX219:
  *  - exposure is FIXED at IMX_DARK_EXPOSURE;
  *  - the sweep measures the entry setting and that one rung as a health check
  *    (autocorr, stuck, bits, dispersion), never a choice -- the rung never
  *    moves, so the settle pause never fires;
  *  - DARK and ZDIFF are not gated; in their place LEAK: px above black must
  *    stay <= CAL_DARK_MAX_PX, or the rung is uncertified.
- * CAM_IMX_DARK 0 restores the lit IMX ladder. */
+ * CAM_IMX_DARK 0 puts the IMX219 on the exposure ladder. */
 #define CAM_IMX_DARK        1
 #define IMX_DARK_EXPOSURE   1600u
 #define CAL_DARK_MAX_PX     1.0     /* px above black; black drifts ±0,4 px */
@@ -592,9 +592,8 @@ static void publish_stats(void)
     double mbps = (elapsed_s > 0) ? (s_bits_extracted / 1e6) / elapsed_s : 0.0;
     /* ABOVE BLACK on the IMX219: it outputs a pedestal of 64 DN
      * (10-bit), 16 on this 8-bit scale. Left in, a sensor in total darkness
-     * would read px 16 and clear the CAL_MIN_MEAN_PX dark gate, whose whole
-     * point is that photons, not read noise, whiten the LSB. The OV5647 path
-     * is unchanged. */
+     * would read px 16 and the LEAK gate (px <= CAL_DARK_MAX_PX) could never
+     * pass. The OV5647 path is unchanged. */
     double mean_px = s_pixel_n ? (double)s_pixel_sum / (double)s_pixel_n : 0.0;
     if (s_sensor_pid == CAM_PID_IMX219 && s_pixel_n) mean_px -= IMX219_BLACK_PX;
 
@@ -1431,20 +1430,17 @@ _Static_assert(sizeof(s_cal_ladder_imx) == sizeof(s_cal_ladder),
 #define CAL_MIN_BITS        2000000ULL
 #define CAL_TARGET_BITS     8000000ULL
 #define CAL_MIN_MINIRUNS    200
-/* Over-illumination ceiling — PUBLISH ONLY. The constant stays as a reading
+/* Mean-pixel ceiling — PUBLISH ONLY. The constant stays as a reading
  * aid on /calibrate; cal_gate() no longer ORs it. */
 #define CAL_MAX_MEAN_PX     100.0
 /* ── The DARK end of the ladder ────────────────────────────────────────────
- * The bottom rungs have too little light: pixel differences come back exactly
- * ZERO, and a zero difference has a deterministic LSB, so those rungs are a
- * partly frozen source, not a dimmer one.
+ * The bottom rungs read too few distinct levels: pixel differences come back
+ * exactly ZERO, and a zero difference has a deterministic LSB, so those rungs
+ * are a partly frozen source.
  *
  * Both gates are cut below the lowest rung that behaves and above the highest
  * that does not, and they are deliberately redundant -- mean_px is the
- * physical quantity, zero_diff is the mechanism, and a rung has to clear both.
- * If the lamp is ever dimmed these will start rejecting rungs that used to
- * pass, which is the correct behaviour and not a regression: the answer is
- * light, not a lower floor. */
+ * physical quantity, zero_diff is the mechanism, and a rung has to clear both. */
 #define CAL_MIN_MEAN_PX       5.0
 #define CAL_MAX_ZERO_DIFF     0.125
 /* ── What the bias gate is actually protecting ─────────────────────────────
@@ -1472,7 +1468,7 @@ _Static_assert(sizeof(s_cal_ladder_imx) == sizeof(s_cal_ladder),
 /* Standard errors of the CHALLENGER's own measurement that it must beat the
  * incumbent by before the rung is changed. 3 is the same "outside its own
  * noise" convention CAL_BIAS_SE_K uses.
- * ⚠ Raising this makes the array slower to follow a lamp that is actually
+ * ⚠ Raising this makes the array slower to follow a sensor that is actually
  * drifting, which is the failure mode on the other side. */
 #define CAL_KEEP_MARGIN_K     3.0
 /* ── The dispersion gate ────────────────────────────────────────────────────
@@ -1565,7 +1561,7 @@ static uint32_t cal_gate(const camera_cal_step_t *s)
     if (s->stuck_frames != 0)                   f |= CAM_CAL_FAIL_STUCK;
     /* The dark end. Both, and only when the window actually measured something:
      * a candidate that never got frames already fails BITS, and adding DARK to
-     * it would report a light level that was never sampled. */
+     * it would report a pixel level that was never sampled. */
     if (s->bits >= CAL_MIN_BITS) {
         if (cam_dark()) {
             /* Dark operation: light is the fault, not its absence. */
@@ -1790,7 +1786,7 @@ bool camera_calibrate(int budget_ms, bool (*abort_cb)(void), camera_cal_t *out)
     }
 
     /* Dark operation stays on its rung even uncertified: the fallback to the
-     * entry setting exists to keep a working LIT rung, and in the dark there is
+     * entry setting exists to keep a working ladder rung, and here there is
      * no other rung to keep. The failure is reported, not hidden. */
     uint32_t use_e   = (pick >= 0) ? out->step[pick].exposure
                      : cam_dark()  ? IMX_DARK_EXPOSURE : e0;
@@ -2288,7 +2284,7 @@ typedef struct {
     int32_t  wn;          /* mini-runs behind wsig; 0 = below WIN_SIGMA_MIN_N */
     float    rsig, rbias; /* LSB sigma/bias, cumulative since the sweep */
     float    sig, bias;   /* likewise cumulative */
-    float    px;          /* mean pixel level -- the light */
+    float    px;          /* mean pixel level -- a light leak shows here */
     float    ac1;         /* lag-1 autocorrelation, cumulative since the sweep */
     float    zdiff;       /* zero-diff fraction */
     float    wac[4];      /* lag-1..4 autocorrelation over THIS window, as z */
@@ -2414,11 +2410,11 @@ esp_err_t camera_winlog_send_json(void *httpd_req)
     return ESP_OK;
 }
 
-/* ── GET /linearity — steady light or flickering light  ───────────
+/* ── GET /linearity — mean_px across an exposure ladder ───────────
  *
- * Four exposures, mean_px at each. The RATIO between consecutive rungs is the
- * answer and the absolute level is not, which is precisely why a single
- * /expose reading cannot decide it.
+ * Four exposures, mean_px at each. In the dark, light leaking in makes mean_px
+ * grow with the exposure; the RATIO between consecutive rungs shows it where
+ * a single /expose reading cannot.
  *
  * ⚠ CAL_SETTLE_PAIRS is not enough here. That constant only guarantees the
  * ring holds no frames from the previous setting; mean_pixel_level is a
@@ -2519,9 +2515,9 @@ esp_err_t camera_linearity_handle(void *httpd_req, bool busy)
 
     for (int i = 0; i < nexp; i++) {
         /* ratio is against the PREVIOUS rung, and only when the exposure
-         * actually doubled-ish -- the caller may pass any ladder. Steady light
-         * gives ratio ~= exp[i]/exp[i-1]; flicker gives less. px_per_exp is the
-         * scale-free form, constant under steady light whatever the ladder. */
+         * actually doubled-ish -- the caller may pass any ladder. Signal that
+         * integrates (a leak, dark current) gives ratio ~= exp[i]/exp[i-1];
+         * px_per_exp is the scale-free form. */
         double ratio  = (i > 0 && px[i - 1] > 0.0) ? px[i] / px[i - 1] : 0.0;
         double eratio = (i > 0) ? (double)exps[i] / (double)exps[i - 1] : 0.0;
         len = snprintf(buf, sizeof(buf),

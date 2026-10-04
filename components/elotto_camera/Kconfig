@@ -95,7 +95,7 @@ menu "Elotto Camera (OV5647 / IMX219 entropy)"
                 on this rig, different per node on purpose. Nothing runs at this
                 number for longer than the first sweep, so changing it moves the
                 starting point and nothing else. POST /expose sets an operating
-                point by hand for tuning the physical light; the next sweep
+                point by hand for trying one; the next sweep
                 overwrites that too.
 
         config ELOTTO_CAM_REG_GAIN

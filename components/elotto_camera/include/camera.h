@@ -3,8 +3,8 @@
 #include <stdbool.h>
 #include "esp_err.h"
 
-// Camera noise source (OV5647 or IMX219, whichever answers on SCCB): photon
-// shot + read noise from non-overlapping frame pairs.
+// Camera noise source (OV5647 or IMX219, whichever answers on SCCB): readout
+// noise in total darkness, from non-overlapping frame pairs.
 // This component is SHARED with the slave repo
 // via EXTRA_COMPONENT_DIRS — one source of truth, byte-identical extraction on
 // both nodes, so a change here means rebuilding and flashing both.
@@ -242,7 +242,7 @@ double camera_fps_probe(int frames, int timeout_ms);
 #define CAM_CAL_FAIL_SIGMA   0x10   // per-mini-run sigma outside 1 +- 0.05
 #define CAM_CAL_FAIL_STUCK   0x20   // a frame pair came back byte-identical
 #define CAM_CAL_FAIL_LIGHT   0x40   // legacy; bright mean_px no longer gated 
-#define CAM_CAL_FAIL_DARK    0x80   // mean pixel level below the shot-noise floor
+#define CAM_CAL_FAIL_DARK    0x80   // mean pixel level below CAL_MIN_MEAN_PX
 #define CAM_CAL_FAIL_ZDIFF  0x100   // too many zero pixel differences
 #define CAM_CAL_FAIL_RSIG   0x200   // LSB per-mini-run sigma above the bar
 #define CAM_CAL_FAIL_LEAK   0x400   // dark operation: light reaches the sensor 
@@ -334,7 +334,7 @@ bool camera_calibrate(int budget_ms, bool (*abort_cb)(void), camera_cal_t *out);
 esp_err_t camera_cal_send_json(void *httpd_req, const camera_cal_t *c);
 
 /* Handle `POST /expose?exp=<lines>[&gain=<g>]` — set this node's operating point
- * by hand, for tuning the physical light against a live mean_px reading.
+ * by hand, for trying one against a live mean_px reading.
  *
  * Shared for the same reason as the sweep serialiser: both firmwares serve this
  * path (the master for its own camera, each slave for its own), and the clamps
@@ -420,11 +420,10 @@ void camera_winlog_new_session(void);
  * by ordinal, never by subtracting their timestamps. */
 esp_err_t camera_winlog_send_json(void *httpd_req);
 
-/* GET /linearity[?exp=a,b,c,d][&settle=<ms>] — the light-quality test from
- * CLAUDE.md as one request instead of four manual /expose calls.
+/* GET /linearity[?exp=a,b,c,d][&settle=<ms>] — mean_px across an exposure
+ * ladder as one request instead of four manual /expose calls.
  *
- * Steady light doubles mean_px when the exposure doubles; light that FLICKERS
- * does not.
+ * In the dark, light leaking in makes mean_px grow with the exposure.
  *
  * Defaults to 32,64,128,256 and ~1200 ms of settling per rung. RESTORES the
  * entry exposure and gain before returning, including on an early exit — the
@@ -432,8 +431,8 @@ esp_err_t camera_winlog_send_json(void *httpd_req);
  *
  * ⚠ Refused with 409 when `busy`: it drives the sensor registers, which is the
  * one thing that must never happen underneath a running measurement.
- * ⚠ It is not a substitute for the sweep. It answers "is the light steady",
- * not "which rung should this node run on". */
+ * ⚠ It is not a substitute for the sweep. It answers "does mean_px follow the
+ * exposure", not "which rung should this node run on". */
 esp_err_t camera_linearity_handle(void *httpd_req, bool busy);
 
 // Priority of the extraction task created by camera_init().

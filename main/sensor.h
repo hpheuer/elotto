@@ -257,7 +257,7 @@ typedef enum { PHASE_SCORING, PHASE_MEASURING,
  * cross-item normalization. A recurrence in a later round is a separate row,
  * never an average. */
 
-/* Entropy is photons. A node whose camera stops is reported and rebooted. */
+/* Entropy is camera readout noise. A node whose camera stops is reported and rebooted. */
 
 typedef struct {
     int        index;      // combination id (1-based slot in the enumeration)
@@ -442,7 +442,7 @@ typedef struct {
      * the in-window trend t is not computed for this node. */
     int      cam_cut_now;
     /* Mean raw pixel level from that same 'D' query (,px=). The one covariate
-     * that separates a light change from a sensor change.
+     * that separates a light leak from a sensor change.
      * ⚠ 0 = this node did not report it (firmware older than 2026-08-28), not
      * a dark frame. */
     float    cam_mean_px;
@@ -502,7 +502,7 @@ typedef struct {
      * setting carry byte-identical values and say nothing about either. These
      * three are read at block CLOSE, from the master's own camera_get_stats()
      * and each slave's 'D' reply, i.e. they describe the block's own bits.
-     * ⚠ `cam_px` separates "the lamp moved" from "the sensor moved". 0 = not
+     * ⚠ `cam_px` separates "light leaked in" from "the sensor moved". 0 = not
      * reported (a slave on firmware older than 2026-08-28 sends no,px= field),
      * which is NOT the same as a dark frame.
      * ⚠ `cam_rsig` is the LSB σ. It has no null of 1 to be read against
@@ -595,7 +595,6 @@ typedef struct {
     uint16_t round;      // (round, index) is the identity in unlimited mode
     uint16_t index;      // combination id WITHIN that round
     uint8_t  node;       // discovery order, 0 = master
-    uint8_t  counted;    // 1 = this node was in that item's combine
     uint8_t  nums[6];
     uint8_t  euro[2];
     /* 0 = an item of the pass; 1..SCORE_PASSES = a scoring run in that pass,
@@ -605,6 +604,9 @@ typedef struct {
     float    prev;       // that node's window sigma on its previous item
     float    now;        // and on this one
     float    jump;       // now - prev; the board ranks |jump|
+    /* Master uptime when the jump was noted (ms). No RTC: the UI does
+     * wall = now − (uptime_ms − t_ms). */
+    int64_t  t_ms;
 } WsigEvent;
 
 /* One number of the scoring, in the pass's own row type: `r` is filled

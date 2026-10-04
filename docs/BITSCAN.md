@@ -30,8 +30,8 @@ das LSB **auf demselben Node, im selben Fenster**.
 1. Dunkel-Modus bestätigt: `/diagjson?all=1` → `cam_sensor` = `IMX219`,
    `exposure` = 1600 (`IMX_DARK_EXPOSURE`), `gain` = 232 (`IMX219_GAIN_MAX`).
    Enclosure lichtdicht, LEDs aus.
-2. `CAM_IMX_DARK` = 1 (`camera.c`). Sonst läuft die lit-Leiter und das Experiment
-   misst Photonen statt Readout-Noise.
+2. `CAM_IMX_DARK` = 1 (`camera.c`), damit der IMX219 auf seiner festen Dunkel-Belichtung
+   steht.
 3. **Nicht während einer Session** (Diagnose-Modus ist dann ohnehin 409). Auf einem
    **Slave**; idealerweise auf allen Nodes, weil Bias/`raw_sigma` per Node
    nicht-stationär sind.
@@ -55,7 +55,7 @@ ist Bit k von `b−a` ≠ Bit k von `a XOR b` (Borrows). Der Monitor muss die **
 Differenz** rekonstruieren, nicht das XOR verallgemeinern. (Nur der Zero-Detect darf
 weiter XOR verwenden: `d==0 ⟺ a==b`.)
 
-Lit-OV5647-Kontrollknoten (RAW8): `d = (b−a) & 255`, k = 0..7.
+OV5647-Knoten: dieselbe RAW10-Rekonstruktion; nur der Master-OV auf RAW8 nutzt `d = (b−a) & 255`, k = 0..7.
 
 ## 4. Implementierung: bewaffneter Per-Bit-Monitor
 

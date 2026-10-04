@@ -216,7 +216,7 @@ static const char HTML[] =
 "</div>"
 "<div class='frow'>"
 "<span>Entropy:</span>"
-"<span style='font-size:.92em'>&#128247; camera photons (OV5647 / IMX219)</span>"
+"<span style='font-size:.92em'>&#128247; camera readout noise (OV5647 / IMX219)</span>"
 "</div>"
 "<div class='frow'>"
 "<label for='numUnlimRuns' title='Measurement runs ONE round may spend. The pool is sized so its whole "
@@ -1528,11 +1528,10 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "+((d.wsig_sd>0)?' Jump-to-jump noise this session: \\u00b1'+d.wsig_sd.toFixed(4)+' over '+d.wsig_sd_n+' node-measurements.':'');"
 "document.getElementById('resHeadWsig').innerHTML="
 "'<tr><th>#</th><th>Item</th><th>Node</th>'"
-"+'<th title=\"that node\\u2019s camera sigma on its previous measurement\">was</th>'"
-"+'<th title=\"and on this one. A quiet window reads 1,0\">now</th>'"
-"+'<th title=\"the change; the board ranks its size, either direction\">jump</th>'"
+"+'<th title=\"when the jump happened (day.month. hour:minute)\">time</th>'"
+"+'<th title=\"that node\\u2019s camera sigma on its previous measurement. A quiet window reads 1,0\">was</th>'"
+"+'<th title=\"the change to this measurement; the board ranks its size, either direction\">jump</th>'"
 "+'<th title=\"the jump measured in this session\\u2019s own jump-to-jump noise. Below about 3 this is ordinary sampling scatter\">\\u00d7\\u03c3</th>'"
-"+'<th title=\"was this node still in the combine for that item\">counted</th>'"
 "+'<th>Numbers</th>'+(isEuro?'<th>Bonus</th>':'')+'<th></th></tr>';"
 "var tb=document.getElementById('resBodyWsig');tb.innerHTML='';"
 "if(ev.length===0){"
@@ -1552,14 +1551,17 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "if(e.spass>0)itm='scoring '+e.spass+(d.unlimited&&e.round?'/'+e.round:'');"
 "var sgn=e.jump>0?'+':'';"
 /* One row per NODE, not per item: one node jumping alone is that camera,
-   two nodes on the SAME item is the light. Collapsing them would erase the
-   one distinction this table exists to make. */
+   two nodes on the SAME item is a shared cause. Collapsing them would erase
+   the one distinction this table exists to make. */
+"var when='';"
+"if(e.t_ms>0&&d.uptime_ms>0){var dt=new Date(Date.now()-(d.uptime_ms-e.t_ms));"
+"var z2=function(n){return (n<10?'0':'')+n;};"
+"when=z2(dt.getDate())+'.'+z2(dt.getMonth()+1)+'. '+z2(dt.getHours())+':'+z2(dt.getMinutes());}"
 "tb.innerHTML+='<tr><td>'+(i+1)+'</td><td>'+itm+'</td>'"
-"+'<td>'+wsigNode(d,e.node)+'</td>'"
-"+'<td>'+e.prev.toFixed(3)+'</td><td>'+e.now.toFixed(3)+'</td>'"
+"+'<td>'+wsigNode(d,e.node)+'</td><td>'+when+'</td>'"
+"+'<td>'+e.prev.toFixed(3)+'</td>'"
 "+'<td><b>'+sgn+e.jump.toFixed(3)+'</b></td>'"
 "+'<td>'+((d.wsig_sd>0)?(Math.abs(e.jump)/d.wsig_sd).toFixed(1):'\\u2014')+'</td>'"
-"+'<td>'+(e.counted?'yes':'no')+'</td>'"
 "+'<td>'+nums+'</td>'+(isEuro?'<td>'+estr+'</td>':'')+cpCell(e.nums,isEuro?e.euro:null)+'</tr>';"
 "}"
 "document.getElementById('resCardWsig').style.display='block';"
@@ -1987,16 +1989,15 @@ static esp_err_t status_handler(httpd_req_t *req)
         g_status.wsig_sd, g_status.wsig_sd_n);
     /* The camera-sigma jump board: biggest |jump| first, session-wide.
      * NOT a ranking -- these are the items whose bits were least quiet while
-     * they were taken, i.e. the z that deserve the least trust. `counted`
-     * says whether that node was still in the combine, so a reader can tell
-     * a disturbance that reached the z from one that was already excluded. */
+     * they were taken, i.e. the z that deserve the least trust. Only nodes
+     * that were in the item's combine are on it; `t_ms` is master uptime. */
     for (int i = 0; i < g_status.wsig_n && i < WSIG_TOP_N; i++) {
         const WsigEvent *e = &g_status.wsig_top[i];
         buf_append(buf, sizeof(buf), &pos,
-            "%s{\"round\":%d,\"index\":%d,\"spass\":%d,\"node\":%d,\"counted\":%d,"
-            "\"prev\":%.4f,\"now\":%.4f,\"jump\":%.4f,\"nums\":[",
+            "%s{\"round\":%d,\"index\":%d,\"spass\":%d,\"node\":%d,"
+            "\"prev\":%.4f,\"jump\":%.4f,\"t_ms\":%lld,\"nums\":[",
             i ? "," : "", (int)e->round, (int)e->index, (int)e->spass, (int)e->node,
-            (int)e->counted, e->prev, e->now, e->jump);
+            e->prev, e->jump, (long long)e->t_ms);
         bool f1 = true;
         for (int m = 0; m < 6; m++) {
             if (!e->nums[m]) continue;
@@ -2940,13 +2941,13 @@ static const char DIAG_HTML[] =
 "<a href='#' onclick='rescan();return false'>re-scan nodes</a></p>"
 "<p class='sub'>&#9881; <b>Set exp</b> halves or doubles that node's exposure and "
 "resets its statistics, so mean_px answers within a second or two &mdash; for "
-"tuning the physical light. Refused while a session runs, and the next "
+"trying an operating point. Refused while a session runs, and the next "
 "calibration sweep overwrites it.</p>"
 "<table><thead><tr>"
 "<th class='l' title=\"board and address. Each row is that node answering for itself\">Node</th>"
-"<th title=\"exposure RIGHT NOW. Different rungs per node are normal &mdash; different sensors, different light\">Exp</th>"
+"<th title=\"exposure RIGHT NOW. Different rungs per node are normal &mdash; different sensors\">Exp</th>"
 "<th class='l' title=\"halve or double this exposure by hand and reset the statistics, so mean_px answers in ~2 s. Refused while measuring; the next sweep overwrites it\">set exp</th>"
-"<th title=\"analog gain. Left at 1023 &mdash; the light is tuned with exposure and the lamp\">Gain</th>"
+"<th title=\"analog gain, fixed at the maximum\">Gain</th>"
 "<th title=\"mean raw pixel byte. Must stay in [5,0 , 100,0]: below = partly frozen frames, above = heading for saturation\">mean_px</th>"
 "<th title=\"ones fraction of the LSB stream minus 0,5. Small by construction &mdash; raw_bias in /diagjson is the front end itself\">bias&minus;0.5</th>"
 "<th title=\"&sigma; of the per-mini-run z (3200 bits each). Gate wants |&sigma;&minus;1| &le; 0,05\">&sigma;</th>"
@@ -2965,8 +2966,8 @@ static const char DIAG_HTML[] =
    sees it, and it is never written to /loops. The array still finds its nodes by
    UDP broadcast with no IP table anywhere, which is why a wrong or changed
    address here costs a label and nothing else.
-   It exists because the operator has to walk to a physical box and change a lamp,
-   and "192.168.178.145" is not what that box is called. The addresses are static
+   It exists because the operator has to walk to a physical box, and
+   "192.168.178.145" is not what that box is called. The addresses are static
    DHCP leases keyed on MAC, so the mapping is stable in this rig.
    An unknown address is shown as-is rather than guessed at: the slave INDEX is
    discovery order (reply arrival), not identity, so naming a row from its
@@ -3227,8 +3228,8 @@ static esp_err_t diagjson_handler(httpd_req_t *req)
  *
  * ⚠ Not sticky. The next calibration sweep re-derives the setting and overwrites
  * whatever was set here — which is correct (the sweep is the thing that decides
- * an operating point on evidence), but it means this is a tool for tuning the
- * LIGHT against a live mean_px, not a way to pin a node to a rung. */
+ * an operating point on evidence), but it means this is a tool for trying a
+ * setting against a live mean_px, not a way to pin a node to a rung. */
 static esp_err_t expose_handler(httpd_req_t *req)
 {
     if (!origin_ok(req)) return ESP_OK;
@@ -3255,7 +3256,7 @@ static esp_err_t camlog_handler(httpd_req_t *req)
     return camera_winlog_send_json(req);
 }
 
-/* GET /linearity — steady light or flickering light, in one request.
+/* GET /linearity — mean_px across an exposure ladder, in one request.
  * Drives the exposure registers, so it is refused for the whole session. */
 static esp_err_t linearity_handler(httpd_req_t *req)
 {

@@ -1900,9 +1900,11 @@ static void block_ac_compute(int block_idx)
  * that outlives compaction, so it copies what it needs.
  *
  * ⚠ One item can put several nodes on the board. That is deliberate: two
- * nodes jumping on the SAME item is a change in the light, one node jumping
- * alone is that camera. Collapsing them to one row per item would erase the
- * distinction that matters most. */
+ * nodes jumping on the SAME item is a shared cause, one node jumping alone is
+ * that camera. Collapsing them to one row per item would erase the
+ * distinction that matters most.
+ * ⚠ Only a node that was IN the item's combine enters the board — its jump is
+ * the only kind that reached a z. Every node's jump still feeds wsig_sd. */
 static void wsig_note(const RunResult *r, const float *wsig, uint8_t mask,
                       uint8_t spass)
 {
@@ -1928,6 +1930,7 @@ static void wsig_note(const RunResult *r, const float *wsig, uint8_t mask,
 
         /* No floor: the board keeps the largest of whatever happened, and
          * the x-sigma column says whether they matter. See WSIG_TOP_N. */
+        if (!(mask & (1u << i))) continue;        /* not in the combine */
 
         /* Insertion sort on |jump|, biggest first. WSIG_TOP_N is 10, so the
          * linear scan is cheaper than anything cleverer and runs once per
@@ -1949,13 +1952,13 @@ static void wsig_note(const RunResult *r, const float *wsig, uint8_t mask,
         e->round   = r->round;
         e->index   = r->index;
         e->node    = (uint8_t)i;
-        e->counted = (mask & (1u << i)) ? 1 : 0;
         e->spass   = spass;
         memcpy(e->nums, r->nums, sizeof(e->nums));
         memcpy(e->euro, r->euro, sizeof(e->euro));
         e->prev = prev;
         e->now  = now;
         e->jump = jump;
+        e->t_ms = esp_timer_get_time() / 1000;
     }
 }
 

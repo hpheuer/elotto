@@ -17,4 +17,4 @@ git show 1e62bca:docs/PLAN_HISTORY.md
 | §1.1 – §1.14 | `git show 1e62bca:docs/PLAN_HISTORY.md` |
 | §1.15 onward (historical numbering) | superseded; v3 contract is [`../CLAUDE.md`](../CLAUDE.md) |
 
-Read findings there as **records of what was true when measured**, not as current state. Several were overturned later (enclosure is lit; selection key is `|bias−0,5|`; LSB-as-is).
+Read findings there as **records of what was true when measured**, not as current state. Several were overturned later.

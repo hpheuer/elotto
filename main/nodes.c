@@ -796,7 +796,7 @@ void slaves_diag(void)
             float t = 0;
             if (sscanf(tp + 3, "%f", &t) == 1) N->die_temp_c = t;
         }
-        /* ",px=<mean pixel level>" — the light covariate, stamped into
+        /* ",px=<mean pixel level>" — the leak covariate, stamped into
          * LoopStat.cam_px at every block close. Cleared first, and 0 is
          * how "this node does not send it" reads: a slave on older firmware
          * must be absent, not dark. Unlike die_temp this cannot travel as NAN,

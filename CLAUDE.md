@@ -20,7 +20,7 @@ Two markers, and only two:
 - VS Code with Espressif ESP-IDF Extension
 
 ## Purpose
-Rank lottery **numbers** (scoring → pool) and **combinations** (the pass) from camera photon noise.
+Rank lottery **numbers** (scoring → pool) and **combinations** (the pass) from camera readout noise.
 Two channels, one key:
 
 - **z** — binomial of the camera LSBs in that window (the old z_pre; there is no second z,
@@ -34,8 +34,8 @@ that key; the pass **ranks** items on the same key; the UI shows Z*, Z, Conc.
 **How the cameras stay usable.** One OV5647 **or** IMX219 per node — `esp_video` probes both (OV at I2C 0x36, IMX at 0x10) and binds whichever chip answers. Frame-pair LSB — z is the camera bits. IMX219 streams packed RAW10 (4 pixels in 5 bytes); the extractor takes the 10-bit LSB. An OV5647 streams RAW10 1920×1080 unbinned on the slaves, RAW8 800×800 on the master (`sdkconfig.defaults` per repo); dark RAW8 is biased and over-dispersed, dark RAW10 is not. ⚠ The layout
 comes from the FOURCC (`BG10`), not from `sizeimage` — esp_video leaves that 0, and the old fallback
 read packed bytes as RAW8. `GET /camtest?dump=1` shows what the buffer really holds.
-⚠ IMX `px` is **above black** (pedestal 16 subtracted), so its dark gate means photons, as on the
-OV. `/status` `cam_sensor` names the bound chip. The **sweep**
+⚠ IMX `px` is **above black** (pedestal 16 subtracted), so its LEAK gate measures light that reaches
+the sensor. `/status` `cam_sensor` names the bound chip. The **sweep**
 picks the exposure with the lowest **`raw_sigma`** among rungs that still look like noise (autocorr,
 dark / zero_diff)  — dispersion is what `rank_key()` divides by and what soft-down trips on;
 the bias is subtracted by the centring and costs nothing. If a node's block σ is too loud against its peers, **soft-down**
@@ -338,9 +338,11 @@ what remains visible is an effect varying **between items inside a block**.
   mode that would otherwise produce it.
 - **A third table, the camera-sigma jump board**: the ten largest changes in a node's
   own camera noise from its previous measurement to this one, session-wide, named by
-  (item/round) plus the drawn numbers. ⛔ **It is a SUSPICION list, not a ranking** — the top row
+  (item/round), wall time (`dd.mm. HH:MM`) and the drawn numbers. Only a node that was in that
+  item's combine enters it; every node's jump still feeds `wsig_sd`. Columns: was, jump, ×σ.
+  ⛔ **It is a SUSPICION list, not a ranking** — the top row
   is the measurement whose z deserves the LEAST trust. It excludes nothing.
-  ⚠ One row per NODE: two nodes on the same item is the light, one node alone is that camera.
+  ⚠ One row per NODE: two nodes on the same item is a shared cause, one node alone is that camera.
   ⚠ Read the **×σ** column, not the raw jump: it scales against `wsig_sd`, the session's own
   measured jump noise (~0,016 on this rig). There is deliberately **no minimum jump** — on a
   quiet session the board holds ten rows at 2..3 σ and says so, and the card is shown even
@@ -444,7 +446,6 @@ visible as possible), from boot. The sweep measures the entry setting and that r
 never a choice — so it never moves the rung and the settle pause never fires. Its gates: autocorr,
 stuck, bits, relative σ, and **LEAK** instead of DARK/ZDIFF: `px` above black ≤ `CAL_DARK_MAX_PX` 1,0.
 An uncertified node keeps measuring on 1600 and the Log names it ("NO certified setting").
-(`CAM_IMX_DARK` 0 restores the lit ladder 16..1600 of.)
 
 Gates a rung must clear: autocorr < `CAL_AUTOC_TOL` 0,03 (⚠ never subsample — it gates),
 σ ≤ `CAL_RAW_SIGMA_K` 1,35 × the ladder's own best (**relative, one-sided**, after the whole
@@ -492,10 +493,6 @@ ladder), no stuck frames, `mean_px` ≥ 5,0,
   the board, not a boot value — and a `POST /expose?gain=` override is carried forward by the
   next sweep instead of being replaced.
   ⛔ **And it stays that way** — gain 1023, exposure ladder only.
-- ⚠ **Too much light on one node is a fault, not a luxury**: it forces the sweep onto the short
-  rungs, which certify worst. slave0 went from 3 of 9 rungs at `raw_sigma` 1,36 to 6 of 9 at
-  1,032 after ~6,7× dimming. Judge it by illumination per exposure unit (`mean_px`/`exp`),
-  not by `mean_px` alone.
 
 ---
 
@@ -512,7 +509,7 @@ place a disturbance can still be located in time.
 - ⚠ `t_ms` is each node's OWN uptime. Align by `tag` or by ordinal, **never** by subtracting
   timestamps across boards.
 - It records what never travels on the wire — `rsig`, `px`, `ac1`, `zdiff`, the per-lag `wac`.
-  The wire carries `wsig` and the lag sum of `wac` (`,ac=`) and nothing else. That difference is what separates "the light moved" from "this sensor
+  The wire carries `wsig` and the lag sum of `wac` (`,ac=`) and nothing else. That difference is what separates "light leaked in" from "this sensor
   is dispersing".
 - ⚠ Only windows that produced a **Z** are pushed; a faulted or voided run has no window.
 
@@ -527,16 +524,11 @@ releases it — ⚠ `SESSION_IDLE_MS` must stay above the 60 s settle pause, whi
   under it. It is kept because without it a master crash would leave every slave locked until
   someone rebooted it. (The pool-confirmation park that motivated it is gone.)
 
-## Illumination — standing rules
-Every enclosure is **totally dark, LEDs off** (the entropy is readout noise). The light rules
-below apply only to a lit OV node, which the array no longer has.
-- ⛔ **Never power illumination from a node's VSYS pin**.
-- ⚠ **After physical work, let the light settle ~30 min** before a long run.
-- ⚠ **Do not judge the light by one `mean_px` reading** — sweep, or take a time series.
-- ⚠ **The linearity test tells STEADY light from bright light, in a minute** (lit OV): `GET
-  /linearity` on the node  — it ladders exp 32/64/128/256, reports `mean_px`, `px_per_exp`
-  and the ratio per rung, and restores the entry exposure; steady light doubles `mean_px` each rung.
-  409 while a session runs; abort first.
+## Darkness — standing rules
+Every enclosure is **totally dark, LEDs off**; the entropy is readout noise. A light leak shows as
+`mean_px` rising — on an IMX219 the LEAK gate catches it, on any node `GET /linearity` (mean_px
+across exp 32/64/128/256, entry exposure restored, 409 during a session) shows `mean_px` growing
+with the exposure.
 - ⛔ **All nodes on PoE, permanently** (user decision).
 
 ---
@@ -559,8 +551,8 @@ below apply only to a lit OV node, which the array no longer has.
   **`GET /diagjson?all=1` is the COLLECTOR**: the whole array's front-end health in one request,
   discovery order, IP per row. 409 while measuring. ⚠ `cal_*` is what the last SWEEP chose;
   `exposure`/`gain` are LIVE — they differ after a manual `/expose` or an uncertified sweep.
-  `POST /expose?exp=<lines>[&gain=<g>]` sets one node's live operating point (tuning the physical
-  LIGHT against a live reading; resets camera stats so `mean_px` answers in ~2 s). Not sticky —
+  `POST /expose?exp=<lines>[&gain=<g>]` sets one node's live operating point (trying a setting
+  against a live reading; resets camera stats so `mean_px` answers in ~2 s). Not sticky —
   the next sweep overwrites it, correctly. 409 while measuring.
 - **main/sensor.c/h** – GCP analysis, scoring and the pool, the pass, blocks, centring, drift,
   soft-down, publishing. ⚠ Counter and round-base semantics are commented at the definitions in
