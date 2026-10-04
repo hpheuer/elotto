@@ -1077,7 +1077,13 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "+'<th align=left title=\"runs this node missed. Each costs that run\\u2019s share of the combine, not the session\">lost</th>'"
 "+'<th align=left title=\"P4 DIE temperature. SoC die, NOT the OV5647. Blank = not reported\">T \\u00b0C</th>'"
 "+'</tr>';"
-"for(var i=0;i<d.nodes.length;i++){var N=d.nodes[i],H=nodeHealth[i]||{};"
+/* Rows in NAME order (master, slave0, slave1, ...), not discovery order. `i`
+   stays the discovery index: nodeHealth[] and the nodeSig ids are keyed on it. */
+"var ord=[];for(var q=0;q<d.nodes.length;q++)ord.push(q);"
+"var nkey=function(q){var p=d.nodes[q].ip;p=(p&&p!=='self')?p:location.hostname;"
+"var n=NODE_NAMES[p]||(q===0?'master':'');return n==='master'?'0':n?'1'+n:'2'+p;};"
+"ord.sort(function(a,b){var x=nkey(a),y=nkey(b);return x<y?-1:(x>y?1:0);});"
+"for(var oi=0;oi<ord.length;oi++){var i=ord[oi],N=d.nodes[i],H=nodeHealth[i]||{};"
 // The master reports ip:"self" (it has no idea what address the client used to
 // reach it), so take the address this page was served from -- which IS the
 // master's, by construction. Keeps the list symmetric: every row names a host.
