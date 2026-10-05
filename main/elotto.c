@@ -533,7 +533,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "function setDir(v){DIR=v;fetch('/scoresum?dir='+v,{method:'POST'}).catch(function(){});"
 "if(LD&&LD.state==='running'&&LD.scoring_pass>0)LD.score_dir=v;showSumPref();}"
 "function showSumPref(c){if(c)sumPrefC=c;var e=document.getElementById('sumPref');"
-"if(!e)return;var t='\\u03a3 '+({key:'Z*',z:'Z',conc:'Conc',nsd:'\\u0394n',ac:'AC',bac:'bAC',tr:'Tr'}[sumPrefC]||'Z*');"
+"if(!e)return;var t='\\u03a3 '+({key:'Z*',z:'Z',conc:'Conc',nsd:'\\u0394n',ac:'AC',mau:'Mau'}[sumPrefC]||'Z*');"
 "e.textContent=(DIR==='low'?'lowest ':'highest ')+t;}"
 "function setMode(mode){"
 "document.getElementById('subtitle').textContent="
@@ -741,17 +741,17 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "var x=pair[0],s=pair[1];"
 "var R=(x&&x.extremes)?x.extremes:[];"
 "R.sort(function(a,b){return Math.abs(b.key||0)-Math.abs(a.key||0);});"
-"var L=['Rank;Round;Comb;Numbers;Euro;Z*;Z;Z_raw;Conc;\\u0394n;AC;bAC;Tr;k'];"
+"var L=['Rank;Round;Comb;Numbers;Euro;Z*;Z;Z_raw;Conc;\\u0394n;AC;Mau;k'];"
 "R.forEach(function(r,i){L.push([i+1,r.round,r.run,(r.nums||[]).join(' '),(r.euro||[]).join(' '),"
-"f(r.key),f(r.z_ctr),f(r.z),f(r.zc),f(r.nsd),f(r.ac),f(r.bac),f(r.tr),r.k].join(';'));});"
+"f(r.key),f(r.z_ctr),f(r.z),f(r.zc),f(r.nsd),f(r.ac),f(r.mau),r.k].join(';'));});"
 "dl('elotto_top'+R.length+'_'+stamp+'.csv',L);"
 "var snaps=(s&&s.snaps)?s.snaps:[];"
 "if(snaps.length){"
-"var L2=['Round;Kind;Number;Passes;Z*;nZ*;Z;nZ;Conc;nConc;\\u0394n;n\\u0394n;AC;nAC;bAC;nbAC;Tr;nTr'];"
+"var L2=['Round;Kind;Number;Passes;Z*;nZ*;Z;nZ;Conc;nConc;\\u0394n;n\\u0394n;AC;nAC;Mau;nMau'];"
 "snaps.forEach(function(sn){(sn.rows||[]).forEach(function(row){"
 "var c=[sn.round,sn.euro?'euro':'main',row.n,sn.passes];"
 "var sum=row.sum||[],kk=row.k||[];"
-"for(var i=0;i<7;i++){var nk=kk[i]|0;c.push(nk?f(sum[i]):'');c.push(nk?String(nk):'');}"
+"for(var i=0;i<6;i++){var nk=kk[i]|0;c.push(nk?f(sum[i]):'');c.push(nk?String(nk):'');}"
 "L2.push(c.join(';'));});});"
 "setTimeout(function(){dl('elotto_sums_'+stamp+'.csv',L2);},400);}"
 "else if(!s) document.getElementById('msg').textContent='⚠ Sums save failed';"
@@ -1247,8 +1247,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "else if(k==='z_ctr')v=(r.z_ctr===undefined||r.z_ctr===null)?r.z:r.z_ctr;"
 "else if(k==='zc')v=r.zc;"
 "else if(k==='ac')v=r.ac;"
-"else if(k==='bac')v=r.bac;"
-"else if(k==='tr')v=r.tr;"
+"else if(k==='mau')v=r.mau;"
 "else v=r.nsd;"
 "return (v===undefined||v===null||v!==v)?null:v;}"
 /* desc, and a missing value (Δn on a solo item) always sinks to the end. */
@@ -1290,8 +1289,8 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "function renderScoreTable(){"
 "if(!LD)return;var d=LD,isEuro=d.mode==='euro';"
 "if(SSK==='sum'&&liveSc())SSD=d.score_dir==='low'?1:-1;"
-"var lab={sum:'\\u03a3 '+({key:'Z*',z:'Z',conc:'Conc',nsd:'\\u0394n',ac:'AC',bac:'bAC',tr:'Tr'}[curSum()]||'Z*'),"
-"key:'Z*',z_ctr:'Z',zc:'Conc',nsd:'\\u0394n',ac:'AC',bac:'bAC',tr:'Tr'};"
+"var lab={sum:'\\u03a3 '+({key:'Z*',z:'Z',conc:'Conc',nsd:'\\u0394n',ac:'AC',mau:'Mau'}[curSum()]||'Z*'),"
+"key:'Z*',z_ctr:'Z',zc:'Conc',nsd:'\\u0394n',ac:'AC',mau:'Mau'};"
 "var s=SC.slice().sort(scCmp);"
 /* Pool members: the numbers the device picked from the sums so far.
    Marked by membership, not by position, so any sort shows them. The table
@@ -1306,7 +1305,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "+' \\u00b7 pool: '+(d.score_dir==='low'?'lowest ':'highest ')+lab.sum;"
 "renderRunTable('resHead','resBody',top,isEuro,d,{p:d.pre_w||0},{pool:pool});"
 "if(!top.length)document.getElementById('resBody').innerHTML="
-"'<tr><td colspan=\"12\" style=\"color:#d0b0b0;padding:10px\">No number scored yet.</td></tr>';}"
+"'<tr><td colspan=\"11\" style=\"color:#d0b0b0;padding:10px\">No number scored yet.</td></tr>';}"
 /* Throttled to 5 s: /extremes is a ~15 KB streamed scan served on the
    MASTER's HTTP task, which shares the consumer core with the GCP consumer
     — fetching it every 1 s stole extraction CPU from the master alone and
@@ -1321,7 +1320,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "EX=(x&&x.extremes)?x.extremes:[];renderExtremeTables();}).catch(function(){});}"
 "function renderExtremeTables(){"
 "if(!LD)return;var d=LD,isEuro=d.mode==='euro',st={p:d.pre_w||0};"
-"var lab={key:'Z*',z_ctr:'Z',zc:'Conc',nsd:'\\u0394n',ac:'AC',bac:'bAC',tr:'Tr'};"
+"var lab={key:'Z*',z_ctr:'Z',zc:'Conc',nsd:'\\u0394n',ac:'AC',mau:'Mau'};"
 "var top,endTxt;"
 /* One table: the leading 10 of the active sort over the extremes set.
    The other end is one header click away (direction flips), so a second table
@@ -1337,7 +1336,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "renderRunTable('resHead','resBody',top,isEuro,d,st);"
 /* How the pool being measured was picked, e.g. "9 numbers, scoring
    lowest Δn". Items of earlier rounds came from their own pools. */
-"var su={key:'Z*',z:'Z',conc:'Conc',nsd:'\\u0394n',ac:'AC',bac:'bAC',tr:'Tr'}[d.pool_used_sum]||'Z*';"
+"var su={key:'Z*',z:'Z',conc:'Conc',nsd:'\\u0394n',ac:'AC',mau:'Mau'}[d.pool_used_sum]||'Z*';"
 "var dr=d.score_dir==='low'?'lowest ':'highest ';"
 "document.getElementById('resSub').textContent=(d.pool_used_n>0)"
 "?('pool of round '+d.pool_used_round+': '+d.pool_used_n+' numbers, scoring '"
@@ -1359,7 +1358,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "if(navigator.clipboard&&window.isSecureContext)navigator.clipboard.writeText(t).then(done,old);else old();}"
 "function renderRunTable(headId,bodyId,res,isEuro,d,st,opt){"
 "document.getElementById(headId).innerHTML="
-"'<tr><th>#</th>'+(opt?'<th style=\"cursor:pointer\" title=\"running sum of this number\\u2019s pass keys \\u2014 the pool is picked on it. While the scoring runs the arrow is the pool direction: \\u25be highest, \\u25b4 lowest; a second click flips it. A green # marks a pool member.\" onclick=\"sortBy(\\'sum\\')\">\\u03a3 '+{key:'Z*',z:'Z',conc:'Conc',nsd:'\\u0394n',ac:'AC',bac:'bAC',tr:'Tr'}[curSum()]+exArrow('sum')+'</th>':'<th>Item</th>')"
+"'<tr><th>#</th>'+(opt?'<th style=\"cursor:pointer\" title=\"running sum of this number\\u2019s pass keys \\u2014 the pool is picked on it. While the scoring runs the arrow is the pool direction: \\u25be highest, \\u25b4 lowest; a second click flips it. A green # marks a pool member.\" onclick=\"sortBy(\\'sum\\')\">\\u03a3 '+{key:'Z*',z:'Z',conc:'Conc',nsd:'\\u0394n',ac:'AC',mau:'Mau'}[curSum()]+exArrow('sum')+'</th>':'<th>Item</th>')"
 "+(st?'<th style=\"cursor:pointer\" title=\"ranking key in units of its own block σ. Click to sort the 50\" onclick=\"sortBy(\\'key\\')\">'+sumLab(opt,'key','Z*')+exArrow('key')+sumMark(opt,'key')+'</th>'"
 "+'<th style=\"cursor:pointer\" title=\"block-centred combined z. Click to sort the 50\" onclick=\"sortBy(\\'z_ctr\\')\">'+sumLab(opt,'z','Z')+exArrow('z_ctr')+sumMark(opt,'z')+'</th>'"
 "+'<th style=\"cursor:pointer\" title=\"leave-one-out half-window concordance. Click to sort the 50\" onclick=\"sortBy(\\'zc\\')\">'+sumLab(opt,'conc','Conc')+exArrow('zc')+sumMark(opt,'conc')+'</th>'"
@@ -1389,33 +1388,19 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "\\u2014 = block (scoring: pass) still open, or the first item of it\\n"
 "AC does not change which numbers enter the pool. Click to sort the 50.\" "
 "style=\"cursor:pointer\" onclick=\"sortBy(\\'ac\\')\">'+sumLab(opt,'ac','AC')+exArrow('ac')+sumMark(opt,'ac')+'</th>'"
-/* bAC: the bit autocorrelation of the camera bits behind this item. A
-   research column like Δn and AC: it sorts, its Σ may pick the pool, it never
-   enters Z*. */
-"+'<th title=\"Were the camera bits of this item ordered?\\n"
-"Autocorrelation of the bits inside this item\\u2019s own measuring window (lags 1 to 4), "
-"each camera against its own average, combined over the cameras, in units of this "
-"block\\u2019s spread.\\n"
+/* Mau: Maurer's universal test (NIST SP 800-22) over the camera bits behind
+   this item. A research column like Δn and AC: it sorts, its Σ may pick the
+   pool, it never enters Z*. */
+"+'<th title=\"Were the camera bits of this item compressible?\\n"
+"Maurer\\u2019s universal test (NIST SP 800-22) over the bits of this item\\u2019s own "
+"measuring window: how soon each 8-bit pattern comes back. Each camera against its own "
+"average, combined over the cameras, in units of this block\\u2019s spread.\\n"
 "around 0 (within \\u00b12) = ordinary\\n"
-"large + = the bits clumped more than usual\\n"
-"large \\u2212 = the bits alternated more than usual\\n"
+"large \\u2212 = patterns came back sooner than usual (less entropy)\\n"
+"large + = patterns came back later than usual\\n"
 "\\u2014 = block (scoring: pass) still open, or no camera reported it\\n"
-"Z counts ones and cannot see the order of the bits; bAC sees only the order. "
-"Click to sort the 50.\" "
-"style=\"cursor:pointer\" onclick=\"sortBy(\\'bac\\')\">'+sumLab(opt,'bac','bAC')+exArrow('bac')+sumMark(opt,'bac')+'</th>'"
-/* Tr: the in-window trend, second half of the window against the first. A
-   research column like bAC. */
-"+'<th title=\"Did the level move DURING this item\\u2019s window?\\n"
-"Each camera splits its window in two halves in time and compares the second "
-"half with the first (a steady offset cancels out). Combined over the cameras, "
-"in units of this block\\u2019s spread.\\n"
-"around 0 (within \\u00b12) = the level stayed put\\n"
-"large + = it rose during the window\\n"
-"large \\u2212 = it fell during the window\\n"
-"\\u2014 = block (scoring: pass) still open, or no camera sent its split\\n"
-"Z is the level of the whole window, Conc asks whether both halves agree, Tr "
-"asks whether they differ. Click to sort the 50.\" "
-"style=\"cursor:pointer\" onclick=\"sortBy(\\'tr\\')\">'+sumLab(opt,'tr','Tr')+exArrow('tr')+sumMark(opt,'tr')+'</th>':'')"
+"Z counts ones; Mau looks at the patterns they form. Click to sort the 50.\" "
+"style=\"cursor:pointer\" onclick=\"sortBy(\\'mau\\')\">'+sumLab(opt,'mau','Mau')+exArrow('mau')+sumMark(opt,'mau')+'</th>':'')"
 "+'<th>Numbers</th>'"
 "+(isEuro?'<th>Bonus</th>':'')+'<th></th></tr>';"
 "var tb=document.getElementById(bodyId);tb.innerHTML='';"
@@ -1447,10 +1432,8 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "var nsdCol=(nsd===null)?'#9aa':(nsd<0.6?'#90ee90':(nsd>1.0?'#c09090':''));"
 "var acTxt=(r.ac===undefined||r.ac===null)?'\\u2014':r.ac.toFixed(2);"
 "var acCol=(r.ac===undefined||r.ac===null)?'#9aa':(Math.abs(r.ac)>3?'#ffd479':'');"
-"var bacTxt=(r.bac===undefined||r.bac===null)?'\\u2014':r.bac.toFixed(2);"
-"var bacCol=(r.bac===undefined||r.bac===null)?'#9aa':(Math.abs(r.bac)>3?'#ffd479':'');"
-"var trTxt=(r.tr===undefined||r.tr===null)?'\\u2014':r.tr.toFixed(2);"
-"var trCol=(r.tr===undefined||r.tr===null)?'#9aa':(Math.abs(r.tr)>3?'#ffd479':'');"
+"var mauTxt=(r.mau===undefined||r.mau===null)?'\\u2014':r.mau.toFixed(2);"
+"var mauCol=(r.mau===undefined||r.mau===null)?'#9aa':(Math.abs(r.mau)>3?'#ffd479':'');"
 "var det='Z '+zTxt+' \\u00b7 Conc '+concTxt"
 "+' \\u00b7 \\u0394n '+nsdTxt+' (k '+(r.k===undefined?'?':r.k)+')';"
 "if(st)det+='\\nweights: z '+(1-(st.p||0)).toFixed(2)"
@@ -1460,8 +1443,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "+'<td'+dim+'>'+zTxt+'</td><td'+dim+'>'+concTxt+'</td>'"
 "+'<td'+(nsdCol?' style=\"color:'+nsdCol+'\"':'')+'>'+nsdTxt+'</td>'"
 "+'<td'+(acCol?' style=\"color:'+acCol+'\"':'')+'>'+acTxt+'</td>'"
-"+'<td'+(bacCol?' style=\"color:'+bacCol+'\"':'')+'>'+bacTxt+'</td>'"
-"+'<td'+(trCol?' style=\"color:'+trCol+'\"':'')+'>'+trTxt+'</td>':'')+'"
+"+'<td'+(mauCol?' style=\"color:'+mauCol+'\"':'')+'>'+mauTxt+'</td>':'')+'"
 "<td>'+nums+'</td>"
 "'+(isEuro?'<td>'+estr+'</td>':'')+cpCell(r.nums,isEuro?r.euro:null)+'</tr>';"
 "}"
@@ -1598,7 +1580,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
  * fields (the scoring's `sum`/`passes`), "" for none. nums/euro carry their
  * non-zero entries: 6 or 5+2 for an item, the one number for a scoring row. */
 /* ScoreSum names on the wire (/status score_sum, POST /scoresum?c=). */
-static const char *const SCORE_SUM_NAME[SCORE_SUM_N] = { "key", "z", "conc", "nsd", "ac", "bac", "tr" };
+static const char *const SCORE_SUM_NAME[SCORE_SUM_N] = { "key", "z", "conc", "nsd", "ac", "mau" };
 
 static int emit_row(char *buf, int cap, const RunResult *r, double key,
                     const char *tail)
@@ -1618,18 +1600,12 @@ static int emit_row(char *buf, int cap, const RunResult *r, double key,
         snprintf(ac, sizeof(ac), "%.2f", (double)r->acz);
     else
         snprintf(ac, sizeof(ac), "null");
-    /* `bac`: window bit autocorrelation in block-σ units, null until centred. */
-    char bac[16];
-    if (isfinite((double)r->bac))
-        snprintf(bac, sizeof(bac), "%.2f", (double)r->bac);
+    /* `mau`: window Maurer z in block-σ units, null until centred. */
+    char mau[16];
+    if (isfinite((double)r->mau))
+        snprintf(mau, sizeof(mau), "%.2f", (double)r->mau);
     else
-        snprintf(bac, sizeof(bac), "null");
-    /* `tr`: in-window trend t in block-σ units, null until centred. */
-    char tr[16];
-    if (isfinite((double)r->trd))
-        snprintf(tr, sizeof(tr), "%.2f", (double)r->trd);
-    else
-        snprintf(tr, sizeof(tr), "null");
+        snprintf(mau, sizeof(mau), "null");
     char ks[16];
     if (isfinite(key)) snprintf(ks, sizeof(ks), "%.4f", key);
     else               snprintf(ks, sizeof(ks), "null");
@@ -1645,10 +1621,10 @@ static int emit_row(char *buf, int cap, const RunResult *r, double key,
 
     return snprintf(buf, cap,
         "{\"run\":%d,\"round\":%d,\"z\":%.4f,\"z_ctr\":%.4f,"
-        "\"zc\":%.3f,\"key\":%s,\"k\":%d,\"nsd\":%s,\"ac\":%s,\"bac\":%s,\"tr\":%s,"
+        "\"zc\":%.3f,\"key\":%s,\"k\":%d,\"nsd\":%s,\"ac\":%s,\"mau\":%s,"
         "\"nums\":[%s],\"euro\":[%s]%s}",
         r->index, (int)r->round, r->z_score, (double)r->z_ctr,
-        (double)r->zc_ctr, ks, (int)r->k, nsd, ac, bac, tr, nums, eu, tail ? tail : "");
+        (double)r->zc_ctr, ks, (int)r->k, nsd, ac, mau, nums, eu, tail ? tail : "");
 }
 
 static int emit_run(char *buf, int cap, const RunResult *r, bool euro)
@@ -2174,7 +2150,7 @@ static esp_err_t extremes_sums(httpd_req_t *req)
     char sb[512];
     int sl = snprintf(sb, sizeof(sb),
         "{\"n\":%d,\"dropped\":%d,"
-        "\"cols\":[\"Z*\",\"Z\",\"Conc\",\"dn\",\"AC\",\"bAC\",\"Tr\"],\"snaps\":[",
+        "\"cols\":[\"Z*\",\"Z\",\"Conc\",\"dn\",\"AC\",\"Mau\"],\"snaps\":[",
         nsnap, drop);
     send_chunk(req, sb, sl, sizeof(sb));
     for (int i = 0; i < nsnap; i++) {
@@ -2201,11 +2177,11 @@ static esp_err_t extremes_sums(httpd_req_t *req)
                 }
             }
             sl = snprintf(sb, sizeof(sb),
-                "{\"n\":%d,\"sum\":[%s,%s,%s,%s,%s,%s,%s],"
-                "\"k\":[%s,%s,%s,%s,%s,%s,%s]}",
+                "{\"n\":%d,\"sum\":[%s,%s,%s,%s,%s,%s],"
+                "\"k\":[%s,%s,%s,%s,%s,%s]}",
                 k,
-                cell[0], cell[1], cell[2], cell[3], cell[4], cell[5], cell[6],
-                kn[0], kn[1], kn[2], kn[3], kn[4], kn[5], kn[6]);
+                cell[0], cell[1], cell[2], cell[3], cell[4], cell[5],
+                kn[0], kn[1], kn[2], kn[3], kn[4], kn[5]);
             send_chunk(req, sb, sl, sizeof(sb));
         }
         httpd_resp_send_chunk(req, "]}", 2);
@@ -2362,7 +2338,7 @@ static esp_err_t focus_handler(httpd_req_t *req)
  *
  * Device-side, like the loop itself: closing the browser does not resume it. */
 /* ── /scoresum POST — the column the pool is summed on  ─────────────
- * ?c=key|z|conc|nsd|ac|bac|tr. Every column is summed all the way through, so a
+ * ?c=key|z|conc|nsd|ac|mau. Every column is summed all the way through, so a
  * switch only changes which sum the pick reads; the pick itself happens when
  * the whole scoring ends, on whatever is selected then. 409 outside the
  * scoring: after it the pool is already picked. */
@@ -2405,7 +2381,7 @@ static esp_err_t scoresum_handler(httpd_req_t *req)
             return ESP_OK;
         }
     httpd_resp_set_status(req, "400 Bad Request");
-    httpd_resp_sendstr(req, "c= must be key, z, conc, nsd, ac, bac or tr");
+    httpd_resp_sendstr(req, "c= must be key, z, conc, nsd, ac or mau");
     return ESP_OK;
 }
 

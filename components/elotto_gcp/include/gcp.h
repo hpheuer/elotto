@@ -76,10 +76,11 @@ gcp_result_t gcp_zscore_raw(int nseg, bool (*on_yield)(void), double *out);
 gcp_result_t gcp_zscore_pre(int nseg, bool (*on_yield)(void), double *out,
                             double *out_h1, double *out_h2);
 
-/* Segments in h1 of the last gcp_zscore_pre() window (h2 has nseg − cut).
- * The halves are unequal: the cut sits on a frame-pair boundary. 0 before any
- * window. One caller per node (the measuring task), read right after it. */
-int gcp_last_cut(void);
+/* Maurer's universal test (NIST SP 800-22 §2.9, L = 8, Q = 2560) over the
+ * bits of the last gcp_zscore_pre() window, as z: unit normal for random bits,
+ * negative = more compressible. NAN when the window held no test block or did
+ * not finish. One caller per node (the measuring task), read right after it. */
+double gcp_last_maurer(void);
 
 #ifdef __cplusplus
 }

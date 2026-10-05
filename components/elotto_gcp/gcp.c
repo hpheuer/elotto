@@ -4,6 +4,7 @@
 
 #include <math.h>
 #include <stdint.h>
+#include <string.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -42,9 +43,73 @@ static double z_from_counts(uint64_t ones, uint64_t words)
  * from camera_window_pair_starts(); a boundary is taken at the end of the read
  * block it falls into (<= GCP_READ_SEGS segments late, < 0,2 % of a pair).
  * No pair boundary inside the window -> nseg/2 as before. */
-static int s_last_cut;
 
-int gcp_last_cut(void) { return s_last_cut; }
+/* ── Maurer's universal statistical test (NIST SP 800-22 §2.9), L = 8 ──
+ * Over the same bits z counts, in the order they were read: bytes of each
+ * word MSB first (the packer's bit order). The first MAU_Q blocks only fill
+ * the last-seen table; each later block adds log2(i − last[b]).
+ * log2 in Q16 from a table below MAU_LUT_N; a longer distance (≈ e^−16 per
+ * block for random bits) is shifted down to the table's top 12 bits. */
+#define MAU_L      8
+#define MAU_Q      (10u << MAU_L)      /* 2560 initialisation blocks */
+#define MAU_E      7.1836656           /* expected f_n, L = 8 */
+#define MAU_VAR    3.238               /* variance of one log2 distance, L = 8 */
+#define MAU_LUT_N  4096u
+static uint32_t s_mau_lut[MAU_LUT_N];  /* round(log2(d)·65536), d ≥ 1 */
+static uint32_t s_mau_last[1u << MAU_L];
+static uint32_t s_mau_i;               /* blocks seen in this window */
+static uint64_t s_mau_sum;             /* Σ log2 distance, Q16 */
+static double   s_last_mau = NAN;
+
+double gcp_last_maurer(void) { return s_last_mau; }
+
+static void mau_begin(void)
+{
+    if (s_mau_lut[2] == 0)
+        for (uint32_t d = 1; d < MAU_LUT_N; d++)
+            s_mau_lut[d] = (uint32_t)(log2((double)d) * 65536.0 + 0.5);
+    memset(s_mau_last, 0, sizeof(s_mau_last));
+    s_mau_i = 0;
+    s_mau_sum = 0;
+}
+
+static inline uint32_t mau_log2q16(uint32_t d)
+{
+    if (d < MAU_LUT_N) return s_mau_lut[d];
+    uint32_t s = 0;
+    while ((d >> s) >= MAU_LUT_N) s++;
+    return s_mau_lut[d >> s] + (s << 16);
+}
+
+static void mau_words(const uint32_t *w, uint32_t n)
+{
+    uint32_t i = s_mau_i;
+    uint64_t sum = 0;
+    for (uint32_t k = 0; k < n; k++) {
+        uint32_t x = w[k];
+        for (int sh = 24; sh >= 0; sh -= 8) {
+            uint32_t b = (x >> sh) & 0xFFu;
+            i++;
+            if (i > MAU_Q) sum += mau_log2q16(i - s_mau_last[b]);
+            s_mau_last[b] = i;
+        }
+    }
+    s_mau_i = i;
+    s_mau_sum += sum;
+}
+
+/* z = (f_n − E)/σ with f_n = Σ/K over the K test blocks,
+ * σ = c·√(Var/K), c = 0,7 − 0,8/L + (4 + 32/L)·K^(−3/L)/15 (NIST).
+ * NAN without a test block. */
+static double mau_z(void)
+{
+    if (s_mau_i <= MAU_Q) return NAN;
+    double K  = (double)(s_mau_i - MAU_Q);
+    double fn = (double)s_mau_sum / 65536.0 / K;
+    double c  = 0.7 - 0.8 / MAU_L
+              + (4.0 + 32.0 / MAU_L) * pow(K, -3.0 / MAU_L) / 15.0;
+    return (fn - MAU_E) / (c * sqrt(MAU_VAR / K));
+}
 
 gcp_result_t gcp_zscore_pre(int nseg, bool (*on_yield)(void), double *out,
                             double *out_h1, double *out_h2)
@@ -67,6 +132,8 @@ gcp_result_t gcp_zscore_pre(int nseg, bool (*on_yield)(void), double *out,
 
     if (out_h1) *out_h1 = 0.0;
     if (out_h2) *out_h2 = 0.0;
+    s_last_mau = NAN;
+    mau_begin();
 
     for (int seg = 0; seg < nseg; ) {
         /* A block ends wherever the per-segment loop acted: after the midpoint
@@ -84,6 +151,7 @@ gcp_result_t gcp_zscore_pre(int nseg, bool (*on_yield)(void), double *out,
         uint32_t bo = 0;                             /* <= 112 * 32, no overflow */
         for (uint32_t i = 0; i < nw; i++) bo += cam_popcount32(buf[i]);
         ones += bo;
+        mau_words(buf, nw);
 
         int last = end - 1;
         if (last + 1 == n1) mid_ones = ones;
@@ -112,6 +180,7 @@ gcp_result_t gcp_zscore_pre(int nseg, bool (*on_yield)(void), double *out,
 
     uint64_t words = (uint64_t)nseg * words_per_seg;
     *out = z_from_counts(ones, words);
+    s_last_mau = mau_z();
 
     /* The split: the pair boundary nearest nseg/2, strictly inside. */
     int      cut = n1;
@@ -122,7 +191,6 @@ gcp_result_t gcp_zscore_pre(int nseg, bool (*on_yield)(void), double *out,
         int d = b_seg[i] - n1; if (d < 0) d = -d;
         if (best < 0 || d < best) { best = d; cut = b_seg[i]; cut_ones = b_ones[i]; }
     }
-    s_last_cut = cut;
     if (out_h1 && cut > 0)
         *out_h1 = z_from_counts(cut_ones, (uint64_t)cut * words_per_seg);
     if (out_h2 && nseg > cut)

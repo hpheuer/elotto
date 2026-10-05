@@ -403,12 +403,6 @@ static void cam_verify_regs(const char *when)
  * camera_task), not where a caller asks for it. */
 static uint32_t s_win_z_n;
 static double   s_win_z_mean, s_win_z_m2;
-/* Autocorrelation over the same window: the lag-1..4 counts process_words()
- * already takes, kept a second time window-scoped, plus the window's own ones
- * and bits so the estimator is centred on the window's bias. Zeroed with
- * s_win_z_* and nowhere else. */
-static uint64_t s_win_ac_both1[4], s_win_ac_pairs[4];
-static uint64_t s_win_ones, s_win_bits;
 
 /* Below this many mini-runs the window sigma is not published: a partial
  * window would otherwise report a wild value that reads like a disturbance.
@@ -501,18 +495,11 @@ static void process_words(void)
     s_autocorr_both1[1] += ac2; s_autocorr_pairs[1] += 30u * (uint64_t)n;
     s_autocorr_both1[2] += ac3; s_autocorr_pairs[2] += 29u * (uint64_t)n;
     s_autocorr_both1[3] += ac4; s_autocorr_pairs[3] += 28u * (uint64_t)n;
-    s_win_ac_both1[0] += ac1; s_win_ac_pairs[0] += 31u * (uint64_t)n;
-    s_win_ac_both1[1] += ac2; s_win_ac_pairs[1] += 30u * (uint64_t)n;
-    s_win_ac_both1[2] += ac3; s_win_ac_pairs[2] += 29u * (uint64_t)n;
-    s_win_ac_both1[3] += ac4; s_win_ac_pairs[3] += 28u * (uint64_t)n;
-    s_win_ones += ones; s_win_bits += 32u * (uint64_t)n;
 }
 
 static void win_stats_zero(void)
 {
     s_win_z_n = 0; s_win_z_mean = 0.0; s_win_z_m2 = 0.0;
-    for (int L = 0; L < 4; L++) { s_win_ac_both1[L] = 0; s_win_ac_pairs[L] = 0; }
-    s_win_ones = 0; s_win_bits = 0;
 }
 
 // diff = b - a per pixel (mod 256), LSB packed. Non-overlapping: caller never
@@ -647,19 +634,6 @@ static void publish_stats(void)
     s_stats.win_sigma_samples = (s_win_z_n >= WIN_SIGMA_MIN_N) ? (int)s_win_z_n : 0;
     s_stats.win_sigma         = (s_win_z_n >= WIN_SIGMA_MIN_N)
         ? sqrt(s_win_z_m2 / (double)(s_win_z_n - 1)) : 0.0;
-    /* Same Pearson r as autocorr_lag below, centred on the WINDOW's bias, then
-     * times √pairs: for independent bits r has SE 1/√pairs (the centring takes
-     * the bias fluctuation out of E[xy] - p²), so this is a unit-normal z. */
-    {
-        double wb = s_win_bits ? (double)s_win_ones / (double)s_win_bits : 0.0;
-        double wv = wb * (1.0 - wb);
-        bool ok = (s_win_z_n >= WIN_SIGMA_MIN_N) && wv > 0.0;
-        for (int L = 0; L < 4; L++) {
-            double np = (double)s_win_ac_pairs[L];
-            s_stats.win_ac_z[L] = (ok && np > 0.0)
-                ? ((double)s_win_ac_both1[L] / np - wb * wb) / wv * sqrt(np) : 0.0;
-        }
-    }
     s_stats.mean_pixel_level  = mean_px;
     s_stats.mbit_per_sec      = mbps;
     s_stats.zero_diff_frac    = s_diff_n ? (double)s_zero_diffs / (double)s_diff_n : 0.0;
@@ -743,7 +717,6 @@ static void stats_reset_locked(void)
     s_stats.sigma_samples     = 0;
     s_stats.win_sigma         = 0.0;
     s_stats.win_sigma_samples = 0;
-    for (int L = 0; L < 4; L++) s_stats.win_ac_z[L] = 0.0;
     s_stats.mean_pixel_level  = 0.0;
     s_stats.mbit_per_sec      = 0.0;
     s_stats.consume_mbit_per_sec = 0.0;
@@ -2287,7 +2260,7 @@ typedef struct {
     float    px;          /* mean pixel level -- a light leak shows here */
     float    ac1;         /* lag-1 autocorrelation, cumulative since the sweep */
     float    zdiff;       /* zero-diff fraction */
-    float    wac[4];      /* lag-1..4 autocorrelation over THIS window, as z */
+    float    mau;         /* Maurer universal-test z of THIS window, NaN = none */
 } cam_winlog_t;
 
 static cam_winlog_t *s_winlog;
@@ -2308,7 +2281,7 @@ void camera_winlog_new_session(void)
     s_winlog_ses++;
 }
 
-void camera_winlog_push(uint32_t tag)
+void camera_winlog_push(uint32_t tag, double mau)
 {
     if (!s_mutex) return;
     if (!s_winlog) {
@@ -2339,7 +2312,7 @@ void camera_winlog_push(uint32_t tag)
     e->px    = (float)cs.mean_pixel_level;
     e->ac1   = (float)cs.autocorr_lag[0];
     e->zdiff = (float)cs.zero_diff_frac;
-    for (int L = 0; L < 4; L++) e->wac[L] = (float)cs.win_ac_z[L];
+    e->mau   = (float)mau;
     s_winlog_head = (s_winlog_head + 1) % CAM_WINLOG_N;
     if (s_winlog_n < CAM_WINLOG_N) s_winlog_n++;
     else                           s_winlog_dropped++;
@@ -2391,15 +2364,18 @@ esp_err_t camera_winlog_send_json(void *httpd_req)
          * one-sided. A flag to read, never an exclusion. */
         int wlo = (e.wn > 1) &&
                   (double)e.wsig < 1.0 - 3.0 / sqrt(2.0 * (double)(e.wn - 1));
+        char mau[16];
+        if (isfinite((double)e.mau)) snprintf(mau, sizeof(mau), "%.3f", (double)e.mau);
+        else                         snprintf(mau, sizeof(mau), "null");
         len = snprintf(buf, sizeof(buf),
             "%s{\"ses\":%lu,\"t_ms\":%lu,\"tag\":%lu,\"wsig\":%.4f,\"wn\":%ld,"
-            "\"wlo\":%d,\"wac\":[%.2f,%.2f,%.2f,%.2f],"
+            "\"wlo\":%d,\"mau\":%s,"
             "\"rsig\":%.4f,\"rbias\":%.6f,\"sig\":%.4f,\"bias\":%.6f,"
             "\"px\":%.2f,\"ac1\":%.4f,\"zdiff\":%.4f}",
             i ? "," : "", (unsigned long)e.ses,
             (unsigned long)e.t_ms, (unsigned long)e.tag,
             (double)e.wsig, (long)e.wn, wlo,
-            (double)e.wac[0], (double)e.wac[1], (double)e.wac[2], (double)e.wac[3],
+            mau,
             (double)e.rsig, (double)e.rbias,
             (double)e.sig, (double)e.bias, (double)e.px, (double)e.ac1,
             (double)e.zdiff);
