@@ -2239,11 +2239,10 @@ static esp_err_t extremes_handler(httpd_req_t *req)
             char tail[192];
             snprintf(tail, sizeof(tail),
                      ",\"sum\":%.4f,\"sum_n\":%d,\"passes\":%d,"
-                     "\"sums\":[%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f]",
+                     "\"sums\":[%.4f,%.4f,%.4f,%.4f,%.4f,%.4f]",
                      (double)s->sums[c], (int)s->sum_n[c], (int)s->passes,
                      (double)s->sums[0], (double)s->sums[1], (double)s->sums[2],
-                     (double)s->sums[3], (double)s->sums[4], (double)s->sums[5],
-                     (double)s->sums[6]);
+                     (double)s->sums[3], (double)s->sums[4], (double)s->sums[5]);
             if (!first) httpd_resp_send_chunk(req, ",", 1);
             sl = emit_row(sb, sizeof(sb), &s->r, (double)s->key, tail);
             send_chunk(req, sb, sl, sizeof(sb));
