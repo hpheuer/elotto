@@ -1050,6 +1050,8 @@ esp_err_t camera_init(void)
                                  : (uint32_t)CONFIG_ELOTTO_CAM_REG_EXPOSURE;
     if (!camera_set_exposure(boot_e, boot_g))
         ESP_LOGW(TAG_CAM, "boot exposure/gain did not latch");
+    if (s_sensor_pid != CAM_PID_IMX219 && !camera_set_isp(false))
+        ESP_LOGW(TAG_CAM, "boot: OV5647 ISP could not be switched off");
     cam_verify_regs("after-write");
 
     struct v4l2_requestbuffers req = {
@@ -1271,6 +1273,40 @@ void camera_stats_reset(int settle_pairs)
 bool camera_stats_settled(void)
 {
     return s_settle_pairs == 0;
+}
+
+/* OV5647 on-chip ISP (0x5000, ISP CTRL00) acts on RAW output too: bit 7 lens
+ * shading correction (position-dependent gain, then rounding), bits 2/1 black/
+ * white defect-pixel cancel (outliers replaced from neighbours). The driver's
+ * format table writes 0xff. All three rewrite pixel values before the LSB is
+ * taken, so they boot OFF; the other (debug) bits keep the table's value.
+ * Not touched by the sweep — it stays as booted or as POST /expose?isp= left it. */
+#define OV_ISP_REG        0x5000
+#define OV_ISP_PROC_BITS  0x86u
+static int s_ov_isp = -1;            // -1 = not an OV5647 / unknown
+
+bool camera_set_isp(bool on)
+{
+    if (s_fd < 0 || s_sensor_pid == CAM_PID_IMX219) return false;
+    uint32_t v = 0;
+    if (cam_reg_read(OV_ISP_REG, &v) != ESP_OK) return false;
+    v = on ? (v | OV_ISP_PROC_BITS) : (v & ~OV_ISP_PROC_BITS);
+    cam_reg_write(OV_ISP_REG, v);
+    uint32_t rb = 0;
+    if (cam_reg_read(OV_ISP_REG, &rb) != ESP_OK || rb != v) {
+        ESP_LOGW(TAG_CAM, "0x5000 did not latch: wrote 0x%02lx, read 0x%02lx",
+                 (unsigned long)v, (unsigned long)rb);
+        return false;
+    }
+    s_ov_isp = on ? 1 : 0;
+    ESP_LOGI(TAG_CAM, "OV5647 ISP processing %s (0x5000=0x%02lx)",
+             on ? "ON" : "OFF", (unsigned long)rb);
+    return true;
+}
+
+int camera_get_isp(void)
+{
+    return s_ov_isp;
 }
 
 /* Apply exposure/gain and CONFIRM by read-back. Writing these registers is not
@@ -1871,13 +1907,13 @@ esp_err_t camera_cal_send_json(void *httpd_req, const camera_cal_t *c)
         "{\"ran\":true,\"ok\":%s,\"chosen\":%d,\"exposure\":%lu,\"gain\":%lu,"
         "\"bias\":%.6f,\"sigma\":%.4f,\"mbit_s\":%.3f,"
         "\"raw_bias\":%.6f,\"raw_sigma\":%.4f,\"raw_runs_z\":%.2f,"
-        "\"kept\":%s,"
+        "\"kept\":%s,\"isp\":%d,"
         "\"autocorr\":%.4f,\"mean_px\":%.2f,\"ms\":%lu,\"steps\":[",
         c->ok ? "true" : "false", c->chosen,
         (unsigned long)c->exposure, (unsigned long)c->gain,
         c->bias, c->sigma, c->mbit_per_sec,
         c->raw_bias, c->raw_sigma, c->raw_runs_z,
-        c->kept ? "true" : "false",
+        c->kept ? "true" : "false", camera_get_isp(),
         c->autocorr_max, c->mean_pixel_level, (unsigned long)c->elapsed_ms);
     httpd_resp_send_chunk(req, buf, len);
 
@@ -1938,6 +1974,7 @@ esp_err_t camera_expose_handle(void *httpd_req, bool busy)
     uint32_t exp_now = 0, gain_now = 0;
     camera_get_exposure(&exp_now, &gain_now);
     uint32_t want_e = exp_now, want_g = gain_now;
+    int want_isp = -1;                     // -1 = leave as is
 
     char qry[96] = "", val[16] = "";
     if (httpd_req_get_url_query_str(req, qry, sizeof(qry)) == ESP_OK) {
@@ -1945,7 +1982,11 @@ esp_err_t camera_expose_handle(void *httpd_req, bool busy)
             want_e = (uint32_t)strtoul(val, NULL, 10);
         if (httpd_query_key_value(qry, "gain", val, sizeof(val)) == ESP_OK)
             want_g = (uint32_t)strtoul(val, NULL, 10);
+        if (httpd_query_key_value(qry, "isp", val, sizeof(val)) == ESP_OK)
+            want_isp = (val[0] == '1') ? 1 : 0;
     }
+    bool isp_ok = true;
+    if (want_isp >= 0) isp_ok = camera_set_isp(want_isp == 1);
 
     /* Same limits the Kconfig entries carry: 20-bit exposure, 10-bit gain, and
      * exposure 0 would stop integration altogether. camera_set_exposure() also
@@ -1961,10 +2002,11 @@ esp_err_t camera_expose_handle(void *httpd_req, bool busy)
     uint32_t got_e = 0, got_g = 0;
     camera_get_exposure(&got_e, &got_g);
     snprintf(buf, sizeof(buf),
-        "{\"ok\":%s,\"exposure\":%lu,\"gain\":%lu,\"asked\":%lu}",
-        applied ? "true" : "false",
-        (unsigned long)got_e, (unsigned long)got_g, (unsigned long)want_e);
-    if (!applied) httpd_resp_set_status(req, "500 Internal Server Error");
+        "{\"ok\":%s,\"exposure\":%lu,\"gain\":%lu,\"asked\":%lu,\"isp\":%d}",
+        (applied && isp_ok) ? "true" : "false",
+        (unsigned long)got_e, (unsigned long)got_g, (unsigned long)want_e,
+        camera_get_isp());
+    if (!applied || !isp_ok) httpd_resp_set_status(req, "500 Internal Server Error");
     httpd_resp_sendstr(req, buf);
     ESP_LOGI(TAG_CAM, "expose: set exposure=%lu gain=%lu -> read back %lu/%lu %s",
              (unsigned long)want_e, (unsigned long)want_g,

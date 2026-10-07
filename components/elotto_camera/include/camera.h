@@ -193,6 +193,12 @@ bool camera_stats_settled(void);
 // register: OV5647 0..1023 (10-bit), IMX219 0..232. Values above the chip's
 // max are clamped so set/get still round-trips.
 bool camera_set_exposure(uint32_t exposure, uint32_t gain);
+
+/* OV5647 on-chip pixel processing (0x5000: lens shading + defect-pixel cancel).
+ * Boots OFF; POST /expose?isp=0|1 switches it, the sweep leaves it alone.
+ * camera_get_isp(): 1 on, 0 off, -1 not an OV5647. */
+bool camera_set_isp(bool on);
+int  camera_get_isp(void);
 void camera_get_exposure(uint32_t *exposure, uint32_t *gain);
 
 /* Capture geometry. The WIDTH is the row length a spatial period in the bit
