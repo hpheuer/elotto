@@ -11,6 +11,7 @@
 #include "esp_log.h"
 #include "esp_err.h"
 #include "esp_timer.h"
+#include "nvs.h"
 #include "driver/temperature_sensor.h"
 #include "esp_heap_caps.h"
 #include "soc/soc.h"
@@ -346,6 +347,8 @@ static esp_err_t cam_reg_read(uint32_t regaddr, uint32_t *value)
     *value = regval.value;
     return ESP_OK;
 }
+
+static void ov_boot_apply(void);
 
 // Read back what the sensor actually holds. Writing these registers is not
 // proof they stuck: the driver rewrites the whole format array on S_FMT, and
@@ -1050,8 +1053,7 @@ esp_err_t camera_init(void)
                                  : (uint32_t)CONFIG_ELOTTO_CAM_REG_EXPOSURE;
     if (!camera_set_exposure(boot_e, boot_g))
         ESP_LOGW(TAG_CAM, "boot exposure/gain did not latch");
-    if (s_sensor_pid != CAM_PID_IMX219 && !camera_set_isp(false))
-        ESP_LOGW(TAG_CAM, "boot: OV5647 ISP could not be switched off");
+    if (s_sensor_pid != CAM_PID_IMX219) ov_boot_apply();
     cam_verify_regs("after-write");
 
     struct v4l2_requestbuffers req = {
@@ -1275,33 +1277,76 @@ bool camera_stats_settled(void)
     return s_settle_pairs == 0;
 }
 
-/* OV5647 on-chip ISP (0x5000, ISP CTRL00) acts on RAW output too: bit 7 lens
- * shading correction (position-dependent gain, then rounding), bits 2/1 black/
- * white defect-pixel cancel (outliers replaced from neighbours). The driver's
- * format table writes 0xff. All three rewrite pixel values before the LSB is
- * taken, so they boot OFF; the other (debug) bits keep the table's value.
- * Not touched by the sweep — it stays as booted or as POST /expose?isp= left it. */
+/* OV5647 boot settings, kept in NVS (namespace "cam") and applied ONCE, after
+ * S_FMT and before streaming. ⚠ Never live: writing 0x5000 while the sensor
+ * streams stalled its MIPI output (frame_pairs froze, stalls stayed 0).
+ *  - isp: on-chip pixel processing in 0x5000 (ISP CTRL00) — bit 7 lens shading
+ *    correction (position-dependent gain, then rounding), bits 2/1 black/white
+ *    defect-pixel cancel. It acts on RAW output too; the other (debug) bits keep
+ *    the driver table's value. Default ON.
+ *  - regs: up to OV_BOOT_REGS_MAX raw register overrides, written after isp. */
 #define OV_ISP_REG        0x5000
 #define OV_ISP_PROC_BITS  0x86u
-static int s_ov_isp = -1;            // -1 = not an OV5647 / unknown
+#define OV_BOOT_REGS_MAX  8
+#define OV_NVS_NS         "cam"
 
-bool camera_set_isp(bool on)
+typedef struct { uint16_t reg; uint8_t val; uint8_t used; } ov_boot_reg_t;
+
+static int           s_ov_isp = -1;       // live state: 1/0, -1 = not an OV5647
+static uint8_t       s_ov_boot_isp = 1;   // NVS value the next boot applies
+static ov_boot_reg_t s_ov_regs[OV_BOOT_REGS_MAX];
+
+static void ov_boot_load(void)
 {
-    if (s_fd < 0 || s_sensor_pid == CAM_PID_IMX219) return false;
-    uint32_t v = 0;
-    if (cam_reg_read(OV_ISP_REG, &v) != ESP_OK) return false;
-    v = on ? (v | OV_ISP_PROC_BITS) : (v & ~OV_ISP_PROC_BITS);
-    cam_reg_write(OV_ISP_REG, v);
+    nvs_handle_t h;
+    if (nvs_open(OV_NVS_NS, NVS_READONLY, &h) != ESP_OK) return;
+    uint8_t v;
+    if (nvs_get_u8(h, "isp", &v) == ESP_OK) s_ov_boot_isp = v ? 1 : 0;
+    size_t len = sizeof(s_ov_regs);
+    if (nvs_get_blob(h, "regs", s_ov_regs, &len) != ESP_OK || len != sizeof(s_ov_regs))
+        memset(s_ov_regs, 0, sizeof(s_ov_regs));
+    nvs_close(h);
+}
+
+static esp_err_t ov_boot_save(void)
+{
+    nvs_handle_t h;
+    esp_err_t e = nvs_open(OV_NVS_NS, NVS_READWRITE, &h);
+    if (e != ESP_OK) return e;
+    e = nvs_set_u8(h, "isp", s_ov_boot_isp);
+    if (e == ESP_OK) e = nvs_set_blob(h, "regs", s_ov_regs, sizeof(s_ov_regs));
+    if (e == ESP_OK) e = nvs_commit(h);
+    nvs_close(h);
+    return e;
+}
+
+static bool ov_reg_set_verify(uint32_t reg, uint32_t v)
+{
+    cam_reg_write(reg, v);
     uint32_t rb = 0;
-    if (cam_reg_read(OV_ISP_REG, &rb) != ESP_OK || rb != v) {
-        ESP_LOGW(TAG_CAM, "0x5000 did not latch: wrote 0x%02lx, read 0x%02lx",
-                 (unsigned long)v, (unsigned long)rb);
+    if (cam_reg_read(reg, &rb) != ESP_OK || rb != v) {
+        ESP_LOGW(TAG_CAM, "boot reg 0x%04lx did not latch: wrote 0x%02lx, read 0x%02lx",
+                 (unsigned long)reg, (unsigned long)v, (unsigned long)rb);
         return false;
     }
-    s_ov_isp = on ? 1 : 0;
-    ESP_LOGI(TAG_CAM, "OV5647 ISP processing %s (0x5000=0x%02lx)",
-             on ? "ON" : "OFF", (unsigned long)rb);
     return true;
+}
+
+static void ov_boot_apply(void)
+{
+    ov_boot_load();
+    uint32_t v = 0;
+    if (cam_reg_read(OV_ISP_REG, &v) == ESP_OK) {
+        v = s_ov_boot_isp ? (v | OV_ISP_PROC_BITS) : (v & ~OV_ISP_PROC_BITS);
+        if (ov_reg_set_verify(OV_ISP_REG, v)) s_ov_isp = s_ov_boot_isp;
+    }
+    ESP_LOGI(TAG_CAM, "OV5647 ISP processing %s", s_ov_isp == 1 ? "ON" : "OFF");
+    for (int i = 0; i < OV_BOOT_REGS_MAX; i++) {
+        if (!s_ov_regs[i].used) continue;
+        bool ok = ov_reg_set_verify(s_ov_regs[i].reg, s_ov_regs[i].val);
+        ESP_LOGI(TAG_CAM, "boot reg 0x%04x = 0x%02x %s",
+                 s_ov_regs[i].reg, s_ov_regs[i].val, ok ? "" : "(DID NOT LATCH)");
+    }
 }
 
 int camera_get_isp(void)
@@ -1974,19 +2019,81 @@ esp_err_t camera_expose_handle(void *httpd_req, bool busy)
     uint32_t exp_now = 0, gain_now = 0;
     camera_get_exposure(&exp_now, &gain_now);
     uint32_t want_e = exp_now, want_g = gain_now;
-    int want_isp = -1;                     // -1 = leave as is
 
     char qry[96] = "", val[16] = "";
-    if (httpd_req_get_url_query_str(req, qry, sizeof(qry)) == ESP_OK) {
+    bool have_q = httpd_req_get_url_query_str(req, qry, sizeof(qry)) == ESP_OK;
+
+    /* OV5647 boot settings and register reads: no exposure write, no stats reset.
+     *   ?rd=<reg>              read one sensor register (hex or decimal)
+     *   ?isp=0|1               store the boot ISP state
+     *   ?reg=<reg>&val=<v>     store a boot register override (replaces same reg)
+     *   ?clr=1                 drop every stored override
+     * Stored settings apply on the next boot (POST /reboot), never live. */
+    if (have_q && (httpd_query_key_value(qry, "rd",  val, sizeof(val)) == ESP_OK ||
+                   httpd_query_key_value(qry, "isp", val, sizeof(val)) == ESP_OK ||
+                   httpd_query_key_value(qry, "reg", val, sizeof(val)) == ESP_OK ||
+                   httpd_query_key_value(qry, "clr", val, sizeof(val)) == ESP_OK)) {
+        if (s_sensor_pid == CAM_PID_IMX219) {
+            httpd_resp_set_status(req, "400 Bad Request");
+            httpd_resp_sendstr(req, "{\"ok\":false,\"err\":\"OV5647 only\"}");
+            return ESP_OK;
+        }
+        if (httpd_query_key_value(qry, "rd", val, sizeof(val)) == ESP_OK) {
+            uint32_t reg = strtoul(val, NULL, 0), v = 0;
+            bool ok = cam_reg_read(reg, &v) == ESP_OK;
+            snprintf(buf, sizeof(buf), "{\"ok\":%s,\"reg\":\"0x%04lx\",\"val\":\"0x%02lx\"}",
+                     ok ? "true" : "false", (unsigned long)reg, (unsigned long)v);
+            httpd_resp_sendstr(req, buf);
+            return ESP_OK;
+        }
+        ov_boot_load();
+        if (httpd_query_key_value(qry, "isp", val, sizeof(val)) == ESP_OK)
+            s_ov_boot_isp = (val[0] == '1') ? 1 : 0;
+        if (httpd_query_key_value(qry, "clr", val, sizeof(val)) == ESP_OK && val[0] == '1')
+            memset(s_ov_regs, 0, sizeof(s_ov_regs));
+        if (httpd_query_key_value(qry, "reg", val, sizeof(val)) == ESP_OK) {
+            uint16_t reg = (uint16_t)strtoul(val, NULL, 0);
+            char v2[16] = "";
+            if (httpd_query_key_value(qry, "val", v2, sizeof(v2)) != ESP_OK) {
+                httpd_resp_set_status(req, "400 Bad Request");
+                httpd_resp_sendstr(req, "{\"ok\":false,\"err\":\"reg needs val\"}");
+                return ESP_OK;
+            }
+            int slot = -1;
+            for (int i = 0; i < OV_BOOT_REGS_MAX; i++)
+                if (s_ov_regs[i].used && s_ov_regs[i].reg == reg) { slot = i; break; }
+            for (int i = 0; slot < 0 && i < OV_BOOT_REGS_MAX; i++)
+                if (!s_ov_regs[i].used) slot = i;
+            if (slot < 0) {
+                httpd_resp_set_status(req, "400 Bad Request");
+                httpd_resp_sendstr(req, "{\"ok\":false,\"err\":\"override table full\"}");
+                return ESP_OK;
+            }
+            s_ov_regs[slot] = (ov_boot_reg_t){ reg, (uint8_t)strtoul(v2, NULL, 0), 1 };
+        }
+        bool ok = ov_boot_save() == ESP_OK;
+        int pos = snprintf(buf, sizeof(buf),
+            "{\"ok\":%s,\"isp\":%d,\"boot_isp\":%d,\"boot_regs\":[",
+            ok ? "true" : "false", s_ov_isp, s_ov_boot_isp);
+        bool first = true;
+        for (int i = 0; i < OV_BOOT_REGS_MAX && pos < (int)sizeof(buf) - 24; i++) {
+            if (!s_ov_regs[i].used) continue;
+            pos += snprintf(buf + pos, sizeof(buf) - pos, "%s\"0x%04x=0x%02x\"",
+                            first ? "" : ",", s_ov_regs[i].reg, s_ov_regs[i].val);
+            first = false;
+        }
+        snprintf(buf + pos, sizeof(buf) - pos, "],\"reboot\":true}");
+        if (!ok) httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_sendstr(req, buf);
+        return ESP_OK;
+    }
+
+    if (have_q) {
         if (httpd_query_key_value(qry, "exp", val, sizeof(val)) == ESP_OK)
             want_e = (uint32_t)strtoul(val, NULL, 10);
         if (httpd_query_key_value(qry, "gain", val, sizeof(val)) == ESP_OK)
             want_g = (uint32_t)strtoul(val, NULL, 10);
-        if (httpd_query_key_value(qry, "isp", val, sizeof(val)) == ESP_OK)
-            want_isp = (val[0] == '1') ? 1 : 0;
     }
-    bool isp_ok = true;
-    if (want_isp >= 0) isp_ok = camera_set_isp(want_isp == 1);
 
     /* Same limits the Kconfig entries carry: 20-bit exposure, 10-bit gain, and
      * exposure 0 would stop integration altogether. camera_set_exposure() also
@@ -2003,10 +2110,10 @@ esp_err_t camera_expose_handle(void *httpd_req, bool busy)
     camera_get_exposure(&got_e, &got_g);
     snprintf(buf, sizeof(buf),
         "{\"ok\":%s,\"exposure\":%lu,\"gain\":%lu,\"asked\":%lu,\"isp\":%d}",
-        (applied && isp_ok) ? "true" : "false",
+        applied ? "true" : "false",
         (unsigned long)got_e, (unsigned long)got_g, (unsigned long)want_e,
         camera_get_isp());
-    if (!applied || !isp_ok) httpd_resp_set_status(req, "500 Internal Server Error");
+    if (!applied) httpd_resp_set_status(req, "500 Internal Server Error");
     httpd_resp_sendstr(req, buf);
     ESP_LOGI(TAG_CAM, "expose: set exposure=%lu gain=%lu -> read back %lu/%lu %s",
              (unsigned long)want_e, (unsigned long)want_g,

@@ -11,5 +11,6 @@ idf_component_register(
         esp_timer
         esp_http_server
         esp_driver_tsens
+        nvs_flash
         freertos
 )
