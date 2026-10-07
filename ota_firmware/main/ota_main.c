@@ -89,6 +89,16 @@ static void ethernet_init(void)
     ESP_ERROR_CHECK(esp_event_handler_instance_register(
         ETH_EVENT, ESP_EVENT_ANY_ID, on_eth_event, NULL, NULL));
     esp_eth_start(eth_hdl);
+
+    /* PHY identity and BMSR (bit 2 = link) on the console: 0xffff/0x0000 IDs
+     * mean nothing answers at ETH_PHY_ADDR on these MDC/MDIO pins. */
+    uint32_t id1 = 0, id2 = 0, bmsr = 0;
+    esp_eth_phy_reg_rw_data_t r = { .reg_addr = 2, .reg_value_p = &id1 };
+    esp_eth_ioctl(eth_hdl, ETH_CMD_READ_PHY_REG, &r);
+    r.reg_addr = 3; r.reg_value_p = &id2;  esp_eth_ioctl(eth_hdl, ETH_CMD_READ_PHY_REG, &r);
+    r.reg_addr = 1; r.reg_value_p = &bmsr; esp_eth_ioctl(eth_hdl, ETH_CMD_READ_PHY_REG, &r);
+    ESP_LOGI(TAG, "PHY@%d id %04lx:%04lx bmsr %04lx", ETH_PHY_ADDR,
+             (unsigned long)id1, (unsigned long)id2, (unsigned long)bmsr);
 }
 
 /* ── GET /info — chip and partition inventory, the esptool-equivalent view ── */
