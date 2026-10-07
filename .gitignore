@@ -24,3 +24,7 @@ docs/data/_live_now_*
 .playwright-mcp/
 now-card-scoring.png
 node_modules/
+
+# Rev v3.x build variant (sdkconfig.defaults.rev3)
+ota_firmware/build_rev3/
+ota_firmware/sdkconfig.rev3
