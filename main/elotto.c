@@ -91,7 +91,7 @@ static void on_eth_event(void *arg, esp_event_base_t base, int32_t id, void *dat
  * disagrees with /diag about which box is slave0 is worse than no name at all.
  * Add a node here and both pages learn it; an address that is not listed shows
  * as "unnamed" rather than being guessed at from a position. */
-#define NODE_NAMES_JS "var NODE_NAMES={'192.168.178.100':'master','192.168.178.103':'slave0'," "'192.168.178.145':'slave1','192.168.178.155':'slave2','192.168.178.83':'slave3'};"
+#define NODE_NAMES_JS "var NODE_NAMES={'192.168.178.100':'master','192.168.178.103':'slave0'," "'192.168.178.145':'slave1','192.168.178.155':'slave2','192.168.178.83':'slave3','192.168.178.172':'slave4'};"
 
 static const char HTML[] =
 "<!DOCTYPE html><html><head><meta charset='utf-8'>"
@@ -3103,7 +3103,7 @@ static esp_err_t diag_handler(httpd_req_t *req)
 static esp_err_t diagjson_handler(httpd_req_t *req)
 {
     /* 4 KB: the collector adds ~380 B per node on top of the ~700 B cam
-     * block, so four nodes leave the old 3072 uncomfortably close. */
+     * block; six nodes measure ~2,6 KB. */
     static char buf[4096];
     int pos = 0;
 

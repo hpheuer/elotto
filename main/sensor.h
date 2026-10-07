@@ -359,8 +359,8 @@ typedef struct {
 } FocusState;
 
 // Nodes in the array, master included as index 0.
-// 5 nodes → C(5,2) = 10 pairwise correlations.
-#define MAX_NODES   5
+// 6 nodes → C(6,2) = 15 pairwise correlations.
+#define MAX_NODES   6
 #define MAX_SLAVES  (MAX_NODES - 1)
 #define MAX_PAIRS   (MAX_NODES * (MAX_NODES - 1) / 2)
 

@@ -54,7 +54,7 @@ change. The page's **Log** card shows every sweep, change,
 pause and soft-down with wall time (`GET /loops?ev=1`).
 
 ## Concept
-Five-node ESP32-P4 array. The master scores lottery numbers via GCP methodology; up to four slaves
+Six-node ESP32-P4 array (`MAX_NODES` 6). The master scores lottery numbers via GCP methodology; up to five slaves
 measure the same window in parallel, triggered by one UDP broadcast (port 5000). Slaves are
 discovered by broadcast at every session start — no IP table, no node count configured. Combined
 z = **Σ z_node / √k** over the k nodes that answered *that* run, so a missing reply costs that
@@ -624,8 +624,13 @@ floor is load-bearing.
 | slave1 | 192.168.178.145 (static lease) | e8:f6:0a:e0:ce:a8 | — | factory = updater, ota_0/ota_1 = slave app |
 | slave2 | 192.168.178.155 | e8:f6:0a:e0:c7:a1 | — | factory = updater, ota_0 = slave app |
 | slave3 | 192.168.178.83 (static lease) | e8:f6:0a:e0:d9:53 | COM10 | factory = updater, ota_0 = slave app · OV5647 |
+| slave4 | 192.168.178.172 | 80:f1:b2:d6:58:80 | COM11 | factory = updater, ota_0 = slave app · OV5647 · **chip rev v3.2** |
 
-**Say master/slave0/slave1/slave2, never the IP ending.**
+**Say master/slave0…slave4, never the IP ending.**
+⚠ **Two silicon revisions**: slave4 is ESP32-P4 rev v3.2, every other node rev v1.3. Support for <3.0 and
+≥3.0 is mutually exclusive, so slave4 runs its own updater and slave images (`build_rev3`, below).
+An image of the wrong revision is refused by the bootloader. Read the revision before flashing a
+new board (`esptool chip-id`).
 ⚠ **Node order is DISCOVERY order**, not the slave number, and changes between sessions — the IP
 per row (`/status` `nodes[]`, `/diagjson?all=1`) is what names a board; never map by position.
 ⚠ **COM ports are not stable** — list the ports before an `erase-flash`; a wrong port wipes a
@@ -685,6 +690,9 @@ gets pinned to the wrong interpreter and fails with "run 'idf.py fullclean'".
 .\build.ps1 build                        # master
 .\build.ps1 -C ota_firmware build        # updater  (-C selects another project)
 .\build.ps1 -C ../elotto_slave build     # slave
+# rev v3.x boards (slave4): overlay sdkconfig.defaults.rev3, own build dir and sdkconfig
+$s='D:\E-Lotto\elotto_slave'; .\build.ps1 -C $s -B "$s\build_rev3" -D "SDKCONFIG=$s\sdkconfig.rev3" -D "SDKCONFIG_DEFAULTS=$s\sdkconfig.defaults;$s\sdkconfig.defaults.rev3" build
+# same pattern with -C ota_firmware for the rev3 updater
 ```
 
 **Flash over Ethernet, not USB:**
@@ -692,6 +700,7 @@ gets pinned to the wrong interpreter and fails with "run 'idf.py fullclean'".
 ```powershell
 curl http://192.168.178.100/update --data-binary @build/elotto.bin                        # master
 curl http://192.168.178.103/update --data-binary @../elotto_slave/build/elotto_slave.bin  # slave
+curl http://192.168.178.172/update --data-binary @../elotto_slave/build_rev3/elotto_slave.bin  # slave4 (rev v3)
 ```
 
 ~750 KB in ~3 s. The node writes the *inactive* slot, reboots, and marks itself valid only once its
@@ -712,7 +721,9 @@ put back on a known-good image without USB.
   `tag` advance — the ring is under **`win`**, and `measuring` on `/diag` is the ~2 s window flag,
   not a session flag.
 - **USB is only for** a fresh board or a node whose recovery updater is gone:
-  `.\build.ps1 -C ota_firmware -p COMx erase-flash`, then `... -p COMx flash`.
+  `.\build.ps1 -C ota_firmware -p COMx erase-flash`, then `... -p COMx flash` (a rev v3 board:
+  `esptool write-flash "@flash_args"` from `ota_firmware/build_rev3`). The updater logs `link up`,
+  the PHY id and BMSR on the console; no `link up` = cable/port, not firmware.
 
 ## Rules
 - ⚠ **Never edit sdkconfig manually.** Edit `sdkconfig.defaults`, delete `sdkconfig`, let the build
@@ -721,7 +732,7 @@ put back on a known-good image without USB.
 - Target is always esp32p4.
 - ⚠ The slave's `sdkconfig.defaults` must keep `CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y` **before**
   `ESP32P4_REV_MIN_0=y` — without it the build silently targets rev v3.1 and refuses to boot on
-  these v1.3 boards.
+  the v1.3 boards. The rev v3 variant flips exactly this in `sdkconfig.defaults.rev3`.
 - Firmware is delivered **over OTA only** in normal workflow.
 
 ---

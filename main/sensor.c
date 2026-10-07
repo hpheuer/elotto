@@ -2413,7 +2413,7 @@ static void record_loop(double loop_mean, int loop_idx)
     }
     double clear_sig = NODE_SOFT_CLEAR_SIG;
     if (npeer > 0) {
-        for (int a = 1; a < npeer; a++) {          /* insertion sort, n <= 4 */
+        for (int a = 1; a < npeer; a++) {          /* insertion sort, n < MAX_NODES */
             double vs = peer_sig[a];
             int b = a - 1;
             while (b >= 0 && peer_sig[b] > vs)  { peer_sig[b + 1]  = peer_sig[b];  b--; }
