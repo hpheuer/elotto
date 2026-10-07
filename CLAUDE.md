@@ -624,7 +624,7 @@ floor is load-bearing.
 | slave1 | 192.168.178.145 (static lease) | e8:f6:0a:e0:ce:a8 | — | factory = updater, ota_0/ota_1 = slave app |
 | slave2 | 192.168.178.155 | e8:f6:0a:e0:c7:a1 | — | factory = updater, ota_0 = slave app |
 | slave3 | 192.168.178.83 (static lease) | e8:f6:0a:e0:d9:53 | COM10 | factory = updater, ota_0 = slave app · OV5647 |
-| slave4 | 192.168.178.172 | 80:f1:b2:d6:58:80 | COM11 | factory = updater, ota_0 = slave app · OV5647 · **chip rev v3.2** |
+| slave4 | 192.168.178.172 (static lease) | 80:f1:b2:d6:58:80 | COM11 | factory = updater, ota_0 = slave app · OV5647 · **chip rev v3.2** |
 
 **Say master/slave0…slave4, never the IP ending.**
 ⚠ **Two silicon revisions**: slave4 is ESP32-P4 rev v3.2, every other node rev v1.3. Support for <3.0 and
