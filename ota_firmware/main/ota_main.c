@@ -54,6 +54,14 @@ static void on_ip_event(void *arg, esp_event_base_t base, int32_t id, void *data
     }
 }
 
+/* Link state on the console: "no IP" alone cannot tell a dead link from a link
+ * whose frames never arrive (RMII clock/pins). */
+static void on_eth_event(void *arg, esp_event_base_t base, int32_t id, void *data)
+{
+    if (id == ETHERNET_EVENT_CONNECTED)         ESP_LOGI(TAG, "link up");
+    else if (id == ETHERNET_EVENT_DISCONNECTED) ESP_LOGW(TAG, "link down");
+}
+
 static void ethernet_init(void)
 {
     esp_netif_config_t ncfg  = ESP_NETIF_DEFAULT_ETH();
@@ -78,6 +86,8 @@ static void ethernet_init(void)
     esp_netif_attach(netif, esp_eth_new_netif_glue(eth_hdl));
     ESP_ERROR_CHECK(esp_event_handler_instance_register(
         IP_EVENT, IP_EVENT_ETH_GOT_IP, on_ip_event, NULL, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(
+        ETH_EVENT, ESP_EVENT_ANY_ID, on_eth_event, NULL, NULL));
     esp_eth_start(eth_hdl);
 }
 
