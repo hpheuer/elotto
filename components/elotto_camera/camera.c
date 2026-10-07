@@ -1283,17 +1283,23 @@ bool camera_stats_settled(void)
  *  - isp: on-chip pixel processing in 0x5000 (ISP CTRL00) — bit 7 lens shading
  *    correction (position-dependent gain, then rounding), bits 2/1 black/white
  *    defect-pixel cancel. It acts on RAW output too; the other (debug) bits keep
- *    the driver table's value. Default ON.
- *  - regs: up to OV_BOOT_REGS_MAX raw register overrides, written after isp. */
+ *    the driver table's value. Default OFF: the LSB stays a raw bit.
+ *  - black level target 0x4009 (10-bit DN, mean_px ≈ target/4) is raised to
+ *    OV_BLC_TARGET before the overrides. At the driver's 16 the dark noise sits
+ *    at code 0 and is clipped: LSB bias 0,35–0,46, σ 1,6–2,6, Bayer-periodic
+ *    autocorrelation. From 32 up the raw LSB passes every gate.
+ *  - regs: up to OV_BOOT_REGS_MAX raw register overrides, written last. */
 #define OV_ISP_REG        0x5000
 #define OV_ISP_PROC_BITS  0x86u
+#define OV_BLC_TARGET_REG 0x4009
+#define OV_BLC_TARGET     0x80u
 #define OV_BOOT_REGS_MAX  8
 #define OV_NVS_NS         "cam"
 
 typedef struct { uint16_t reg; uint8_t val; uint8_t used; } ov_boot_reg_t;
 
 static int           s_ov_isp = -1;       // live state: 1/0, -1 = not an OV5647
-static uint8_t       s_ov_boot_isp = 1;   // NVS value the next boot applies
+static uint8_t       s_ov_boot_isp = 0;   // NVS value the next boot applies
 static ov_boot_reg_t s_ov_regs[OV_BOOT_REGS_MAX];
 
 static void ov_boot_load(void)
@@ -1341,6 +1347,8 @@ static void ov_boot_apply(void)
         if (ov_reg_set_verify(OV_ISP_REG, v)) s_ov_isp = s_ov_boot_isp;
     }
     ESP_LOGI(TAG_CAM, "OV5647 ISP processing %s", s_ov_isp == 1 ? "ON" : "OFF");
+    if (!ov_reg_set_verify(OV_BLC_TARGET_REG, OV_BLC_TARGET))
+        ESP_LOGW(TAG_CAM, "black level target not set -- dark LSB will be clipped");
     for (int i = 0; i < OV_BOOT_REGS_MAX; i++) {
         if (!s_ov_regs[i].used) continue;
         bool ok = ov_reg_set_verify(s_ov_regs[i].reg, s_ov_regs[i].val);

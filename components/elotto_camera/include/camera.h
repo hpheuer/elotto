@@ -195,7 +195,7 @@ bool camera_stats_settled(void);
 bool camera_set_exposure(uint32_t exposure, uint32_t gain);
 
 /* OV5647 on-chip pixel processing (0x5000: lens shading + defect-pixel cancel)
- * as applied at boot from NVS (POST /expose?isp=0|1, then reboot).
+ * as applied at boot: default off, NVS override POST /expose?isp=0|1 + reboot.
  * 1 on, 0 off, -1 not an OV5647. */
 int  camera_get_isp(void);
 void camera_get_exposure(uint32_t *exposure, uint32_t *gain);
