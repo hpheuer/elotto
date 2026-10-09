@@ -194,9 +194,11 @@ bool camera_stats_settled(void);
 // max are clamped so set/get still round-trips.
 bool camera_set_exposure(uint32_t exposure, uint32_t gain);
 
-/* OV5647 on-chip pixel processing (0x5000: lens shading + defect-pixel cancel)
- * as applied at boot: default off, NVS override POST /expose?isp=0|1 + reboot.
- * 1 on, 0 off, -1 not an OV5647. */
+/* OV5647 on-chip pixel processing (0x5000) as applied at boot: clears lens
+ * shading (bit 7) + black/white defect-pixel cancel (bits 2/1). ⚠ Bits
+ * 6,5,4,3,0 stay at the driver's 0xff — bit 5 is RAW gamma, bit 0 colour
+ * interpolation; UNMEASURED whether they act on RAW. Default off, NVS override
+ * POST /expose?isp=0|1 + reboot. 1 on, 0 off, -1 not an OV5647. */
 int  camera_get_isp(void);
 void camera_get_exposure(uint32_t *exposure, uint32_t *gain);
 
