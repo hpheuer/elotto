@@ -1282,13 +1282,13 @@ bool camera_stats_settled(void)
  * streams stalled its MIPI output (frame_pairs froze, stalls stayed 0).
  *  - isp: on-chip pixel processing in 0x5000 (ISP CTRL00). The driver's format
  *    table sets 0xff (all bits); OV_ISP_PROC_BITS clears bit 7 lens shading
- *    (position-dependent gain, then rounding) and bits 2/1 black/white
- *    defect-pixel cancel → 0x5000 = 0x79. ⚠ Bits 6,5,4,3,0 STAY SET: per the
- *    OV5640/OV5645 tables in this driver, bit 5 is RAW gamma and bit 0 colour
- *    interpolation — nonlinear pixel transforms, not debug bits. Whether they
- *    act on RAW output is UNMEASURED, so "the LSB is raw" is not established
- *    while they are on. Default OFF = LSC/BPC/WPC off. Verify any wider mask
- *    via POST /expose?reg=0x5000&val= (NVS, reboot) before changing this.
+ *    (position-dependent gain, then rounding), bits 2/1 black/white
+ *    defect-pixel cancel and bit 0 (colour interpolation per the OV5640/OV5645
+ *    tables in this driver) → 0x5000 = 0x78. Bit 0 acts on RAW: set, the LSB
+ *    carries lag-2/lag-4 autocorrelation (z 2..6) and its bias sits lower.
+ *    Bits 6,5,4,3 stay set; bit 5 (RAW gamma) shows no effect on the LSB.
+ *    Default OFF. Verify any other mask via POST /expose?reg=0x5000&val=
+ *    (NVS, reboot) and /camtest?bitscan= before changing this.
  *  - black level target 0x4009 (10-bit DN, mean_px ≈ target/4) is raised to
  *    OV_BLC_TARGET before the overrides. ⚠ The driver never writes 0x4009; 16
  *    is the reset default. At 16 the dark noise sits at code 0 and is clipped:
@@ -1296,7 +1296,7 @@ bool camera_stats_settled(void)
  *    the raw LSB passes every gate.
  *  - regs: up to OV_BOOT_REGS_MAX raw register overrides, written last. */
 #define OV_ISP_REG        0x5000
-#define OV_ISP_PROC_BITS  0x86u
+#define OV_ISP_PROC_BITS  0x87u
 #define OV_BLC_TARGET_REG 0x4009
 #define OV_BLC_TARGET     0x80u
 #define OV_BOOT_REGS_MAX  8
