@@ -345,7 +345,13 @@ what remains visible is an effect varying **between items inside a block**.
   when empty.
   ⚠ Scoring windows enter it too, named `scoring <pass>/<round>` with the number in the
   Numbers column — not an item identity.
-- **A fourth table, Soft-down origins**: when a block trips a node, the three
+- **A fourth table, Closest to chance**: the session's ten ranked, centred items with the
+  smallest `|Z*|`, ascending, same columns as the Top-10, fixed order (no sort clicks).
+  `/extremes` carries it as `quiet`. ⚠ Compaction keeps only the extremes, so `pass_compact()`
+  hands every merged row to a session board (`QUIET_N` 10, cleared at session start) and
+  `results_quietest()` merges it with the rows still in `results[]`. A block without σ gives key
+  0 by default and never enters.
+- **A fifth table, Soft-down origins**: when a block trips a node, the three
   measurements of that block whose z sat furthest from the block mean, captured at block close
   because compaction takes the rows one round later. Hidden when nothing tripped.
   Title line: **Block · node · wall time · σ · mean**. Time is `now − (uptime_ms − t_ms)` — no RTC.

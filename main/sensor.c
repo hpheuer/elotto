@@ -1543,6 +1543,53 @@ int results_extremes(RunResult *out, int max)
     return m;
 }
 
+/* ── The quiet board ──────────────────────────────────────────────────────
+ * The session's QUIET_N items with the smallest |rank_key|. Compaction keeps
+ * only the |Z*| extremes, so the quiet end leaves results[] at every round
+ * boundary: pass_compact() offers each ranked row it merges to s_quiet, and
+ * results_quietest() merges the board with the rows still held. A row sits in
+ * one of the two, never both. Written by the sensor task under the archive
+ * lock, cleared at session start. */
+static RunResult s_quiet[QUIET_N];
+static int       s_quiet_n;
+
+/* ⚠ A block without σ gives key 0 by default — that would top this board
+ * without having been measured as quiet. */
+static bool quiet_eligible(const RunResult *r)
+{
+    if (!result_ranked(r) || !result_centred(r)) return false;
+    double sz = 0.0;
+    block_sig_of(r, &sz, NULL);
+    return sz > 0.0;
+}
+
+/* Insertion into out[0..*m), ascending |key|, at most max. */
+static void quiet_insert(RunResult *out, int *m, int max, const RunResult *r)
+{
+    double a = fabs(rank_key(r));
+    if (*m >= max && !(a < fabs(rank_key(&out[*m - 1])))) return;
+    int p = (*m < max) ? (*m)++ : *m - 1;
+    while (p > 0 && fabs(rank_key(&out[p - 1])) > a) { out[p] = out[p - 1]; p--; }
+    out[p] = *r;
+}
+
+int results_quietest(RunResult *out, int max)
+{
+    if (!out || max <= 0) return 0;
+    if (max > QUIET_N) max = QUIET_N;
+    archive_lock();
+    int m = 0;
+    for (int i = 0; i < s_quiet_n; i++) quiet_insert(out, &m, max, &s_quiet[i]);
+    int ntot = g_status.runs_completed;
+    if (ntot > NUM_RUNS) ntot = NUM_RUNS;
+    for (int j = 0; j < ntot; j++) {
+        const RunResult *r = &g_status.results[j];
+        if (quiet_eligible(r)) quiet_insert(out, &m, max, r);
+    }
+    archive_unlock();
+    return m;
+}
+
 /* ── What compaction left behind ──────────────────────────────────────────
  * Moments of the items pass_compact() dropped, so every pass statistic stays
  * EXACT over the whole session while results[] holds only the survivors.
@@ -1761,6 +1808,7 @@ static void pass_compact(void)
                 /* 0 means "no value for this item", the same convention
                  * rank_key() uses — it must not be counted as one. */
                 if (r->zc_ctr != 0.0f) s_drop_pn++;
+                if (quiet_eligible(r)) quiet_insert(s_quiet, &s_quiet_n, QUIET_N, r);
             }
             dropped++;
             continue;
@@ -2729,6 +2777,9 @@ void elotto_task(void *pvParam)
     s_drop_sum = s_drop_sumsq = 0.0;
     s_drop_n = s_drop_void = s_drop_excl = 0;
     s_drop_pn = 0;
+    archive_lock();
+    s_quiet_n = 0;
+    archive_unlock();
     // unlimited / runs_cap / scoring_passes are session parameters from /start and are NOT reset
     // here — they tag the session.
     g_status.round           = 0;

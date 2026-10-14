@@ -390,6 +390,13 @@ static const char HTML[] =
 "<table><thead id='resHeadWsig'></thead>"
 "<tbody id='resBodyWsig'></tbody></table>"
 "</div>"
+/* The quiet end: the session's ten smallest |Z*|, from /extremes `quiet`. */
+"<div class='card' id='resCardQuiet' style='display:none'>"
+"<h3 id='resTitleQuiet' style='color:#9ad0c0;margin-bottom:4px'></h3>"
+"<div id='resSubQuiet' style='font-size:.78em;opacity:.7;margin-bottom:6px'></div>"
+"<table><thead id='resHeadQuiet'></thead>"
+"<tbody id='resBodyQuiet'></tbody></table>"
+"</div>"
 /* What a soft-down trip was made of. Hidden when nothing tripped: unlike
    the jump board, an empty trip list says nothing the node table does not
    already show. */
@@ -1189,6 +1196,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "document.getElementById('resBody').innerHTML="
 "'<tr><td style=\"color:#d0b0b0;padding:10px\">No items measured yet.</td></tr>';"
 "document.getElementById('resCardWsig').style.display='none';"
+"document.getElementById('resCardQuiet').style.display='none';"
 "document.getElementById('resCardTrip').style.display='none';"
 "return;}"
 // Z* IS the ranking key (block-σ units) and the cell prints it as it
@@ -1236,7 +1244,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
    second click flips the direction (largest-first <-> smallest-first), shown
    by the arrow. Items still ENTER the set by |Z*| only — the sort reorders
    what is shown, it never changes the display pool of 50 or the pool. */
-"var EX=[],SORTK='key',SORTD=-1,LD=null;"
+"var EX=[],QX=[],SORTK='key',SORTD=-1,LD=null;"
 /* The scoring table keeps its own sort: it opens on the running sum, the key
    that picks the pool, and the item table keeps whatever the operator chose. */
 "var SC=[],SCM=false,SSK='sum',SSD=-1,lastSc=0,VIEW=null,lastLive=null;"
@@ -1317,7 +1325,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "if(now-lastEx<5000){renderExtremeTables();return;}"
 "lastEx=now;"
 "fetch('/extremes').then(function(r){return r.json();}).then(function(x){"
-"EX=(x&&x.extremes)?x.extremes:[];renderExtremeTables();}).catch(function(){});}"
+"EX=(x&&x.extremes)?x.extremes:[];QX=(x&&x.quiet)?x.quiet:[];renderExtremeTables();}).catch(function(){});}"
 "function renderExtremeTables(){"
 "if(!LD)return;var d=LD,isEuro=d.mode==='euro',st={p:d.pre_w||0};"
 "var lab={key:'Z*',z_ctr:'Z',zc:'Conc',nsd:'\\u0394n',ac:'AC',mau:'Mau'};"
@@ -1340,7 +1348,23 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "var dr=d.score_dir==='low'?'lowest ':'highest ';"
 "document.getElementById('resSub').textContent=(d.pool_used_n>0)"
 "?('pool of round '+d.pool_used_round+': '+d.pool_used_n+' numbers, scoring '"
-"+dr+su):'';}"
+"+dr+su):'';"
+"showQuiet(d,isEuro,st);}"
+/* The quiet end: the session's ten smallest |Z*|, ascending, in the item
+   row shape. Fixed order, so the header carries no sort clicks -- those
+   belong to the Top-10. */
+"function showQuiet(d,isEuro,st){"
+"var c=document.getElementById('resCardQuiet');"
+"if(!QX.length){c.style.display='none';return;}"
+"document.getElementById('resTitleQuiet').innerHTML="
+"'\\u2248 Closest to chance '+QX.length+' (smallest |Z*|)';"
+"document.getElementById('resSubQuiet').textContent="
+"'The items of this session whose ranking key sat nearest 0, smallest first.';"
+"renderRunTable('resHeadQuiet','resBodyQuiet',QX,isEuro,d,st);"
+"document.getElementById('resHeadQuiet').innerHTML="
+"'<tr><th>#</th><th>Item</th><th>Z*</th><th>Z</th><th>Conc</th><th>\\u0394n</th><th>AC</th><th>Mau</th>'"
+"+'<th>Numbers</th>'+(isEuro?'<th>Bonus</th>':'')+'<th></th></tr>';"
+"c.style.display='block';}"
 /* Items and scoring numbers: the same rows, one renderer. `opt` is set
    for the scoring — the Item column becomes the running sum \u03a3 (the number
    stands in Numbers / Bonus), a green # marks a pool member, and a row whose
@@ -2260,6 +2284,15 @@ static esp_err_t extremes_handler(httpd_req_t *req)
     int len = snprintf(buf, sizeof(buf), "{\"n\":%d,\"extremes\":[", n);
     send_chunk(req, buf, len, sizeof(buf));
     for (int i = 0; i < n; i++) {
+        if (i) httpd_resp_send_chunk(req, ",", 1);
+        len = emit_run(buf, sizeof(buf), &ex[i], euro);
+        send_chunk(req, buf, len, sizeof(buf));
+    }
+    /* The other end: the session's QUIET_N smallest |Z*|, ascending. Same
+     * scratch, reused once the extremes are out. */
+    int nq = ex ? results_quietest(ex, QUIET_N) : 0;
+    httpd_resp_send_chunk(req, "],\"quiet\":[", 11);
+    for (int i = 0; i < nq; i++) {
         if (i) httpd_resp_send_chunk(req, ",", 1);
         len = emit_run(buf, sizeof(buf), &ex[i], euro);
         send_chunk(req, buf, len, sizeof(buf));

@@ -21,6 +21,10 @@
  * rows is not a goal. Since D67 every session is rounds, so every round
  * boundary calls pass_compact() (no-op while n ≤ 100). */
 #define PASS_KEEP_EXTREME 100
+/* The quiet board: the session's QUIET_N items with the smallest |rank_key|.
+ * Compaction keeps only the extremes, so pass_compact() hands every row it
+ * merges to the board — see results_quietest(). */
+#define QUIET_N          10
 #define POOL_MAIN_49    15   // C(15,6) = 5005 combinations
 #define POOL_MAIN_50    12   // C(12,5) =  792 combinations
 #define POOL_EURO_12     5   // C(5,2)  =   10 combinations
@@ -977,6 +981,13 @@ double rank_key(const RunResult *r);
  * caller sorts on whichever column it displays; selection here is by |Z*|
  * only, so a newly measured item joins the set exactly as it did before. */
 int results_extremes(RunResult *out, int max);
+
+/* The up-to `max` (≤ QUIET_N) ranked & centred rows with the SMALLEST
+ * |rank_key| of the whole session, ascending, under the archive lock: the rows
+ * compaction already merged (kept on the quiet board) plus those still in
+ * results[]. A row without a block σ has key 0 by default, not by measurement,
+ * and never enters. */
+int results_quietest(RunResult *out, int max);
 
 /* Scoring-sum archive (ScoreSnap). Written by the sensor task, read by HTTP.
  * count is the number of snaps published; a snap is visible only after it is
