@@ -355,8 +355,21 @@ void nodes_discover(void)
             uint32_t rseq;
             char    *payload;
             if (!elotto_link_parse(buf, &rseq, &payload)) continue;
-            if (rseq != s_pending.seq || payload[0] != 'O') continue;
+            if (rseq != s_pending.seq) continue;
             if (link_node_of(&from) >= 0) continue;          // already known
+            /* "E:<reason>" = a node that cannot measure (no camera bound at
+             * boot). It stays out of the session entirely: no slot, no K/M, no
+             * drop/reboot. Logged once per discovery, on the first round. */
+            if (payload[0] == 'E') {
+                if (round == 0) {
+                    char ip[16];
+                    inet_ntoa_r(from.sin_addr, ip, sizeof(ip));
+                    printf("node %s ignored: %s\n", ip, payload);
+                    evlog("Node %s ignored (%s)", ip, payload + 2);
+                }
+                continue;
+            }
+            if (payload[0] != 'O') continue;
             if (s_nslaves >= MAX_SLAVES) break;
 
             int k = s_nslaves++;
