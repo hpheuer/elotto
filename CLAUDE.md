@@ -631,11 +631,14 @@ floor is load-bearing.
 | slave2 | 192.168.178.155 | e8:f6:0a:e0:c7:a1 | — | factory = updater, ota_0 = slave app |
 | slave3 | 192.168.178.83 (static lease) | e8:f6:0a:e0:d9:53 | COM10 | factory = updater, ota_0 = slave app · OV5647 |
 | slave4 | 192.168.178.172 (static lease) | 80:f1:b2:d6:58:80 | COM11 | factory = updater, ota_0 = slave app · OV5647 · **chip rev v3.2** |
-| slave5 | 192.168.178.166 (DHCP) | 80:f1:b2:d6:58:81 | COM3 | factory = updater, ota_0 = slave app · OV5647 · **chip rev v3.2** |
+| slave5 | 192.168.178.166 (static lease) | 80:f1:b2:d6:58:81 | COM3 | factory = updater, ota_0 = slave app · OV5647 · **chip rev v3.2** |
+| slave6 | 192.168.178.173 (DHCP) | 80:f1:b2:d6:5a:1a | COM4 | factory = updater, ota_0 = slave app · OV5647 · **chip rev v3.2** |
 
-**Say master/slave0…slave5, never the IP ending.**
-⚠ **Two silicon revisions**: slave4 and slave5 are ESP32-P4 rev v3.2, every other node rev v1.3. Support for <3.0 and
-≥3.0 is mutually exclusive, so slave4/slave5 run their own updater and slave images (`build_rev3`, below).
+**Say master/slave0…slave6, never the IP ending.**
+⚠ **Two silicon revisions**: slave4, slave5 and slave6 are ESP32-P4 rev v3.2, every other node rev v1.3. Support for <3.0 and
+≥3.0 is mutually exclusive, so the rev v3.2 boards run their own updater and slave images (`build_rev3`, below).
+⚠ `MAX_NODES` 6 (`sensor.h`) caps discovery at five slaves; a sixth and seventh answering slave are ignored until it is raised.
+⚠ The updater starts its web server only if it gets an IP within 30 s of boot — plug LAN before power, else power-cycle.
 An image of the wrong revision is refused by the bootloader. Read the revision before flashing a
 new board (`esptool chip-id`).
 ⚠ **Node order is DISCOVERY order**, not the slave number, and changes between sessions — the IP
