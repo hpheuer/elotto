@@ -3136,7 +3136,7 @@ static esp_err_t diag_handler(httpd_req_t *req)
 static esp_err_t diagjson_handler(httpd_req_t *req)
 {
     /* 4 KB: the collector adds ~380 B per node on top of the ~700 B cam
-     * block; six nodes measure ~2,6 KB. */
+     * block; six nodes measure ~2,5 KB, eight ~3,3 KB. */
     static char buf[4096];
     int pos = 0;
 

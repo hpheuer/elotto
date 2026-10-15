@@ -363,10 +363,13 @@ typedef struct {
 } FocusState;
 
 // Nodes in the array, master included as index 0.
-// 6 nodes → C(6,2) = 15 pairwise correlations.
-#define MAX_NODES   6
+// 8 nodes → C(8,2) = 28 pairwise correlations.
+// ⚠ 8 is the ceiling: every per-node mask (have_mask, soft/trip/mean_mask,
+// the scoring masks) is a uint8_t, bit i = node i.
+#define MAX_NODES   8
 #define MAX_SLAVES  (MAX_NODES - 1)
 #define MAX_PAIRS   (MAX_NODES * (MAX_NODES - 1) / 2)
+_Static_assert(MAX_NODES <= 8, "per-node masks are uint8_t");
 
 // Per-node health, published so a node that quietly degraded is visible rather
 // than merely averaged in. `ok` is session-scoped participation: a node whose
