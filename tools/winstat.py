@@ -1,7 +1,7 @@
 import sys, math, statistics as st
 names = {"192.168.178.145": "slave1", "192.168.178.103": "slave0",
          "192.168.178.155": "slave2", "192.168.178.83": "slave3", "192.168.178.172": "slave4",
-         "192.168.178.100": "master"}
+         "192.168.178.166": "slave5", "192.168.178.173": "slave6", "192.168.178.100": "master"}
 rows = [l.rstrip("\n").split(";") for l in open(sys.argv[1]) if not l.startswith("i;")]
 by = {}
 for r in rows:
