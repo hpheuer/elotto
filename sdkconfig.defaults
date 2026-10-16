@@ -101,3 +101,12 @@ CONFIG_COMPILER_OPTIMIZATION_PERF=y
 # 16 gives httpd 13 against Chrome's 6, so the table no longer fills and the
 # CSV / camlog pulls the operator is told to make mid-session can get through.
 CONFIG_LWIP_MAX_SOCKETS=16
+
+# ── UDP link receive queue ─────────────────────────────────────────────
+# Every slave answers the broadcast M/K at about the same moment, while the
+# master is still measuring its own window and not reading. The replies wait in
+# the link socket's receive mailbox; one slot per datagram. At the default 6 a
+# seventh slave's reply is dropped, the collect times out and resends after
+# LINK_MEAS_MS_FOR (~15 s at run 5 s). Must stay above MAX_SLAVES plus a
+# resend's duplicate replies.
+CONFIG_LWIP_UDP_RECVMBOX_SIZE=16

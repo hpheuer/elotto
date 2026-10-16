@@ -93,6 +93,12 @@ void node_camera_failed(int node, const char *why)
 // Consecutive missed replies before a node leaves the session.
 #define NODE_MISS_LIMIT 3
 
+/* All slaves reply at once while the master is still measuring; the socket's
+ * receive mailbox must hold every reply, or the surplus is dropped and each
+ * window pays a full LINK_MEAS_MS_FOR timeout before the resend. */
+_Static_assert(CONFIG_LWIP_UDP_RECVMBOX_SIZE >= 2 * MAX_SLAVES,
+               "UDP receive mailbox too small for one reply per slave plus a resend's duplicates");
+
 /* Stamp the first drop of the session with the master's OWN link state.
  * Called from both drop paths (missed replies here, camera fault above), and
  * only the first one lands: what a diagnosis needs is the state at the moment
