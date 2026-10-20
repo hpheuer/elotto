@@ -711,7 +711,9 @@ typedef struct {
     int64_t          elapsed_ms;
     volatile int     scoring_done;
     int              scoring_total;
-    int              scoring_pass;        // 1..scoring_passes while scoring, else 0
+    int              scoring_pass;        // 1..scoring_passes while scoring, else 0;
+                                          // restarts at 1 for the euro numbers
+    int              scoring_euro;        // 1 while the euro numbers are scored, else 0
     int              scoring_passes;      // ?passes=, a session parameter written by /start
     uint32_t         scoring_start_ms;    // elapsed_ms when this round's scoring began,
                                           // for the scoring's own Time / ETA card

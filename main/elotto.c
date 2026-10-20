@@ -311,7 +311,7 @@ static const char HTML[] =
 "<div style='color:#6ab0e8;font-size:.9em;text-align:center;margin-top:4px'>"
 "<span id='sScoreDone'>0</span> / <span id='sScoreTotal'>-</span> Runs "
 "(<span id='sScoreReps'>-</span>&times; per number"
-" · pass <span id='sScorePass'>-</span>/<span id='sScorePasses'>-</span>)</div>"
+" · <span id='sScoreSect'></span>pass <span id='sScorePass'>-</span>/<span id='sScorePasses'>-</span>)</div>"
 /* The scoring's own row of three, the twin of the measurement's: numbers
    scored / progress / time and ETA of THIS round's scoring. */
 "<div class='stats' id='scStats' style='display:none'>"
@@ -457,7 +457,13 @@ NODE_NAMES_JS
 "document.getElementById('sScorePass').textContent="
 "(d.scoring_pass>0)?d.scoring_pass:'-';"
 "document.getElementById('sScorePasses').textContent=passes;"
+"document.getElementById('sScoreSect').textContent=scoreSect(d);"
 "}"
+// Eurojackpot scores in two sections, main then euro numbers, and the pass
+// counter restarts at 1 for the second; the section says which one it counts.
+"function scoreSect(d){"
+"if(d.mode!=='euro'||!(d.scoring_pass>0))return '';"
+"return (d.scoring_euro?'euro numbers':'main numbers')+' \\u00b7 ';}"
 /* Unlimited mode: show what a given run budget actually buys, in both modes, as
    the number is typed. The rule is sensor.c's unlimited_pool_sizes() — maximise
    the combinations measured, ties to the larger bonus pool. The SEARCH is
@@ -1309,7 +1315,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "var top=s.slice(0,Math.max(10,last+1));"
 "document.getElementById('resTitle').innerHTML="
 "'\\uD83C\\uDFC6 Top '+top.length+' of '+SC.length+' \\u2014 scoring '"
-"+(d.scoring_pass>0?'pass '+d.scoring_pass+'/'+(d.scoring_passes||" EL_STR(SCORE_PASSES_DEFAULT) "):'done, round '+(d.round||1))"
+"+(d.scoring_pass>0?scoreSect(d)+'pass '+d.scoring_pass+'/'+(d.scoring_passes||" EL_STR(SCORE_PASSES_DEFAULT) "):'done, round '+(d.round||1))"
 "+' \\u00b7 pool: '+(d.score_dir==='low'?'lowest ':'highest ')+lab.sum;"
 "renderRunTable('resHead','resBody',top,isEuro,d,{p:d.pre_w||0},{pool:pool});"
 "if(!top.length)document.getElementById('resBody').innerHTML="
@@ -1771,7 +1777,7 @@ static esp_err_t status_handler(httpd_req_t *req)
         "\"off_first\":%.4f,\"off_last\":%.4f,"
         "\"sigma_lo\":%.4f,\"sigma_hi\":%.4f,"
         "\"scoring_done\":%d,\"scoring_total\":%d,"
-        "\"scoring_pass\":%d,\"scoring_passes\":%d,\"scoring_start_ms\":%lu,"
+        "\"scoring_pass\":%d,\"scoring_passes\":%d,\"scoring_euro\":%d,\"scoring_start_ms\":%lu,"
         "\"score_sig_z\":%.4f,\"score_sig_c\":%.4f,"
         "\"score_span_n\":%d,\"score_conc_n\":%d,"
         "\"completed\":%d,\"total\":%d,\"elapsed_ms\":%lld,\"compacted\":%d,"
@@ -1842,7 +1848,7 @@ static esp_err_t status_handler(httpd_req_t *req)
         g_status.off_first, g_status.off_last,
         g_status.sigma_lo, g_status.sigma_hi,
         g_status.scoring_done, g_status.scoring_total,
-        g_status.scoring_pass, g_status.scoring_passes,
+        g_status.scoring_pass, g_status.scoring_passes, g_status.scoring_euro,
         (unsigned long)g_status.scoring_start_ms,
         g_status.score_sig_z, g_status.score_sig_c,
         g_status.score_span_n, g_status.score_conc_n,

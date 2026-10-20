@@ -782,6 +782,7 @@ static void score_run(int max_val, int pool_size, bool euro_pool)
     uint8_t last = 0;
     int closed = 0;   /* passes whose sums are already in A */
     const int passes = g_status.scoring_passes;
+    g_status.scoring_euro = euro_pool ? 1 : 0;
     for (int pass = 0; pass < passes; pass++) {
         g_status.scoring_pass = pass + 1;
         bool scored[51] = {false};
