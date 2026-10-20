@@ -15,8 +15,9 @@
 #define NUM_RUNS      1400
 #define TOP_N            5
 /* ── Round-boundary compaction  ──────────────────────────────────────
- * Unlimited rounds keep the 1000 most extreme RANKED items by |rank_key| (both
- * tails). Quarantined rows are not kept: nothing reads them once their
+ * Unlimited rounds keep the 1000 RANKED items that rank best on the pool
+ * criterion (score_sum column, score_dir direction — one tail, see
+ * rank_order() in sensor.c). Quarantined rows are not kept: nothing reads them once their
  * block is closed. Everything else merges into pass moments. Offline re-analysis of the dropped
  * rows is not a goal. Every session is rounds, so every round
  * boundary calls pass_compact() (no-op while n ≤ 1000). */
