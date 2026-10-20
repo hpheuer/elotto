@@ -180,8 +180,14 @@ as backstop for a compaction that cannot allocate.
   tie-break.
 - **Results ACCUMULATE** — `results[]` is never cleared between rounds; every statistic runs on the
   union of all rounds.
-- **Every round compact at the boundary**: the 1000 most extreme items by
-  `|rank_key|` stay as rows (both tails). Quarantined rows are not kept — nothing reads them after
+- **Every round compact at the boundary**: the 1000 items that rank best on the **pool
+  criterion** stay as rows — the Σ column (`score_sum`: Z\*, Z, Conc, Δn, AC, Mau) in the pool
+  direction (`score_dir`: high = largest values, low = smallest; `rank_order()` in `sensor.c`).
+  Both can only change during a scoring, so a round's compaction uses exactly the criterion its
+  pool was picked with. ⚠ **One tail only**: under `high` the most negative values leave at the
+  next round boundary. ⚠ A row without a value in that column (AC on a block's first item, Δn
+  with k < 2) is never kept. ⚠ A criterion switched in a later scoring cannot bring back rows an
+  earlier compaction merged. Quarantined rows are not kept — nothing reads them after
   their block closes. The rest merges into moments — pass mean/σ/χ²
   stay exact. `n ≤ 1000` is a no-op, so a short session keeps every row. The display
   pool (`GET /extremes`, 50) is separate from this archive.
@@ -290,19 +296,20 @@ what remains visible is an effect varying **between items inside a block**.
 - **One sortable table of ten**: Top-10, item counter + block badge. Columns: `Z*` (key
   in that item's block-σ units), `Z`, `Conc`, `Δn`, `AC`, `Mau`. Every header has a
   plain-language tooltip.
-  ⚠ **The table is the leading 10 of the ~50 most extreme items by `|Z*|`, sorted by whichever
-  column header was clicked**. `GET /extremes` (streamed JSON, `emit_run` row shape,
+  ⚠ **The table is the leading 10 of the ~50 items best on the pool criterion (same rule as
+  compaction), sorted by whichever column header was clicked**. `GET /extremes` (streamed JSON, `emit_run` row shape,
   polled every **5 s** — it is a ~15 KB scan on the master's HTTP task, which shares the consumer
   core, so a 1 s poll stole the master's extraction CPU) carries the set; the page sorts client-side
   and shows the top 10 of the active sort. `?n=1..1000` widens the set (default 50, else
   **400**); the **Save** button beside Abort (also shown after Done/Abort) writes
-  `/extremes?n=1000` as a CSV for a German Excel (`;`, decimal comma, BOM) and, as a second file
+  `/extremes?n=1000` as a CSV for a German Excel (`;`, decimal comma, BOM), ranked best-first
+  on the pool criterion (`crit`/`dir` in the reply and the file name), and, as a second file
   `elotto_sums_…`, `/extremes?sums=1`: every number's six signed column sums for every scoring
   still in RAM (high and low are that column sorted either way; an empty count is a missing value).
   Click any stat header to sort; a second click on the
   same header flips direction (arrow ▾/▴, ⇅ on the inactive ones), so the low end is one click away —
-  which is why the old Bottom-5 table is gone. ⛔ Items still ENTER the set by `|Z*|` only — the sort
-  reorders the view, never the display pool of 50 or the compaction archive of 1000. A missing `Δn` (solo item) sinks to the
+  which is why the old Bottom-5 table is gone. Items ENTER the set by the pool criterion only — the
+  sort reorders the view, never the display pool of 50 or the compaction archive of 1000. A missing `Δn` (solo item) sinks to the
   bottom of a `Δn` sort. `Δn` prints the node count it is taken over in parentheses — `0,79 (3)` is
   three cameras. Until the first `/extremes` reply lands the table falls back to `/status` `top`.
   **`AC` is the ITEM autocorrelation**: u = centred combined z / block σ in MEASUREMENT order,
@@ -310,10 +317,8 @@ what remains visible is an effect varying **between items inside a block**.
   items**, read against 0. + = it moved with its predecessors, − = it alternated. Coloured at
   |AC| > 3. **—** until the block (scoring: the pass) closes, and for its first item. The
   series' own z_L = r_L·√(n−L) for lags 1..4 (Bancel's lag-1 test on the GCP series) is in the
-  Nodes card (`/status` `item_ac_z`, `score_ac_z`). It never ranks items or excludes; its scoring
-  SUM may pick the pool when selected (research).
-  ⚠ It only sorts the ~50 extremes by `|Z*|` — the items with the largest `AC` session-wide are
-  not necessarily in that set.
+  Nodes card (`/status` `item_ac_z`, `score_ac_z`). It never enters Z\*; as the pool criterion
+  it picks the pool and the extreme set (research).
   **`Mau` is Maurer's universal test (NIST SP 800-22 §2.9) over the item's own window**: per
   node, over exactly the bits z counts (`gcp_last_maurer()` in `elotto_gcp`, `,mau=`, `/camlog`
   `mau`), L = 8 (byte blocks, MSB first), Q = 2560 init blocks, K = the rest; z = (f_n − 7,1836656)
@@ -321,13 +326,13 @@ what remains visible is an effect varying **between items inside a block**.
   compressible. Then centred on that node's block mean (scoring: pass mean; a node with < 2
   values stays out), Stouffer over the combined nodes, divided by the block's own σ of that
   combine — unit variance, read against 0, coloured at |Mau| > 3. Research hypothesis: it never
-  enters Z\*, its scoring SUM may pick the pool when selected. **—** until centred.
+  enters Z\*; as the pool criterion it picks the pool and the extreme set. **—** until centred.
   ⚠ Below NIST's minimum at short `?run=` (L = 8 wants ≥ 2,07 Mbit per window); the c(L,K)
   correction keeps σ right, the centring removes the per-camera offset.
   **`Δn` is node agreement**: σ across the contributing nodes of their block-centred z,
   each node divided by ITS OWN σ over that block. Small = the cameras moved together on this
   item; **≈ 1 is what independent nodes give**, so read it against 1, not against 0.
-  It never ranks items or excludes; its scoring SUM may pick the pool when selected (research).
+  It never enters Z\*; as the pool criterion it picks the pool and the extreme set (research).
   ⚠ **—** until the item's block has been centred (same wait as `Z`), and whenever fewer than
   two nodes have a block σ. Never 0 for "unknown": 0 would read as perfect agreement.
   ⚠ Small Δn is agreement, not evidence — centring has already removed the block-wide common
@@ -373,8 +378,8 @@ what remains visible is an effect varying **between items inside a block**.
 
 ## ⛔ A session is a closed unit 
 Everything is judged **inside one session**: its blocks, its pairwise matrix, its tables. Sessions
-are never compared, pooled or merged. Save writes two CSVs of the session still in RAM (the |Z*|
-extremes, and every number's six scoring sums). A reboot or the next start drops them. Parameters,
+are never compared, pooled or merged. Save writes two CSVs of the session still in RAM (the
+extremes on the pool criterion, and every number's six scoring sums). A reboot or the next start drops them. Parameters,
 firmware and instrument may change freely between sessions; what must hold is that they do not change
 **within** one.
 

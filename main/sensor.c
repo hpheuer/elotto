@@ -1505,12 +1505,21 @@ double rank_key(const RunResult *r)
     return (a * z + p * zc) / n;
 }
 
-/* ── |Z*| ranking of the held rows ────────────────────────────────────────
+/* ── Ranking of the held rows by the pool criterion ──────────────────────
+ * The extreme set — compaction survivors, /extremes, Save — is chosen on the
+ * SAME column and direction that picked the pool: score_sum (Z*, Z, Conc, Δn,
+ * AC, Mau) and score_dir (high = largest values, low = smallest). Both can only
+ * change while a scoring runs, so a round's compaction uses exactly the
+ * criterion its pool was picked with. ⚠ One direction, not both tails: under
+ * `high` the most negative Z* leave at the next round boundary.
+ * The value is the item's own column as the table shows it; a row without one
+ * (NaN: AC on a block's first item, Δn with k < 2, Mau uncentred) is not
+ * ranked and never kept.
  * rank_key() is soft-float double work, and with PASS_KEEP_EXTREME in the
- * thousands a per-slot scan (K × n calls) costs seconds. So every selection by
- * |Z*| computes each key ONCE and sorts: n calls plus an O(n log n) sort.
- * Fills ord[0..return) with row indices, largest |key| first. The caller owns
- * ord (NUM_RUNS entries) and any locking. */
+ * thousands a per-slot scan (K × n calls) costs seconds, so each value is
+ * computed ONCE and sorted: n calls plus O(n log n).
+ * Fills ord[0..return) with row indices, best first. The caller owns ord
+ * (NUM_RUNS entries) and any locking. */
 typedef struct { double a; uint16_t j; } KeyIdx;
 
 static int keyidx_desc(const void *x, const void *y)
@@ -1519,14 +1528,30 @@ static int keyidx_desc(const void *x, const void *y)
     return (a < b) - (a > b);
 }
 
+static double item_crit(const RunResult *r, int ch)
+{
+    switch (ch) {
+    case SUM_Z:    return (double)r->z_ctr;
+    case SUM_CONC: return (double)r->zc_ctr;
+    case SUM_NSD:  return (double)r->node_sd;
+    case SUM_AC:   return (double)r->acz;
+    case SUM_MAU:  return (double)r->mau;
+    default:       return rank_key(r);
+    }
+}
+
 static int rank_order(KeyIdx *ord, int ntot, bool need_centred)
 {
+    const int  ch  = score_sum_sel();
+    const bool low = g_status.score_dir == SCORE_DIR_LOW;
     int m = 0;
     for (int j = 0; j < ntot; j++) {
         const RunResult *r = &g_status.results[j];
         if (!result_ranked(r)) continue;
         if (need_centred && !result_centred(r)) continue;
-        ord[m].a = fabs(rank_key(r));
+        double v = item_crit(r, ch);
+        if (!isfinite(v)) continue;
+        ord[m].a = low ? -v : v;
         ord[m].j = (uint16_t)j;
         m++;
     }
@@ -1535,16 +1560,15 @@ static int rank_order(KeyIdx *ord, int ntot, bool need_centred)
 }
 
 /* ── The live extreme set, for the sortable Top-10  ───────────────────
- * The up-to `max` ranked & centred rows with the largest |rank_key|, both
- * tails, copied into out[0..return) under the archive lock, |key| descending.
- * This is the live form of the compaction survivors (PASS_KEEP_EXTREME): the
- * same "most extreme by |Z*|" set, computed on demand from the current prefix
- * so it reflects every item measured so far, not only what the last round
- * boundary kept.
+ * The up-to `max` ranked & centred rows that rank best on the pool criterion
+ * (see rank_order), copied into out[0..return) under the archive lock, best
+ * first. This is the live form of the compaction survivors
+ * (PASS_KEEP_EXTREME), computed on demand from the current prefix so it
+ * reflects every item measured so far, not only what the last round boundary
+ * kept.
  *
  * ⚠ ONLY selection lives here — which items. The ordering the tables show is
- * the page's, on whichever column the operator clicked; this always ranks by
- * |Z*| so a new item enters the set exactly as before. Runs once per
+ * the page's, on whichever column the operator clicked. Runs once per
  * results-page poll, not per item, on the HTTP task — hence its own scratch
  * (the sensor task's compaction may be selecting at the same moment).
  * result_ranked / result_centred gate it to the same rows every statistic uses,
@@ -1767,8 +1791,9 @@ static void recompute_pass_ranks(void)
  * A second call before a round starts if the next space would not fit in the
  * remaining buffer. Compaction costs rows that can never be recovered.
  *
- * Survivors: the PASS_KEEP_EXTREME items with largest |rank_key| (both tails).
- * Kept in MEASUREMENT ORDER, and s_node_z moves with them.
+ * Survivors: the PASS_KEEP_EXTREME items that rank best on the pool criterion
+ * and direction (rank_order). Kept in MEASUREMENT ORDER, and s_node_z moves
+ * with them.
  *
  * ⚠ results[] stops being a complete prefix here. Nothing may infer "the
  * session measured runs_completed items" afterwards; items_done says that. */
@@ -1786,8 +1811,8 @@ static void pass_compact(void)
         return;
     }
 
-    /* Keep the K most extreme by |rank_key|, both tails: one key per row,
-     * sorted (rank_order). The scratch is the sensor task's own — the HTTP
+    /* Keep the K best on the pool criterion and direction (rank_order). The
+     * scratch is the sensor task's own — the HTTP
      * task's results_extremes() may select concurrently, outside the lock.
      *
      * Ranked rows only. A QUARANTINED row (k > 0, skip_rank) has no reader

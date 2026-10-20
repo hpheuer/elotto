@@ -269,8 +269,8 @@ static const char HTML[] =
 "<button class='btn' id='btnPause' onclick='doPause()' "
 "style='background:#a08030;color:#fff'>&#9208; Pause</button>"
 "<button class='btn btn-abort' id='btnAbort' onclick='doAbort()'>&#9632; Abort</button>"
-// Save: two CSVs for Excel. /extremes?n=1000 is the 1000 most extreme items by
-// |Z*|; /extremes?sums=1 is every number's seven column sums for every scoring
+// Save: two CSVs for Excel. /extremes?n=1000 is the 1000 items best on the
+// pool criterion and direction; /extremes?sums=1 is every number's seven column sums for every scoring
 // still in RAM. Stays on screen after Done/Abort, when Pause and Abort are hidden.
 "<button class='btn' id='btnSave' onclick='doSave()' "
 "style='background:#2e6b9e;color:#fff'>&#128190; Save</button>"
@@ -735,7 +735,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "document.getElementById('btnPause').style.display=run?'':'none';"
 "document.getElementById('btnAbort').style.display=run?'':'none';}"
 /* Two CSVs for a German Excel: ';' separator, decimal comma, UTF-8 BOM.
-   First: the |Z*| extremes. Second: every number's seven signed column sums
+   First: the extremes on the pool criterion. Second: every number's seven signed column sums
    for every scoring still in RAM (high and low are the same numbers, sorted
    either way). Both fetches start in the click, then both files download. */
 "function doSave(){"
@@ -752,12 +752,13 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "fetch('/extremes?sums=1').then(function(r){return r.json();}).catch(function(){return null;})"
 "]).then(function(pair){"
 "var x=pair[0],s=pair[1];"
+// Rows arrive best-first on the pool criterion (x.crit, x.dir); Rank is that order.
 "var R=(x&&x.extremes)?x.extremes:[];"
-"R.sort(function(a,b){return Math.abs(b.key||0)-Math.abs(a.key||0);});"
+"var cr=(x&&x.crit)?x.crit+'_'+x.dir:'';"
 "var L=['Rank;Round;Comb;Numbers;Euro;Z*;Z;Z_raw;Conc;\\u0394n;AC;Mau;k'];"
 "R.forEach(function(r,i){L.push([i+1,r.round,r.run,(r.nums||[]).join(' '),(r.euro||[]).join(' '),"
 "f(r.key),f(r.z_ctr),f(r.z),f(r.zc),f(r.nsd),f(r.ac),f(r.mau),r.k].join(';'));});"
-"dl('elotto_top'+R.length+'_'+stamp+'.csv',L);"
+"dl('elotto_top'+R.length+(cr?'_'+cr:'')+'_'+stamp+'.csv',L);"
 "var snaps=(s&&s.snaps)?s.snaps:[];"
 "if(snaps.length){"
 "var L2=['Round;Kind;Number;Passes;Z*;nZ*;Z;nZ;Conc;nConc;\\u0394n;n\\u0394n;AC;nAC;Mau;nMau'];"
@@ -1245,11 +1246,12 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "+(c>0?' \\u00b7 reading '+c.toFixed(2)+' Mbit/s while a window reads':'')"
 "+(p>0?' \\u00b7 extraction '+p.toFixed(2)+' Mbit/s (sensor output, mostly dropped in the gaps)':'');}"
 /* ── Sortable Top-10 over the extremes set  ──────────────
-   The table is the leading 10 of the /extremes set (the ~50 most extreme
-   items by |Z*|). A click on a stat header sorts that set by the column; a
-   second click flips the direction (largest-first <-> smallest-first), shown
-   by the arrow. Items still ENTER the set by |Z*| only — the sort reorders
-   what is shown, it never changes the display pool of 50 or the pool. */
+   The table is the leading 10 of the /extremes set (the ~50 items that rank
+   best on the pool criterion and direction). A click on a stat header sorts
+   that set by the column; a second click flips the direction (largest-first
+   <-> smallest-first), shown by the arrow. Items ENTER the set by the pool
+   criterion only — the sort reorders what is shown, it never changes the
+   display pool of 50 or the pool. */
 "var EX=[],QX=[],SORTK='key',SORTD=-1,LD=null;"
 /* The scoring table keeps its own sort: it opens on the running sum, the key
    that picks the pool, and the item table keeps whatever the operator chose. */
@@ -2156,14 +2158,14 @@ static esp_err_t loops_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* ── /extremes GET — the ~50 most extreme ranked items by |Z*| ──
+/* ── /extremes GET — the ~50 ranked items best on the pool criterion ──
  * Same row shape as top/low (emit_run), so the page reuses renderRunTable and
  * sorts them client-side. Streamed and on its OWN fetch, not folded into
  * /status: the set outgrows the 8 KB /status buffer, and /status is polled
  * once a second by everything — this is pulled only while the results table
  * is on screen. Live: results_extremes() rebuilds the set from the current
- * prefix on every call, so a newly measured item enters it by |Z*| exactly as
- * the compaction survivors do. The scratch lives in PSRAM; on a shortfall
+ * prefix on every call, so a newly measured item enters it on the pool
+ * criterion (score_sum, score_dir) exactly as the compaction survivors do. The scratch lives in PSRAM; on a shortfall
  * it answers an empty set rather than a fault. */
 #define EXTREMES_MAX 50   /* display pool for the Top-10 table (halves the
                              per-poll scan/serialize on the master). The
@@ -2287,7 +2289,12 @@ static esp_err_t extremes_handler(httpd_req_t *req)
     bool euro = (g_status.mode == MODE_EUROJACKPOT);
 
     char buf[256];
-    int len = snprintf(buf, sizeof(buf), "{\"n\":%d,\"extremes\":[", n);
+    /* crit/dir: what chose and ordered the set (sensor.c rank_order). */
+    int sc = (g_status.score_sum >= 0 && g_status.score_sum < SCORE_SUM_N)
+             ? g_status.score_sum : SUM_KEY;
+    int len = snprintf(buf, sizeof(buf), "{\"n\":%d,\"crit\":\"%s\",\"dir\":\"%s\",\"extremes\":[",
+                       n, SCORE_SUM_NAME[sc],
+                       g_status.score_dir == SCORE_DIR_LOW ? "low" : "high");
     send_chunk(req, buf, len, sizeof(buf));
     for (int i = 0; i < n; i++) {
         if (i) httpd_resp_send_chunk(req, ",", 1);

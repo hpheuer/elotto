@@ -332,8 +332,9 @@ typedef struct {
      * ⚠ NaN when fewer than two nodes have a usable block σ — k < 2, or a node
      * with fewer than 2 runs in the block. It is never 0 for "unknown".
      * ⚠ It says nothing about whether the item is HIGH or LOW; it is a
-     * confidence column beside Z*, not a second ranking key. Nothing selects,
-     * excludes or reorders on it. */
+     * confidence column beside Z*, not a second ranking key. It selects only
+     * when it is the pool criterion (the pool, and the extreme set kept by
+     * compaction — see rank_order() in sensor.c). */
     float      node_sd;
     /* ITEM AUTOCORRELATION (AC): this item's centred z times the 1..4 items
      * measured before it, / √m — see series_ac(). NaN until the block closes
