@@ -1563,7 +1563,8 @@ static int rank_order(KeyIdx *ord, int ntot, bool need_centred, int ch, bool low
  * archive lock, best first. ch < 0 = the pool criterion, i.e. the live form of
  * the compaction survivors (Save); the Top-10 passes the column the operator
  * clicked, so its ten are the best of every row held, not of a pre-cut set.
- * *held (optional) receives how many rows carried a value at all.
+ * *held (optional) receives how many rows carried a value at all;
+ * *used_ch / *used_low (optional) the column and direction actually used.
  *
  * ⚠ It can only choose from what compaction kept — the pool criterion's 1000
  * plus the open round. Runs once per results-page poll, not per item, on the
@@ -1571,14 +1572,17 @@ static int rank_order(KeyIdx *ord, int ntot, bool need_centred, int ch, bool low
  * selecting at the same moment). result_ranked / result_centred gate it to the
  * same rows every statistic uses, so an uncentred open-block item with its raw
  * node offsets can never appear. */
-int results_extremes(RunResult *out, int max, int ch, bool low, int *held)
+int results_extremes(RunResult *out, int max, int ch, bool low, int *held,
+                     int *used_ch, bool *used_low)
 {
-    if (held) *held = 0;
-    if (!out || max <= 0) return 0;
     if (ch < 0 || ch >= SCORE_SUM_N) {
         ch  = score_sum_sel();
         low = g_status.score_dir == SCORE_DIR_LOW;
     }
+    if (used_ch)  *used_ch  = ch;
+    if (used_low) *used_low = low;
+    if (held) *held = 0;
+    if (!out || max <= 0) return 0;
     static KeyIdx *ord;
     if (!ord) ord = heap_caps_malloc((size_t)NUM_RUNS * sizeof(KeyIdx), MALLOC_CAP_SPIRAM);
     if (!ord) return 0;

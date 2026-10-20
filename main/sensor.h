@@ -984,8 +984,10 @@ double rank_key(const RunResult *r);
 /* The up-to `max` ranked & centred rows best on column `ch` (a ScoreSum) in
  * direction `low`, best first, copied into out[0..return) under the archive
  * lock. ch < 0 = the pool criterion and direction (the compaction rule, Save).
- * *held, if given, receives how many rows carried a value in that column. */
-int results_extremes(RunResult *out, int max, int ch, bool low, int *held);
+ * *held, if given, receives how many rows carried a value in that column;
+ * *used_ch / *used_low the column and direction actually used. */
+int results_extremes(RunResult *out, int max, int ch, bool low, int *held,
+                     int *used_ch, bool *used_low);
 
 /* The up-to `max` (≤ QUIET_N) ranked & centred rows with the SMALLEST
  * |rank_key| of the whole session, ascending, under the archive lock: the rows

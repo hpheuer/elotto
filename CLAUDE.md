@@ -298,8 +298,9 @@ what remains visible is an effect varying **between items inside a block**.
   plain-language tooltip.
   ⚠ **The table is the ten held rows best on the clicked column and direction, chosen on the
   master** — `GET /extremes?sort=key|z|conc|nsd|ac|mau&dir=high|low` (streamed JSON, `emit_run` row
-  shape, `held` = rows with a value in that column), polled every **5 s** and at once on a header
-  click. It ranks every held row on the master's HTTP task, which shares the consumer core, so a
+  shape, `held` = rows with a value in that column), polled every **5 s**; a header click fetches
+  at once but at most once per second, and a reply for a superseded sort is dropped. `dir=`
+  without `sort=`, an unknown value and a truncated value or query (> 95 characters) answer **400**. It ranks every held row on the master's HTTP task, which shares the consumer core, so a
   1 s poll stole the master's extraction CPU. ⚠ **Held rows** are the compaction archive (chosen on
   the pool criterion) plus the open round, so another column's extremes are those of that archive,
   not of the session. Without `?sort=` the set is chosen on the pool criterion. `?n=1..1000`

@@ -1208,8 +1208,8 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "return;}"
 // Z* IS the ranking key (block-σ units) and the cell prints it as it
 // stands — there is no session moment of the key to rescale it with.
-// The Top-10 is built by renderExtremeTables() from the /extremes set so it
-// can be re-sorted by column; d.top is the fallback until the first
+// The Top-10 is built by renderExtremeTables() from the master's ten on the
+// clicked column (/extremes?sort=); d.top is the fallback until the first
 // /extremes lands.
 "LD=d;"
 "fetchExtremes();"
@@ -1265,9 +1265,6 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "else if(k==='mau')v=r.mau;"
 "else v=r.nsd;"
 "return (v===undefined||v===null||v!==v)?null:v;}"
-/* desc, and a missing value (Δn on a solo item) always sinks to the end. */
-"function exCmp(a,b){var x=colVal(a,SORTK),y=colVal(b,SORTK);"
-"if(x===null&&y===null)return 0;if(x===null)return 1;if(y===null)return -1;return y-x;}"
 /* The column the pool is summed on: the Σ marker in a header selects
    it on the device, the selected header is printed in gold. */
 "function curSum(){return (LD&&LD.score_sum)||'key';}"
@@ -1291,7 +1288,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "if(SCM&&k==='sum'&&liveSc()){if(SSK==='sum')setDir(LD.score_dir==='low'?'high':'low');"
 "SSK='sum';SSD=LD.score_dir==='low'?1:-1;renderScoreTable();return;}"
 "if(SCM){if(SSK===k)SSD=-SSD;else{SSK=k;SSD=-1;}renderScoreTable();return;}"
-"if(SORTK===k)SORTD=-SORTD;else{SORTK=k;SORTD=-1;}lastEx=0;fetchExtremes();}"
+"if(SORTK===k)SORTD=-SORTD;else{SORTK=k;SORTD=-1;}fetchExtremes();}"
 /* The scoring table: every number of this round's scoring, its latest
    measurement and the running sum (/extremes?score=1). 5 s like /extremes —
    the same HTTP task shares the consumer core. */
@@ -1321,36 +1318,47 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "renderRunTable('resHead','resBody',top,isEuro,d,{p:d.pre_w||0},{pool:pool});"
 "if(!top.length)document.getElementById('resBody').innerHTML="
 "'<tr><td colspan=\"11\" style=\"color:#d0b0b0;padding:10px\">No number scored yet.</td></tr>';}"
-/* Throttled to 5 s: /extremes ranks every held row on the MASTER's HTTP task,
-   which shares the consumer core with the GCP consumer — fetching it every
-   1 s stole extraction CPU from the master alone and lowered its mbit/s.
-   The master picks the ten on the clicked column and direction (?sort=&dir=),
-   so the ten are the best of every row held; a header click refetches at once.
-   Between fetches the cached ten are re-rendered. */
-"var lastEx=0,EXH=0;"
+/* /extremes ranks every held row on the MASTER's HTTP task, which shares the
+   consumer core with the GCP consumer — fetching it every 1 s stole
+   extraction CPU from the master alone and lowered its mbit/s. So: a 5 s
+   poll, and a header click fetches at once but never sooner than 1 s after the
+   last fetch (a burst of clicks costs one scan per second at most; the
+   1 s /status tick picks up a deferred one). The master picks and orders the
+   ten on the clicked column and direction (?sort=&dir=), so the page shows
+   them as they come. Each reply carries the sort it was asked for (EXK); one
+   that no longer matches the selection is dropped, so a slow poll cannot
+   overwrite the reply to a later click. */
+"var lastEx=0,EXH=0,EXK='',EXF=false;"
 "var EXS={key:'key',z_ctr:'z',zc:'conc',nsd:'nsd',ac:'ac',mau:'mau'};"
+"function exKey(){return (EXS[SORTK]||'key')+'&dir='+(SORTD<0?'high':'low');}"
 "function fetchExtremes(){"
-"var now=Date.now();"
-"if(now-lastEx<5000){renderExtremeTables();return;}"
+"var now=Date.now(),k=exKey();"
+"if(now-lastEx<(k===EXK?5000:1000)){renderExtremeTables();return;}"
 "lastEx=now;"
-"fetch('/extremes?sort='+(EXS[SORTK]||'key')+'&dir='+(SORTD<0?'high':'low')).then(function(r){return r.json();}).then(function(x){"
-"EX=(x&&x.extremes)?x.extremes:[];QX=(x&&x.quiet)?x.quiet:[];EXH=(x&&x.held)||0;renderExtremeTables();}).catch(function(){});}"
+"fetch('/extremes?sort='+k).then(function(r){return r.json();}).then(function(x){"
+"if(k!==exKey())return;"
+"EX=(x&&x.extremes)?x.extremes:[];QX=(x&&x.quiet)?x.quiet:[];EXH=(x&&x.held)||0;EXK=k;EXF=true;"
+"renderExtremeTables();}).catch(function(){});}"
 "function renderExtremeTables(){"
 "if(!LD)return;var d=LD,isEuro=d.mode==='euro',st={p:d.pre_w||0};"
 "var lab={key:'Z*',z_ctr:'Z',zc:'Conc',nsd:'\\u0394n',ac:'AC',mau:'Mau'};"
-"var top,endTxt;"
-/* One table: the leading 10 of the active sort over the extremes set.
-   The other end is one header click away (direction flips), so a second table
-   is redundant now that the columns sort. */
-"if(EX.length){"
-"var s=EX.slice().sort(exCmp);if(SORTD>0)s.reverse();"
-"top=s.slice(0,10);"
-"endTxt=(SORTD<0)?'highest':'lowest';"
-"}else{top=(d.top||[]).slice(0,10);endTxt='highest';}"
+"var top,title;"
+/* One table: the master's ten on the active sort. The other end is one
+   header click away (direction flips). Until the reply for a new sort lands
+   the old ten stay up under their OWN label; before the first reply ever,
+   /status top (ordered by Z*) stands in. A column no held row has a value in
+   yet says so instead of falling back. */
+"var lk=EXK.split('&dir='),inv={key:'key',z:'z_ctr',conc:'zc',nsd:'nsd',ac:'ac',mau:'mau'};"
+"if(EXF){top=EX.slice(0,10);"
+"title=' ('+(lk[1]==='low'?'lowest ':'highest ')+lab[inv[lk[0]]]+')';}"
+"else{top=(d.top||[]).slice(0,10);title=' (highest Z*)';}"
 "document.getElementById('resTitle').innerHTML="
-"'\\uD83C\\uDFC6 Top '+top.length+' of '+(EXH||d.comparisons||top.length)"
-"+(isEuro?' \\u2014 Eurojackpot':' \\u2014 6-of-49')+' ('+endTxt+' '+lab[SORTK]+')';"
+"'\\uD83C\\uDFC6 Top '+top.length+' of '+(EXF?EXH:(d.comparisons||top.length))"
+"+(isEuro?' \\u2014 Eurojackpot':' \\u2014 6-of-49')+title;"
 "renderRunTable('resHead','resBody',top,isEuro,d,st);"
+"if(EXF&&!top.length)document.getElementById('resBody').innerHTML="
+"'<tr><td colspan=\"11\" style=\"color:#d0b0b0;padding:10px\">No held item carries a '"
+"+lab[inv[lk[0]]]+' value yet.</td></tr>';"
 /* How the pool being measured was picked, e.g. "9 numbers, scoring
    lowest Δn". Items of earlier rounds came from their own pools. */
 "var su={key:'Z*',z:'Z',conc:'Conc',nsd:'\\u0394n',ac:'AC',mau:'Mau'}[d.pool_used_sum]||'Z*';"
@@ -1720,8 +1728,9 @@ static esp_err_t status_handler(httpd_req_t *req)
      * slaves_diag() — see the note at the node loop below. */
     camera_stats_t st_cam; camera_get_stats(&st_cam);
     // Fixed head, top[]/low[], the jump board (WSIG_TOP_N) and up to
-    // TRIPX_MAX trip records. /extremes is a separate stream because 50
-    // rows would overflow this one.
+    // TRIPX_MAX trip records. /extremes is a separate stream: it is pulled
+    // only while the results table is on screen, and Save's 1000 rows would
+    // overflow this one.
     static char buf[12288];
     int  pos = 0;
     const char *state_str =
@@ -2236,44 +2245,55 @@ static esp_err_t extremes_handler(httpd_req_t *req)
      * row each, in the item row shape (emit_row) plus `sum`, the running
      * Σ that picks the pool, and `passes` behind it. A query flag, not a new
      * handler: the URI-handler cap fails silently. */
-    char q[48], v[8];
-    bool have_q = httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK;
-    if (have_q &&
-        httpd_query_key_value(q, "sums", v, sizeof(v)) == ESP_OK && v[0] == '1')
+    /* ⚠ A truncated query or value must never read as "key absent" and fall
+     * back to a default set — same rule as /start. Too long answers 400. */
+    char q[96], v[8];
+    size_t qlen = httpd_req_get_url_query_len(req);
+    if (qlen >= sizeof(q)) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_set_type(req, "text/plain");
+        httpd_resp_sendstr(req, "query too long");
+        return ESP_OK;
+    }
+    bool have_q = qlen > 0 && httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK;
+    /* 1 = present (in v), 0 = absent, -1 = value too long. */
+    #define QPARAM(key) (!have_q ? 0 : ({ esp_err_t e_ = httpd_query_key_value(q, key, v, sizeof(v)); \
+                          e_ == ESP_OK ? 1 : e_ == ESP_ERR_HTTPD_RESULT_TRUNC ? -1 : 0; }))
+    int qs = QPARAM("sums");
+    if (qs < 0) goto bad;
+    if (qs > 0 && v[0] == '1')
         return extremes_sums(req);
     int  want = EXTREMES_MAX;
-    if (have_q && httpd_query_key_value(q, "n", v, sizeof(v)) == ESP_OK) {
+    int  qn = QPARAM("n");
+    if (qn < 0) goto bad;
+    if (qn > 0) {
         char *end;
         long nv = strtol(v, &end, 10);
-        if (end == v || *end || nv < 1 || nv > PASS_KEEP_EXTREME) {
-            httpd_resp_set_status(req, "400 Bad Request");
-            httpd_resp_set_type(req, "text/plain");
-            httpd_resp_sendstr(req, "n= must be 1.." EL_STR(PASS_KEEP_EXTREME));
-            return ESP_OK;
-        }
+        if (end == v || *end || nv < 1 || nv > PASS_KEEP_EXTREME) goto bad;
         want = (int)nv;
     }
     /* ?sort=<ScoreSum name>&dir=high|low — the column the set is chosen on.
-     * Absent = the pool criterion (-1). Unknown values answer 400, never a
-     * silent fallback to another column. */
+     * Absent = the pool criterion (-1). dir= belongs to sort= (absent = high);
+     * an unknown or truncated value, or dir= without sort=, answers 400. */
     int  sort_ch  = -1;
     bool sort_low = false;
-    if (have_q && httpd_query_key_value(q, "sort", v, sizeof(v)) == ESP_OK) {
+    int  qso = QPARAM("sort");
+    if (qso < 0) goto bad;
+    if (qso > 0) {
         for (int c = 0; c < SCORE_SUM_N; c++)
             if (strcmp(v, SCORE_SUM_NAME[c]) == 0) sort_ch = c;
-        char dv[8] = "high";
-        if (httpd_query_key_value(q, "dir", dv, sizeof(dv)) != ESP_OK) strcpy(dv, "high");
-        bool dir_ok = strcmp(dv, "high") == 0 || strcmp(dv, "low") == 0;
-        if (sort_ch < 0 || !dir_ok) {
-            httpd_resp_set_status(req, "400 Bad Request");
-            httpd_resp_set_type(req, "text/plain");
-            httpd_resp_sendstr(req, "sort= must be key|z|conc|nsd|ac|mau, dir= high|low");
-            return ESP_OK;
-        }
-        sort_low = dv[0] == 'l';
+        if (sort_ch < 0) goto bad;
     }
-    if (have_q &&
-        httpd_query_key_value(q, "score", v, sizeof(v)) == ESP_OK && v[0] == '1') {
+    int qd = QPARAM("dir");
+    if (qd < 0 || (qd > 0 && qso == 0)) goto bad;
+    if (qd > 0) {
+        if (strcmp(v, "low") == 0)        sort_low = true;
+        else if (strcmp(v, "high") != 0)  goto bad;
+    }
+    int qsc = QPARAM("score");
+    if (qsc < 0) goto bad;
+    #undef QPARAM
+    if (qsc > 0 && v[0] == '1') {
         const ScoreItem *R = g_status.score_rows;
         int nr = R ? g_status.score_rows_n : 0;
         char sb[448];
@@ -2303,19 +2323,14 @@ static esp_err_t extremes_handler(httpd_req_t *req)
         return ESP_OK;
     }
 
-    int held = 0;
-    int n = ex ? results_extremes(ex, want, sort_ch, sort_low, &held) : 0;
+    /* crit/dir: what chose and ordered the set, as results_extremes()
+     * resolved it — the one place the pool-criterion fallback lives. */
+    int  held = 0, sc = SUM_KEY;
+    bool low = false;
+    int  n = results_extremes(ex, want, sort_ch, sort_low, &held, &sc, &low);
     bool euro = (g_status.mode == MODE_EUROJACKPOT);
 
     char buf[256];
-    /* crit/dir: what chose and ordered the set (sensor.c rank_order). */
-    int sc = sort_ch;
-    bool low = sort_low;
-    if (sc < 0) {
-        sc  = (g_status.score_sum >= 0 && g_status.score_sum < SCORE_SUM_N)
-              ? g_status.score_sum : SUM_KEY;
-        low = g_status.score_dir == SCORE_DIR_LOW;
-    }
     int len = snprintf(buf, sizeof(buf),
                        "{\"n\":%d,\"held\":%d,\"crit\":\"%s\",\"dir\":\"%s\",\"extremes\":[",
                        n, held, SCORE_SUM_NAME[sc], low ? "low" : "high");
@@ -2336,6 +2351,13 @@ static esp_err_t extremes_handler(httpd_req_t *req)
     }
     httpd_resp_send_chunk(req, "]}", 2);
     httpd_resp_send_chunk(req, NULL, 0);
+    return ESP_OK;
+
+bad:
+    httpd_resp_set_status(req, "400 Bad Request");
+    httpd_resp_set_type(req, "text/plain");
+    httpd_resp_sendstr(req, "n=1.." EL_STR(PASS_KEEP_EXTREME)
+                       ", sort=key|z|conc|nsd|ac|mau, dir=high|low (with sort=), sums=1, score=1");
     return ESP_OK;
 }
 
