@@ -1505,41 +1505,62 @@ double rank_key(const RunResult *r)
     return (a * z + p * zc) / n;
 }
 
+/* ── |Z*| ranking of the held rows ────────────────────────────────────────
+ * rank_key() is soft-float double work, and with PASS_KEEP_EXTREME in the
+ * thousands a per-slot scan (K × n calls) costs seconds. So every selection by
+ * |Z*| computes each key ONCE and sorts: n calls plus an O(n log n) sort.
+ * Fills ord[0..return) with row indices, largest |key| first. The caller owns
+ * ord (NUM_RUNS entries) and any locking. */
+typedef struct { double a; uint16_t j; } KeyIdx;
+
+static int keyidx_desc(const void *x, const void *y)
+{
+    double a = ((const KeyIdx *)x)->a, b = ((const KeyIdx *)y)->a;
+    return (a < b) - (a > b);
+}
+
+static int rank_order(KeyIdx *ord, int ntot, bool need_centred)
+{
+    int m = 0;
+    for (int j = 0; j < ntot; j++) {
+        const RunResult *r = &g_status.results[j];
+        if (!result_ranked(r)) continue;
+        if (need_centred && !result_centred(r)) continue;
+        ord[m].a = fabs(rank_key(r));
+        ord[m].j = (uint16_t)j;
+        m++;
+    }
+    qsort(ord, (size_t)m, sizeof(KeyIdx), keyidx_desc);
+    return m;
+}
+
 /* ── The live extreme set, for the sortable Top-10  ───────────────────
  * The up-to `max` ranked & centred rows with the largest |rank_key|, both
- * tails, copied into out[0..return) under the archive lock. This is the live
- * form of the compaction survivors (PASS_KEEP_EXTREME): the same "most extreme
- * by |Z*|" set, computed on demand from the current prefix so it reflects every
- * item measured so far, not only what the last round boundary kept.
+ * tails, copied into out[0..return) under the archive lock, |key| descending.
+ * This is the live form of the compaction survivors (PASS_KEEP_EXTREME): the
+ * same "most extreme by |Z*|" set, computed on demand from the current prefix
+ * so it reflects every item measured so far, not only what the last round
+ * boundary kept.
  *
  * ⚠ ONLY selection lives here — which items. The ordering the tables show is
  * the page's, on whichever column the operator clicked; this always ranks by
- * |Z*| so a new item enters the set exactly as before. out[] is kept
- * sorted by |key| desc by insertion so the tail comparison is O(1); the whole
- * scan is O(n·max) worst case and runs once per results-page poll, not per item.
+ * |Z*| so a new item enters the set exactly as before. Runs once per
+ * results-page poll, not per item, on the HTTP task — hence its own scratch
+ * (the sensor task's compaction may be selecting at the same moment).
  * result_ranked / result_centred gate it to the same rows every statistic uses,
  * so an uncentred open-block item with its raw node offsets can never appear. */
 int results_extremes(RunResult *out, int max)
 {
     if (!out || max <= 0) return 0;
+    static KeyIdx *ord;
+    if (!ord) ord = heap_caps_malloc((size_t)NUM_RUNS * sizeof(KeyIdx), MALLOC_CAP_SPIRAM);
+    if (!ord) return 0;
     archive_lock();
     int ntot = g_status.runs_completed;
     if (ntot > NUM_RUNS) ntot = NUM_RUNS;
-    int m = 0;
-    for (int j = 0; j < ntot; j++) {
-        const RunResult *r = &g_status.results[j];
-        if (!result_ranked(r) || !result_centred(r)) continue;
-        double a = fabs(rank_key(r));
-        if (m < max) {
-            int p = m++;
-            while (p > 0 && fabs(rank_key(&out[p - 1])) < a) { out[p] = out[p - 1]; p--; }
-            out[p] = *r;
-        } else if (a > fabs(rank_key(&out[m - 1]))) {
-            int p = m - 1;
-            while (p > 0 && fabs(rank_key(&out[p - 1])) < a) { out[p] = out[p - 1]; p--; }
-            out[p] = *r;
-        }
-    }
+    int m = rank_order(ord, ntot, true);
+    if (m > max) m = max;
+    for (int i = 0; i < m; i++) out[i] = g_status.results[ord[i].j];
     archive_unlock();
     return m;
 }
@@ -1765,26 +1786,24 @@ static void pass_compact(void)
         return;
     }
 
-    /* Keep the K most extreme by |rank_key|. Linear scan per slot: n is at most
-     * NUM_RUNS and K is 100. Both tails survive.
+    /* Keep the K most extreme by |rank_key|, both tails: one key per row,
+     * sorted (rank_order). The scratch is the sensor task's own — the HTTP
+     * task's results_extremes() may select concurrently, outside the lock.
      *
      * Ranked rows only. A QUARANTINED row (k > 0, skip_rank) has no reader
      * once its block is closed — it is out of every statistic, and the
      * block σ and the soft-down origins were taken at the close — so it merges
      * into the counters like a void row. */
-    for (int slot = 0; slot < K; slot++) {
-        int    best = -1;
-        double best_key = 0.0;
-        for (int j = 0; j < n; j++) {
-            if (keep[j]) continue;
-            const RunResult *r = &g_status.results[j];
-            if (!result_ranked(r)) continue;
-            double key = fabs(rank_key(r));
-            if (best < 0 || key > best_key) { best_key = key; best = j; }
-        }
-        if (best < 0) break;
-        keep[best] = 1;
+    KeyIdx *ord = heap_caps_malloc((size_t)n * sizeof(KeyIdx), MALLOC_CAP_SPIRAM);
+    if (!ord) {
+        heap_caps_free(keep);
+        printf("pass: compaction skipped — no heap for the key order\n");
+        return;
     }
+    int m = rank_order(ord, n, false);
+    if (m > K) m = K;
+    for (int i = 0; i < m; i++) keep[ord[i].j] = 1;
+    heap_caps_free(ord);
 
     /* Merge the losers into the moments, then close the gaps in place. Forward
      * copy with w <= j, so the array is rewritten under itself safely and the

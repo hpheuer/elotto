@@ -93,11 +93,11 @@ across rounds a combination can recur — identity is **(round, index)**.
   `g_status` only after every one validates, so a 400 leaves the finished session's `/status` —
   `pre_w` above all — describing that session. A 500 (task create failed) restores
   the snapshot, including `state`; `prefs_save()` runs only after the task exists. 100 % of the progress bar is the
-  full combination space. `NUM_RUNS` 500 is the hard cap on `results[]`.
+  full combination space. `NUM_RUNS` 1400 is the hard cap on `results[]`.
   ⚠ **A combination space larger than `NUM_RUNS` aborts** rather than compacting mid-round.
   Eurojackpot's 7920 and 6-of-49's 5005 are both over it; the pool is sized down to `?maxruns=`.
-  Compaction keeps at most 100 rows (the ranked extremes) and the next round is appended after
-  them, so `?maxruns=` is capped at `UNLIM_RUNS_MAX` 400 = `NUM_RUNS` − 100 and a round is never
+  Compaction keeps at most 1000 rows (the ranked extremes) and the next round is appended after
+  them, so `?maxruns=` is capped at `UNLIM_RUNS_MAX` 400 = `NUM_RUNS` − 1000 and a round is never
   truncated.
 - **Measuring time is a session parameter.** `?run=<s>` is **0,2–5 s, default 5**; out of range
   answers **400**, no fallback. `?gap=<s>` if present must be 0–10 s, else **400**; omitted →
@@ -180,10 +180,10 @@ as backstop for a compaction that cannot allocate.
   tie-break.
 - **Results ACCUMULATE** — `results[]` is never cleared between rounds; every statistic runs on the
   union of all rounds.
-- **Every round compact at the boundary**: the 100 most extreme items by
+- **Every round compact at the boundary**: the 1000 most extreme items by
   `|rank_key|` stay as rows (both tails). Quarantined rows are not kept — nothing reads them after
   their block closes. The rest merges into moments — pass mean/σ/χ²
-  stay exact. `n ≤ 100` is a no-op, so a short session keeps every row. The display
+  stay exact. `n ≤ 1000` is a no-op, so a short session keeps every row. The display
   pool (`GET /extremes`, 50) is separate from this archive.
   ⚠ The counter and round-base semantics after a compaction (`completed`/`runs_completed`,
   `round_base`/`round_item_base`) are subtle and documented at their definitions in `sensor.h` —
@@ -294,15 +294,15 @@ what remains visible is an effect varying **between items inside a block**.
   column header was clicked**. `GET /extremes` (streamed JSON, `emit_run` row shape,
   polled every **5 s** — it is a ~15 KB scan on the master's HTTP task, which shares the consumer
   core, so a 1 s poll stole the master's extraction CPU) carries the set; the page sorts client-side
-  and shows the top 10 of the active sort. `?n=1..100` widens the set (default 50, else
+  and shows the top 10 of the active sort. `?n=1..1000` widens the set (default 50, else
   **400**); the **Save** button beside Abort (also shown after Done/Abort) writes
-  `/extremes?n=100` as a CSV for a German Excel (`;`, decimal comma, BOM) and, as a second file
+  `/extremes?n=1000` as a CSV for a German Excel (`;`, decimal comma, BOM) and, as a second file
   `elotto_sums_…`, `/extremes?sums=1`: every number's six signed column sums for every scoring
   still in RAM (high and low are that column sorted either way; an empty count is a missing value).
   Click any stat header to sort; a second click on the
   same header flips direction (arrow ▾/▴, ⇅ on the inactive ones), so the low end is one click away —
   which is why the old Bottom-5 table is gone. ⛔ Items still ENTER the set by `|Z*|` only — the sort
-  reorders the view, never the display pool of 50 or the compaction archive of 100. A missing `Δn` (solo item) sinks to the
+  reorders the view, never the display pool of 50 or the compaction archive of 1000. A missing `Δn` (solo item) sinks to the
   bottom of a `Δn` sort. `Δn` prints the node count it is taken over in parentheses — `0,79 (3)` is
   three cameras. Until the first `/extremes` reply lands the table falls back to `/status` `top`.
   **`AC` is the ITEM autocorrelation**: u = centred combined z / block σ in MEASUREMENT order,
@@ -606,7 +606,7 @@ floor is load-bearing.
   per-item per-node archives (`s_node_z` and the half-window copies, sized to `NUM_RUNS`),
   and the scoring-sum log (`SCORE_SNAP_MAX` 128 snaps, ~225 KB).
   The word ring `s_ring` (64 KB) is **internal RAM**; `results[]` stays internal too:
-  `NUM_RUNS` 500.
+  `NUM_RUNS` 1400.
 - ⚠ **The measurement path reads the ring in BLOCKS** — `camera_read_words()`, 112 words per call
   from `gcp_zscore_pre()`. `camera_read_word()` takes `s_mutex` and fences four times per
   32 bits; read that way, the reader — not PSRAM, not the camera — was the session rate (6,2 Mbit/s

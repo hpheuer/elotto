@@ -269,7 +269,7 @@ static const char HTML[] =
 "<button class='btn' id='btnPause' onclick='doPause()' "
 "style='background:#a08030;color:#fff'>&#9208; Pause</button>"
 "<button class='btn btn-abort' id='btnAbort' onclick='doAbort()'>&#9632; Abort</button>"
-// Save: two CSVs for Excel. /extremes?n=100 is the 100 most extreme items by
+// Save: two CSVs for Excel. /extremes?n=1000 is the 1000 most extreme items by
 // |Z*|; /extremes?sums=1 is every number's seven column sums for every scoring
 // still in RAM. Stays on screen after Done/Abort, when Pause and Abort are hidden.
 "<button class='btn' id='btnSave' onclick='doSave()' "
@@ -2167,8 +2167,8 @@ static esp_err_t loops_handler(httpd_req_t *req)
  * it answers an empty set rather than a fault. */
 #define EXTREMES_MAX 50   /* display pool for the Top-10 table (halves the
                              per-poll scan/serialize on the master). The
-                             compaction archive (PASS_KEEP_EXTREME) is separate
-                             and stays at 100. */
+                             compaction archive (PASS_KEEP_EXTREME, 1000) is
+                             separate. */
 /* ?n=1..PASS_KEEP_EXTREME widens the set for the page's CSV save; out of range
  * answers 400. The page's 5 s poll stays at the default.
  * ?sums=1 is the scoring-sum archive (every number, every scoring still in

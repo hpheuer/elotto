@@ -7,20 +7,20 @@
 /* v3: rounds until Abort. Inside a round every combination is measured
  * exactly ONCE; results[] holds it in MEASUREMENT order and ACCUMULATES across
  * rounds, so NUM_RUNS is the hard cap on the buffer, not on the session.
- * 500 rows. A row is 48 B (the double in RunResult forces 8-byte
- * alignment). Compaction keeps at most PASS_KEEP_EXTREME rows (100) and the
- * next round is appended after them, so the resident peak is 100 + ?maxruns=;
+ * 1400 rows. A row is 48 B (the double in RunResult forces 8-byte
+ * alignment). Compaction keeps at most PASS_KEEP_EXTREME rows (1000) and the
+ * next round is appended after them, so the resident peak is 1000 + ?maxruns=;
  * UNLIM_RUNS_MAX 400 is what keeps every round whole. A combination space
  * larger than NUM_RUNS aborts — the shuffle buffer is this wide. */
-#define NUM_RUNS       500
+#define NUM_RUNS      1400
 #define TOP_N            5
 /* ── Round-boundary compaction  ──────────────────────────────────────
- * Unlimited rounds keep the 100 most extreme RANKED items by |rank_key| (both
+ * Unlimited rounds keep the 1000 most extreme RANKED items by |rank_key| (both
  * tails). Quarantined rows are not kept: nothing reads them once their
  * block is closed. Everything else merges into pass moments. Offline re-analysis of the dropped
- * rows is not a goal. Since D67 every session is rounds, so every round
- * boundary calls pass_compact() (no-op while n ≤ 100). */
-#define PASS_KEEP_EXTREME 100
+ * rows is not a goal. Every session is rounds, so every round
+ * boundary calls pass_compact() (no-op while n ≤ 1000). */
+#define PASS_KEEP_EXTREME 1000
 /* The quiet board: the session's QUIET_N items with the smallest |rank_key|.
  * Compaction keeps only the extremes, so pass_compact() hands every row it
  * merges to the board — see results_quietest(). */
