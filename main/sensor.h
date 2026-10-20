@@ -981,12 +981,11 @@ void results_archive_init(void);
  * rank_z() is the only reader of z_ctr. */
 double rank_key(const RunResult *r);
 
-/* The up-to `max` most extreme ranked & centred rows by |rank_key| (both
- * tails), copied into out[0..return) under the archive lock. The live form of
- * the compaction survivors, for the sortable Top-10. The
- * caller sorts on whichever column it displays; selection here is by |Z*|
- * only, so a newly measured item joins the set exactly as it did before. */
-int results_extremes(RunResult *out, int max);
+/* The up-to `max` ranked & centred rows best on column `ch` (a ScoreSum) in
+ * direction `low`, best first, copied into out[0..return) under the archive
+ * lock. ch < 0 = the pool criterion and direction (the compaction rule, Save).
+ * *held, if given, receives how many rows carried a value in that column. */
+int results_extremes(RunResult *out, int max, int ch, bool low, int *held);
 
 /* The up-to `max` (≤ QUIET_N) ranked & centred rows with the SMALLEST
  * |rank_key| of the whole session, ascending, under the archive lock: the rows

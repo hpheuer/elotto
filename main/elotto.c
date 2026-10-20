@@ -1246,12 +1246,11 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "+(c>0?' \\u00b7 reading '+c.toFixed(2)+' Mbit/s while a window reads':'')"
 "+(p>0?' \\u00b7 extraction '+p.toFixed(2)+' Mbit/s (sensor output, mostly dropped in the gaps)':'');}"
 /* ── Sortable Top-10 over the extremes set  ──────────────
-   The table is the leading 10 of the /extremes set (the ~50 items that rank
-   best on the pool criterion and direction). A click on a stat header sorts
-   that set by the column; a second click flips the direction (largest-first
-   <-> smallest-first), shown by the arrow. Items ENTER the set by the pool
-   criterion only — the sort reorders what is shown, it never changes the
-   display pool of 50 or the pool. */
+   The table is the ten held rows that rank best on the clicked column
+   (/extremes?sort=&dir=, chosen on the master). A second click flips the
+   direction (largest-first <-> smallest-first), shown by the arrow. Rows held
+   = what compaction kept on the pool criterion plus the open round; the sort
+   never changes that archive or the pool. */
 "var EX=[],QX=[],SORTK='key',SORTD=-1,LD=null;"
 /* The scoring table keeps its own sort: it opens on the running sum, the key
    that picks the pool, and the item table keeps whatever the operator chose. */
@@ -1292,7 +1291,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "if(SCM&&k==='sum'&&liveSc()){if(SSK==='sum')setDir(LD.score_dir==='low'?'high':'low');"
 "SSK='sum';SSD=LD.score_dir==='low'?1:-1;renderScoreTable();return;}"
 "if(SCM){if(SSK===k)SSD=-SSD;else{SSK=k;SSD=-1;}renderScoreTable();return;}"
-"if(SORTK===k)SORTD=-SORTD;else{SORTK=k;SORTD=-1;}renderExtremeTables();}"
+"if(SORTK===k)SORTD=-SORTD;else{SORTK=k;SORTD=-1;}lastEx=0;fetchExtremes();}"
 /* The scoring table: every number of this round's scoring, its latest
    measurement and the running sum (/extremes?score=1). 5 s like /extremes —
    the same HTTP task shares the consumer core. */
@@ -1322,18 +1321,20 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "renderRunTable('resHead','resBody',top,isEuro,d,{p:d.pre_w||0},{pool:pool});"
 "if(!top.length)document.getElementById('resBody').innerHTML="
 "'<tr><td colspan=\"11\" style=\"color:#d0b0b0;padding:10px\">No number scored yet.</td></tr>';}"
-/* Throttled to 5 s: /extremes is a ~15 KB streamed scan served on the
-   MASTER's HTTP task, which shares the consumer core with the GCP consumer
-    — fetching it every 1 s stole extraction CPU from the master alone and
-   lowered its mbit/s. Between fetches the cached list is re-rendered, and sort
-   clicks run on the cache, so the table stays live at a fraction of the load. */
-"var lastEx=0;"
+/* Throttled to 5 s: /extremes ranks every held row on the MASTER's HTTP task,
+   which shares the consumer core with the GCP consumer — fetching it every
+   1 s stole extraction CPU from the master alone and lowered its mbit/s.
+   The master picks the ten on the clicked column and direction (?sort=&dir=),
+   so the ten are the best of every row held; a header click refetches at once.
+   Between fetches the cached ten are re-rendered. */
+"var lastEx=0,EXH=0;"
+"var EXS={key:'key',z_ctr:'z',zc:'conc',nsd:'nsd',ac:'ac',mau:'mau'};"
 "function fetchExtremes(){"
 "var now=Date.now();"
 "if(now-lastEx<5000){renderExtremeTables();return;}"
 "lastEx=now;"
-"fetch('/extremes').then(function(r){return r.json();}).then(function(x){"
-"EX=(x&&x.extremes)?x.extremes:[];QX=(x&&x.quiet)?x.quiet:[];renderExtremeTables();}).catch(function(){});}"
+"fetch('/extremes?sort='+(EXS[SORTK]||'key')+'&dir='+(SORTD<0?'high':'low')).then(function(r){return r.json();}).then(function(x){"
+"EX=(x&&x.extremes)?x.extremes:[];QX=(x&&x.quiet)?x.quiet:[];EXH=(x&&x.held)||0;renderExtremeTables();}).catch(function(){});}"
 "function renderExtremeTables(){"
 "if(!LD)return;var d=LD,isEuro=d.mode==='euro',st={p:d.pre_w||0};"
 "var lab={key:'Z*',z_ctr:'Z',zc:'Conc',nsd:'\\u0394n',ac:'AC',mau:'Mau'};"
@@ -1347,7 +1348,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "endTxt=(SORTD<0)?'highest':'lowest';"
 "}else{top=(d.top||[]).slice(0,10);endTxt='highest';}"
 "document.getElementById('resTitle').innerHTML="
-"'\\uD83C\\uDFC6 Top '+top.length+' of '+(EX.length||d.comparisons||top.length)"
+"'\\uD83C\\uDFC6 Top '+top.length+' of '+(EXH||d.comparisons||top.length)"
 "+(isEuro?' \\u2014 Eurojackpot':' \\u2014 6-of-49')+' ('+endTxt+' '+lab[SORTK]+')';"
 "renderRunTable('resHead','resBody',top,isEuro,d,st);"
 /* How the pool being measured was picked, e.g. "9 numbers, scoring
@@ -2158,21 +2159,19 @@ static esp_err_t loops_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* ── /extremes GET — the ~50 ranked items best on the pool criterion ──
- * Same row shape as top/low (emit_run), so the page reuses renderRunTable and
- * sorts them client-side. Streamed and on its OWN fetch, not folded into
- * /status: the set outgrows the 8 KB /status buffer, and /status is polled
- * once a second by everything — this is pulled only while the results table
- * is on screen. Live: results_extremes() rebuilds the set from the current
- * prefix on every call, so a newly measured item enters it on the pool
- * criterion (score_sum, score_dir) exactly as the compaction survivors do. The scratch lives in PSRAM; on a shortfall
- * it answers an empty set rather than a fault. */
-#define EXTREMES_MAX 50   /* display pool for the Top-10 table (halves the
-                             per-poll scan/serialize on the master). The
-                             compaction archive (PASS_KEEP_EXTREME, 1000) is
-                             separate. */
+/* ── /extremes GET — the best ranked items on a column ──────────────────
+ * Same row shape as top/low (emit_run), so the page reuses renderRunTable.
+ * Streamed and on its OWN fetch, not folded into /status: this is pulled only
+ * while the results table is on screen. Live: results_extremes() ranks every
+ * row held on each call. ?sort=key|z|conc|nsd|ac|mau&dir=high|low picks the
+ * column (the Top-10 sends the header the operator clicked); without ?sort= it
+ * is the pool criterion, the compaction rule (Save). `held` = rows that carry
+ * a value in that column. The scratch lives in PSRAM; on a shortfall it
+ * answers an empty set rather than a fault. */
+#define EXTREMES_MAX 10   /* the Top-10: the master picks the ten, so the
+                             page's 5 s poll serialises ten rows */
 /* ?n=1..PASS_KEEP_EXTREME widens the set for the page's CSV save; out of range
- * answers 400. The page's 5 s poll stays at the default.
+ * answers 400.
  * ?sums=1 is the scoring-sum archive (every number, every scoring still in
  * RAM), not a new URI — the handler cap fails silently. */
 static esp_err_t extremes_sums(httpd_req_t *req)
@@ -2254,6 +2253,25 @@ static esp_err_t extremes_handler(httpd_req_t *req)
         }
         want = (int)nv;
     }
+    /* ?sort=<ScoreSum name>&dir=high|low — the column the set is chosen on.
+     * Absent = the pool criterion (-1). Unknown values answer 400, never a
+     * silent fallback to another column. */
+    int  sort_ch  = -1;
+    bool sort_low = false;
+    if (have_q && httpd_query_key_value(q, "sort", v, sizeof(v)) == ESP_OK) {
+        for (int c = 0; c < SCORE_SUM_N; c++)
+            if (strcmp(v, SCORE_SUM_NAME[c]) == 0) sort_ch = c;
+        char dv[8] = "high";
+        if (httpd_query_key_value(q, "dir", dv, sizeof(dv)) != ESP_OK) strcpy(dv, "high");
+        bool dir_ok = strcmp(dv, "high") == 0 || strcmp(dv, "low") == 0;
+        if (sort_ch < 0 || !dir_ok) {
+            httpd_resp_set_status(req, "400 Bad Request");
+            httpd_resp_set_type(req, "text/plain");
+            httpd_resp_sendstr(req, "sort= must be key|z|conc|nsd|ac|mau, dir= high|low");
+            return ESP_OK;
+        }
+        sort_low = dv[0] == 'l';
+    }
     if (have_q &&
         httpd_query_key_value(q, "score", v, sizeof(v)) == ESP_OK && v[0] == '1') {
         const ScoreItem *R = g_status.score_rows;
@@ -2285,16 +2303,22 @@ static esp_err_t extremes_handler(httpd_req_t *req)
         return ESP_OK;
     }
 
-    int n = ex ? results_extremes(ex, want) : 0;
+    int held = 0;
+    int n = ex ? results_extremes(ex, want, sort_ch, sort_low, &held) : 0;
     bool euro = (g_status.mode == MODE_EUROJACKPOT);
 
     char buf[256];
     /* crit/dir: what chose and ordered the set (sensor.c rank_order). */
-    int sc = (g_status.score_sum >= 0 && g_status.score_sum < SCORE_SUM_N)
-             ? g_status.score_sum : SUM_KEY;
-    int len = snprintf(buf, sizeof(buf), "{\"n\":%d,\"crit\":\"%s\",\"dir\":\"%s\",\"extremes\":[",
-                       n, SCORE_SUM_NAME[sc],
-                       g_status.score_dir == SCORE_DIR_LOW ? "low" : "high");
+    int sc = sort_ch;
+    bool low = sort_low;
+    if (sc < 0) {
+        sc  = (g_status.score_sum >= 0 && g_status.score_sum < SCORE_SUM_N)
+              ? g_status.score_sum : SUM_KEY;
+        low = g_status.score_dir == SCORE_DIR_LOW;
+    }
+    int len = snprintf(buf, sizeof(buf),
+                       "{\"n\":%d,\"held\":%d,\"crit\":\"%s\",\"dir\":\"%s\",\"extremes\":[",
+                       n, held, SCORE_SUM_NAME[sc], low ? "low" : "high");
     send_chunk(req, buf, len, sizeof(buf));
     for (int i = 0; i < n; i++) {
         if (i) httpd_resp_send_chunk(req, ",", 1);

@@ -189,8 +189,8 @@ as backstop for a compaction that cannot allocate.
   with k < 2) is never kept. ⚠ A criterion switched in a later scoring cannot bring back rows an
   earlier compaction merged. Quarantined rows are not kept — nothing reads them after
   their block closes. The rest merges into moments — pass mean/σ/χ²
-  stay exact. `n ≤ 1000` is a no-op, so a short session keeps every row. The display
-  pool (`GET /extremes`, 50) is separate from this archive.
+  stay exact. `n ≤ 1000` is a no-op, so a short session keeps every row. The Top-10
+  (`GET /extremes`) chooses from this archive plus the open round.
   ⚠ The counter and round-base semantics after a compaction (`completed`/`runs_completed`,
   `round_base`/`round_item_base`) are subtle and documented at their definitions in `sensor.h` —
   read them before touching anything that counts or indexes items; getting them wrong is what broke
@@ -296,21 +296,22 @@ what remains visible is an effect varying **between items inside a block**.
 - **One sortable table of ten**: Top-10, item counter + block badge. Columns: `Z*` (key
   in that item's block-σ units), `Z`, `Conc`, `Δn`, `AC`, `Mau`. Every header has a
   plain-language tooltip.
-  ⚠ **The table is the leading 10 of the ~50 items best on the pool criterion (same rule as
-  compaction), sorted by whichever column header was clicked**. `GET /extremes` (streamed JSON, `emit_run` row shape,
-  polled every **5 s** — it is a ~15 KB scan on the master's HTTP task, which shares the consumer
-  core, so a 1 s poll stole the master's extraction CPU) carries the set; the page sorts client-side
-  and shows the top 10 of the active sort. `?n=1..1000` widens the set (default 50, else
-  **400**); the **Save** button beside Abort (also shown after Done/Abort) writes
+  ⚠ **The table is the ten held rows best on the clicked column and direction, chosen on the
+  master** — `GET /extremes?sort=key|z|conc|nsd|ac|mau&dir=high|low` (streamed JSON, `emit_run` row
+  shape, `held` = rows with a value in that column), polled every **5 s** and at once on a header
+  click. It ranks every held row on the master's HTTP task, which shares the consumer core, so a
+  1 s poll stole the master's extraction CPU. ⚠ **Held rows** are the compaction archive (chosen on
+  the pool criterion) plus the open round, so another column's extremes are those of that archive,
+  not of the session. Without `?sort=` the set is chosen on the pool criterion. `?n=1..1000`
+  widens it (default 10, else **400**); the **Save** button beside Abort (also shown after Done/Abort) writes
   `/extremes?n=1000` as a CSV for a German Excel (`;`, decimal comma, BOM), ranked best-first
   on the pool criterion (`crit`/`dir` in the reply and the file name), and, as a second file
   `elotto_sums_…`, `/extremes?sums=1`: every number's six signed column sums for every scoring
   still in RAM (high and low are that column sorted either way; an empty count is a missing value).
   Click any stat header to sort; a second click on the
   same header flips direction (arrow ▾/▴, ⇅ on the inactive ones), so the low end is one click away —
-  which is why the old Bottom-5 table is gone. Items ENTER the set by the pool criterion only — the
-  sort reorders the view, never the display pool of 50 or the compaction archive of 1000. A missing `Δn` (solo item) sinks to the
-  bottom of a `Δn` sort. `Δn` prints the node count it is taken over in parentheses — `0,79 (3)` is
+  which is why the old Bottom-5 table is gone. The sort never changes the compaction archive or the
+  pool. An item without a value in the sorted column (`Δn` on a solo item) is not listed. `Δn` prints the node count it is taken over in parentheses — `0,79 (3)` is
   three cameras. Until the first `/extremes` reply lands the table falls back to `/status` `top`.
   **`AC` is the ITEM autocorrelation**: u = centred combined z / block σ in MEASUREMENT order,
   AC_j = Σ_{L=1..4} u_j·u_{j−L} / √m (m = lags available) — **unit variance for independent

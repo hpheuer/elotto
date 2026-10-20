@@ -1540,10 +1540,8 @@ static double item_crit(const RunResult *r, int ch)
     }
 }
 
-static int rank_order(KeyIdx *ord, int ntot, bool need_centred)
+static int rank_order(KeyIdx *ord, int ntot, bool need_centred, int ch, bool low)
 {
-    const int  ch  = score_sum_sel();
-    const bool low = g_status.score_dir == SCORE_DIR_LOW;
     int m = 0;
     for (int j = 0; j < ntot; j++) {
         const RunResult *r = &g_status.results[j];
@@ -1559,30 +1557,36 @@ static int rank_order(KeyIdx *ord, int ntot, bool need_centred)
     return m;
 }
 
-/* ── The live extreme set, for the sortable Top-10  ───────────────────
- * The up-to `max` ranked & centred rows that rank best on the pool criterion
- * (see rank_order), copied into out[0..return) under the archive lock, best
- * first. This is the live form of the compaction survivors
- * (PASS_KEEP_EXTREME), computed on demand from the current prefix so it
- * reflects every item measured so far, not only what the last round boundary
- * kept.
+/* ── The live extreme set: the Top-10 and Save  ───────────────────────
+ * The up-to `max` ranked & centred rows that rank best on column `ch` in
+ * direction `low` (see rank_order), copied into out[0..return) under the
+ * archive lock, best first. ch < 0 = the pool criterion, i.e. the live form of
+ * the compaction survivors (Save); the Top-10 passes the column the operator
+ * clicked, so its ten are the best of every row held, not of a pre-cut set.
+ * *held (optional) receives how many rows carried a value at all.
  *
- * ⚠ ONLY selection lives here — which items. The ordering the tables show is
- * the page's, on whichever column the operator clicked. Runs once per
- * results-page poll, not per item, on the HTTP task — hence its own scratch
- * (the sensor task's compaction may be selecting at the same moment).
- * result_ranked / result_centred gate it to the same rows every statistic uses,
- * so an uncentred open-block item with its raw node offsets can never appear. */
-int results_extremes(RunResult *out, int max)
+ * ⚠ It can only choose from what compaction kept — the pool criterion's 1000
+ * plus the open round. Runs once per results-page poll, not per item, on the
+ * HTTP task — hence its own scratch (the sensor task's compaction may be
+ * selecting at the same moment). result_ranked / result_centred gate it to the
+ * same rows every statistic uses, so an uncentred open-block item with its raw
+ * node offsets can never appear. */
+int results_extremes(RunResult *out, int max, int ch, bool low, int *held)
 {
+    if (held) *held = 0;
     if (!out || max <= 0) return 0;
+    if (ch < 0 || ch >= SCORE_SUM_N) {
+        ch  = score_sum_sel();
+        low = g_status.score_dir == SCORE_DIR_LOW;
+    }
     static KeyIdx *ord;
     if (!ord) ord = heap_caps_malloc((size_t)NUM_RUNS * sizeof(KeyIdx), MALLOC_CAP_SPIRAM);
     if (!ord) return 0;
     archive_lock();
     int ntot = g_status.runs_completed;
     if (ntot > NUM_RUNS) ntot = NUM_RUNS;
-    int m = rank_order(ord, ntot, true);
+    int m = rank_order(ord, ntot, true, ch, low);
+    if (held) *held = m;
     if (m > max) m = max;
     for (int i = 0; i < m; i++) out[i] = g_status.results[ord[i].j];
     archive_unlock();
@@ -1825,7 +1829,8 @@ static void pass_compact(void)
         printf("pass: compaction skipped — no heap for the key order\n");
         return;
     }
-    int m = rank_order(ord, n, false);
+    int m = rank_order(ord, n, false, score_sum_sel(),
+                       g_status.score_dir == SCORE_DIR_LOW);
     if (m > K) m = K;
     for (int i = 0; i < m; i++) keep[ord[i].j] = 1;
     heap_caps_free(ord);
