@@ -642,9 +642,10 @@ floor is load-bearing.
 | slave4 | 192.168.178.172 (static lease) | 80:f1:b2:d6:58:80 | COM11 | factory = updater, ota_0 = slave app · OV5647 · **chip rev v3.2** |
 | slave5 | 192.168.178.166 (static lease) | 80:f1:b2:d6:58:81 | COM3 | factory = updater, ota_0 = slave app · OV5647 · **chip rev v3.2** |
 | slave6 | 192.168.178.173 (static lease) | 80:f1:b2:d6:5a:1a | COM4 | factory = updater, ota_0 = slave app · OV5647 · **chip rev v3.2** |
+| slave7 | 192.168.178.32 | e8:f6:0a:e7:fe:13 | COM6 | factory = updater, ota_0 = slave app · OV5647 · **chip rev v3.2** |
 
 **Say master/slave0…slave6, never the IP ending.**
-⚠ **Two silicon revisions**: slave4, slave5 and slave6 are ESP32-P4 rev v3.2, every other node rev v1.3. Support for <3.0 and
+⚠ **Two silicon revisions**: slave4, slave5, slave6 and slave7 are ESP32-P4 rev v3.2, every other node rev v1.3. Support for <3.0 and
 ≥3.0 is mutually exclusive, so the rev v3.2 boards run their own updater and slave images (`build_rev3`, below).
 ⚠ Discovery stops at `MAX_SLAVES` (`MAX_NODES` − 1 = 7); a further answering slave is silently ignored.
 ⚠ The updater starts its web server only if it gets an IP within 30 s of boot — plug LAN before power, else power-cycle.
