@@ -91,7 +91,7 @@ static void on_eth_event(void *arg, esp_event_base_t base, int32_t id, void *dat
  * disagrees with /diag about which box is slave0 is worse than no name at all.
  * Add a node here and both pages learn it; an address that is not listed shows
  * as "unnamed" rather than being guessed at from a position. */
-#define NODE_NAMES_JS "var NODE_NAMES={'192.168.178.100':'master','192.168.178.103':'slave0'," "'192.168.178.145':'slave1','192.168.178.155':'slave2','192.168.178.83':'slave3','192.168.178.172':'slave4'," "'192.168.178.166':'slave5','192.168.178.173':'slave6'};"
+#define NODE_NAMES_JS "var NODE_NAMES={'192.168.178.100':'master','192.168.178.103':'slave0'," "'192.168.178.145':'slave1','192.168.178.155':'slave2','192.168.178.83':'slave3','192.168.178.172':'slave4'," "'192.168.178.166':'slave5','192.168.178.173':'slave6','192.168.178.32':'slave7'};"
 
 static const char HTML[] =
 "<!DOCTYPE html><html><head><meta charset='utf-8'>"
