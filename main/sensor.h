@@ -4,6 +4,8 @@
 #include "camera.h"
 #include "elotto_link.h"
 
+typedef uint16_t node_mask_t;   // bit i = node i; MAX_NODES below must fit
+
 /* v3: rounds until Abort. Inside a round every combination is measured
  * exactly ONCE; results[] holds it in MEASUREMENT order and ACCUMULATES across
  * rounds, so NUM_RUNS is the hard cap on the buffer, not on the session.
@@ -292,8 +294,8 @@ typedef struct {
      * DIFFERENT combination space per round — the pair (round, index) is the
      * identity, and nums[]/euro[] are what a reader should actually key on. */
     uint16_t   round;
+    node_mask_t have_mask; // bit i set ⇒ node i contributed (master = bit 0)
     uint8_t    k;          // nodes that entered the combine; 0 = VOID (incomplete)
-    uint8_t    have_mask;  // bit i set ⇒ node i contributed (master = bit 0)
     uint8_t    skip_rank;  // 1 = exclude from pass mean/σ/Top-Bottom (trigger block)
     uint8_t    nums[6];
     uint8_t    euro[2];
@@ -365,13 +367,13 @@ typedef struct {
 } FocusState;
 
 // Nodes in the array, master included as index 0.
-// 8 nodes → C(8,2) = 28 pairwise correlations.
-// ⚠ 8 is the ceiling: every per-node mask (have_mask, soft/trip/mean_mask,
-// the scoring masks) is a uint8_t, bit i = node i.
-#define MAX_NODES   8
+// 9 nodes → C(9,2) = 36 pairwise correlations.
+// Every per-node mask (have_mask, soft/trip/mean_mask, the scoring masks) is a
+// node_mask_t, bit i = node i.
+#define MAX_NODES   9
 #define MAX_SLAVES  (MAX_NODES - 1)
 #define MAX_PAIRS   (MAX_NODES * (MAX_NODES - 1) / 2)
-_Static_assert(MAX_NODES <= 8, "per-node masks are uint8_t");
+_Static_assert(MAX_NODES <= 16, "per-node masks are node_mask_t (uint16_t)");
 
 // Per-node health, published so a node that quietly degraded is visible rather
 // than merely averaged in. `ok` is session-scoped participation: a node whose
@@ -530,7 +532,7 @@ typedef struct {
      *            MOVES per block, so a clean/not-clean call cannot be rechecked
      *            without it
      * quarantined  this block's items were skipped for ranking */
-    uint8_t  soft_mask, trip_mask, mean_mask;
+    node_mask_t soft_mask, trip_mask, mean_mask;
     uint8_t  quarantined;
     float    clear_sig;
 } LoopStat;

@@ -246,18 +246,18 @@ static void nth_combination(const uint8_t *pool, int n, int r, int k, uint8_t *o
 static void score_one_run(bool *ok, float znode[MAX_NODES],
                           float h1[MAX_NODES], float h2[MAX_NODES],
                           float maun[MAX_NODES],
-                          uint8_t *mask, float *ac, ScoreItem *row,
+                          node_mask_t *mask, float *ac, ScoreItem *row,
                           float wsig[MAX_NODES]);
 static void score_build_keys(const float zn[][MAX_NODES],
                              const float h1[][MAX_NODES],
                              const float h2[][MAX_NODES],
-                             const uint8_t *mask,
+                             const node_mask_t *mask,
                              const bool *scored, int max_val, double *scores,
                              double *zc_out, double *conc_out, double *nsd_out);
 static void   center_block(int block_idx);  // forward: publish_valid centres the OPEN block
 static void   wsig_collect(float out[MAX_NODES]);
 static void   series_ac(const double *u, int n, float *item, float zl[4]);
-static void   wsig_note(const RunResult *r, const float *wsig, uint8_t mask,
+static void   wsig_note(const RunResult *r, const float *wsig, node_mask_t mask,
                         uint8_t spass);
 
 /* Per-item node-z archive (PSRAM). results[j] stays lean; centring needs the
@@ -385,7 +385,7 @@ static void node_col_store(float *arch, int j, const double *v, const bool *have
  * stays out: an uncentred per-camera offset would rank nodes), the rest
  * Stouffer-combined, and the combine divided by its own σ over the span
  * (n >= 3). out[t] = NaN where there is nothing to say. */
-static void node_span_col(const float *vals, const int *idx, const uint8_t *mask,
+static void node_span_col(const float *vals, const int *idx, const node_mask_t *mask,
                      int n, double *out)
 {
     double m[MAX_NODES] = {0};
@@ -430,7 +430,7 @@ static int    s_pass_n;
  * looked at. Set there because it already walks that block's rows, and read by
  * record_loop() immediately afterwards to decide whether a trip could have
  * contaminated anything. */
-static uint8_t s_blk_contrib;
+static node_mask_t s_blk_contrib;
 
 /* How many blocks are FINAL: closed, centred, and their per-node sums
  * cleared, so nothing in them can move again. The open block's index is always
@@ -767,7 +767,7 @@ static void score_run(int max_val, int pool_size, bool euro_pool)
     static float h1[51][MAX_NODES];
     static float h2[51][MAX_NODES];
     static float mn[51][MAX_NODES];   /* window Maurer z per node (Mau) */
-    uint8_t smask[51];
+    node_mask_t smask[51];
     /* The health line describes THIS scoring run's closed passes only — the
      * euro-number run must not show the main run's last span as its own. */
     g_status.score_sig_z = g_status.score_sig_c = 0.0;
@@ -867,7 +867,7 @@ static void score_run(int max_val, int pool_size, bool euro_pool)
         double maup[51];
         {
             int     idx[51], nb = 0;
-            uint8_t bm[51];
+            node_mask_t bm[51];
             double  bo[51];
             for (int k = 0; k < 51; k++) maup[k] = NAN;
             for (int k = 1; k <= max_val; k++)
@@ -1008,7 +1008,7 @@ static int gather_and_combine(double z_master, bool master_ok,
                               double h1[MAX_NODES], double h2[MAX_NODES],
                               bool have_h[MAX_NODES],
                               double h1_master, double h2_master, bool master_h,
-                              double *out_z, uint8_t *out_mask)
+                              double *out_z, node_mask_t *out_mask)
 {
     for (int i = 0; i < MAX_NODES; i++) {
         znode[i]  = 0.0;
@@ -1045,13 +1045,13 @@ static int gather_and_combine(double z_master, bool master_ok,
 
     double sum = 0.0;
     int    k   = 0;
-    uint8_t mask = 0;
+    node_mask_t mask = 0;
     for (int i = 0; i < g_status.node_count && i < MAX_NODES; i++) {
         if (!have[i]) continue;
         if (use_soft && g_status.nodes[i].soft_down) continue;
         sum += znode[i];
         k++;
-        mask |= (uint8_t)(1u << i);
+        mask |= (node_mask_t)(1u << i);
     }
     if (out_mask) *out_mask = mask;
     if (out_z) *out_z = (k > 0) ? sum / sqrt((double)k) : 0.0;
@@ -1074,7 +1074,7 @@ typedef struct {
     double  znode[MAX_NODES], h1[MAX_NODES], h2[MAX_NODES];   /* RAW halves */
     double  mau[MAX_NODES];             /* window Maurer z, raw (Mau) */
     bool    have[MAX_NODES], haveh[MAX_NODES], havemau[MAX_NODES];
-    uint8_t mask;
+    node_mask_t mask;
     int     k;
 } WindowMeas;
 
@@ -1136,7 +1136,7 @@ static int measure_window(WindowMeas *w)
 static void score_one_run(bool *ok, float znode[MAX_NODES],
                           float h1[MAX_NODES], float h2[MAX_NODES],
                           float maun[MAX_NODES],
-                          uint8_t *mask, float *ac, ScoreItem *row,
+                          node_mask_t *mask, float *ac, ScoreItem *row,
                           float wsig[MAX_NODES])
 {
     WindowMeas m;
@@ -1197,7 +1197,7 @@ static void score_one_run(bool *ok, float znode[MAX_NODES],
 static void score_build_keys(const float zn[][MAX_NODES],
                              const float h1[][MAX_NODES],
                              const float h2[][MAX_NODES],
-                             const uint8_t *mask,
+                             const node_mask_t *mask,
                              const bool *scored, int max_val, double *scores,
                              double *zc_out, double *conc_out, double *nsd_out)
 {
@@ -1967,7 +1967,7 @@ static void block_ac_compute(int block_idx)
  * distinction that matters most.
  * ⚠ Only a node that was IN the item's combine enters the board — its jump is
  * the only kind that reached a z. Every node's jump still feeds wsig_sd. */
-static void wsig_note(const RunResult *r, const float *wsig, uint8_t mask,
+static void wsig_note(const RunResult *r, const float *wsig, node_mask_t mask,
                       uint8_t spass)
 {
     for (int i = 0; i < MAX_NODES; i++) {
@@ -2426,7 +2426,7 @@ static void record_loop(double loop_mean, int loop_idx)
     double mean_i[MAX_NODES] = {0}, sig_i[MAX_NODES] = {0};
     double trip_bar = 0.0;
     bool   any_trip = false;
-    uint8_t mean_mask = 0, trip_mask = 0, soft_mask = 0;
+    node_mask_t mean_mask = 0, trip_mask = 0, soft_mask = 0;
 
     for (int i = 0; i < g_status.node_count && i < MAX_NODES; i++) {
         const NodeAcc *a = &s_nacc[i];
@@ -2438,7 +2438,7 @@ static void record_loop(double loop_mean, int loop_idx)
         sig_i[i]  = sig;
         have_stats[i] = true;
         if (fabs(m_i) > NODE_MEAN_REPORT) {
-            mean_mask |= (uint8_t)(1u << i);
+            mean_mask |= (node_mask_t)(1u << i);
             printf("node %d: block |mean| %.3f over the %.2f report bar "
                    "(σ %.3f, not an exclusion — centred out of the ranking)\n",
                    i, m_i, NODE_MEAN_REPORT, sig);
@@ -2556,7 +2556,7 @@ static void record_loop(double loop_mean, int loop_idx)
              * the block's own rows still exist. */
             trip_record(loop_idx, i, mean_i[i], sig_i[i]);
             calibrate_shorten("soft-down");
-            trip_mask |= (uint8_t)(1u << i);
+            trip_mask |= (node_mask_t)(1u << i);
             evlog("Block %d: %s %s (sigma %.2f, bar %.2f)%s", loop_idx + 1,
                   i == 0 ? "master" : g_status.nodes[i].ip,
                   g_status.nodes[i].soft_down ? "still soft-down" : "SOFT-DOWN",
@@ -2595,7 +2595,7 @@ static void record_loop(double loop_mean, int loop_idx)
     }
 
     for (int i = 0; i < g_status.node_count && i < MAX_NODES; i++)
-        if (g_status.nodes[i].soft_down) soft_mask |= (uint8_t)(1u << i);
+        if (g_status.nodes[i].soft_down) soft_mask |= (node_mask_t)(1u << i);
 
     if (any_trip) {
         quarantine_block(loop_idx);
@@ -2748,7 +2748,7 @@ static void center_block(int block_idx)
     /* Mau over the same items, centred and scaled on this block alone. */
     if (s_node_mau) {
         static int     bidx[NUM_RUNS];
-        static uint8_t bmask[NUM_RUNS];
+        static node_mask_t bmask[NUM_RUNS];
         static double  bout[NUM_RUNS];
         int nb = 0;
         for (int j = 0; j < ntot; j++) {
@@ -3257,7 +3257,7 @@ void elotto_task(void *pvParam)
             WindowMeas w;
             int k = measure_window(&w);
             double  z = w.z;
-            uint8_t mask = w.mask;
+            node_mask_t mask = w.mask;
 
             /* Archive every node that produced a z (including soft-down ones),
              * so post-hoc recombine is possible. */

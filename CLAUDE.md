@@ -54,7 +54,7 @@ change. The page's **Log** card shows every sweep, change,
 pause and soft-down with wall time (`GET /loops?ev=1`).
 
 ## Concept
-Eight-node ESP32-P4 array (`MAX_NODES` 8, the ceiling: per-node masks are `uint8_t`). The master scores lottery numbers via GCP methodology; up to seven slaves
+Nine-node ESP32-P4 array (`MAX_NODES` 9; per-node masks are `node_mask_t` = `uint16_t`, so 16 is the type ceiling). The master scores lottery numbers via GCP methodology; up to eight slaves
 measure the same window in parallel, triggered by one UDP broadcast (port 5000). Slaves are
 discovered by broadcast at every session start — no IP table, no node count configured. Combined
 z = **Σ z_node / √k** over the k nodes that answered *that* run, so a missing reply costs that
@@ -647,7 +647,7 @@ floor is load-bearing.
 **Say master/slave0…slave6, never the IP ending.**
 ⚠ **Two silicon revisions**: slave4, slave5, slave6 and slave7 are ESP32-P4 rev v3.2, every other node rev v1.3. Support for <3.0 and
 ≥3.0 is mutually exclusive, so the rev v3.2 boards run their own updater and slave images (`build_rev3`, below).
-⚠ Discovery stops at `MAX_SLAVES` (`MAX_NODES` − 1 = 7); a further answering slave is silently ignored.
+⚠ Discovery stops at `MAX_SLAVES` (`MAX_NODES` − 1 = 8); a further answering slave is silently ignored.
 ⚠ The updater starts its web server only if it gets an IP within 30 s of boot — plug LAN before power, else power-cycle.
 An image of the wrong revision is refused by the bootloader. Read the revision before flashing a
 new board (`esptool chip-id`).
