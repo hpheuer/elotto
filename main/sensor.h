@@ -108,7 +108,7 @@ typedef uint16_t node_mask_t;   // bit i = node i; MAX_NODES below must fit
 #define ONSET_SETTLE_MS        700   // two pairs now: one discarded 
 
 #define RUN_S_MIN              0.2
-#define RUN_S_MAX                7
+#define RUN_S_MAX               38
 #define GAP_S_MIN                0
 #define GAP_S_MAX               10
 /* Live 4-node cal. ⚠ THIS PAIR IS A MEASUREMENT, and it must be re-measured
@@ -122,8 +122,8 @@ typedef uint16_t node_mask_t;   // bit i = node i; MAX_NODES below must fit
 /* The wire caps the segment count at EL_SEG_MAX, and a receiver does NOT clamp
  * an out-of-range value — it falls back to its own default, which would put the
  * nodes on different window lengths without anything looking wrong. The master
- * must therefore never ASK for more than the wire allows. With RUN_S_MAX at 7 s
- * that holds (365217 of 400000; 8 s would overrun it), and the assertion below
+ * must therefore never ASK for more than the wire allows. With RUN_S_MAX at 38 s
+ * that holds (1982612 of EL_SEG_MAX 2000000), and the assertion below
  * makes the compiler re-check it after any future recalibration instead of
  * leaving it to whoever edits RUN_MS_REF next. */
 _Static_assert(((long long)RUN_S_MAX * 1000 * RUN_SEGS_REF) / RUN_MS_REF <= EL_SEG_MAX,

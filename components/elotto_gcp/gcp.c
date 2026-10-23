@@ -119,8 +119,11 @@ gcp_result_t gcp_zscore_pre(int nseg, bool (*on_yield)(void), double *out,
     uint64_t ones = 0, mid_ones = 0;
     /* Pair boundaries crossed so far: (segment, ones before it). */
     /* Static, not on the stack: the slave's link task has 6 KB. One caller per
-     * node at a time (the measuring task), so no reentrancy to protect. */
-    enum { NB = 64 };
+     * node at a time (the measuring task), so no reentrancy to protect.
+     * ⚠ Keep in step with WIN_PAIRS_MAX in camera.c — it must cover the pairs in
+     * the longest window, or the half-split is taken among early pairs only. At
+     * 512: b_seg 2 KB + b_ones 4 KB + starts 2 KB = 8 KB of static .bss. */
+    enum { NB = 512 };
     static int      b_seg[NB];
     static uint64_t b_ones[NB];
     static uint32_t starts[NB];

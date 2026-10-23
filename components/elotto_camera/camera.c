@@ -298,7 +298,11 @@ static volatile int    s_flush_discard = 0; // pairs to throw away first
  * pairs after it arrive whole because the consumer outruns the producer.
  * Written by the capture task (start before count, with a fence), read by the
  * consumer through camera_window_pair_starts(). */
-#define WIN_PAIRS_MAX 64
+/* ⚠ Must cover the pairs in the LONGEST window: a window holds ~one pair per
+ * ~70-100 ms, so a multi-second window has hundreds. Too small and only the
+ * early pairs are recorded, which drags the concordance half-split toward the
+ * front of the window instead of its middle. Kept in step with NB in gcp.c. */
+#define WIN_PAIRS_MAX 512
 static volatile uint32_t s_win_pair_start[WIN_PAIRS_MAX];
 static volatile uint32_t s_win_npair = 0;
 static volatile uint32_t s_win_enq = 0;

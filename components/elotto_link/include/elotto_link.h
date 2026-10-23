@@ -16,11 +16,12 @@
  * upper bound as a bare 200000 in two places and the slave as its own SEG_MAX,
  * three copies that nothing forced to agree.
  *
- * ⚠ A value outside this range is NOT clamped by the receiver; see
- * seg_from_cmd() in the slave. Keep the master's ?run= validation inside it.
+ * ⚠ A value outside this range is REFUSED by the receiver (V: void), not
+ * clamped or substituted; see seg_from_cmd() in the slave. Keep the master's
+ * ?run= validation inside it.
  */
 #define EL_SEG_MIN      100
-#define EL_SEG_MAX   400000
+#define EL_SEG_MAX  2000000
 
 /*
  * FRAME:  "EL1 <seq> <payload>"      (plain ASCII, one command per datagram)
