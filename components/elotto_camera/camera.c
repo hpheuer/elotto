@@ -882,6 +882,7 @@ static void camera_task(void *arg)
             cam_bitscan_pair(&s_bs, s_bufs[first.index], s_bufs[buf.index],
                              s_frame_size, s_packed_raw10);
         s_bs_busy = false;
+        __sync_synchronize();   // publish the clear before the HTTP core polls it
 
         ioctl(s_fd, VIDIOC_QBUF, &first);
         ioctl(s_fd, VIDIOC_QBUF, &buf);
@@ -2225,6 +2226,21 @@ static esp_err_t cam_dump_send(httpd_req_t *req, uint32_t off)
     return httpd_resp_sendstr(req, buf);
 }
 
+/* Wait until the capture task is out of cam_bitscan_pair, BOUNDED. An unbounded
+ * wait here is what hung the HTTP task — leaving the node answering ping and TCP
+ * but dead to every request, needing a power-cycle — when the capture loop did
+ * not clear s_bs_busy (a stalled capture task, or the flag's clear not yet seen
+ * across cores). ⚠ One cam_bitscan_pair is NOT cheap: on a full RAW10 frame
+ * (~2 Mpx) it runs ~1,1 s, which is why a scan only books ~0,8 pairs/s. The
+ * timeout must clear a single in-flight call with margin, or a legitimate long
+ * call is misread as a hang (2 s did exactly that → spurious 503). 10 s covers
+ * it and still bounds a real stall. */
+static bool bs_wait_idle(void)
+{
+    for (int i = 0; i < 2000 && s_bs_busy; i++) vTaskDelay(pdMS_TO_TICKS(5));
+    return !s_bs_busy;
+}
+
 /* GET /camtest?bitscan=<s> — arm the per-bit monitor for s seconds (1..120) and
  * reduce it per bit k of the frame-pair diff, bit 0 included as the baseline.
  * Same reductions as publish_stats() and the sweep: bias, raw_sigma (3200-bit
@@ -2242,7 +2258,10 @@ static esp_err_t cam_bitscan_send(httpd_req_t *req, uint32_t sec)
 
     s_bs_on = false;
     __sync_synchronize();
-    while (s_bs_busy) vTaskDelay(pdMS_TO_TICKS(5));
+    if (!bs_wait_idle()) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        return httpd_resp_sendstr(req, "{\"err\":\"capture task not responding\"}");
+    }
     memset(&s_bs, 0, sizeof(s_bs));
     s_bs.nbits = s_packed_raw10 ? 10 : 8;
     __sync_synchronize();
@@ -2251,7 +2270,10 @@ static esp_err_t cam_bitscan_send(httpd_req_t *req, uint32_t sec)
     vTaskDelay(pdMS_TO_TICKS(sec * 1000u));
     s_bs_on = false;
     __sync_synchronize();
-    while (s_bs_busy) vTaskDelay(pdMS_TO_TICKS(5));
+    if (!bs_wait_idle()) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        return httpd_resp_sendstr(req, "{\"err\":\"capture task stalled during scan\"}");
+    }
     double el_s = (esp_timer_get_time() - t0) / 1e6;
 
     camera_stats_t cs;
