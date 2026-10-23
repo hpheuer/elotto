@@ -99,13 +99,15 @@ across rounds a combination can recur — identity is **(round, index)**.
   Compaction keeps at most 1000 rows (the ranked extremes) and the next round is appended after
   them, so `?maxruns=` is capped at `UNLIM_RUNS_MAX` 400 = `NUM_RUNS` − 1000 and a round is never
   truncated.
-- **Measuring time is a session parameter.** `?run=<s>` is **0,2–5 s, default 5**; out of range
-  answers **400**, no fallback. `?gap=<s>` if present must be 0–10 s, else **400**; omitted →
+- **Measuring time is a session parameter.** `?run=<s>` is **0,2–22 s, default 5**; out of range
+  answers **400**, no fallback. The 22 s ceiling is `EL_SEG_MAX` 2000000 divided by the measured
+  rate (`EL_SEG_MAX / (RUN_SEGS_REF/RUN_MS_REF)`), not a camera limit — the rate held flat to there.
+  `?gap=<s>` if present must be 0–10 s, else **400**; omitted →
   40 % of run, no floor; `?gap=0` is legal — the flush on `M`, not the gap, separates items. `?cal=` 0..`CAL_BUDGET_MAX_MS` (0 = no sweep),
   `?maxruns=` 10..400 (`UNLIM_RUNS_MAX`); out of range **400**, no fallback. Segment count follows from
-  `RUN_SEGS_REF`/`RUN_MS_REF` in `sensor.h`. ⚠ The requested window is
-  not the wall time you get — actual is `focus_win_ms`, set by the **slowest** node's bit rate
-.
+  `RUN_SEGS_REF`/`RUN_MS_REF` in `sensor.h`, re-measured so nominal `?run=` now matches the real
+  `focus_win_ms` (short windows run a touch long by the fixed per-window onset overhead). ⚠ The
+  per-node rate still varies, so `focus_win_ms` is set by the **slowest** node.
 - **`results[]` is in MEASUREMENT order** (`.index` = combination id, `.block` stamped), so the
   prefix is always complete: aborts need no compaction. ⚠ RAM only — a master reboot or the
   next session start ends it. Save writes the extremes CSV and the scoring-sum CSV while it is

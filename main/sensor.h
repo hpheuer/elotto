@@ -95,8 +95,10 @@ typedef uint16_t node_mask_t;   // bit i = node i; MAX_NODES below must fit
  * window (5 s → 2 s, 7 s → 2.8 s ≈ 3 s) so duty stays ~70 % of the intentional
  * cycle; measured focus_gap_ms is larger because it also includes slave collect.
  * Segment count is derived from run_s via the segs↔ms cal — wall time can stretch
- * if the camera rate collapses at long windows (that IS the limit). */
-/* ⚠ 0,2..5 s: 0,2 s is ~10435 segs / ~2,3 Mbit, the
+ * if the camera rate collapses at long windows. Measured to EL_SEG_MAX (real
+ * ~22 s) the rate held flat, so the window length is not the limit — the wire's
+ * EL_SEG_MAX is (real seconds = EL_SEG_MAX / the measured segs-per-s). */
+/* ⚠ 0,2..22 s: 0,2 s is ~17806 segs / ~4,0 Mbit, the
  * window's ~0,52 Mbit first-pair fragment plus about one whole pair.
  * Auto-gap is 40 % of the window with no floor above GAP_S_MIN 0, and an
  * explicit ?gap= may be 0: the item boundary is the flush on M, not the gap
@@ -108,22 +110,24 @@ typedef uint16_t node_mask_t;   // bit i = node i; MAX_NODES below must fit
 #define ONSET_SETTLE_MS        700   // two pairs now: one discarded 
 
 #define RUN_S_MIN              0.2
-#define RUN_S_MAX               38
+#define RUN_S_MAX               22
 #define GAP_S_MIN                0
 #define GAP_S_MAX               10
-/* Live 4-node cal. ⚠ THIS PAIR IS A MEASUREMENT, and it must be re-measured
- * after anything that changes the extraction rate — otherwise the window the
- * operator asks for and the window the observer actually gets drift apart
- * silently, which is the one thing the Focus protocol cannot tolerate.
+/* Live array cal — 1669564 segs measured in 18753 ms (≈89,0 segs/ms) across
+ * the nine nodes, so nominal ?run= now matches the real focus_win_ms.
+ * ⚠ THIS PAIR IS A MEASUREMENT, and it must be re-measured after anything that
+ * changes the extraction rate — otherwise the window the operator asks for and
+ * the window the observer actually gets drift apart silently, which is the one
+ * thing the Focus protocol cannot tolerate.
  * ⚠ Do not pool sessions measured against different pairs: same nominal
  * ?run=, different bit count per item. */
-#define RUN_SEGS_REF        141026
-#define RUN_MS_REF            2703
+#define RUN_SEGS_REF       1669564
+#define RUN_MS_REF           18753
 /* The wire caps the segment count at EL_SEG_MAX, and a receiver does NOT clamp
  * an out-of-range value — it falls back to its own default, which would put the
  * nodes on different window lengths without anything looking wrong. The master
- * must therefore never ASK for more than the wire allows. With RUN_S_MAX at 38 s
- * that holds (1982612 of EL_SEG_MAX 2000000), and the assertion below
+ * must therefore never ASK for more than the wire allows. With RUN_S_MAX at 22 s
+ * that holds (1958642 of EL_SEG_MAX 2000000), and the assertion below
  * makes the compiler re-check it after any future recalibration instead of
  * leaving it to whoever edits RUN_MS_REF next. */
 _Static_assert(((long long)RUN_S_MAX * 1000 * RUN_SEGS_REF) / RUN_MS_REF <= EL_SEG_MAX,
