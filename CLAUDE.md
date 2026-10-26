@@ -104,7 +104,14 @@ across rounds a combination can recur — identity is **(round, index)**.
   rate (`EL_SEG_MAX / (RUN_SEGS_REF/RUN_MS_REF)`), not a camera limit — the rate held flat to there.
   `?gap=<s>` if present must be 0–10 s, else **400**; omitted →
   40 % of run, no floor; `?gap=0` is legal — the flush on `M`, not the gap, separates items. `?cal=` 0..`CAL_BUDGET_MAX_MS` (0 = no sweep),
-  `?maxruns=` 10..400 (`UNLIM_RUNS_MAX`); out of range **400**, no fallback. Segment count follows from
+  `?maxruns=` **0 or 10..400** (`UNLIM_RUNS_MAX`); out of range **400**, no fallback. **`?maxruns=0`
+  is scoring-only**: no combination pass, the session just scores numbers round after round,
+  endlessly until Abort — `results[]`, blocks, compaction, drift and the pairwise matrix are
+  bypassed entirely (no pass → none of their counters move), no pool is picked (`pool_n_main/euro`
+  stay 0), and the Top-10 comes from the sorted scoring table. ⚠ **`?passes=0` is the
+  continuous-scoring flag and is legal ONLY with `?maxruns=0`** (else **400**): one never-ending
+  scoring, one pass per round, sums **accumulate without reset** (one snap per pool, refreshed),
+  whereas `?passes≥1` with `?maxruns=0` re-scores from scratch each round. Segment count follows from
   `RUN_SEGS_REF`/`RUN_MS_REF` in `sensor.h`, re-measured so nominal `?run=` now matches the real
   `focus_win_ms` (short windows run a touch long by the fixed per-window onset overhead). ⚠ The
   per-node rate still varies, so `focus_win_ms` is set by the **slowest** node.
@@ -123,7 +130,8 @@ across rounds a combination can recur — identity is **(round, index)**.
   boundary: every scoring PASS is its own centring span (`score_build_keys()` runs per pass), and
   the pass block is its own. No operating point ever moves underneath a mean being subtracted.
   ⚠ **The block length is `?maxruns=`**, so every round holds the same item count and its `Z*`
-  values compare — the largest key a block can produce is `(n−1)/√n` in that block's n. The form
+  values compare — the largest key a block can produce is `(n−1)/√n` in that block's n. (⚠ With
+  `?maxruns=0` there is no pass and therefore no block at all.) The form
   predicts the round length and **no longer warns**: with 20 scoring passes the scoring is
   1240 of a Eurojackpot round's ~1340 cycles, so no legal `?maxruns=` could clear a 30-minute bar.
   It prints the scoring/pass split instead, which names `?run=` — the parameter that sets the
@@ -133,7 +141,8 @@ across rounds a combination can recur — identity is **(round, index)**.
 ### Phases
 **Phase 0 — scoring.** It starts 2 s after the sweep before it (`SCORE_START_PAUSE_MS`, a visible
 break for the operator). Each number 1..N is measured **`?passes=` times** (1..`SCORE_PASSES_MAX` 100, default 20; form
-"Scoring passes"), each pass a
+"Scoring passes"; **0 = continuous, `?maxruns=0` only** — one pass per round, sums never reset),
+each pass a
 full session window in a fresh Fisher–Yates order (never the same number back-to-back).
 After each pass every column — Z\*, Z, Conc, Δn, AC, Mau — is added to that number's own running sum;
 the pool is the top by ONE of those sums, the one selected on the page (Σ marker in a column
@@ -176,7 +185,8 @@ or combination (pass). `confirm=1` writes NVS form prefs only.
 **Runs per round** (default 100); `POST /start?maxruns=<n>` (`unlimited` on by default). A **round** =
 score every number → keep as many of the best as fit `maxruns` runs → measure that space once in a
 fresh Fisher–Yates order → score again. Ends only on **Abort**; the `results[]`-full stop survives
-as backstop for a compaction that cannot allocate.
+as backstop for a compaction that cannot allocate. ⚠ **`maxruns=0` drops the measure step** — the
+round is just a scoring (see the `?maxruns=0` rule under v3), endless.
 
 - **Pool sizing maximises COMBINATIONS MEASURED, nothing else**; the bonus preference is only the
   tie-break.

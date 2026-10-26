@@ -741,6 +741,35 @@ static void score_snap_store(const ScoreAcc *A, bool euro, int passes)
     s_snap_n = n + 1;
 }
 
+/* Scoring-only accumulate mode (maxruns=0, passes=0) is ONE growing scoring,
+ * not a series: keep a single snap per pool (main → slot 0, euro → slot 1),
+ * refreshed each pass, so Save and /extremes?sums=1 read the current totals
+ * rather than 128 per-pass snaps that then drop. Non-accumulate appends as
+ * before. */
+static void score_snap_put(const ScoreAcc *A, bool euro, int passes, bool accumulate)
+{
+    if (!accumulate) { score_snap_store(A, euro, passes); return; }
+    if (!A || passes <= 0 || !s_snaps) return;
+    int mv = A->max_val;
+    if (mv < 1) return;
+    if (mv > 50) mv = 50;
+    if (passes > 255) passes = 255;
+    int slot = euro ? 1 : 0;
+    ScoreSnap *S = &s_snaps[slot];
+    S->round  = (uint16_t)g_status.round;
+    S->euro   = euro ? 1 : 0;
+    S->nnum   = (uint8_t)mv;
+    S->passes = (uint8_t)passes;
+    for (int k = 1; k <= mv; k++) {
+        for (int c = 0; c < SCORE_SUM_N; c++) {
+            S->cnt[k][c] = A->n[c][k];
+            S->sum[k][c] = A->n[c][k] ? (float)A->acc[c][k] : 0.0f;
+        }
+    }
+    __sync_synchronize();
+    if (s_snap_n < slot + 1) s_snap_n = slot + 1;
+}
+
 int score_snap_count(void)   { return s_snap_n; }
 int score_snap_dropped(void) { return s_snap_drop; }
 
@@ -754,13 +783,18 @@ const ScoreSnap *score_snap_at(int i)
 
 // `euro_pool` selects the bonus-number pool; it only reaches the Focus panel,
 // which styles a euro candidate differently from a main one.
-/* One scoring run: every number scoring_passes times, every column summed into
+/* One scoring run: every number `passes` times, every column summed into
  * s_sacc[euro_pool]. It picks nothing — score_pick_pool() does, once the whole
- * scoring is over. */
-static void score_run(int max_val, int pool_size, bool euro_pool)
+ * scoring is over — and it no longer snaps: the caller stores the snap so
+ * accumulate mode (maxruns=0, passes=0) can keep ONE growing snap instead of
+ * one per pass. `reset` false keeps the accumulator across calls (accumulate);
+ * `pass_base` is added to the live pass counter so a continuous scoring shows
+ * its cumulative pass number. Returns the passes closed into A this call. */
+static int score_run(int max_val, int pool_size, bool euro_pool,
+                     int passes, bool reset, int pass_base)
 {
     const int ix = euro_pool ? 1 : 0;
-    score_acc_begin(ix, max_val, pool_size);
+    if (reset) score_acc_begin(ix, max_val, pool_size);
     ScoreAcc *A = &s_sacc[ix];
     /* Per-node archive for ONE scoring pass. Function-static: ~1,6 KB. */
     static float zn[51][MAX_NODES];
@@ -781,10 +815,9 @@ static void score_run(int max_val, int pool_size, bool euro_pool)
 
     uint8_t last = 0;
     int closed = 0;   /* passes whose sums are already in A */
-    const int passes = g_status.scoring_passes;
     g_status.scoring_euro = euro_pool ? 1 : 0;
     for (int pass = 0; pass < passes; pass++) {
-        g_status.scoring_pass = pass + 1;
+        g_status.scoring_pass = pass_base + pass + 1;
         bool scored[51] = {false};
         double scores[51] = {0};
         float  acp[51];                 /* AC of each number this pass, for SUM_AC */
@@ -903,9 +936,11 @@ static void score_run(int max_val, int pool_size, bool euro_pool)
             row->key       = (float)scores[k];
             for (int c = 0; c < SCORE_SUM_N; c++) {
                 row->sums[c] = (float)A->acc[c][k];
-                if (isfinite(v[c])) row->sum_n[c]++;
+                /* Saturate: continuous scoring (accumulate) runs far past 255
+                 * passes, and a wrap would read as "0 closed passes". */
+                if (isfinite(v[c]) && row->sum_n[c] < 255) row->sum_n[c]++;
             }
-            row->passes++;
+            if (row->passes < 255) row->passes++;
         }
         closed++;
         score_publish_live(ix);
@@ -934,7 +969,7 @@ static void score_run(int max_val, int pool_size, bool euro_pool)
         }
     }
 snap:
-    score_snap_store(A, euro_pool, closed);
+    return closed;
 }
 
 /* Per-node half-window LSB z.
@@ -2983,9 +3018,24 @@ void elotto_task(void *pvParam)
     int  nm      = euro ? 5 : 6;
     int  mx      = euro ? 50 : 49;
 
-    if (g_status.scoring_passes < SCORE_PASSES_MIN || g_status.scoring_passes > SCORE_PASSES_MAX)
+    /* passes==0 is the continuous-scoring flag (only legal with maxruns==0),
+     * NOT an out-of-range value to reset. */
+    if (g_status.scoring_passes != 0 &&
+        (g_status.scoring_passes < SCORE_PASSES_MIN || g_status.scoring_passes > SCORE_PASSES_MAX))
         g_status.scoring_passes = SCORE_PASSES_DEFAULT;
-    g_status.scoring_total = g_status.scoring_passes * (mx + (euro ? 12 : 0));
+
+    /* ── The scoring-only extension ────────────────────────────────────
+     * maxruns==0: no combination pass. The session just scores every number,
+     * round after round, endlessly until Abort — the whole results[]/block/
+     * compaction machinery below is bypassed, so none of its counters move.
+     *   passes>=1  : each round re-scores from scratch (fresh sums).
+     *   passes==0  : ONE continuous scoring, one pass per round, sums never
+     *                reset (accumulate). */
+    bool scoring_only = (g_status.runs_cap == 0);
+    bool accumulate   = scoring_only && (g_status.scoring_passes == 0);
+
+    g_status.scoring_total = (accumulate ? 1 : g_status.scoring_passes)
+                             * (mx + (euro ? 12 : 0));
 
     uint8_t pool_main[POOL_MAIN_49] = {0};   // 15 slots, enough for both modes
     uint8_t pool_euro[POOL_EURO_12] = {0};
@@ -2994,12 +3044,17 @@ void elotto_task(void *pvParam)
     // them.
     int     pool_nm = euro ? POOL_MAIN_50 : POOL_MAIN_49;
     int     pool_ne = euro ? POOL_EURO_12 : 0;
-    if (g_status.unlimited) {
+    if (scoring_only) {
+        /* No pass → no pool. score_run() with pool_size 0 publishes an empty
+         * pool; the Top-10 comes straight from the sorted scoring table. */
+        pool_nm = pool_ne = 0;
+    } else if (g_status.unlimited) {
         if (g_status.runs_cap < 1 || g_status.runs_cap > UNLIM_RUNS_MAX)
             g_status.runs_cap = UNLIM_RUNS_DEFAULT;
         unlimited_pool_sizes(euro, nm, g_status.runs_cap, &pool_nm, &pool_ne);
     }
-    g_status.runs_total = comb(pool_nm, nm) * (euro ? comb(pool_ne, 2) : 1);
+    g_status.runs_total = scoring_only ? 0
+                        : comb(pool_nm, nm) * (euro ? comb(pool_ne, 2) : 1);
 
     // Pairwise independence check across all nodes (per-block centered)
     pairs_reset();
@@ -3058,43 +3113,73 @@ void elotto_task(void *pvParam)
 
         /* ── Phase 0: scoring_passes over every number, keys summed  ── */
         g_status.phase = PHASE_SCORING;
-        g_status.scoring_total  = g_status.scoring_passes * (mx + (euro ? 12 : 0));
+        /* accumulate: one pass per round and the rows carry the single growing
+         * scoring, so the bar fills over a pass and the rows are not cleared. */
+        g_status.scoring_total  = (accumulate ? 1 : g_status.scoring_passes)
+                                  * (mx + (euro ? 12 : 0));
         g_status.scoring_done   = 0;
         g_status.scoring_pass   = 0;
-        score_rows_begin(mx, euro);
-        /* A visible break between the sweep and the scoring, for the operator
-         *: the page shows the calibration bar finished and the
-         * scoring bar at 0 before the first number appears. Nothing is
-         * measured; every window flushes the ring first anyway. */
-        vTaskDelay(pdMS_TO_TICKS(SCORE_START_PAUSE_MS));
-        if (g_status.abort_requested) { slave_abort(); goto done; }
-        g_status.scoring_start_ms = (uint32_t)elapsed_ms_now();
+        if (!accumulate || round == 1) score_rows_begin(mx, euro);
+        /* A visible break between the sweep and the scoring: the page shows the
+         * calibration bar finished and the scoring bar at 0 before the first
+         * number appears. Nothing is measured; every window flushes the ring
+         * first anyway. The break and the scoring clock restart only when a
+         * fresh scoring begins — in accumulate mode round>1 just adds another
+         * pass to the scoring already running. */
+        if (!accumulate || round == 1) {
+            vTaskDelay(pdMS_TO_TICKS(SCORE_START_PAUSE_MS));
+            if (g_status.abort_requested) { slave_abort(); goto done; }
+            g_status.scoring_start_ms = (uint32_t)elapsed_ms_now();
+        } else if (g_status.abort_requested) { slave_abort(); goto done; }
         g_status.pool_need_main = (uint8_t)nm;
         g_status.pool_need_euro = euro ? 2 : 0;
         /* Unlimited: the pool sizes come from the run cap, and are re-derived every
-         * round because the cap is fixed while nothing else here is. */
-        if (g_status.unlimited)
+         * round because the cap is fixed while nothing else here is. No pass in
+         * scoring-only mode, so the pool stays empty. */
+        if (g_status.unlimited && !scoring_only)
             unlimited_pool_sizes(euro, nm, g_status.runs_cap, &pool_nm, &pool_ne);
         /* The pool is already withdrawn — at the top of the round, and at
          * session start before the state went RUNNING. Nothing to clear here. */
         memset(pool_main, 0, sizeof(pool_main));
         memset(pool_euro, 0, sizeof(pool_euro));
-        s_sacc[0].active = s_sacc[1].active = false;
-        s_live_sum = -1;
-        if (g_status.fake_pool) {
+        /* Keep the accumulator live across rounds in accumulate mode. */
+        if (!accumulate || round == 1) {
+            s_sacc[0].active = s_sacc[1].active = false;
+            s_live_sum = -1;
+        }
+        int  eff_passes  = accumulate ? 1 : g_status.scoring_passes;
+        bool score_reset = !accumulate || (round == 1);
+        int  pass_base   = accumulate ? (round - 1) : 0;
+        if (g_status.fake_pool && !scoring_only) {
             /* TEST ?fakepool=1: no scoring, a random pool — straight to the pass. */
             fake_pick_pool(mx, pool_nm, pool_main, g_status.pool_main_z);
             if (euro) fake_pick_pool(12, pool_ne, pool_euro, g_status.pool_euro_z);
             evlog("Pool FAKE (random, test)");
         } else {
-            score_run(mx, pool_nm, false);
+            int cm = score_run(mx, pool_nm, false, eff_passes, score_reset, pass_base);
+            score_snap_put(&s_sacc[0], false, accumulate ? round : cm, accumulate);
             if (g_status.abort_requested) goto done;
-            if (euro) score_run(12, pool_ne, true);
+            if (euro) {
+                int ce = score_run(12, pool_ne, true, eff_passes, score_reset, pass_base);
+                score_snap_put(&s_sacc[1], true, accumulate ? round : ce, accumulate);
+                if (g_status.abort_requested) goto done;
+            }
+            /* The pick, on the column selected at the END of the scoring
+             * — main and bonus pool alike. No pool without a pass. */
+            if (!scoring_only) {
+                if (!score_pick_pool(0, pool_main, g_status.pool_main_z)) goto done;
+                if (euro && !score_pick_pool(1, pool_euro, g_status.pool_euro_z)) goto done;
+            }
+        }
+        if (scoring_only) {
+            /* No pool, no pass: the scoring span is the whole round. Loop back
+             * to score again (passes>=1) or to add another pass to the one
+             * growing scoring (passes==0). Endless until Abort. */
+            g_status.scoring_pass = 0;
+            focus_off();
+            g_status.elapsed_ms = elapsed_ms_now();
             if (g_status.abort_requested) goto done;
-            /* The pick, on the column selected at the END of the scoring 
-             * — main and bonus pool alike. */
-            if (!score_pick_pool(0, pool_main, g_status.pool_main_z)) goto done;
-            if (euro && !score_pick_pool(1, pool_euro, g_status.pool_euro_z)) goto done;
+            continue;
         }
         pool_log(pool_main, pool_nm, pool_euro, euro ? pool_ne : 0);
         g_status.pool_used_n     = pool_nm + (euro ? pool_ne : 0);

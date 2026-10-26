@@ -220,11 +220,12 @@ static const char HTML[] =
 "</div>"
 "<div class='frow'>"
 "<label for='numUnlimRuns' title='Measurement runs ONE round may spend. The pool is sized so its whole "
-"combination space fits inside it. Rounds repeat until Abort.'>"
+"combination space fits inside it. Rounds repeat until Abort. 0 = only score numbers, no "
+"combination pass, endless.'>"
 "Runs per round:</label>"
 "<span style='display:flex;align-items:center;gap:8px'>"
 "<input id='numUnlimRuns' class='fin' type='number'"
-" value='" EL_STR(UNLIM_RUNS_DEFAULT) "' min='" EL_STR(UNLIM_RUNS_MIN) "'"
+" value='" EL_STR(UNLIM_RUNS_DEFAULT) "' min='0'"
 " max='" EL_STR(UNLIM_RUNS_MAX) "' step='" EL_STR(UNLIM_RUNS_STEP) "'"
 " oninput='unlimHint()'>"
 "<span id='unlimHint' style='color:#8fae8f;font-size:.85em;line-height:1.55'>"
@@ -233,9 +234,10 @@ static const char HTML[] =
 "</div>"
 "<div class='frow'>"
 "<label for='numPasses' title='How often every number is measured in each round\u2019s scoring. "
-"The pool is picked from the sum over all passes.'>Scoring passes:</label>"
+"The pool is picked from the sum over all passes. 0 (only with Runs per round 0) = one continuous "
+"scoring whose sums never reset.'>Scoring passes:</label>"
 "<input id='numPasses' class='fin' type='number'"
-" value='" EL_STR(SCORE_PASSES_DEFAULT) "' min='" EL_STR(SCORE_PASSES_MIN) "'"
+" value='" EL_STR(SCORE_PASSES_DEFAULT) "' min='0'"
 " max='" EL_STR(SCORE_PASSES_MAX) "' step='1' oninput='unlimHint()'>"
 "</div>"
 "<div class='frow'>"
@@ -452,7 +454,9 @@ NODE_NAMES_JS
 "function setScoreTotal(d){"
 "document.getElementById('sScoreTotal').textContent=d.scoring_total||0;"
 "var nn=(d.mode==='euro')?62:49;"
-"var passes=d.scoring_passes||" EL_STR(SCORE_PASSES_DEFAULT) ";"
+// Continuous scoring (Runs 0, Passes 0) has no finite pass count: show infinity.
+"var cont=(d.runs_cap===0&&d.scoring_passes===0);"
+"var passes=cont?'\\u221e':(d.scoring_passes||" EL_STR(SCORE_PASSES_DEFAULT) ");"
 "document.getElementById('sScoreReps').textContent=passes;"
 "document.getElementById('sScorePass').textContent="
 "(d.scoring_pass>0)?d.scoring_pass:'-';"
@@ -522,12 +526,21 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
    pass. None is a function of elapsed time; there is still no time trigger. */
 "var ins=(euro?4:3)*" EL_STR(CAL_BUDGET_DEFAULT_MS) ";"
 "return {s:(euro?62:49)*formPasses()*cyc,m:combos*cyc,i:ins};}"
-"function formPasses(){var n=parseInt(document.getElementById('numPasses').value)||" EL_STR(SCORE_PASSES_DEFAULT) ";"
-"if(n<" EL_STR(SCORE_PASSES_MIN) ")n=" EL_STR(SCORE_PASSES_MIN) ";if(n>" EL_STR(SCORE_PASSES_MAX) ")n=" EL_STR(SCORE_PASSES_MAX) ";return n;}"
+"function formPasses(){var n=parseInt(document.getElementById('numPasses').value);"
+"if(isNaN(n))n=" EL_STR(SCORE_PASSES_DEFAULT) ";"
+"if(n<0)n=0;else if(n>0&&n<" EL_STR(SCORE_PASSES_MIN) ")n=" EL_STR(SCORE_PASSES_MIN) ";"
+"if(n>" EL_STR(SCORE_PASSES_MAX) ")n=" EL_STR(SCORE_PASSES_MAX) ";return n;}"
 "function unlimHint(){"
-"var c=parseInt(document.getElementById('numUnlimRuns').value)||0;"
+"var c=parseInt(document.getElementById('numUnlimRuns').value);"
+"var pp=parseInt(document.getElementById('numPasses').value);"
 "var h=document.getElementById('unlimHint');"
+/* Runs 0 is scoring-only: no combination pass. Passes 0 on top of it is one
+   continuous accumulating scoring. Both endless until Abort. */
+"if(c===0){h.innerHTML=(pp===0)"
+"?'Runs 0 \\u00b7 Passes 0 \\u2192 ein durchgehendes Number-Scoring, Summen akkumulieren, endlos bis Abort'"
+":'Runs 0 \\u2192 nur Number-Scoring (kein Pass), jede Runde neu, endlos bis Abort';return;}"
 "if(!(c>=1)){h.innerHTML='';return;}"
+"if(pp===0){h.innerHTML='\\u26a0 Passes 0 geht nur mit Runs per round 0';return;}"
 "var e=unlimPool(true,c),l=unlimPool(false,c);"
 /* A round IS a block, so this preview is also the block length. No
    warning: every legal value of THIS field predicts a round dominated by
@@ -579,7 +592,8 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "curMode=d.mode==='euro'?0:1;setMode(curMode);showRunBtns(false);"
 "document.getElementById('msg').textContent="
 "d.state==='done'?'✅ Done! ('+fmt(d.elapsed_ms)+')'"
-":'⚠️ Aborted after '+d.completed+' items — partial results:';"
+":(d.runs_cap===0?'\\u23f9 Scoring stopped ('+fmt(d.elapsed_ms)+') \\u2014 number ranking:'"
+":'⚠️ Aborted after '+d.completed+' items — partial results:');"
 "showResults(d);"
 "}"
 "showSlaveBadge(d);"
@@ -623,6 +637,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "b.style.display='';"
 "var p=[];"
 "p.push(pItem('Mode',d.mode==='euro'?'Eurojackpot 5+2':'6 of 49'));"
+"if(d.runs_cap===0)p.push(pItem('Scoring',(d.scoring_passes===0)?'continuous, endless':'only, endless'));"
 "p.push(pItem('Measuring',(d.run_s||0).toFixed(1)+' s'));"
 "p.push(pItem('Gap',(d.gap_s||0).toFixed((d.gap_s||0)<1?2:1)+' s'));"
 "p.push(pItem('Segments',d.run_segs||0));"
@@ -683,11 +698,17 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "if(!(runS>0))runS=" EL_STR(RUN_S_DEFAULT) ";else if(runS<" EL_STR(RUN_S_MIN) ")runS=" EL_STR(RUN_S_MIN) ";"
 "if(runS>" EL_STR(RUN_S_MAX) ")runS=" EL_STR(RUN_S_MAX) ";"
 "document.getElementById('numRunS').value=runS;"
-"var mxr=parseInt(document.getElementById('numUnlimRuns').value)"
-"||" EL_STR(UNLIM_RUNS_DEFAULT) ";"
-"if(mxr<" EL_STR(UNLIM_RUNS_MIN) ")mxr=" EL_STR(UNLIM_RUNS_MIN) ";"
+"var mxr=parseInt(document.getElementById('numUnlimRuns').value);"
+"if(isNaN(mxr))mxr=" EL_STR(UNLIM_RUNS_DEFAULT) ";"
+"if(mxr<0)mxr=0;"
+"else if(mxr>0&&mxr<" EL_STR(UNLIM_RUNS_MIN) ")mxr=" EL_STR(UNLIM_RUNS_MIN) ";"
 "if(mxr>" EL_STR(UNLIM_RUNS_MAX) ")mxr=" EL_STR(UNLIM_RUNS_MAX) ";"
-"var passes=formPasses();document.getElementById('numPasses').value=passes;"
+"document.getElementById('numUnlimRuns').value=mxr;"
+"var passes=formPasses();"
+// passes=0 (continuous) is only legal with scoring-only; otherwise the device
+// answers 400, so never let the form send it.
+"if(mxr!==0&&passes===0)passes=" EL_STR(SCORE_PASSES_DEFAULT) ";"
+"document.getElementById('numPasses').value=passes;"
 "var score=DIR;"
 // Clamped here as well as validated in C: /start answers 400 for anything
 // outside 0..1 rather than falling back, so the form must not be able to send
@@ -848,7 +869,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "function updateStats2(d){"
 "var s2=document.getElementById('stats2');"
 "if(d.unlimited&&(d.state==='running'||d.completed>0)){s2.style.display='';"
-"document.getElementById('sRound').textContent=(d.round||1)+' \\u00b7 '+(d.round_total||0);"
+"document.getElementById('sRound').textContent=(d.round||1)+(d.round_total>0?' \\u00b7 '+d.round_total:'');"
 "document.getElementById('sTotal').textContent=(d.completed||0);"
 "document.getElementById('sTotTime').textContent=fmt(d.elapsed_ms);"
 "}else s2.style.display='none';}"
@@ -938,7 +959,8 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 /* The measurement bar's 100 % is the WHOLE combination space — the v3
    progress contract. During a mid-pass sweep the phase leaves 'measuring'
    but the bar and counters keep their values: the pass is parked, not reset. */
-"if(d.phase==='measuring'||stDone||(d.completed>0)){"
+// Scoring-only (Runs 0) never runs a pass, so the measurement bar stays hidden.
+"if((d.phase==='measuring'||stDone||(d.completed>0))&&d.runs_cap!==0){"
 "document.getElementById('measArea').style.display='';"
 "if(!stDone)document.getElementById('measCheck').innerHTML='';"
 "var rd=roundDone(d),rt=roundTotal(d);"
@@ -973,7 +995,8 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "var done=d.state==='done';"
 "document.getElementById('msg').textContent="
 "done?'✅ Done! ('+fmt(d.elapsed_ms)+')'"
-":'⚠️ Aborted after '+d.completed+' items — partial results:';"
+":(d.runs_cap===0?'\\u23f9 Scoring stopped ('+fmt(d.elapsed_ms)+') \\u2014 number ranking:'"
+":'⚠️ Aborted after '+d.completed+' items — partial results:');"
 "showResults(d);"
 "}"
 "}).catch(function(){});"
@@ -1313,7 +1336,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "var top=s.slice(0,Math.max(10,last+1));"
 "document.getElementById('resTitle').innerHTML="
 "'\\uD83C\\uDFC6 Top '+top.length+' of '+SC.length+' \\u2014 scoring '"
-"+(d.scoring_pass>0?scoreSect(d)+'pass '+d.scoring_pass+'/'+(d.scoring_passes||" EL_STR(SCORE_PASSES_DEFAULT) "):'done, round '+(d.round||1))"
+"+(d.scoring_pass>0?scoreSect(d)+'pass '+d.scoring_pass+((d.runs_cap===0&&d.scoring_passes===0)?'':'/'+(d.scoring_passes||" EL_STR(SCORE_PASSES_DEFAULT) ")):'done, round '+(d.round||1))"
 "+' \\u00b7 pool: '+(d.score_dir==='low'?'lowest ':'highest ')+lab.sum;"
 "renderRunTable('resHead','resBody',top,isEuro,d,{p:d.pre_w||0},{pool:pool});"
 "if(!top.length)document.getElementById('resBody').innerHTML="
@@ -2606,9 +2629,12 @@ static bool start_parse_wpre(const char *val, StartReq *r, httpd_req_t *req)
 static bool start_parse_maxruns(const char *val, StartReq *r, httpd_req_t *req)
 {
     int m;
-    if (!parse_int_all(val, &m) || m < UNLIM_RUNS_MIN || m > UNLIM_RUNS_MAX) {
-        start_refuse(req, "maxruns= must be between " EL_STR(UNLIM_RUNS_MIN)
-                     " and " EL_STR(UNLIM_RUNS_MAX));
+    /* 0 = scoring-only: no combination pass, endless number-scoring. Otherwise
+     * the per-round run cap. */
+    if (!parse_int_all(val, &m) ||
+        (m != 0 && (m < UNLIM_RUNS_MIN || m > UNLIM_RUNS_MAX))) {
+        start_refuse(req, "maxruns= must be 0 (scoring only) or between "
+                     EL_STR(UNLIM_RUNS_MIN) " and " EL_STR(UNLIM_RUNS_MAX));
         return false;
     }
     r->runs_cap = m;
@@ -2617,9 +2643,13 @@ static bool start_parse_maxruns(const char *val, StartReq *r, httpd_req_t *req)
 static bool start_parse_passes(const char *val, StartReq *r, httpd_req_t *req)
 {
     int m;
-    if (!parse_int_all(val, &m) || m < SCORE_PASSES_MIN || m > SCORE_PASSES_MAX) {
-        start_refuse(req, "passes= must be between " EL_STR(SCORE_PASSES_MIN)
-                     " and " EL_STR(SCORE_PASSES_MAX));
+    /* 0 = one continuous scoring (sums accumulate, endless). Only legal with
+     * maxruns=0 — the maxruns/passes combination is checked after the whole
+     * query has parsed. */
+    if (!parse_int_all(val, &m) ||
+        (m != 0 && (m < SCORE_PASSES_MIN || m > SCORE_PASSES_MAX))) {
+        start_refuse(req, "passes= must be 0 (continuous, maxruns=0 only) or between "
+                     EL_STR(SCORE_PASSES_MIN) " and " EL_STR(SCORE_PASSES_MAX));
         return false;
     }
     r->passes = m;
@@ -2898,6 +2928,14 @@ static esp_err_t start_handler(httpd_req_t *req)
                 "query string too long -- /start takes at most 255 characters");
         if (qe == ESP_OK && start_parse_query(req, qry, &parsed))
             return ESP_OK;
+
+        /* passes=0 is the continuous-scoring flag and means nothing without a
+         * pass to skip: it requires maxruns=0. */
+        if (parsed.passes == 0 && parsed.runs_cap != 0)
+            return start_refuse(req,
+                "passes=0 (continuous scoring) needs maxruns=0; otherwise "
+                "passes must be " EL_STR(SCORE_PASSES_MIN) ".."
+                EL_STR(SCORE_PASSES_MAX));
 
         /* ?gap= omitted → 40 % of the resolved window, floor GAP_S_MIN. */
         if (parsed.gap_ms < 0) {
@@ -3428,9 +3466,12 @@ static void prefs_send(httpd_req_t *req)
     uint16_t run10 = 0, maxruns = 0;
     uint8_t score = 0xff, wpre = 0xff, passes = 0;
     bool any = false;
+    /* maxruns and passes now have 0 as a real value (scoring-only / continuous),
+     * so remember them on presence, not on being non-zero. */
+    bool have_mx = false, have_passes = false;
     if (nvs_get_u16(h, "run10", &run10) == ESP_OK) any = true;
-    if (nvs_get_u16(h, "maxruns", &maxruns) == ESP_OK) any = true;
-    if (nvs_get_u8(h,  "passes", &passes) == ESP_OK) any = true;
+    if (nvs_get_u16(h, "maxruns", &maxruns) == ESP_OK) { any = true; have_mx = true; }
+    if (nvs_get_u8(h,  "passes", &passes) == ESP_OK) { any = true; have_passes = true; }
     if (nvs_get_u8(h,  "score", &score) == ESP_OK) any = true;
     if (nvs_get_u8(h,  "wpre", &wpre) == ESP_OK) any = true;
     nvs_close(h);
@@ -3443,11 +3484,11 @@ static void prefs_send(httpd_req_t *req)
         p += snprintf(js + p, sizeof(js) - p,
             "e=document.getElementById('numRunS');if(e)e.value='%.1f';",
             run10 / 10.0);
-    if (maxruns > 0)
+    if (have_mx)
         p += snprintf(js + p, sizeof(js) - p,
             "e=document.getElementById('numUnlimRuns');if(e)e.value='%u';",
             (unsigned)maxruns);
-    if (passes > 0)
+    if (have_passes)
         p += snprintf(js + p, sizeof(js) - p,
             "e=document.getElementById('numPasses');if(e)e.value='%u';",
             (unsigned)passes);
