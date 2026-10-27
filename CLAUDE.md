@@ -54,7 +54,7 @@ change. The page's **Log** card shows every sweep, change,
 pause and soft-down with wall time (`GET /loops?ev=1`).
 
 ## Concept
-Nine-node ESP32-P4 array (`MAX_NODES` 9; per-node masks are `node_mask_t` = `uint16_t`, so 16 is the type ceiling). The master scores lottery numbers via GCP methodology; up to eight slaves
+Ten-node ESP32-P4 array (`MAX_NODES` 10; per-node masks are `node_mask_t` = `uint16_t`, so 16 is the type ceiling). The master scores lottery numbers via GCP methodology; up to nine slaves
 measure the same window in parallel, triggered by one UDP broadcast (port 5000). Slaves are
 discovered by broadcast at every session start — no IP table, no node count configured. Combined
 z = **Σ z_node / √k** over the k nodes that answered *that* run, so a missing reply costs that
@@ -655,11 +655,14 @@ floor is load-bearing.
 | slave5 | 192.168.178.166 (static lease) | 80:f1:b2:d6:58:81 | COM3 | factory = updater, ota_0 = slave app · OV5647 · **chip rev v3.2** |
 | slave6 | 192.168.178.173 (static lease) | 80:f1:b2:d6:5a:1a | COM4 | factory = updater, ota_0 = slave app · OV5647 · **chip rev v3.2** |
 | slave7 | 192.168.178.32 (static lease) | e8:f6:0a:e7:fe:13 | COM6 | factory = updater, ota_0 = slave app · OV5647 · **chip rev v3.2** |
+| slave8 | 192.168.178.181 (DHCP) | e8:f6:0a:e8:15:94 | COM9 | factory = updater, ota_0 = slave app · **chip rev v3.2** |
 
-**Say master/slave0…slave6, never the IP ending.**
-⚠ **Two silicon revisions**: slave4, slave5, slave6 and slave7 are ESP32-P4 rev v3.2, every other node rev v1.3. Support for <3.0 and
+**Say master/slave0…slave8, never the IP ending.**
+⚠ **Two silicon revisions**: slave4 … slave8 are ESP32-P4 rev v3.2, every other node rev v1.3. Support for <3.0 and
 ≥3.0 is mutually exclusive, so the rev v3.2 boards run their own updater and slave images (`build_rev3`, below).
-⚠ Discovery stops at `MAX_SLAVES` (`MAX_NODES` − 1 = 8); a further answering slave is silently ignored.
+⚠ Discovery stops at `MAX_SLAVES` (`MAX_NODES` − 1 = 9); a further answering slave is silently ignored.
+⚠ The master's UDP receive mailbox (`CONFIG_LWIP_UDP_RECVMBOX_SIZE`, `sdkconfig.defaults`) must hold
+2 × `MAX_SLAVES` replies (a build-time assert in `nodes.c`); raise both together.
 ⚠ The updater starts its web server only if it gets an IP within 30 s of boot — plug LAN before power, else power-cycle.
 An image of the wrong revision is refused by the bootloader. Read the revision before flashing a
 new board (`esptool chip-id`).

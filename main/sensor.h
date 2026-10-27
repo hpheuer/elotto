@@ -371,10 +371,10 @@ typedef struct {
 } FocusState;
 
 // Nodes in the array, master included as index 0.
-// 9 nodes → C(9,2) = 36 pairwise correlations.
+// 10 nodes → C(10,2) = 45 pairwise correlations.
 // Every per-node mask (have_mask, soft/trip/mean_mask, the scoring masks) is a
 // node_mask_t, bit i = node i.
-#define MAX_NODES   9
+#define MAX_NODES  10
 #define MAX_SLAVES  (MAX_NODES - 1)
 #define MAX_PAIRS   (MAX_NODES * (MAX_NODES - 1) / 2)
 _Static_assert(MAX_NODES <= 16, "per-node masks are node_mask_t (uint16_t)");

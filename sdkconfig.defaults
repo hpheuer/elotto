@@ -109,4 +109,4 @@ CONFIG_LWIP_MAX_SOCKETS=16
 # seventh slave's reply is dropped, the collect times out and resends after
 # LINK_MEAS_MS_FOR (~15 s at run 5 s). Must stay above MAX_SLAVES plus a
 # resend's duplicate replies.
-CONFIG_LWIP_UDP_RECVMBOX_SIZE=16
+CONFIG_LWIP_UDP_RECVMBOX_SIZE=24
