@@ -756,9 +756,12 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "document.getElementById('btnPause').style.display=run?'':'none';"
 "document.getElementById('btnAbort').style.display=run?'':'none';}"
 /* Two CSVs for a German Excel: ';' separator, decimal comma, UTF-8 BOM.
-   First: the extremes on the pool criterion. Second: every number's seven signed column sums
-   for every scoring still in RAM (high and low are the same numbers, sorted
-   either way). Both fetches start in the click, then both files download. */
+   First: the extremes on the pool criterion (elotto_top). ⚠ In scoring-only
+   mode (Runs 0) there is no pass, so /extremes?n= is empty; the first file is
+   instead the scoring numbers ranked by the selected criterion (elotto_scored),
+   built from the sums. Second: every number's six signed column sums for every
+   scoring still in RAM (high and low are the same numbers, sorted either way).
+   Both fetches start in the click, then both files download. */
 "function doSave(){"
 "function f(v){return v===null||v===undefined?'':String(v).replace('.',',');}"
 "function dl(name,lines){"
@@ -768,11 +771,34 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "setTimeout(function(){URL.revokeObjectURL(a.href);},1500);}"
 "var d=new Date(),p=function(n){return (n<10?'0':'')+n;};"
 "var stamp=d.getFullYear()+p(d.getMonth()+1)+p(d.getDate())+'_'+p(d.getHours())+p(d.getMinutes());"
+// /status rides along so Save knows the criterion/direction/mode at click time,
+// independent of the poll cadence — scoring-only needs it to rank the numbers.
 "Promise.all(["
+"fetch('/status').then(function(r){return r.json();}).catch(function(){return LD||{};}),"
 "fetch('/extremes?n=" EL_STR(PASS_KEEP_EXTREME) "').then(function(r){return r.json();}),"
 "fetch('/extremes?sums=1').then(function(r){return r.json();}).catch(function(){return null;})"
 "]).then(function(pair){"
-"var x=pair[0],s=pair[1];"
+"var st=pair[0]||{},x=pair[1],s=pair[2];"
+"var snaps=(s&&s.snaps)?s.snaps:[];"
+// Scoring-only (Runs 0) has no pass, so /extremes?n= is empty. Build the primary
+// file from the scoring sums, ranked by the selected criterion. Continuous
+// (passes 0) carries its true pass count in sn.round, not the capped sn.passes.
+"var scoreOnly=(st.runs_cap===0);"
+"var cont=(st.scoring_passes===0);"
+"if(scoreOnly){"
+"var ci={key:0,z:1,conc:2,nsd:3,ac:4,mau:5}[st.score_sum||'key'];if(ci==null)ci=0;"
+"var lowdir=(st.score_dir==='low');"
+"var L=['Rank;Kind;Number;Passes;Z*;Z;Conc;\\u0394n;AC;Mau'];"
+"snaps.forEach(function(sn){var pc=cont?sn.round:sn.passes;"
+"var rows=(sn.rows||[]).slice();"
+"rows.sort(function(a,b){var av=(a.sum||[])[ci],bv=(b.sum||[])[ci];"
+"if(av==null&&bv==null)return 0;if(av==null)return 1;if(bv==null)return -1;"
+"return lowdir?av-bv:bv-av;});"
+"rows.forEach(function(row,i){var sm=row.sum||[];"
+"L.push([i+1,sn.euro?'euro':'main',row.n,pc,"
+"f(sm[0]),f(sm[1]),f(sm[2]),f(sm[3]),f(sm[4]),f(sm[5])].join(';'));});});"
+"dl('elotto_scored_'+((st.score_sum||'key')+'_'+(st.score_dir||'high'))+'_'+stamp+'.csv',L);"
+"}else{"
 // Rows arrive best-first on the pool criterion (x.crit, x.dir); Rank is that order.
 "var R=(x&&x.extremes)?x.extremes:[];"
 "var cr=(x&&x.crit)?x.crit+'_'+x.dir:'';"
@@ -780,11 +806,11 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "R.forEach(function(r,i){L.push([i+1,r.round,r.run,(r.nums||[]).join(' '),(r.euro||[]).join(' '),"
 "f(r.key),f(r.z_ctr),f(r.z),f(r.zc),f(r.nsd),f(r.ac),f(r.mau),r.k].join(';'));});"
 "dl('elotto_top'+R.length+(cr?'_'+cr:'')+'_'+stamp+'.csv',L);"
-"var snaps=(s&&s.snaps)?s.snaps:[];"
+"}"
 "if(snaps.length){"
 "var L2=['Round;Kind;Number;Passes;Z*;nZ*;Z;nZ;Conc;nConc;\\u0394n;n\\u0394n;AC;nAC;Mau;nMau'];"
 "snaps.forEach(function(sn){(sn.rows||[]).forEach(function(row){"
-"var c=[sn.round,sn.euro?'euro':'main',row.n,sn.passes];"
+"var c=[sn.round,sn.euro?'euro':'main',row.n,(cont?sn.round:sn.passes)];"
 "var sum=row.sum||[],kk=row.k||[];"
 "for(var i=0;i<6;i++){var nk=kk[i]|0;c.push(nk?f(sum[i]):'');c.push(nk?String(nk):'');}"
 "L2.push(c.join(';'));});});"

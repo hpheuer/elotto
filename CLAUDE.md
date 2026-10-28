@@ -321,6 +321,11 @@ what remains visible is an effect varying **between items inside a block**.
   on the pool criterion (`crit`/`dir` in the reply and the file name), and, as a second file
   `elotto_sums_…`, `/extremes?sums=1`: every number's six signed column sums for every scoring
   still in RAM (high and low are that column sorted either way; an empty count is a missing value).
+  ⚠ In **scoring-only mode** (`maxruns=0`) `/extremes?n=` is empty (no pass), so the first file is
+  built client-side from the sums instead — the scoring numbers ranked by the selected criterion
+  (`elotto_scored_<crit>_<dir>_…`). Save also fetches `/status` so the criterion, direction and
+  mode are the ones in force at the click. ⚠ A continuous scoring's true pass count is the snap's
+  `round`, not `passes` (the per-number pass counter saturates at 255).
   Click any stat header to sort; a second click on the
   same header flips direction (arrow ▾/▴, ⇅ on the inactive ones), so the low end is one click away —
   which is why the old Bottom-5 table is gone. The sort never changes the compaction archive or the
