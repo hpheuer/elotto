@@ -116,8 +116,9 @@ across rounds a combination can recur — identity is **(round, index)**.
   per-node rate still varies, so `focus_win_ms` is set by the **slowest** node.
 - **`results[]` is in MEASUREMENT order** (`.index` = combination id, `.block` stamped), so the
   prefix is always complete: aborts need no compaction. ⚠ RAM only — a master reboot or the
-  next session start ends it. Save writes the extremes CSV and the scoring-sum CSV while it is
-  still in RAM.
+  next session start ends it. Save writes four files while it is still in RAM: the extremes
+  CSV, the scoring-sum CSV, `elotto_params_….txt` (the parameters that ran), and
+  `elotto_jumps_….csv` (the camera-jumps board, the ten rows `/status` `wsig` already holds).
 - **Blocks are the statistics unit, and ONE BLOCK IS ONE ROUND**. The round boundary is the
   only block boundary: the pass parks there → `/loops` row, drift point, pairwise close, block
   centring, then a sweep candidate before the next round scores. The sweep timing is the dynamic
@@ -235,7 +236,7 @@ One ranking key, `zstar_of()` in `sensor.c`, used by the scoring pass and by `ra
 
 Z\* = (Z/σ_z) · [1 + α·(1/Δn − 1)] · [1 + β·max(−Mau, 0)] · [1 + γ·max(Conc·sign(Z)/σ_c, 0)] · [1 − δ·max(AC, 0)/(1+max(AC, 0))]
 
-α β γ δ are `?kdn=` `?kmau=` `?kconc=` `?kac=`, each 0..1, default 0. 0 leaves that factor at 1.
+α β γ δ are `?kdn=` `?kmau=` `?kconc=` `?kac=`, each 0..1, default 0. 0 leaves that factor at 1. ⚠ The start form types each as a whole percent 0–100 and sends the fraction: 80 in the field is `?kdn=0.80`. `?kdn=80` is refused.
 - **Δn** — spread of the cameras on this item (each centred z / that camera's own σ). Independent cameras ≈ 1. Smaller than 1 stretches Z along its own sign; larger than 1 pulls Z toward 0. Δn = 1 → factor 1. Δn = 0,82 and α = 1 → 1 + (1/0,82 − 1) = 1,220. Δn ≤ 0 or missing → factor 1.
 - **Mau** — Maurer z of the window, already in block-σ units. Only a negative Mau stretches. Mau = 0 or positive → factor 1. Mau = −1,5 and β = 1 → 2,5. Missing → 1. A positive Mau does not flip the sign of Z.
 - **Conc** — same sign as Z, scaled by |Conc|/σ_c. Opposite sign, Conc 0, missing σ_c, or Z = 0 → factor 1. |Conc|/σ_c = 1,55 and γ = 1 → 2,55. Conc is not a second entropy subtraction: when the window bias is stable it tracks Z, so a large same-sign Conc means the deviation held across both halves.
@@ -310,14 +311,21 @@ what remains visible is an effect varying **between items inside a block**.
   the pool criterion) plus the open round, so another column's extremes are those of that archive,
   not of the session. Without `?sort=` the set is chosen on the pool criterion. `?n=1..1000`
   widens it (default 10, else **400**); the **Save** button beside Abort (also shown after Done/Abort) writes
-  `/extremes?n=1000` as a CSV for a German Excel (`;`, decimal comma, BOM), ranked best-first
-  on the pool criterion (`crit`/`dir` in the reply and the file name), and, as a second file
-  `elotto_sums_…`, `/extremes?sums=1`: every number's six signed column sums for every scoring
-  still in RAM (high and low are that column sorted either way; an empty count is a missing value).
+  four files in one step. First, `/extremes?n=1000` as a CSV for a German Excel (`;`, decimal
+  comma, BOM), ranked best-first on the pool criterion (`crit`/`dir` in the reply and the file
+  name). Second, `elotto_sums_…` from `/extremes?sums=1`: every number's six signed column sums
+  for every scoring still in RAM (high and low are that column sorted either way; an empty count
+  is a missing value). Third, `elotto_params_….txt`: mode, measuring time, gap, runs per round,
+  scoring passes, sweep budget, pool criterion and direction, the four weights, and the formula
+  with those weights. Fourth, `elotto_jumps_….csv`: the camera-jumps board, the ten rows
+  `/status` `wsig` already holds (was, jump, ×σ; the node named from its address). Chrome/Edge ask for one folder and write all four there. ⚠ That dialog
+  exists only on a secure page; on the master's http address the four files go to the browser's
+  download folder. Cancelling the dialog writes nothing. A failed sums fetch skips that file and
+  warns; the other three are still written.
   ⚠ In **scoring-only mode** (`maxruns=0`) `/extremes?n=` is empty (no pass), so the first file is
   built client-side from the sums instead — the scoring numbers ranked by the selected criterion
-  (`elotto_scored_<crit>_<dir>_…`). Save also fetches `/status` so the criterion, direction and
-  mode are the ones in force at the click. ⚠ A continuous scoring's true pass count is the snap's
+  (`elotto_scored_<crit>_<dir>_…`). Save fetches `/status` so the criterion, direction, mode and
+  the weights are the ones in force at the click. ⚠ A continuous scoring's true pass count is the snap's
   `round`, not `passes` (the per-number pass counter saturates at 255).
   Click any stat header to sort; a second click on the
   same header flips direction (arrow ▾/▴, ⇅ on the inactive ones), so the low end is one click away —
@@ -355,6 +363,7 @@ what remains visible is an effect varying **between items inside a block**.
   own camera noise from its previous measurement to this one, session-wide, named by
   (item/round), wall time (`dd.mm. HH:MM`) and the drawn numbers. Only a node that was in that
   item's combine enters it; every node's jump still feeds `wsig_sd`. Columns: was, jump, ×σ.
+  Save writes this board as `elotto_jumps_….csv` (those ten rows, no wider set).
   ⛔ **It is a SUSPICION list, not a ranking** — the top row
   is the measurement whose z deserves the LEAST trust. It excludes nothing.
   ⚠ One row per NODE: two nodes on the same item is a shared cause, one node alone is that camera.
@@ -381,7 +390,8 @@ what remains visible is an effect varying **between items inside a block**.
   block was simply wide.
   ⚠ The block number shown is 1-based like `/loops`; `results[].block` is 0-based.
 - **The start form remembers its last values** (NVS, survives reboot and OTA): measuring time,
-  runs per round, scoring passes, direction, and the four Z\* weights. `/` serves them as a script chunk
+  runs per round, scoring passes, direction, and the four Z\* weights as whole percents 0–100
+  (the request sends the fraction). `/` serves them as a script chunk
   appended to the page. ⚠ **Only a start carrying `confirm=1` writes them** — i.e. only the
   web UI. A curl start that omits `kdn` / `kmau` / `kconc` / `kac` runs at 0 and does not
   overwrite the stored form weights. ⚠ It changes **no** API default: an omitted parameter still resolves to the
@@ -392,8 +402,8 @@ what remains visible is an effect varying **between items inside a block**.
 
 ## ⛔ A session is a closed unit 
 Everything is judged **inside one session**: its blocks, its pairwise matrix, its tables. Sessions
-are never compared, pooled or merged. Save writes two CSVs of the session still in RAM (the
-extremes on the pool criterion, and every number's six scoring sums). A reboot or the next start drops them. Parameters,
+are never compared, pooled or merged. Save writes four files of the session still in RAM (the
+extremes on the pool criterion, every number's six scoring sums, the parameters that ran, and the camera-jumps board). A reboot or the next start drops them. Parameters,
 firmware and instrument may change freely between sessions; what must hold is that they do not change
 **within** one.
 

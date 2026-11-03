@@ -179,6 +179,11 @@ static const char HTML[] =
 ".wgrid .frow{grid-column:auto;grid-template-columns:1fr;justify-items:start;gap:2px}"
 ".wgrid .frow>label{text-align:left;font-size:.82em}"
 ".wgrid .fin{width:100%;max-width:96px;box-sizing:border-box}"
+/* The four Z* weights are typed as whole percents. The % sits outside the
+   box; doStart divides by 100 before /start, which still wants 0..1. */
+".wpct{display:flex;align-items:center;gap:4px}"
+".wgrid .wpct .fin{width:64px;max-width:none;flex:0 0 auto}"
+".wpct .pu{color:#f0c040;font-size:.9em;font-weight:700}"
 ".wspan{grid-column:1 / -1}"
 "#btnPause,#btnAbort,#btnSave{min-width:168px}"
 ".tblwrap{overflow-x:auto}"
@@ -259,29 +264,40 @@ static const char HTML[] =
 "</div>"
 "<div class='wgrid'>"
 "<div class='frow'>"
-"<label for='numKdn' title='alpha. A smaller delta-n stretches Z* along the sign of Z. "
-"At delta-n = 1 the factor is 1. 0 turns this factor off.'>&#916;n &#945;:</label>"
-"<input id='numKdn' class='fin' type='number' min='0' max='1' step='0.05' value='0' "
-"oninput='formulaDirty=true;paintFormula()'>"
+"<label for='numKdn' title='Percent of the full delta-n correction, 0 to 100. "
+"A smaller delta-n stretches Z* along the sign of Z. "
+"At delta-n = 1 the factor is 1. 0 leaves this factor at 1.'>&#916;n &#945;</label>"
+"<span class='wpct'>"
+"<input id='numKdn' class='fin' type='number' min='0' max='100' step='1' value='0' "
+"oninput='onW(this)' onblur='onW(this,1)'>"
+"<span class='pu'>%</span></span>"
 "</div>"
 "<div class='frow'>"
-"<label for='numKmau' title='beta. A negative Mau stretches Z* along the sign of Z. "
-"Zero or positive Mau leaves the factor at 1. 0 turns this factor off.'>Mau &#946;:</label>"
-"<input id='numKmau' class='fin' type='number' min='0' max='1' step='0.05' value='0' "
-"oninput='formulaDirty=true;paintFormula()'>"
+"<label for='numKmau' title='Percent of the full Mau correction, 0 to 100. "
+"A negative Mau stretches Z* along the sign of Z. "
+"Zero or positive Mau leaves the factor at 1. 0 leaves this factor at 1.'>Mau &#946;</label>"
+"<span class='wpct'>"
+"<input id='numKmau' class='fin' type='number' min='0' max='100' step='1' value='0' "
+"oninput='onW(this)' onblur='onW(this,1)'>"
+"<span class='pu'>%</span></span>"
 "</div>"
 "<div class='frow'>"
-"<label for='numKconc' title='gamma. Conc stretches Z* only when it has the same sign as Z, "
-"by |Conc| / sigma of Conc. The other sign leaves the factor at 1. 0 turns this factor off.'>"
-"Conc &#947;:</label>"
-"<input id='numKconc' class='fin' type='number' min='0' max='1' step='0.05' value='0' "
-"oninput='formulaDirty=true;paintFormula()'>"
+"<label for='numKconc' title='Percent of the full Conc correction, 0 to 100. "
+"Conc stretches Z* only when it has the same sign as Z, by |Conc| / sigma of Conc. "
+"The other sign leaves the factor at 1. 0 leaves this factor at 1.'>Conc &#947;</label>"
+"<span class='wpct'>"
+"<input id='numKconc' class='fin' type='number' min='0' max='100' step='1' value='0' "
+"oninput='onW(this)' onblur='onW(this,1)'>"
+"<span class='pu'>%</span></span>"
 "</div>"
 "<div class='frow'>"
-"<label for='numKac' title='delta. A positive AC damps Z*, so a run is not rewarded. "
-"A negative AC leaves the factor at 1. 0 turns this factor off.'>AC &#948;:</label>"
-"<input id='numKac' class='fin' type='number' min='0' max='1' step='0.05' value='0' "
-"oninput='formulaDirty=true;paintFormula()'>"
+"<label for='numKac' title='Percent of the full AC correction, 0 to 100. "
+"A positive AC damps Z*, so a run is not rewarded. "
+"A negative AC leaves the factor at 1. 0 leaves this factor at 1.'>AC &#948;</label>"
+"<span class='wpct'>"
+"<input id='numKac' class='fin' type='number' min='0' max='100' step='1' value='0' "
+"oninput='onW(this)' onblur='onW(this,1)'>"
+"<span class='pu'>%</span></span>"
 "</div>"
 "</div>"
 "<div class='frow wspan'>"
@@ -307,9 +323,13 @@ static const char HTML[] =
 "<button class='btn' id='btnPause' onclick='doPause()' "
 "style='background:#a08030;color:#fff'>&#9208; Pause</button>"
 "<button class='btn btn-abort' id='btnAbort' onclick='doAbort()'>&#9632; Abort</button>"
-// Save: two CSVs for Excel. /extremes?n=1000 is the 1000 items best on the
-// pool criterion and direction; /extremes?sums=1 is every number's seven column sums for every scoring
-// still in RAM. Stays on screen after Done/Abort, when Pause and Abort are hidden.
+// Save: four files. /extremes?n=1000 is the 1000 items best on the pool
+// criterion; /extremes?sums=1 is every number's six column sums; the third
+// file is the parameters that ran; the fourth is the camera-jumps board,
+// the ten rows /status wsig already holds. Chrome/Edge on a secure page ask
+// for one folder. ⚠ On the master's http address that dialog does not
+// exist, so the four files go to the browser's download folder. Stays on
+// screen after Done/Abort, when Pause and Abort are hidden.
 "<button class='btn' id='btnSave' onclick='doSave()' "
 "style='background:#2e6b9e;color:#fff'>&#128190; Save</button>"
 "</div>"
@@ -601,8 +621,17 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "document.getElementById('subtitle').textContent="
 "mode===0?'Eurojackpot • 5 of 50 + 2 bonus numbers':'6 of 49 Lotto';}"
 "var formulaDirty=false;"
+/* The four weight fields are whole percents 0..100. The formula and /start
+   use the fraction (80 -> 0.80). Empty while typing reads as 0; blur commits it. */
 "function wShow(id){var e=document.getElementById(id);if(!e)return 0;"
-"var v=parseFloat(e.value);if(!(v>=0))return 0;if(v>1)return 1;return v;}"
+"var v=parseFloat(e.value);if(!(v>=0))return 0;if(v>100)v=100;return v/100;}"
+"function onW(el,commit){"
+"var raw=el.value;"
+"if(raw===''){if(commit)el.value='0';}"
+"else{var v=parseFloat(raw);"
+"if(!(v>=0)||!isFinite(v))v=0;else if(v>100)v=100;else v=Math.round(v);"
+"var s=String(v);if(s!==raw)el.value=s;}"
+"formulaDirty=true;paintFormula();}"
 "function fmtW(x){return (Math.round(x*100)/100).toFixed(2);}"
 "function paintFormula(d){"
 "var live=d&&(d.state==='running'||((d.state==='done'||d.state==='aborted')&&!formulaDirty));"
@@ -758,11 +787,11 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "if(mxr!==0&&passes===0)passes=" EL_STR(SCORE_PASSES_DEFAULT) ";"
 "document.getElementById('numPasses').value=passes;"
 "var score=DIR;"
-// Clamped here as well as validated in C: /start answers 400 for anything
-// outside 0..1 rather than falling back, so the form must not be able to send
-// a value that gets the session refused. parseFloat of '' is NaN -> 0.
+// Fields hold whole percents 0..100. /start answers 400 outside 0..1, so
+// this returns the fraction (80 -> "0.80"). Empty or out of range -> 0.
 "function clampW(id){var e=document.getElementById(id);var v=parseFloat(e.value);"
-"if(!(v>=0&&v<=1))v=0;e.value=v;return v;}"
+"if(!(v>=0)||!isFinite(v))v=0;if(v>100)v=100;v=Math.round(v);e.value=String(v);"
+"return (v/100).toFixed(2);}"
 "var kdn=clampW('numKdn'),kmau=clampW('numKmau'),kconc=clampW('numKconc'),kac=clampW('numKac');"
 "paintFormula();"
 "document.getElementById('runsErr').textContent='';"
@@ -805,36 +834,62 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "document.getElementById('runBtns').style.display='flex';"
 "document.getElementById('btnPause').style.display=run?'':'none';"
 "document.getElementById('btnAbort').style.display=run?'':'none';}"
-/* Two CSVs for a German Excel: ';' separator, decimal comma, UTF-8 BOM.
-   First: the extremes on the pool criterion (elotto_top). ⚠ In scoring-only
-   mode (Runs 0) there is no pass, so /extremes?n= is empty; the first file is
-   instead the scoring numbers ranked by the selected criterion (elotto_scored),
-   built from the sums. Second: every number's six signed column sums for every
-   scoring still in RAM (high and low are the same numbers, sorted either way).
-   Both fetches start in the click, then both files download. */
+/* Four files. The CSVs are for a German Excel: ';' separator, decimal
+   comma, UTF-8 BOM. First: the extremes on the pool criterion (elotto_top).
+   ⚠ In scoring-only mode (Runs 0) there is no pass, so /extremes?n= is empty;
+   the first file is instead the scoring numbers ranked by the selected
+   criterion (elotto_scored), built from the sums. Second: every number's six
+   signed column sums (elotto_sums). Third: elotto_params_….txt, the parameters
+   that ran, from /status at the click. Fourth: elotto_jumps_….csv, the
+   camera-jumps board — the ten rows /status wsig already holds, same labels
+   as the card (a scoring window is "scoring <pass>/<round>", the node is
+   named from its address). ×σ is empty when wsig_sd is not positive.
+   Chrome/Edge ask for one folder (showDirectoryPicker) and write all four
+   there. ⚠ That call exists only on a secure page. On the master's http
+   address it is absent, and the four files go to the download folder.
+   Cancelling the dialog writes nothing. The picker must run in the click,
+   before the fetches, or the browser drops the user gesture. */
 "function doSave(){"
 "function f(v){return v===null||v===undefined?'':String(v).replace('.',',');}"
-"function dl(name,lines){"
-"var b=new Blob(['\\ufeff'+lines.join('\\r\\n')+'\\r\\n'],{type:'text/csv;charset=utf-8'});"
+"function textOf(lines){return '\\ufeff'+lines.join('\\r\\n')+'\\r\\n';}"
+"function dl(name,text){"
+"var type=name.slice(-4)==='.txt'?'text/plain;charset=utf-8':'text/csv;charset=utf-8';"
+"var b=new Blob([text],{type:type});"
 "var a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=name;"
 "document.body.appendChild(a);a.click();a.remove();"
 "setTimeout(function(){URL.revokeObjectURL(a.href);},1500);}"
+"function w3(x){return (Math.round((+x||0)*1000)/1000).toFixed(3);}"
+"function paramsOf(st){"
+"var dir=st.score_dir==='low'?'lowest ':'highest ';"
+"var col=({key:'Z*',z:'Z',conc:'Conc',nsd:'\\u0394n',ac:'AC',mau:'Mau'}[st.score_sum||'key']||'Z*');"
+"var a=+st.k_dn||0,b=+st.k_mau||0,g=+st.k_conc||0,dw=+st.k_ac||0;"
+"var runs=st.runs_cap,passes=st.scoring_passes;"
+"var L=[];"
+"L.push('Mode: '+(st.mode==='euro'?'Eurojackpot 5+2':(st.mode?'6 of 49':'')));"
+"L.push('Measuring time: '+(+st.run_s||0).toFixed(2)+' s');"
+"L.push('Gap: '+(+st.gap_s||0).toFixed(2)+' s');"
+"L.push('Runs per round: '+(runs===0?'0 (scoring only)':(runs==null?'':String(runs))));"
+"L.push('Scoring passes: '+(passes===0?'0 (continuous)':(passes==null?'':String(passes))));"
+"L.push('Sweep: '+(st.cal_budget_ms>0?(st.cal_budget_ms/1000)+' s':'off'));"
+"L.push('Pool criterion: '+dir+'\\u03a3 '+col);"
+"L.push('\\u0394n \\u03b1: '+w3(a));"
+"L.push('Mau \\u03b2: '+w3(b));"
+"L.push('Conc \\u03b3: '+w3(g));"
+"L.push('AC \\u03b4: '+w3(dw));"
+"L.push('Z* = (Z/\\u03c3) \\u00b7 [1 + '+w3(a)+'\\u00b7(1/\\u0394n \\u2212 1)]'"
+"+' \\u00b7 [1 + '+w3(b)+'\\u00b7max(\\u2212Mau, 0)]'"
+"+' \\u00b7 [1 + '+w3(g)+'\\u00b7max(Conc\\u00b7sign(Z)/\\u03c3c, 0)]'"
+"+' \\u00b7 [1 \\u2212 '+w3(dw)+'\\u00b7max(AC, 0)/(1+max(AC, 0))]');"
+"L.push('0 turns that factor off');"
+"return L;}"
 "var d=new Date(),p=function(n){return (n<10?'0':'')+n;};"
 "var stamp=d.getFullYear()+p(d.getMonth()+1)+p(d.getDate())+'_'+p(d.getHours())+p(d.getMinutes());"
-// /status rides along so Save knows the criterion/direction/mode at click time,
-// independent of the poll cadence — scoring-only needs it to rank the numbers.
-"Promise.all(["
-"fetch('/status').then(function(r){return r.json();}).catch(function(){return LD||{};}),"
-"fetch('/extremes?n=" EL_STR(PASS_KEEP_EXTREME) "').then(function(r){return r.json();}),"
-"fetch('/extremes?sums=1').then(function(r){return r.json();}).catch(function(){return null;})"
-"]).then(function(pair){"
+"function filesOf(pair){"
 "var st=pair[0]||{},x=pair[1],s=pair[2];"
 "var snaps=(s&&s.snaps)?s.snaps:[];"
-// Scoring-only (Runs 0) has no pass, so /extremes?n= is empty. Build the primary
-// file from the scoring sums, ranked by the selected criterion. Continuous
-// (passes 0) carries its true pass count in sn.round, not the capped sn.passes.
 "var scoreOnly=(st.runs_cap===0);"
 "var cont=(st.scoring_passes===0);"
+"var files=[];"
 "if(scoreOnly){"
 "var ci={key:0,z:1,conc:2,nsd:3,ac:4,mau:5}[st.score_sum||'key'];if(ci==null)ci=0;"
 "var lowdir=(st.score_dir==='low');"
@@ -847,26 +902,61 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "rows.forEach(function(row,i){var sm=row.sum||[];"
 "L.push([i+1,sn.euro?'euro':'main',row.n,pc,"
 "f(sm[0]),f(sm[1]),f(sm[2]),f(sm[3]),f(sm[4]),f(sm[5])].join(';'));});});"
-"dl('elotto_scored_'+((st.score_sum||'key')+'_'+(st.score_dir||'high'))+'_'+stamp+'.csv',L);"
+"files.push({name:'elotto_scored_'+((st.score_sum||'key')+'_'+(st.score_dir||'high'))+'_'+stamp+'.csv',body:textOf(L)});"
 "}else{"
-// Rows arrive best-first on the pool criterion (x.crit, x.dir); Rank is that order.
 "var R=(x&&x.extremes)?x.extremes:[];"
 "var cr=(x&&x.crit)?x.crit+'_'+x.dir:'';"
 "var L=['Rank;Round;Comb;Numbers;Euro;Z*;Z;Z_raw;Conc;\\u0394n;AC;Mau;k'];"
 "R.forEach(function(r,i){L.push([i+1,r.round,r.run,(r.nums||[]).join(' '),(r.euro||[]).join(' '),"
 "f(r.key),f(r.z_ctr),f(r.z),f(r.zc),f(r.nsd),f(r.ac),f(r.mau),r.k].join(';'));});"
-"dl('elotto_top'+R.length+(cr?'_'+cr:'')+'_'+stamp+'.csv',L);"
+"files.push({name:'elotto_top'+R.length+(cr?'_'+cr:'')+'_'+stamp+'.csv',body:textOf(L)});"
 "}"
-"if(snaps.length){"
+"if(s){"
 "var L2=['Round;Kind;Number;Passes;Z*;nZ*;Z;nZ;Conc;nConc;\\u0394n;n\\u0394n;AC;nAC;Mau;nMau'];"
 "snaps.forEach(function(sn){(sn.rows||[]).forEach(function(row){"
 "var c=[sn.round,sn.euro?'euro':'main',row.n,(cont?sn.round:sn.passes)];"
 "var sum=row.sum||[],kk=row.k||[];"
 "for(var i=0;i<6;i++){var nk=kk[i]|0;c.push(nk?f(sum[i]):'');c.push(nk?String(nk):'');}"
 "L2.push(c.join(';'));});});"
-"setTimeout(function(){dl('elotto_sums_'+stamp+'.csv',L2);},400);}"
-"else if(!s) document.getElementById('msg').textContent='⚠ Sums save failed';"
-"}).catch(function(){document.getElementById('msg').textContent='⚠ Save failed';});}"
+"files.push({name:'elotto_sums_'+stamp+'.csv',body:textOf(L2)});}"
+"files.push({name:'elotto_params_'+stamp+'.txt',body:textOf(paramsOf(st))});"
+"var Lj=['Rank;Item;Node;Time;Was;Jump;\\u00d7\\u03c3;Numbers'+(st.mode==='euro'?';Euro':'')];"
+"(Array.isArray(st.wsig)?st.wsig:[]).slice(0,10).forEach(function(e,i){"
+"var itm=(st.unlimited&&e.round)?(e.index+'/'+e.round):e.index;"
+"if(e.spass>0)itm='scoring '+e.spass+(st.unlimited&&e.round?'/'+e.round:'');"
+"var when='';"
+"if(e.t_ms>0&&st.uptime_ms>0){var dt=new Date(Date.now()-(st.uptime_ms-e.t_ms));"
+"var z2=function(n){return (n<10?'0':'')+n;};"
+"when=z2(dt.getDate())+'.'+z2(dt.getMonth()+1)+'. '+z2(dt.getHours())+':'+z2(dt.getMinutes());}"
+"var jmp=e.jump,jtxt=(typeof jmp==='number')?((jmp>0?'+':'')+f(jmp.toFixed(3))):'';"
+"var xs=(st.wsig_sd>0&&typeof jmp==='number')?f((Math.abs(jmp)/st.wsig_sd).toFixed(1)):'';"
+"var row=[i+1,itm,wsigNode(st,e.node),when,(typeof e.prev==='number'?f(e.prev.toFixed(3)):''),"
+"jtxt,xs,(e.nums||[]).join(' ')];"
+"if(st.mode==='euro')row.push((e.euro||[]).join(' '));"
+"Lj.push(row.join(';'));});"
+"files.push({name:'elotto_jumps_'+stamp+'.csv',body:textOf(Lj)});"
+"return {files:files,sumsOk:!!s};}"
+"function fetchAll(){return Promise.all(["
+"fetch('/status').then(function(r){return r.json();}).catch(function(){return LD||{};}),"
+"fetch('/extremes?n=" EL_STR(PASS_KEEP_EXTREME) "').then(function(r){return r.json();}),"
+"fetch('/extremes?sums=1').then(function(r){return r.json();}).catch(function(){return null;})"
+"]);}"
+"function put(dir,built){"
+"if(!built.sumsOk)document.getElementById('msg').textContent='\\u26a0 Sums save failed';"
+"if(dir){var chain=Promise.resolve();"
+"built.files.forEach(function(file){chain=chain.then(function(){"
+"return dir.getFileHandle(file.name,{create:true}).then(function(h){"
+"return h.createWritable().then(function(w){"
+"return w.write(file.body).then(function(){return w.close();});});});});});"
+"return chain;}"
+"built.files.forEach(function(file,i){setTimeout(function(){dl(file.name,file.body);},i*400);});}"
+"var pick=(typeof showDirectoryPicker==='function')"
+"?showDirectoryPicker({id:'elotto-save',mode:'readwrite',startIn:'downloads'})"
+":Promise.resolve(null);"
+"pick.then(function(dir){return fetchAll().then(function(pair){return put(dir,filesOf(pair));});}"
+",function(err){if(err&&err.name==='AbortError')return;"
+"return fetchAll().then(function(pair){return put(null,filesOf(pair));});})"
+".catch(function(){document.getElementById('msg').textContent='\\u26a0 Save failed';});}"
 "function doAbort(){"
 "fetch('/abort',{method:'POST'});"
 "document.getElementById('msg').textContent='Aborting...';"
@@ -3615,22 +3705,24 @@ static void prefs_send(httpd_req_t *req)
         p += snprintf(js + p, sizeof(js) - p, "DIR='%s';showSumPref();",
                       score == SCORE_DIR_LOW ? "low" : "high");
     }
+    /* NVS already stores whole percents (pref_w100). The fields show that
+       number; doStart divides by 100. 0xff is "not stored". */
     if (kdn != 0xff)
         p += snprintf(js + p, sizeof(js) - p,
-            "e=document.getElementById('numKdn');if(e)e.value='%.2f';",
-            kdn / 100.0);
+            "e=document.getElementById('numKdn');if(e)e.value='%u';",
+            (unsigned)(kdn > 100 ? 100 : kdn));
     if (kmau != 0xff)
         p += snprintf(js + p, sizeof(js) - p,
-            "e=document.getElementById('numKmau');if(e)e.value='%.2f';",
-            kmau / 100.0);
+            "e=document.getElementById('numKmau');if(e)e.value='%u';",
+            (unsigned)(kmau > 100 ? 100 : kmau));
     if (kconc != 0xff)
         p += snprintf(js + p, sizeof(js) - p,
-            "e=document.getElementById('numKconc');if(e)e.value='%.2f';",
-            kconc / 100.0);
+            "e=document.getElementById('numKconc');if(e)e.value='%u';",
+            (unsigned)(kconc > 100 ? 100 : kconc));
     if (kac != 0xff)
         p += snprintf(js + p, sizeof(js) - p,
-            "e=document.getElementById('numKac');if(e)e.value='%.2f';",
-            kac / 100.0);
+            "e=document.getElementById('numKac');if(e)e.value='%u';",
+            (unsigned)(kac > 100 ? 100 : kac));
     p += snprintf(js + p, sizeof(js) - p, "paintFormula();unlimHint();})();</script>");
     if (p > 0 && p < (int)sizeof(js))
         httpd_resp_send_chunk(req, js, p);
