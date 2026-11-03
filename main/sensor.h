@@ -779,7 +779,7 @@ typedef struct {
      * ⚠ This is a SUSPICION list, not a ranking: what stands at the top is
      * the item whose bits were least quiet while they were taken, i.e. the
      * one whose z deserves the least trust. It must never be read like
-     * top[]/low[], and it excludes nothing by itself — the software
+     * top[], and it excludes nothing by itself — the software
      * publishes the number and draws no verdict. */
     /* What each soft-down trip was made of. Oldest kept, newest dropped
      * once full: the FIRST trip of a session is the one worth keeping — a
@@ -835,8 +835,6 @@ typedef struct {
     double           pair_r[MAX_NODES][MAX_NODES];
     int              result_count;       // valid entries in top[] (published)
     RunResult        top[TOP_N];          // largest |rank_key|, row keeps its sign
-    int              low_count;           // valid entries in low[] (published)
-    RunResult        low[TOP_N];          // smallest |rank_key|, row keeps its sign
     volatile bool    abort_requested;
     // ── Current-item display (always on; session is unattended, D66) ──
     volatile bool    paused;              // hold BETWEEN runs (never inside one)

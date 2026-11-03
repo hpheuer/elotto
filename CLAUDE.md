@@ -203,7 +203,7 @@ round is just a scoring (see the `?maxruns=0` rule under v3), endless.
   largest magnitudes, `low` the smallest; the stored key stays signed. Items −3,0, +2,5, −0,4
   under `high` keep −3,0 then +2,5. Every other column stays signed, so under `high` on Z the
   most negative values leave. ⚠ A row without a value in that column (AC on a block's first item, Δn
-  with k < 2) is never kept. ⚠ A criterion switched in a later scoring cannot bring back rows an
+  with k < 2, Z* of a block without σ) is never kept. ⚠ A criterion switched in a later scoring cannot bring back rows an
   earlier compaction merged. Quarantined rows are not kept — nothing reads them after
   their block closes. The rest merges into moments — pass mean/σ/χ²
   stay exact. `n ≤ 1000` is a no-op, so a short session keeps every row. The Top-10

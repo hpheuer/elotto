@@ -423,7 +423,7 @@ static void node_span_col(const float *vals, const int *idx, const node_mask_t *
 }
 
 /* Running pass sums over RANKED items only (k > 0, !skip_rank). Ranking and
- * ranks recompute from results[] after every valid item so top[]/low[] track
+ * ranks recompute from results[] after every valid item so top[] tracks
  * the live block-σ key rather than an early snapshot. */
 static double s_pass_sum, s_pass_sumsq;
 static int    s_pass_n;
@@ -1585,8 +1585,14 @@ static int rank_order(KeyIdx *ord, int ntot, bool need_centred, int ch, bool low
         double v = item_crit(r, ch);
         if (!isfinite(v)) continue;
         /* |Z*| only. high = largest magnitude, low = smallest. The row's
-         * key is not rewritten. */
-        if (ch == SUM_KEY) v = fabs(v);
+         * key is not rewritten. ⚠ A block without σ gives key 0, which would
+         * top the low end without having been measured as quiet. */
+        if (ch == SUM_KEY) {
+            double sz = 0.0;
+            block_sig_of(r, &sz, NULL);
+            if (!(sz > 0.0)) continue;
+            v = fabs(v);
+        }
         ord[m].a = low ? -v : v;
         ord[m].j = (uint16_t)j;
         m++;
@@ -1750,7 +1756,7 @@ static void recompute_pass_ranks(void)
     g_status.pass_chi2    = sumsq;
     if (nv <= 0) {
         g_status.pass_mean = g_status.pass_sigma = g_status.pass_stouffer = 0.0;
-        g_status.result_count = g_status.low_count = 0;
+        g_status.result_count = 0;
         g_status.comparisons = 0;
         g_status.pre_n = 0;
         return;
@@ -1767,8 +1773,8 @@ static void recompute_pass_ranks(void)
      * instrument health on the LSB stream.
      *
      * Everything BELOW — the published tables — runs on rank_key() in units
-     * of the item's own block σ. top[] is the largest |rank_key|, low[] the
-     * smallest; the copied row keeps the signed key. No session moments of
+     * of the item's own block σ. top[] is the largest |rank_key|; the copied
+     * row keeps the signed key. No session moments of
      * the key are kept: Z* is already standardised, and over a compacted
      * results[] such a mean/σ would describe the surviving EXTREMES, not
      * the session. */
@@ -1788,12 +1794,12 @@ static void recompute_pass_ranks(void)
     g_status.pre_n        = pre_n;
 
     /* Built into LOCAL lists and published at the end: /status reads
-     * top[]/low[] from the HTTP task, and zeroing the counts
+     * top[] from the HTTP task, and zeroing the counts
      * before refilling them let a poll land on an empty or half-built table.
      * The counts still move last, so a racing reader sees either the old list
      * or the new one, never a partial one. */
-    RunResult ltop[TOP_N], llow[TOP_N];
-    int       ltn = 0, lln = 0;
+    RunResult ltop[TOP_N];
+    int       ltn = 0;
 
     for (int j = 0; j < ntot; j++) {
         const RunResult *r = &g_status.results[j];
@@ -1810,21 +1816,10 @@ static void recompute_pass_ranks(void)
             ltop[p] = *r;
         }
 
-        if (lln < TOP_N || mag < fabs(rank_key(&llow[lln - 1]))) {
-            if (lln < TOP_N) lln++;
-            int p = lln - 1;
-            while (p > 0 && fabs(rank_key(&llow[p - 1])) > mag) {
-                llow[p] = llow[p - 1];
-                p--;
-            }
-            llow[p] = *r;
-        }
     }
 
     for (int i = 0; i < ltn; i++) g_status.top[i] = ltop[i];
-    for (int i = 0; i < lln; i++) g_status.low[i] = llow[i];
     g_status.result_count = ltn;
-    g_status.low_count    = lln;
 
     g_status.comparisons = nv;
 }
@@ -2887,7 +2882,6 @@ void elotto_task(void *pvParam)
     g_status.elapsed_ms      = 0;
     g_status.slave_connected = false;
     g_status.result_count    = 0;
-    g_status.low_count       = 0;
 
     g_status.comparisons     = 0;
     g_status.pass_n_open     = 0;

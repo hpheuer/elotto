@@ -884,7 +884,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "+' \\u00b7 [1 + '+w3(b)+'\\u00b7max(\\u2212Mau, 0)]'"
 "+' \\u00b7 [1 + '+w3(g)+'\\u00b7max(Conc\\u00b7sign(Z)/\\u03c3c, 0)]'"
 "+' \\u00b7 [1 \\u2212 '+w3(dw)+'\\u00b7max(AC, 0)/(1+max(AC, 0))]');"
-"L.push('0 turns that factor off');"
+"L.push('0 leaves that factor at 1');"
 "return L;}"
 "var d=new Date(),p=function(n){return (n<10?'0':'')+n;};"
 "var stamp=d.getFullYear()+p(d.getMonth()+1)+p(d.getDate())+'_'+p(d.getHours())+p(d.getMinutes());"
@@ -917,7 +917,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "f(r.key),f(r.z_ctr),f(r.z),f(r.zc),f(r.nsd),f(r.ac),f(r.mau),r.k].join(';'));});"
 "files.push({name:'elotto_top'+R.length+(cr?'_'+cr:'')+'_'+stamp+'.csv',body:textOf(L)});"
 "}"
-"if(s){"
+"if(s&&snaps.length){"
 "var L2=['Round;Kind;Number;Passes;Z*;nZ*;Z;nZ;Conc;nConc;\\u0394n;n\\u0394n;AC;nAC;Mau;nMau'];"
 "snaps.forEach(function(sn){(sn.rows||[]).forEach(function(row){"
 "var c=[sn.round,sn.euro?'euro':'main',row.n,(cont?sn.round:sn.passes)];"
@@ -928,12 +928,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "files.push({name:'elotto_params_'+stamp+'.txt',body:textOf(paramsOf(st))});"
 "var Lj=['Rank;Item;Node;Time;Was;Jump;\\u00d7\\u03c3;Numbers'+(st.mode==='euro'?';Euro':'')];"
 "(Array.isArray(st.wsig)?st.wsig:[]).slice(0,10).forEach(function(e,i){"
-"var itm=(st.unlimited&&e.round)?(e.index+'/'+e.round):e.index;"
-"if(e.spass>0)itm='scoring '+e.spass+(st.unlimited&&e.round?'/'+e.round:'');"
-"var when='';"
-"if(e.t_ms>0&&st.uptime_ms>0){var dt=new Date(Date.now()-(st.uptime_ms-e.t_ms));"
-"var z2=function(n){return (n<10?'0':'')+n;};"
-"when=z2(dt.getDate())+'.'+z2(dt.getMonth()+1)+'. '+z2(dt.getHours())+':'+z2(dt.getMinutes());}"
+"var itm=wsigItem(st,e),when=wsigWhen(st,e);"
 "var jmp=e.jump,jtxt=(typeof jmp==='number')?((jmp>0?'+':'')+f(jmp.toFixed(3))):'';"
 "var xs=(st.wsig_sd>0&&typeof jmp==='number')?f((Math.abs(jmp)/st.wsig_sd).toFixed(1)):'';"
 "var row=[i+1,itm,wsigNode(st,e.node),when,(typeof e.prev==='number'?f(e.prev.toFixed(3)):''),"
@@ -953,7 +948,8 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "built.files.forEach(function(file){chain=chain.then(function(){"
 "return dir.getFileHandle(file.name,{create:true}).then(function(h){"
 "return h.createWritable().then(function(w){"
-"return w.write(file.body).then(function(){return w.close();});});});});});"
+"return w.write(file.body).then(function(){return w.close();});});})"
+".catch(function(){dl(file.name,file.body);});});});"
 "return chain;}"
 "built.files.forEach(function(file,i){setTimeout(function(){dl(file.name,file.body);},i*400);});}"
 "var pick=(typeof showDirectoryPicker==='function')"
@@ -1480,10 +1476,11 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "if(SSK==='key'||(SSK==='sum'&&curSum()==='key')){x=Math.abs(x);y=Math.abs(y);}"
 "return SSD<0?y-x:x-y;}"
 /* Visible under the Top-10 while that table is ordered on Z*. The cell
-   itself stays signed: 3 and −3 are the same rank. */
-"function absRankNote(sum){"
+   itself stays signed: 3 and −3 are the same rank. lo = smallest first. */
+"function absRankNote(sum,lo){"
 "return (sum?'Ranked by |\\u03a3 Z*|':'Ranked by |Z*|')"
-"+' \\u2014 the absolute value only. The cell keeps the sign, so 3 and \\u22123 both rank at the top.';}"
+"+(lo?', smallest first \\u2014 the absolute value only. The cell keeps the sign, so 0,3 and \\u22120,3 rank alike.'"
+":' \\u2014 the absolute value only. The cell keeps the sign, so 3 and \\u22123 both rank at the top.');}"
 "function exArrow(k){var K=SCM?SSK:SORTK,D=SCM?SSD:SORTD;"
 "if(K!==k)return ' <span style=\"color:#667\">\\u21c5</span>';"
 "return D<0?' \\u25be':' \\u25b4';}"
@@ -1523,7 +1520,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "+(d.scoring_pass>0?scoreSect(d)+'pass '+d.scoring_pass+((d.runs_cap===0&&d.scoring_passes===0)?'':'/'+(d.scoring_passes||" EL_STR(SCORE_PASSES_DEFAULT) ")):'done, round '+(d.round||1))"
 "+' \\u00b7 pool: '+critPhrase(d.score_dir,curSum());"
 "var byAbs=SSK==='key'||(SSK==='sum'&&curSum()==='key');"
-"document.getElementById('resSub').textContent=byAbs?absRankNote(SSK!=='key'):'';"
+"document.getElementById('resSub').textContent=byAbs?absRankNote(SSK!=='key',SSD>0):'';"
 "renderRunTable('resHead','resBody',top,isEuro,d,zW(d),{pool:pool});"
 "if(!top.length)document.getElementById('resBody').innerHTML="
 "'<tr><td colspan=\"11\" style=\"color:#d0b0b0;padding:10px\">No number scored yet.</td></tr>';}"
@@ -1575,7 +1572,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "var poolTxt=(d.pool_used_n>0)"
 "?('pool of round '+d.pool_used_round+': '+d.pool_used_n+' numbers, scoring '"
 "+critPhrase(d.score_dir,d.pool_used_sum)):'';"
-"var note=rankAbs?absRankNote(false):'';"
+"var note=rankAbs?absRankNote(false,lo):'';"
 "document.getElementById('resSub').textContent=poolTxt&&note?poolTxt+' '+note:(poolTxt||note);"
 "showQuiet(d,isEuro,st);}"
 /* The quiet end: the session's ten smallest |Z*|, ascending, in the item
@@ -1717,6 +1714,15 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
    the stored index on its own: the board keeps a discovery-order index, and
    that order changes between sessions (see NODE_NAMES_JS). Within the running
    session the mapping is fixed, so the lookup is valid exactly here. */
+/* Jump-board row labels, shared by the card and Save's jumps CSV. A scoring
+   run has no item: it is named by its pass (and round); the number stands in
+   the Numbers / Bonus column. Time is now − (uptime − t_ms), no RTC. */
+"function wsigItem(d,e){var itm=(d.unlimited&&e.round)?(e.index+'/'+e.round):e.index;"
+"if(e.spass>0)itm='scoring '+e.spass+(d.unlimited&&e.round?'/'+e.round:'');return itm;}"
+"function wsigWhen(d,e){if(!(e.t_ms>0&&d.uptime_ms>0))return '';"
+"var dt=new Date(Date.now()-(d.uptime_ms-e.t_ms));"
+"var z2=function(n){return (n<10?'0':'')+n;};"
+"return z2(dt.getDate())+'.'+z2(dt.getMonth()+1)+'. '+z2(dt.getHours())+':'+z2(dt.getMinutes());}"
 "function wsigNode(d,ix){"
 "var n=(d.nodes&&d.nodes[ix])?d.nodes[ix]:null;"
 "var ip=n?(n.ip==='self'?'192.168.178.100':n.ip):'';"
@@ -1802,18 +1808,12 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "if(isEuro&&e.euro&&e.euro.length)"
 "for(var j=0;j<e.euro.length;j++)"
 "estr+='<span class=\"num euro\">'+e.euro[j]+'</span>';"
-"var itm=(d.unlimited&&e.round)?(e.index+'/'+e.round):e.index;"
-/* A scoring run has no item: it is named by its pass (and round); the number
-   stands in the Numbers / Bonus column. */
-"if(e.spass>0)itm='scoring '+e.spass+(d.unlimited&&e.round?'/'+e.round:'');"
+"var itm=wsigItem(d,e);"
 "var sgn=e.jump>0?'+':'';"
 /* One row per NODE, not per item: one node jumping alone is that camera,
    two nodes on the SAME item is a shared cause. Collapsing them would erase
    the one distinction this table exists to make. */
-"var when='';"
-"if(e.t_ms>0&&d.uptime_ms>0){var dt=new Date(Date.now()-(d.uptime_ms-e.t_ms));"
-"var z2=function(n){return (n<10?'0':'')+n;};"
-"when=z2(dt.getDate())+'.'+z2(dt.getMonth()+1)+'. '+z2(dt.getHours())+':'+z2(dt.getMinutes());}"
+"var when=wsigWhen(d,e);"
 "tb.innerHTML+='<tr><td>'+(i+1)+'</td><td>'+itm+'</td>'"
 "+'<td>'+wsigNode(d,e.node)+'</td><td>'+when+'</td>'"
 "+'<td>'+e.prev.toFixed(3)+'</td>'"
@@ -1945,7 +1945,7 @@ static esp_err_t status_handler(httpd_req_t *req)
     /* The master's own camera, for the fields nodes[0] cannot get from
      * slaves_diag() — see the note at the node loop below. */
     camera_stats_t st_cam; camera_get_stats(&st_cam);
-    // Fixed head, top[]/low[], the jump board (WSIG_TOP_N) and up to
+    // Fixed head, top[], the jump board (WSIG_TOP_N) and up to
     // TRIPX_MAX trip records. /extremes is a separate stream: it is pulled
     // only while the results table is on screen, and Save's 1000 rows would
     // overflow this one.
@@ -2189,17 +2189,6 @@ static esp_err_t status_handler(httpd_req_t *req)
         pos = buf_advance(sizeof(buf), &pos,
                           emit_run(buf + pos, buf_room(pos, sizeof(buf)),
                                    &g_status.top[i], euro));
-    }
-    buf_append(buf, sizeof(buf), &pos, "],\"low\":[");
-
-    int lshow = g_status.low_count;
-    if (lshow < 0) lshow = 0;
-    if (lshow > TOP_N) lshow = TOP_N;
-    for (int i = 0; i < lshow; i++) {
-        if (i) buf_append(buf, sizeof(buf), &pos, ",");
-        pos = buf_advance(sizeof(buf), &pos,
-                          emit_run(buf + pos, buf_room(pos, sizeof(buf)),
-                                   &g_status.low[i], euro));
     }
     buf_append(buf, sizeof(buf), &pos, "],");
     /* What each soft-down trip was made of. Empty when nothing tripped,
