@@ -252,8 +252,10 @@ static void score_build_keys(const float zn[][MAX_NODES],
                              const float h1[][MAX_NODES],
                              const float h2[][MAX_NODES],
                              const node_mask_t *mask,
-                             const bool *scored, int max_val, double *scores,
+                             const bool *scored, int max_val,
                              double *zc_out, double *conc_out, double *nsd_out);
+static double zstar_of(double z, double sz, double nsd, double mau,
+                       double conc, double sc, double ac);
 static void   center_block(int block_idx);  // forward: publish_valid centres the OPEN block
 static void   wsig_collect(float out[MAX_NODES]);
 static void   series_ac(const double *u, int n, float *item, float zl[4]);
@@ -819,7 +821,6 @@ static int score_run(int max_val, int pool_size, bool euro_pool,
     for (int pass = 0; pass < passes; pass++) {
         g_status.scoring_pass = pass_base + pass + 1;
         bool scored[51] = {false};
-        double scores[51] = {0};
         float  acp[51];                 /* AC of each number this pass, for SUM_AC */
         for (int i = 0; i < 51; i++) acp[i] = NAN;
         for (int i = 0; i < 51; i++) {
@@ -869,7 +870,7 @@ static int score_run(int max_val, int pool_size, bool euro_pool,
         }
         last = n_order ? order[n_order - 1] : 0;
         double zc_ctr[51], conc[51], nsd[51];
-        score_build_keys(zn, h1, h2, smask, scored, max_val, scores,
+        score_build_keys(zn, h1, h2, smask, scored, max_val,
                          zc_ctr, conc, nsd);
         /* Item AC over this pass: the centred z in the order the
          * numbers were measured, scaled by the pass span's own σ. */
@@ -911,10 +912,15 @@ static int score_run(int max_val, int pool_size, bool euro_pool,
         for (int k = 1; k <= max_val; k++) {
             if (!scored[k]) continue;
             ScoreItem *row = score_row(euro_pool, k);
-            /* This pass's value per column. Missing concordance counts as 0,
-             * the results[] convention; missing Δn / AC / z adds nothing. */
+            /* This pass's value per column. Z* sees Conc while it is still
+             * NaN (no concordance → that factor stays 1). The stored column
+             * uses 0, the results[] convention. Missing Δn / AC / z adds
+             * nothing. */
             double v[SCORE_SUM_N];
-            v[SUM_KEY]  = scores[k];
+            double key = zstar_of(zc_ctr[k], g_status.score_sig_z, nsd[k],
+                                 maup[k], conc[k], g_status.score_sig_c,
+                                 (double)acp[k]);
+            v[SUM_KEY]  = key;
             v[SUM_Z]    = zc_ctr[k];
             v[SUM_CONC] = isnan(conc[k]) ? 0.0 : conc[k];
             v[SUM_NSD]  = nsd[k];
@@ -933,7 +939,7 @@ static int score_run(int max_val, int pool_size, bool euro_pool,
             row->r.zc_ctr  = isnan(conc[k])   ? 0.0f : (float)conc[k];
             row->r.node_sd = (float)nsd[k];
             row->r.mau     = (float)maup[k];
-            row->key       = (float)scores[k];
+            row->key       = (float)key;
             for (int c = 0; c < SCORE_SUM_N; c++) {
                 row->sums[c] = (float)A->acc[c][k];
                 /* Saturate: continuous scoring (accumulate) runs far past 255
@@ -1221,8 +1227,8 @@ static void score_one_run(bool *ok, float znode[MAX_NODES],
     }
 }
 
-/* Scoring key = pass key: per-node centre over this scoring span, then
- * Stouffer / concordance, then the same mix rank_key() uses.
+/* Centre one scoring pass and publish its σ. The product Z* is applied by
+ * the caller once AC and Mau of this pass exist (zstar_of).
  *
  * ⚠ There is no /loops block here — a scoring run is not an item. The span
  * of this function is the block: each node's mean is over the numbers it
@@ -1233,7 +1239,7 @@ static void score_build_keys(const float zn[][MAX_NODES],
                              const float h1[][MAX_NODES],
                              const float h2[][MAX_NODES],
                              const node_mask_t *mask,
-                             const bool *scored, int max_val, double *scores,
+                             const bool *scored, int max_val,
                              double *zc_out, double *conc_out, double *nsd_out)
 {
     /* Per-node means over the span: full z, and EACH HALF on its own.
@@ -1331,13 +1337,9 @@ static void score_build_keys(const float zn[][MAX_NODES],
     if (zc_out)   for (int k = 0; k <= max_val && k < 51; k++) zc_out[k]   = zc[k];
     if (conc_out) for (int k = 0; k <= max_val && k < 51; k++) conc_out[k] = zcc[k];
 
-    /* p = concordance weight, 1-p = z. Same mix as rank_key().
-     * σ is this scoring span's own, analogue of block σ. */
-    double p = g_status.pre_w;
-    if (p < 0.0) p = 0.0;
-    if (p > 1.0) p = 1.0;
-
-    double s[2] = {1.0, 1.0};
+    /* σ of this scoring span. Fewer than two finite values, or a span whose
+     * variance is ~0, publishes 0 and Z* is 0. No fallback of 1. */
+    double s[2] = {0.0, 0.0};
     int    sn[2] = {0, 0};
     const double *srcs[2] = { zc, zcc };
     for (int ch = 0; ch < 2; ch++) {
@@ -1353,33 +1355,10 @@ static void score_build_keys(const float zn[][MAX_NODES],
         double v = (sq - n * mean * mean) / (n - 1);
         if (v > 1e-9) s[ch] = sqrt(v);
     }
-    /* The scoring's health line: this span's own channel σ, the analogue of
-     * the pass health the page shows while items are measured. Published only,
-     * never read back. */
     g_status.score_sig_z  = sn[0] >= 2 ? s[0] : 0.0;
     g_status.score_sig_c  = sn[1] >= 2 ? s[1] : 0.0;
     g_status.score_span_n = sn[0];
     g_status.score_conc_n = sn[1];
-
-    /* ⚠ The weights are PER NUMBER, not per pass. `zcc[k]` is NaN
-     * whenever the concordance channel could not rank that number — its halves
-     * disagreed, or fewer than two nodes survived the loudest-node drop. That
-     * is normal and common, and such a number must lose the concordance WEIGHT
-     * along with the value: a one-channel score under a two-channel normaliser
-     * comes out small, and here that decides which numbers enter the pool.
-     * ⛔ Unbounded, like rank_key(). The span's own σ over at most 50
-     * numbers caps any score at 49/√50 = 6,9 by itself. */
-    for (int k = 1; k <= max_val; k++) {
-        if (!scored[k]) { scores[k] = 0.0; continue; }
-        bool haz = (!isnan(zc[k])  && s[0] > 0.0);
-        bool hac = (!isnan(zcc[k]) && s[1] > 0.0);
-        double vz = haz ? zc[k]  / s[0] : 0.0;
-        double vc = hac ? zcc[k] / s[1] : 0.0;
-        double pk = hac ? p : 0.0;
-        double ak = haz ? (1.0 - pk) : 0.0;
-        double nk = sqrt(ak * ak + pk * pk);
-        scores[k] = (nk > 0.0) ? (ak * vz + pk * vc) / nk : 0.0;
-    }
 }
 
 /* Effective variance of the Stouffer combine under the measured per-node σ
@@ -1495,49 +1474,58 @@ static void block_sig_of(const RunResult *r, double *out_p, double *out_c)
     if (out_c) *out_c = sc;
 }
 
-/* ── The ranking key: z and concordance, weighted, in units of BLOCK σ 
+/* Weight as used by Z*: NaN and anything outside (0, 1] becomes 0 (off)
+ * or 1 (full). The /start parser already refuses values outside 0..1. */
+static double zstar_w01(double w)
+{
+    if (!(w > 0.0)) return 0.0;
+    return w > 1.0 ? 1.0 : w;
+}
+
+/* Z* = (Z/σ_z) · [1 + α·(1/Δn − 1)] · [1 + β·max(−Mau, 0)]
+ *              · [1 + γ·max(Conc·sign(Z)/σ_c, 0)]
+ *              · [1 − δ·max(AC, 0)/(1+max(AC, 0))]
  *
- * key = ((1−p)·z_ctr/σ_p + p·zc_ctr/σ_c) / √((1−p)² + p²)
- *
- * p = ?wpre=; 1-p is z. p=0 is z_ctr / σ_p of THIS item's block.
- *   σ_p / σ_c  — that block's own sample σ, frozen at close in
- *                s_bsig[]. There is no session-wide fallback.
- * ⚠ No block σ yet (open block under PASS_OPEN_MIN_N) → 0, do not rank on raw z.
- *
- * ⛔ UNBOUNDED, deliberately. An extreme item is what this instrument
- * exists to find, so nothing here truncates one. There is no explosion risk to
- * guard against either: the item is INSIDE the σ it divides by, so
- *
- *     |key| <= (n-1)/√n,  n = items in that item's block
- *
- * whatever σ comes out — 14,4 at n=208, 6,9 at the <=50 numbers a scoring span
- * holds. A quiet block cannot manufacture a large key. ⚠ That ceiling MOVES
- * with n, so Z* is not comparable across blocks of different length; the block
- * length is `?maxruns=` (one round = one block). */
+ * α β γ δ are g_status.k_dn / k_mau / k_conc / k_ac, each 0..1.
+ * A missing column (NaN, Δn ≤ 0, Conc 0, no σ_c, Z = 0, AC ≤ 0) leaves
+ * its factor at 1. No σ_z → 0, never a fallback of 1.
+ * ⛔ UNBOUNDED. Z/σ_z sits inside its block, the product of the factors
+ * does not: a small Δn or a large negative Mau can exceed (n−1)/√n.
+ * Nothing here truncates an extreme. */
+static double zstar_of(double z, double sz, double nsd, double mau,
+                       double conc, double sc, double ac)
+{
+    if (!(sz > 0.0) || !isfinite(z)) return 0.0;
+    double zp = z / sz;
+    double f  = 1.0;
+    double a  = zstar_w01(g_status.k_dn);
+    if (isfinite(nsd) && nsd > 0.0 && a > 0.0)
+        f *= 1.0 + a * (1.0 / nsd - 1.0);
+    double b = zstar_w01(g_status.k_mau);
+    if (isfinite(mau) && mau < 0.0 && b > 0.0)
+        f *= 1.0 + b * (-mau);
+    double g = zstar_w01(g_status.k_conc);
+    if (g > 0.0 && isfinite(conc) && conc != 0.0 && sc > 0.0 && z != 0.0) {
+        double s = (z > 0.0) ? 1.0 : -1.0;
+        double t = conc * s / sc;
+        if (t > 0.0) f *= 1.0 + g * t;
+    }
+    double dlt = zstar_w01(g_status.k_ac);
+    if (dlt > 0.0 && isfinite(ac) && ac > 0.0)
+        f *= 1.0 - dlt * (ac / (1.0 + ac));
+    return zp * f;
+}
+
 double rank_key(const RunResult *r)
 {
     if (!r) return 0.0;
     double sz = 0.0, sc = 0.0;
     block_sig_of(r, &sz, &sc);
-    if (!(sz > 0.0)) return 0.0;
-
-    double z = (double)r->z_ctr / sz;
-
-    /* A concordance term that does not exist must lose its WEIGHT as well.
-     * `zc_ctr` 0 means the channel could not rank this item at all (halves
-     * disagreed, or k<2 after the drop) — that is what `pre_n` counts — and a
-     * missing block σ means the same for the whole block. Adding a 0 under the
-     * full two-channel normaliser is not "no concordance evidence", it is a
-     * silent scale error. */
-    double p = (sc > 0.0 && r->zc_ctr != 0.0f) ? g_status.pre_w : 0.0;
-    if (p <= 0.0) return z;
-
-    double zc = (double)r->zc_ctr / sc;
-
-    double a = 1.0 - p;
-    double n = sqrt(a * a + p * p);
-    if (!(n > 0.0)) return z;
-    return (a * z + p * zc) / n;
+    /* zc_ctr 0 is "no concordance" (halves disagreed, or k<2 after the
+     * drop), the same sentinel pre_n counts. The factor stays 1. */
+    double conc = (r->zc_ctr == 0.0f) ? NAN : (double)r->zc_ctr;
+    return zstar_of((double)r->z_ctr, sz, (double)r->node_sd, (double)r->mau,
+                    conc, sc, (double)r->acz);
 }
 
 /* ── Ranking of the held rows by the pool criterion ──────────────────────
@@ -1699,9 +1687,8 @@ static int    s_drop_n, s_drop_void, s_drop_excl;
 static int    s_drop_pn;
 
 /* Recompute pass mean/σ/χ² and Top-N / Bottom-N from the ranked prefix.
- * O(n·TOP_N) after each valid item. Z* is rank_key() itself (block-σ units),
- * so nothing here rescales the tables — no session moments of the key exist
- * any more. */
+ * O(n·TOP_N) after each valid item. Z* is rank_key() itself, so nothing
+ * here rescales the tables — no session moments of the key exist. */
 static void recompute_pass_ranks(void)
 {
     int ntot = g_status.runs_completed;
@@ -3308,9 +3295,8 @@ void elotto_task(void *pvParam)
             if (g_status.abort_requested) { slave_abort(); goto done; }
 
             /* ⛔ NO mid-round block boundary. A round is one block, so
-             * every block of a session holds the same item count and its Z*
-             * values compare — `rank_key()` divides by the block's own σ, whose
-             * largest possible quotient is (n-1)/√n in that block's n. */
+             * every block of a session holds the same item count and Z/σ
+             * compares. The Z* factors are not bounded by (n-1)/√n. */
 
             /* Uncapped and unrepeated within the round, so slot i IS this
              * round's combination i. */

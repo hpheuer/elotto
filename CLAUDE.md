@@ -21,15 +21,14 @@ Two markers, and only two:
 
 ## Purpose
 Rank lottery **numbers** (scoring → pool) and **combinations** (the pass) from camera readout noise.
-Two channels, one key:
+One key, the same function for both:
 
-- **z** — binomial of the camera LSBs in that window (the old z_pre; there is no second z,
-  and since  no second field either)
-- **conc** — half-window concordance of the same bits (same sign both **centred** halves, loudest
-  node dropped) 
+Z\* = (Z/σ_z) · [1 + α·(1/Δn − 1)] · [1 + β·max(−Mau, 0)] · [1 + γ·max(Conc·sign(Z)/σ_c, 0)] · [1 − δ·max(AC, 0)/(1+max(AC, 0))]
 
-`?wpre=` is the concordance weight (form 0,8; API 0 = z alone). Scoring **selects** the pool on
-that key; the pass **ranks** items on the same key; the UI shows Z*, Z, Conc.
+α `?kdn=`, β `?kmau=`, γ `?kconc=`, δ `?kac=` are each 0..1 and independent (API and form default 0 = that factor stays 1). All four at 0 is Z/σ_z. A missing column leaves its factor at 1. Δn ≤ 0 does not divide. Scoring **selects** the pool on that key; the pass **ranks** items on the same key. The page shows the formula with the weights in force at the top, and the columns Z\*, Z, Conc, Δn, AC, Mau.
+
+- **z** — binomial of the camera LSBs in that window. Z is the block-centred Stouffer combine, σ_z that block's own σ (scoring: the pass span).
+- **conc** — half-window concordance of the same bits (same sign both **centred** halves, loudest node dropped). It stretches Z\* only when it has the same sign as Z.
 
 **How the cameras stay usable.** One OV5647 **or** IMX219 per node — `esp_video` probes both (OV at I2C 0x36, IMX at 0x10) and binds whichever chip answers. Frame-pair LSB — z is the camera bits. IMX219 streams packed RAW10 (4 pixels in 5 bytes); the extractor takes the 10-bit LSB. An OV5647 streams RAW10 1920×1080 unbinned on the slaves, RAW8 800×800 on the master (`sdkconfig.defaults` per repo). **OV5647 on-chip processing:** the driver's format table sets `0x5000 = 0xff`; `ov_boot_apply()` clears bits 7/2/1/0 (lens shading, black/white defect-pixel cancel, colour interpolation) → `0x78`. ⚠ Bit 0 acts on RAW — set, the LSB carries lag-2/lag-4 autocorrelation and a lower bias. Bits 6/5/4/3 stay on; bit 5 (RAW gamma) shows no effect on the LSB (bit naming from the OV5640/OV5645 tables in the same driver). The black level target `0x4009` is **128** DN (reset default 16 — the driver never writes `0x4009`). ⚠ At 16 the dark noise sits at code 0 and is clipped — LSB bias 0,35–0,46, σ 1,6–2,6, Bayer-periodic autocorrelation; the lens-shading gain hid exactly that. Both are firmware defaults applied at boot (`ov_boot_apply()`); per-node NVS overrides — `POST /expose?isp=0|1`, `?reg=<r>&val=<v>` (up to 8, written last), `?clr=1`, then `/reboot`; `?rd=<r>` reads a register. ⚠ **Never write these registers while the sensor streams** — it stalls the OV5647's MIPI output without tripping `stalls`. `/expose` and `/calibrate` report `isp`. ⚠ The layout
 comes from the FOURCC (`BG10`), not from `sizeimage` — esp_video leaves that 0, and the old fallback
@@ -85,13 +84,13 @@ across rounds a combination can recur — identity is **(round, index)**.
 
 - **No loops, no Runs cap, no ranking modes.** `/start` is a **whitelist**: an unknown
   key answers **400**. Deleted keys (`loops`, `runs`, `rank`, `focus`, `went`, `wruns`,
-  `baseline`, `calint`, `unlimited=0`) keep a specific 400. Allowed: `mode`, `run`, `gap`,
-  `score`, `wpre`, `maxruns`, `passes`, `confirm`, `cal`, `unlimited`. An empty key (`?=x`), a value over
+  `baseline`, `calint`, `unlimited=0`, `wpre`) keep a specific 400. Allowed: `mode`, `run`, `gap`,
+  `score`, `kdn`, `kmau`, `kconc`, `kac`, `maxruns`, `passes`, `confirm`, `cal`, `unlimited`. An empty key (`?=x`), a value over
   `START_VAL_MAX` 31 characters and a query string over 255 characters each answer **400** as well
   — a truncated value or query must never read as "key absent" and resolve to the default.
   ⚠ **A refused /start changes nothing**: parameters are parsed into locals and committed to
   `g_status` only after every one validates, so a 400 leaves the finished session's `/status` —
-  `pre_w` above all — describing that session. A 500 (task create failed) restores
+  the four Z\* weights above all — describing that session. A 500 (task create failed) restores
   the snapshot, including `state`; `prefs_save()` runs only after the task exists. 100 % of the progress bar is the
   full combination space. `NUM_RUNS` 1400 is the hard cap on `results[]`.
   ⚠ **A combination space larger than `NUM_RUNS` aborts** rather than compacting mid-round.
@@ -129,9 +128,9 @@ across rounds a combination can recur — identity is **(round, index)**.
   be overrun by at most one pass. Still exactly one block per round. Every candidate sits on a centring
   boundary: every scoring PASS is its own centring span (`score_build_keys()` runs per pass), and
   the pass block is its own. No operating point ever moves underneath a mean being subtracted.
-  ⚠ **The block length is `?maxruns=`**, so every round holds the same item count and its `Z*`
-  values compare — the largest key a block can produce is `(n−1)/√n` in that block's n. (⚠ With
-  `?maxruns=0` there is no pass and therefore no block at all.) The form
+  ⚠ **The block length is `?maxruns=`**, so every round holds the same item count and Z/σ_z
+  compares. That part is at most `(n−1)/√n` in the block's n; the four factors are not.
+  (⚠ With `?maxruns=0` there is no pass and therefore no block at all.) The form
   predicts the round length and **no longer warns**: with 20 scoring passes the scoring is
   1240 of a Eurojackpot round's ~1340 cycles, so no legal `?maxruns=` could clear a 30-minute bar.
   It prints the scoring/pass split instead, which names `?run=` — the parameter that sets the
@@ -159,12 +158,11 @@ title names the pool criterion; the column arrows show the table sort. The UI sh
 **everything the pass shows**: a Top-10 of the numbers (Σ, Z\*, Z, Conc, Δn, AC — `GET
 /extremes?score=1`, `RunResult` rows in their own buffer, never in `results[]`; display
 only, the pool is picked from the sum in `score_and_build_pool()`; pool members: `#` in green),
-a scoring health line (last closed pass's own σ), stat cards, node table and boards. **The scoring key is the pass key** — z and concordance at the session's
-`?wpre=`; `score_build_keys()` is the only place a scoring key is built.
+a scoring health line (last closed pass's own σ), stat cards, node table and boards. **The scoring key is the pass key** — `zstar_of()`, after that pass's AC and Mau exist.
 ⚠ Scoring has no `/loops` block; the scoring span **is** the block. Per-node centre over the
 numbers each camera actually answered, then concordance (loudest **centred** node dropped), then
-the same mix as the pass. σ is that span's own. Uncentred LSB ranks nodes.
-⚠ `?wpre=0` is z alone.
+the same product as the pass. σ is that span's own. Uncentred LSB ranks nodes.
+⚠ All four weights at 0 is z alone (Z/σ). `score_build_keys()` centres the span and publishes its σ; it does not build the key.
 The six sums of every number (main and euro each their own record) are kept for every scoring
 of the session until the next session start: `SCORE_SNAP_MAX` 128 earliest, PSRAM,
 `GET /extremes?sums=1`. A scoring aborted before any pass closed stores nothing; one aborted
@@ -233,22 +231,22 @@ round is just a scoring (see the `?maxruns=0` rule under v3), endless.
 ---
 
 ## The ranking channels
-One ranking key from z plus concordance:
-**key = ((1−p)·z_ctr/σ_z + p·zc_ctr/σ_c) / √((1−p)² + p²)** —
-p = `?wpre=` is the concordance weight (API default 0 = z alone, form 0,8).
-⚠ A channel that cannot rank an item loses its **weight** too, not just its value: the
-normaliser is rebuilt from the channels the item actually has, so an item with z alone is ranked on
-z at full scale. Adding a 0 under the two-channel normaliser is a scale error, not a null result.
-⚠ Each channel is standardised by ITS OWN σ of **that item's block**, frozen at close. There is **no** session-wide channel σ any more  — `s_bsig[block].sig_p`/`sig_c` is the only scale, and `/loops` no longer publishes it. A key with no block σ is 0, never a fallback.
+One ranking key, `zstar_of()` in `sensor.c`, used by the scoring pass and by `rank_key()`:
+
+Z\* = (Z/σ_z) · [1 + α·(1/Δn − 1)] · [1 + β·max(−Mau, 0)] · [1 + γ·max(Conc·sign(Z)/σ_c, 0)] · [1 − δ·max(AC, 0)/(1+max(AC, 0))]
+
+α β γ δ are `?kdn=` `?kmau=` `?kconc=` `?kac=`, each 0..1, default 0. 0 leaves that factor at 1.
+- **Δn** — spread of the cameras on this item (each centred z / that camera's own σ). Independent cameras ≈ 1. Smaller than 1 stretches Z along its own sign; larger than 1 pulls Z toward 0. Δn = 1 → factor 1. Δn = 0,82 and α = 1 → 1 + (1/0,82 − 1) = 1,220. Δn ≤ 0 or missing → factor 1.
+- **Mau** — Maurer z of the window, already in block-σ units. Only a negative Mau stretches. Mau = 0 or positive → factor 1. Mau = −1,5 and β = 1 → 2,5. Missing → 1. A positive Mau does not flip the sign of Z.
+- **Conc** — same sign as Z, scaled by |Conc|/σ_c. Opposite sign, Conc 0, missing σ_c, or Z = 0 → factor 1. |Conc|/σ_c = 1,55 and γ = 1 → 2,55. Conc is not a second entropy subtraction: when the window bias is stable it tracks Z, so a large same-sign Conc means the deviation held across both halves.
+- **AC** — this item against the 1..4 items measured just before it. A positive AC (a run) damps. AC = 4,12 and δ = 1 → 1 − 4,12/5,12 = 0,195. A negative AC leaves the factor at 1. The factor never goes negative. The first item of a round or pass has no predecessor → factor 1.
+
+Worked stack, all weights 1: Z/σ_z = −2, Δn = 0,82, Mau = −1,5, |Conc|/σ_c = 1,55, AC = 4,12 → −2 · 1,220 · 2,5 · 2,55 · 0,195 ≈ −3,03.
+
+⚠ Z and Conc are each divided by their own σ of **that item's block**, frozen at close. There is **no** session-wide channel σ — `s_bsig[block].sig_p`/`sig_c` is the only scale, and `/loops` no longer publishes it. A key with no block σ is 0, never a fallback. The product is not re-standardised.
 ⚠ Uncentred z ranks NODES, not items — a live table is meaningless before the first block closes.
-⛔ **The key is UNBOUNDED — nothing truncates an extreme item**. It needs no bound: the item
-sits INSIDE the σ it divides by, so `|key| ≤ (n−1)/√n` with n the items in that item's block,
-whatever σ comes out. A quiet block cannot manufacture a large key.
-⚠ **That ceiling moves with n**, so it is `?maxruns=` that fixes the scale: every round is one block
-, so within a session n is constant and Z\* compares. 6,9 for a scoring span's ≤50 numbers,
-14,4 at n=208, 23,1 at 535. Pure chance over 38000 items reaches about 4.
-⚠ The last round of a session is short because Abort cut it.
-UI: **Z\*** is the key itself (block-σ units), **Z**, **Conc**.
+⛔ **The key is UNBOUNDED — nothing truncates an extreme item**. Z/σ_z sits inside its block (`|Z/σ_z| ≤ (n−1)/√n`). The product of the factors does not: a small Δn or a large negative Mau can pass that ceiling, and a quiet block can then produce a large key. ⚠ The last round of a session is short because Abort cut it.
+UI: **Z\*** is the product, **Z**, **Conc**, **Δn**, **AC**, **Mau**. The formula with the session's four numbers stays at the top of the page. While a session runs it is read from `/status`; while the start form is what is being edited it follows the inputs. A reload of a finished session shows that session's weights until an input changes.
 
 **Concordance.** Per node, split the window at the **frame-pair boundary nearest the
 middle**  (nseg/2 if the window holds none) and **centre each half on that node's own
@@ -277,10 +275,6 @@ that formula for the session's own σ. Measured 69,9 % and 75,2 % on two builds,
 above the σ-corrected expectation; that residual is real (~4 σ) and **unexplained**. Not signal,
 not fault.
 
-⚠ Both keys are standardised by their own measured block σ, so a correlated pair of channels
-**cannot manufacture a false positive** — the scale stays right. What it costs is diversification,
-i.e. sensitivity, which is the harm that matters when the effect being hunted is small.
-
 Wire: `Z:<z>[,<h1>,<h2>][,wsig=<σ>][,mau=<z>]`. `,wsig=`, `,mau=` TAGGED.
 `,mau=` (window Maurer z) feeds the `Mau` column; the master takes its own from `gcp_last_maurer()`. Every node measures the commanded `nseg`.
 
@@ -305,9 +299,8 @@ what remains visible is an effect varying **between items inside a block**.
 . The scoring has its own round-relative row (Numbers, Progress, Time/ETA).
 - **A view button over the table** switches items ↔ number scoring whenever both have data;
   default follows the phase.
-- **One sortable table of ten**: Top-10, item counter + block badge. Columns: `Z*` (key
-  in that item's block-σ units), `Z`, `Conc`, `Δn`, `AC`, `Mau`. Every header has a
-  plain-language tooltip.
+- **One sortable table of ten**: Top-10, item counter + block badge. Columns: `Z*` (the
+  product above), `Z`, `Conc`, `Δn`, `AC`, `Mau`. Every header has a plain-language tooltip.
   ⚠ **The table is the ten held rows best on the clicked column and direction, chosen on the
   master** — `GET /extremes?sort=key|z|conc|nsd|ac|mau&dir=high|low` (streamed JSON, `emit_run` row
   shape, `held` = rows with a value in that column), polled every **5 s**; a header click fetches
@@ -336,22 +329,24 @@ what remains visible is an effect varying **between items inside a block**.
   items**, read against 0. + = it moved with its predecessors, − = it alternated. Coloured at
   |AC| > 3. **—** until the block (scoring: the pass) closes, and for its first item. The
   series' own z_L = r_L·√(n−L) for lags 1..4 (Bancel's lag-1 test on the GCP series) is in the
-  Nodes card (`/status` `item_ac_z`, `score_ac_z`). It never enters Z\*; as the pool criterion
-  it picks the pool and the extreme set (research).
+  Nodes card (`/status` `item_ac_z`, `score_ac_z`). It enters Z\* only through `?kac=` (0 = it
+  does not). As the pool criterion it still picks the pool and the extreme set on its own sum.
   **`Mau` is Maurer's universal test (NIST SP 800-22 §2.9) over the item's own window**: per
   node, over exactly the bits z counts (`gcp_last_maurer()` in `elotto_gcp`, `,mau=`, `/camlog`
   `mau`), L = 8 (byte blocks, MSB first), Q = 2560 init blocks, K = the rest; z = (f_n − 7,1836656)
   / (c·√(3,238/K)), c = 0,7 − 0,1 + 8·K^(−3/8)/15. Unit normal for random bits, − = more
   compressible. Then centred on that node's block mean (scoring: pass mean; a node with < 2
   values stays out), Stouffer over the combined nodes, divided by the block's own σ of that
-  combine — unit variance, read against 0, coloured at |Mau| > 3. Research hypothesis: it never
-  enters Z\*; as the pool criterion it picks the pool and the extreme set. **—** until centred.
+  combine — unit variance, read against 0, coloured at |Mau| > 3. It enters Z\* only through
+  `?kmau=` (0 = it does not; only a negative Mau stretches). As the pool criterion it still
+  picks the pool and the extreme set on its own sum. **—** until centred.
   ⚠ Below NIST's minimum at short `?run=` (L = 8 wants ≥ 2,07 Mbit per window); the c(L,K)
   correction keeps σ right, the centring removes the per-camera offset.
   **`Δn` is node agreement**: σ across the contributing nodes of their block-centred z,
   each node divided by ITS OWN σ over that block. Small = the cameras moved together on this
   item; **≈ 1 is what independent nodes give**, so read it against 1, not against 0.
-  It never enters Z\*; as the pool criterion it picks the pool and the extreme set (research).
+  It enters Z\* only through `?kdn=` (0 = it does not). As the pool criterion it still picks
+  the pool and the extreme set on its own sum.
   ⚠ **—** until the item's block has been centred (same wait as `Z`), and whenever fewer than
   two nodes have a block σ. Never 0 for "unknown": 0 would read as perfect agreement.
   ⚠ Small Δn is agreement, not evidence — centring has already removed the block-wide common
@@ -386,10 +381,10 @@ what remains visible is an effect varying **between items inside a block**.
   block was simply wide.
   ⚠ The block number shown is 1-based like `/loops`; `results[].block` is 0-based.
 - **The start form remembers its last values** (NVS, survives reboot and OTA): measuring time,
-  runs per round, scoring passes, direction, concordance weight. `/` serves them as a script chunk
+  runs per round, scoring passes, direction, and the four Z\* weights. `/` serves them as a script chunk
   appended to the page. ⚠ **Only a start carrying `confirm=1` writes them** — i.e. only the
-  web UI. A curl start sends no `wpre=` and would otherwise replace the operator's weight with the
-  API default. ⚠ It changes **no** API default: an omitted parameter still resolves to the
+  web UI. A curl start that omits `kdn` / `kmau` / `kconc` / `kac` runs at 0 and does not
+  overwrite the stored form weights. ⚠ It changes **no** API default: an omitted parameter still resolves to the
   compiled-in value. Mode is not remembered — it is which button was pressed, not a field.
   The pool criterion is remembered too, but by its own rule  (written on the Σ click).
 

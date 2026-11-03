@@ -85,10 +85,9 @@ typedef uint16_t node_mask_t;   // bit i = node i; MAX_NODES below must fit
  * separate blocks (the scoring span and the pass), so it moves no operating
  * point underneath a centring and leaves n untouched.
  *
- * Why: `rank_key()` divides by the block's own σ, and the largest value a block
- * can produce is (n-1)/√n with n its item count. Round = block makes n the same
- * in every round, because every round measures the same `maxruns`-sized space.
- * ⚠ The last round is cut short by Abort, so its block is the one exception. */
+ * Why: Z' = z_ctr/σ is at most (n-1)/√n with n the block's item count, so a
+ * round of one block keeps that part comparable across rounds. The four Z*
+ * factors are not bounded by it. ⚠ The last round is cut short by Abort. */
 /* Per-run window (one continuous window per item) and the
  * intentional blank after it. Both are session parameters on /start (?run= &
  * ?gap=). Gap defaults to 40 % of the
@@ -236,11 +235,11 @@ _Static_assert(UNLIM_RUNS_MAX + PASS_KEEP_EXTREME <= NUM_RUNS,
  * the second would stay in the combine. A bad arm in the combine costs more
  * than a small k does. */
 #define NODE_SOFT_MIN_COMBINE  1     // never soft-exclude below this many live nodes
-/* Concordance weight of the ranking key, ?wpre=<0..1>.
- * DEFAULT 0: z alone. The form pre-fills 0,8. Curl must not silently pick a
- * weight; the page does, and /status `pre_w` says which one ran. */
-#define ENT_W_PRE_DEFAULT    0.0
-#define ENT_W_PRE_FORM       0.8
+/* Z* factor weights, each independently 0..1. 0 turns that factor off
+ * (the factor stays 1). ?kdn= Δn, ?kmau= Mau, ?kconc= Conc, ?kac= AC.
+ * Omitted → 0, so Z* = z_ctr / block σ. The form stores them only on
+ * confirm=1; /status names the four that ran. */
+#define ZSTAR_W_DEFAULT      0.0
 
 /* Phase-0 scoring direction (pre-registered). Only affects WHICH numbers enter
  * the pool — never the Phase-2 measurement statistics. Default HIGH matches
@@ -278,7 +277,8 @@ typedef struct {
      * block, Stouffer over the combined nodes, then divided by the block's own
      * σ of that combine — unit variance within the block, read against 0.
      * − = the bits repeated sooner (more compressible) than in the rest of the
-     * block. Never enters Z*; its scoring SUM may pick the pool (research).
+     * block. Enters Z* through ?kmau=: only a negative Mau stretches Z along
+     * its own sign. Its scoring SUM may still pick the pool on its own.
      * NaN until the block (scoring: the pass) is centred, or no node reported.
      * Sits here to fill the padding before z_score. */
     float      mau;
@@ -314,10 +314,9 @@ typedef struct {
      * test  — on raw halves the node offset makes
      * both halves always agree and the channel was z plus noise. 0 = halves
      * disagreed on every surviving node, or fewer than two nodes to
-     * corroborate; under H₀ that is about half of all items.
-     * ⚠ This is the ONLY channel beside z  — `?wpre=` is its weight p and
-     * the key is ((1-p)·z_ctr/σ_z + p·zc_ctr/σ_c)/√((1-p)²+p²), each term on
-     * that item's own BLOCK σ. Not a half-and-half split of pre_w. */
+     * corroborate. That 0 means no concordance: the Conc factor of Z* stays 1.
+     * It enters Z* only through ?kconc=, and only the part with the same sign
+     * as Z, scaled by this block's own σ of concordance. */
     float      zc_ctr;
     /* NODE AGREEMENT on this item: sample σ across the contributing nodes of
      * their own block-centred z, each standardised by that NODE's own σ over
@@ -338,14 +337,15 @@ typedef struct {
      * block has been centred, recomputed by center_block() every time.
      * ⚠ NaN when fewer than two nodes have a usable block σ — k < 2, or a node
      * with fewer than 2 runs in the block. It is never 0 for "unknown".
-     * ⚠ It says nothing about whether the item is HIGH or LOW; it is a
-     * confidence column beside Z*, not a second ranking key. It selects only
-     * when it is the pool criterion (the pool, and the extreme set kept by
-     * compaction — see rank_order() in sensor.c). */
+     * Enters Z* through ?kdn=: a value below 1 stretches Z along its own sign,
+     * a value above 1 pulls Z toward 0. Δn ≤ 0 or missing leaves that factor
+     * at 1 (a real 0 must not divide). It also selects when it is the pool
+     * criterion (the pool, and the extreme set kept by compaction). */
     float      node_sd;
     /* ITEM AUTOCORRELATION (AC): this item's centred z times the 1..4 items
-     * measured before it, / √m — see series_ac(). NaN until the block closes
-     * and for its first item. Never enters Z*. */
+     * measured before it, / √m — see series_ac(). Enters Z* through ?kac=:
+     * a positive AC damps the key, a negative AC leaves it. NaN (open block,
+     * or the first item) leaves that factor at 1. */
     float      acz;
 } RunResult;
 _Static_assert(sizeof(RunResult) == 48, "results[] row is the internal-RAM budget");
@@ -618,8 +618,8 @@ typedef struct {
  * z_ctr / zc_ctr (provisional raw until the pass closes, then centred on the
  * pass span, like an item on its block), node_sd (Δn), acz (AC), mau (Mau). What a
  * results[] row gets from its block instead is carried beside it: `key` (Z*,
- * the pass key in span-σ units — rank_key() would read s_bsig[] of a block
- * this row has none of) and `sum`, the running Σ the pool is picked on.
+ * zstar_of() on this pass's own σ, after AC and Mau exist — a scoring row has
+ * no s_bsig block) and `sum`, the running Σ the pool is picked on.
  * Holds the LATEST measurement of that number. `r.block` is unused.
  * ⚠ key is NaN while the pass holding the latest measurement is still open.
  * ⛔ Display only, and never in results[]: a scoring run is not an item and
@@ -634,7 +634,7 @@ typedef enum { SUM_KEY = 0, SUM_Z, SUM_CONC, SUM_NSD, SUM_AC, SUM_MAU, SCORE_SUM
 
 typedef struct {
     RunResult r;
-    float     key;       // Z*: pass key in span-σ units, NaN while open
+    float     key;       // Z*: zstar_of() of this pass, NaN while open
     /* Σ per column over the closed passes, indexed by ScoreSum. A pass whose
      * value is missing (Δn with < 2 nodes, AC not reported, no z) adds
      * nothing; sum_n says how many passes did add. */
@@ -796,15 +796,18 @@ typedef struct {
     int              wsig_sd_n;           // node-items behind wsig_sd
     double           v_eff;               // Var(Σz_i/√k) under measured σ and r
                                           // (1.0 = independent unit nodes)
-    /* ── Concordance ranking weight ────────────────────────────────
-     * ⚠ It RANKS. It does not test. pass_mean/pass_sigma/pass_chi2 stay
-     * on z alone. */
-    double           pre_w;               // concordance weight, ?wpre=
-                                          // (0 = pure-z ranking)
+    /* ── Z* factor weights ─────────────────────────────────────────
+     * Each 0..1, independent. 0 leaves that factor at 1, so all four at 0
+     * is Z* = z_ctr/σ. They rank; they do not test. pass_mean/pass_sigma/
+     * pass_chi2 stay on z alone. */
+    double           k_dn;                // ?kdn=  Δn stretch
+    double           k_mau;               // ?kmau= Mau stretch (negative Mau)
+    double           k_conc;              // ?kconc= Conc, same sign as Z
+    double           k_ac;                // ?kac=  positive AC damps
     int              pre_n;               // ranked items carrying a CONCORDANCE
                                           // value (zc_ctr != 0). 0 on an item
                                           // means the leave-one-out drop left
-                                          // k < 2, so only the z term ranked it
+                                          // k < 2, so the Conc factor stays 1
     double           loop_sigma;          // per-run σ of the LAST CLOSED BLOCK (1.0 = ideal)
     int              loops_done;          // BLOCKS closed and merged into the drift stats
     int              loop_hist_n;         // entries valid in loop_hist[] (<= LOOP_HIST)
@@ -982,10 +985,9 @@ const camera_cal_t *elotto_last_calibration(void);
  * poll. Idempotent. */
 void results_archive_init(void);
 
-/* The combined ranking key of one row, in units of that item's own block σ
- *: block-centred z and concordance, weighted by pre_w. The ONE accessor
- * every table and every survivor choice goes through, for the same reason
- * rank_z() is the only reader of z_ctr. */
+/* Z* of one row: (z_ctr / block σ) times the Δn, Mau, Conc and AC factors
+ * at g_status.k_dn / k_mau / k_conc / k_ac. 0 when that block has no σ.
+ * The ONE accessor every table and every survivor choice goes through. */
 double rank_key(const RunResult *r);
 
 /* The up-to `max` ranked & centred rows best on column `ch` (a ScoreSum) in

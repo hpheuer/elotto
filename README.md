@@ -19,8 +19,8 @@ noise** using
 A home-built GCP/PEAR-style instrument: each node draws bits from its **own** camera (OV5647 or IMX219, never shared).
 Frame-pair diff → LSB → segments of 224 bits → Stouffer z. LSB bits as measured.
 Up to four nodes combine as `Σz/√k` for the nodes that answered that run. Ranking is
-**block-centred** z plus concordance (`?wpre=`), Z* in units of that block's σ.
-Scoring uses the same per-node centre.
+Z\* = (Z/σ) times the four factors Δn, Mau, Conc and AC (`?kdn=` `?kmau=` `?kconc=` `?kac=`,
+each 0..1, default 0). Scoring uses the same product.
 The HTML page shows the number or combination being measured. Sessions are unattended;
 do not pool with old `focus=on` archives.
 

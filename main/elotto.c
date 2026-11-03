@@ -175,6 +175,11 @@ static const char HTML[] =
 ".frow>label,.frow>span:first-child{color:#f0c040;font-size:.9em;text-align:right}"
 ".fin{width:80px;padding:5px 8px;border-radius:6px;border:1px solid #a08030;"
 "background:#0a2e0a;color:#fff;font-size:1em;text-align:center}"
+".wgrid{grid-column:1 / -1;display:grid;grid-template-columns:repeat(4,1fr);gap:6px 12px}"
+".wgrid .frow{grid-column:auto;grid-template-columns:1fr;justify-items:start;gap:2px}"
+".wgrid .frow>label{text-align:left;font-size:.82em}"
+".wgrid .fin{width:100%;max-width:96px;box-sizing:border-box}"
+".wspan{grid-column:1 / -1}"
 "#btnPause,#btnAbort,#btnSave{min-width:168px}"
 ".tblwrap{overflow-x:auto}"
 "@media(max-width:520px){"
@@ -186,6 +191,7 @@ static const char HTML[] =
 "#btnPause,#btnAbort,#btnSave{min-width:126px}"
 ".frow{grid-template-columns:128px 1fr;gap:6px}"
 ".frow>label,.frow>span:first-child{font-size:.8em}"
+".wgrid{grid-template-columns:1fr 1fr}"
 ".sv{font-size:.85em}"
 ".sl{font-size:.62em}"
 ".stats{gap:6px}"
@@ -203,6 +209,17 @@ static const char HTML[] =
 "<div id='subtitle'>ESP32-P4 &bull; Camera dark-frame entropy &bull; GCP Analysis</div>"
 "<div id='slaveBadge' style='display:none;text-align:center;color:#a0e8ff;"
 "font-size:.88em;margin:-18px 0 12px'></div>"
+"<div id='formulaBar' style='text-align:center;font-size:.92em;line-height:1.45;"
+"color:#e8f5e8;margin:0 auto 14px;max-width:980px;padding:8px 12px;"
+"border:1px solid rgba(240,192,64,.35);border-radius:8px;"
+"background:rgba(0,0,0,.25)'>"
+"Z* = (Z/&#963;) &#183; [1 + 0.00&#183;(1/&#916;n &#8722; 1)]"
+" &#183; [1 + 0.00&#183;max(&#8722;Mau, 0)]"
+" &#183; [1 + 0.00&#183;max(Conc&#183;sign(Z)/&#963;c, 0)]"
+" &#183; [1 &#8722; 0.00&#183;max(AC, 0)/(1+max(AC, 0))]"
+"<div style='font-size:.78em;color:#8fae8f;margin-top:2px'>"
+"&#945; &#916;n &#183; &#946; Mau &#183; &#947; Conc &#183; &#948; AC"
+" &#183; 0 turns that factor off</div></div>"
 "<div class='card'>"
 "<div id='runsRow' style='display:grid;grid-template-columns:1fr 1fr;gap:8px 14px;margin-bottom:10px'>"
 "<div class='frow'>"
@@ -240,15 +257,34 @@ static const char HTML[] =
 " value='" EL_STR(SCORE_PASSES_DEFAULT) "' min='0'"
 " max='" EL_STR(SCORE_PASSES_MAX) "' step='1' oninput='unlimHint()'>"
 "</div>"
+"<div class='wgrid'>"
 "<div class='frow'>"
-"<label for='numPreW' title='Weight of concordance in the ranking key. "
-"The key is ((1-p)*z_ctr/\u03c3_z + p*zc_ctr/\u03c3_c)/sqrt((1-p)^2+p^2). 0 is z alone. "
-"Tables mean nothing before the first block closes: uncentred offsets are huge.'>"
-"Concordance weight:</label>"
-"<input id='numPreW' class='fin' type='number' min='0' max='1' step='0.05' "
-"value='" EL_STR(ENT_W_PRE_FORM) "'>"
+"<label for='numKdn' title='alpha. A smaller delta-n stretches Z* along the sign of Z. "
+"At delta-n = 1 the factor is 1. 0 turns this factor off.'>&#916;n &#945;:</label>"
+"<input id='numKdn' class='fin' type='number' min='0' max='1' step='0.05' value='0' "
+"oninput='formulaDirty=true;paintFormula()'>"
 "</div>"
 "<div class='frow'>"
+"<label for='numKmau' title='beta. A negative Mau stretches Z* along the sign of Z. "
+"Zero or positive Mau leaves the factor at 1. 0 turns this factor off.'>Mau &#946;:</label>"
+"<input id='numKmau' class='fin' type='number' min='0' max='1' step='0.05' value='0' "
+"oninput='formulaDirty=true;paintFormula()'>"
+"</div>"
+"<div class='frow'>"
+"<label for='numKconc' title='gamma. Conc stretches Z* only when it has the same sign as Z, "
+"by |Conc| / sigma of Conc. The other sign leaves the factor at 1. 0 turns this factor off.'>"
+"Conc &#947;:</label>"
+"<input id='numKconc' class='fin' type='number' min='0' max='1' step='0.05' value='0' "
+"oninput='formulaDirty=true;paintFormula()'>"
+"</div>"
+"<div class='frow'>"
+"<label for='numKac' title='delta. A positive AC damps Z*, so a run is not rewarded. "
+"A negative AC leaves the factor at 1. 0 turns this factor off.'>AC &#948;:</label>"
+"<input id='numKac' class='fin' type='number' min='0' max='1' step='0.05' value='0' "
+"oninput='formulaDirty=true;paintFormula()'>"
+"</div>"
+"</div>"
+"<div class='frow wspan'>"
 "<label title='The column whose running sum picks the pool, and from which end. Column: the Σ marker "
 "in the number-scoring table header; end: the sort arrow of the Σ column (▾ highest, ▴ lowest). "
 "The last choice is stored and used by every following session.'>Pool criterion:</label>"
@@ -564,9 +600,26 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "function setMode(mode){"
 "document.getElementById('subtitle').textContent="
 "mode===0?'Eurojackpot • 5 of 50 + 2 bonus numbers':'6 of 49 Lotto';}"
+"var formulaDirty=false;"
+"function wShow(id){var e=document.getElementById(id);if(!e)return 0;"
+"var v=parseFloat(e.value);if(!(v>=0))return 0;if(v>1)return 1;return v;}"
+"function fmtW(x){return (Math.round(x*100)/100).toFixed(2);}"
+"function paintFormula(d){"
+"var live=d&&(d.state==='running'||((d.state==='done'||d.state==='aborted')&&!formulaDirty));"
+"var a,b,g,c;"
+"if(live){a=+d.k_dn||0;b=+d.k_mau||0;g=+d.k_conc||0;c=+d.k_ac||0;}"
+"else{a=wShow('numKdn');b=wShow('numKmau');g=wShow('numKconc');c=wShow('numKac');}"
+"var el=document.getElementById('formulaBar');if(!el)return;"
+"el.innerHTML='Z* = (Z/\\u03c3) \\u00b7 [1 + '+fmtW(a)+'\\u00b7(1/\\u0394n \\u2212 1)]'"
+"+' \\u00b7 [1 + '+fmtW(b)+'\\u00b7max(\\u2212Mau, 0)]'"
+"+' \\u00b7 [1 + '+fmtW(g)+'\\u00b7max(Conc\\u00b7sign(Z)/\\u03c3c, 0)]'"
+"+' \\u00b7 [1 \\u2212 '+fmtW(c)+'\\u00b7max(AC, 0)/(1+max(AC, 0))]'"
+"+\"<div style='font-size:.78em;color:#8fae8f;margin-top:2px'>\\u03b1 \\u0394n \\u00b7 \\u03b2 Mau \\u00b7 \\u03b3 Conc \\u00b7 \\u03b4 AC \\u00b7 0 turns that factor off</div>\";"
+"}"
+"function zW(d){return {a:+d.k_dn||0,b:+d.k_mau||0,g:+d.k_conc||0,ac:+d.k_ac||0};}"
 "window.onload=function(){"
 "fetch('/status').then(function(r){return r.json();}).then(function(d){"
-"evPoll(d);showSumPref(d.score_sum);"
+"evPoll(d);showSumPref(d.score_sum);paintFormula(d);"
 "if(d.state==='running'){"
 "curMode=d.mode==='euro'?0:1;setMode(curMode);"
 "document.getElementById('runsRow').style.display='none';"
@@ -653,11 +706,6 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "?((d.cal_budget_ms/1000)+' s, every '+fmt(d.cal_interval_ms||0)"
 "+((d.cal_due_ms>0)?' (next \u2264 '+fmt(d.cal_due_ms)+')':''))"
 ":'off'));"
-"var kz=1-(d.pre_w||0);"
-"var ktxt=(d.pre_w>0)"
-"?('z '+kz.toFixed(2)+' / conc '+(d.pre_w||0).toFixed(2))"
-":'z alone';"
-"p.push(pItem('Key',ktxt));"
 "p.push(pItem('Score',d.score_dir||'high'));"
 /* How many /loops rows -- i.e. drift points -- exist so far. Counts the OPEN
    block too while the session is live, because that is the one being filled. */
@@ -712,9 +760,11 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "var score=DIR;"
 // Clamped here as well as validated in C: /start answers 400 for anything
 // outside 0..1 rather than falling back, so the form must not be able to send
-// a value that gets the session refused. parseFloat of '' is NaN -> default.
-"var wPre=parseFloat(document.getElementById('numPreW').value);"
-"if(!(wPre>=0&&wPre<=1))wPre=" EL_STR(ENT_W_PRE_FORM) ";"
+// a value that gets the session refused. parseFloat of '' is NaN -> 0.
+"function clampW(id){var e=document.getElementById(id);var v=parseFloat(e.value);"
+"if(!(v>=0&&v<=1))v=0;e.value=v;return v;}"
+"var kdn=clampW('numKdn'),kmau=clampW('numKmau'),kconc=clampW('numKconc'),kac=clampW('numKac');"
+"paintFormula();"
 "document.getElementById('runsErr').textContent='';"
 "document.getElementById('pfScore').style.width='0%';"
 "document.getElementById('sScoreDone').textContent='0';"
@@ -723,7 +773,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "fetch('/start?mode='+mode"
 "+'&run='+runS"
 "+'&score='+score"
-"+'&wpre='+wPre"
+"+'&kdn='+kdn+'&kmau='+kmau+'&kconc='+kconc+'&kac='+kac"
 "+'&maxruns='+mxr+'&passes='+passes+'&confirm=1',{method:'POST'})"
 ".then(function(r){if(!r.ok){"
 "document.getElementById('runsErr').textContent="
@@ -918,7 +968,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "function poll(){"
 "fetch('/status').then(function(r){return r.json();}).then(function(d){"
 "lastSlowMbit=slowMbit(d)||lastSlowMbit;showSumPref(d.score_sum);"
-"updatePoolBadge(d);updateParamBadge(d);"
+"updatePoolBadge(d);updateParamBadge(d);paintFormula(d);"
 "updateFocusInfo(d);"
 "evPoll(d);"
 "preparing=(d.state==='running'&&d.phase==='calibrating');"
@@ -1067,9 +1117,9 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "ph=(d.score_span_n>0)"
 "?((live?'scoring pass '+(d.scoring_pass>1?d.scoring_pass-1:d.scoring_pass)+' closed':'scoring done \\u00b7 last pass')"
 "+' \\u00b7 \\u03c3 z '+(d.score_sig_z||0).toFixed(3)"
-"+(d.pre_w>0?' \\u00b7 \\u03c3 conc '+(d.score_sig_c||0).toFixed(3):'')"
+"+(d.k_conc>0?' \\u00b7 \\u03c3 conc '+(d.score_sig_c||0).toFixed(3):'')"
 "+' \\u00b7 numbers '+d.score_span_n"
-"+(d.pre_w>0?' \\u00b7 \\u2211 conc '+(d.score_conc_n||0)+'/'+d.score_span_n:''))"
+"+(d.k_conc>0?' \\u00b7 \\u2211 conc '+(d.score_conc_n||0)+'/'+d.score_span_n:''))"
 ":(live?'scoring pass '+d.scoring_pass+' open \\u2014 its centre and \\u03c3 exist once it closes':'');"
 "}else if((d.pass_n_valid||0)>0){"
 "ph='pass mean '+(d.pass_mean||0).toFixed(3)"
@@ -1090,7 +1140,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "+', n '+acn+', z): '+t.join(' \\u00b7 ');}"
 "var s2='';"
 /* Concordance coverage when weight is on: pre_n = items with zc_ctr != 0. */
-"if(!SCM&&(d.pre_w||0)>0){"
+"if(!SCM&&(d.k_conc||0)>0){"
 "var e='\u2211 conc';"
 "if(d.pass_n_valid>0)e+=' '+(d.pre_n||0)+'/'+d.pass_n_valid"
 "+((d.pre_n<d.pass_n_valid)?' \u26a0':'');"
@@ -1364,7 +1414,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "'\\uD83C\\uDFC6 Top '+top.length+' of '+SC.length+' \\u2014 scoring '"
 "+(d.scoring_pass>0?scoreSect(d)+'pass '+d.scoring_pass+((d.runs_cap===0&&d.scoring_passes===0)?'':'/'+(d.scoring_passes||" EL_STR(SCORE_PASSES_DEFAULT) ")):'done, round '+(d.round||1))"
 "+' \\u00b7 pool: '+(d.score_dir==='low'?'lowest ':'highest ')+lab.sum;"
-"renderRunTable('resHead','resBody',top,isEuro,d,{p:d.pre_w||0},{pool:pool});"
+"renderRunTable('resHead','resBody',top,isEuro,d,zW(d),{pool:pool});"
 "if(!top.length)document.getElementById('resBody').innerHTML="
 "'<tr><td colspan=\"11\" style=\"color:#d0b0b0;padding:10px\">No number scored yet.</td></tr>';}"
 /* /extremes ranks every held row on the MASTER's HTTP task, which shares the
@@ -1389,7 +1439,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "EX=(x&&x.extremes)?x.extremes:[];QX=(x&&x.quiet)?x.quiet:[];EXH=(x&&x.held)||0;EXK=k;EXF=true;"
 "renderExtremeTables();}).catch(function(){});}"
 "function renderExtremeTables(){"
-"if(!LD)return;var d=LD,isEuro=d.mode==='euro',st={p:d.pre_w||0};"
+"if(!LD)return;var d=LD,isEuro=d.mode==='euro',st=zW(d);"
 "var lab={key:'Z*',z_ctr:'Z',zc:'Conc',nsd:'\\u0394n',ac:'AC',mau:'Mau'};"
 "var top,title;"
 /* One table: the master's ten on the active sort. The other end is one
@@ -1449,7 +1499,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "function renderRunTable(headId,bodyId,res,isEuro,d,st,opt){"
 "document.getElementById(headId).innerHTML="
 "'<tr><th>#</th>'+(opt?'<th style=\"cursor:pointer\" title=\"running sum of this number\\u2019s pass keys \\u2014 the pool is picked on it. While the scoring runs the arrow is the pool direction: \\u25be highest, \\u25b4 lowest; a second click flips it. A green # marks a pool member.\" onclick=\"sortBy(\\'sum\\')\">\\u03a3 '+{key:'Z*',z:'Z',conc:'Conc',nsd:'\\u0394n',ac:'AC',mau:'Mau'}[curSum()]+exArrow('sum')+'</th>':'<th>Item</th>')"
-"+(st?'<th style=\"cursor:pointer\" title=\"ranking key in units of its own block σ. Click to sort the 50\" onclick=\"sortBy(\\'key\\')\">'+sumLab(opt,'key','Z*')+exArrow('key')+sumMark(opt,'key')+'</th>'"
+"+(st?'<th style=\"cursor:pointer\" title=\"Z* = (Z/\\u03c3) times the four factors shown at the top of the page. No block \\u03c3 yet gives 0. Click to sort.\" onclick=\"sortBy(\\'key\\')\">'+sumLab(opt,'key','Z*')+exArrow('key')+sumMark(opt,'key')+'</th>'"
 "+'<th style=\"cursor:pointer\" title=\"block-centred combined z. Click to sort the 50\" onclick=\"sortBy(\\'z_ctr\\')\">'+sumLab(opt,'z','Z')+exArrow('z_ctr')+sumMark(opt,'z')+'</th>'"
 "+'<th style=\"cursor:pointer\" title=\"leave-one-out half-window concordance. Click to sort the 50\" onclick=\"sortBy(\\'zc\\')\">'+sumLab(opt,'conc','Conc')+exArrow('zc')+sumMark(opt,'conc')+'</th>'"
 /* Plain-language tooltip: the operator is the only reader of this cell, and the
@@ -1464,11 +1514,11 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "large (1.5 and up) = one or two cameras carried the result alone, the others "
 "saw none of it\\n"
 "\\u2014 = not computed yet (block still open) or too few cameras\\n"
-"\\u0394n does not change which numbers enter the pool; the table can be sorted "
-"by it. Click to sort the 50.\" style=\"cursor:pointer\" onclick=\"sortBy(\\'nsd\\')\">"
+"When its weight at the top is above 0, a smaller \\u0394n stretches Z* along the sign of Z. "
+"Its running sum can also pick the pool. Click to sort.\" style=\"cursor:pointer\" onclick=\"sortBy(\\'nsd\\')\">"
 "'+sumLab(opt,'nsd','\\u0394n')+exArrow('nsd')+sumMark(opt,'nsd')+'</th>'"
-/* AC: the window autocorrelation of the bits behind this item. A
-   diagnostic column like Δn: it sorts the 50, it never enters a key. */
+/* AC: autocorrelation against the 1..4 items measured just before this one.
+   A positive AC damps Z* when ?kac= is above 0. */
 "+'<th title=\"Did this item\\u2019s z follow the items measured just before it?\\n"
 "Autocorrelation of the centred z series in measurement order: this item times "
 "each of the 1 to 4 items before it, in units of pure chance.\\n"
@@ -1476,11 +1526,11 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "large + = it moved together with its predecessors (a slow drift or a shared state)\\n"
 "large \\u2212 = it alternated against them\\n"
 "\\u2014 = block (scoring: pass) still open, or the first item of it\\n"
-"AC does not change which numbers enter the pool. Click to sort the 50.\" "
+"When its weight at the top is above 0, a positive AC damps Z* so a run is not rewarded. "
+"A negative AC leaves Z* alone. Its running sum can also pick the pool. Click to sort.\" "
 "style=\"cursor:pointer\" onclick=\"sortBy(\\'ac\\')\">'+sumLab(opt,'ac','AC')+exArrow('ac')+sumMark(opt,'ac')+'</th>'"
-/* Mau: Maurer's universal test (NIST SP 800-22) over the camera bits behind
-   this item. A research column like Δn and AC: it sorts, its Σ may pick the
-   pool, it never enters Z*. */
+/* Mau: Maurer's universal test over this item's window. A negative Mau
+   stretches Z* when ?kmau= is above 0. Its Σ may still pick the pool. */
 "+'<th title=\"Were the camera bits of this item compressible?\\n"
 "Maurer\\u2019s universal test (NIST SP 800-22) over the bits of this item\\u2019s own "
 "measuring window: how soon each 8-bit pattern comes back. Each camera against its own "
@@ -1489,7 +1539,8 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "large \\u2212 = patterns came back sooner than usual (less entropy)\\n"
 "large + = patterns came back later than usual\\n"
 "\\u2014 = block (scoring: pass) still open, or no camera reported it\\n"
-"Z counts ones; Mau looks at the patterns they form. Click to sort the 50.\" "
+"When its weight at the top is above 0, a negative Mau stretches Z* along the sign of Z. "
+"A positive Mau leaves Z* alone. Click to sort.\" "
 "style=\"cursor:pointer\" onclick=\"sortBy(\\'mau\\')\">'+sumLab(opt,'mau','Mau')+exArrow('mau')+sumMark(opt,'mau')+'</th>':'')"
 "+'<th>Numbers</th>'"
 "+(isEuro?'<th>Bonus</th>':'')+'<th></th></tr>';"
@@ -1512,9 +1563,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "var concTxt=(r.zc===undefined||r.zc===null)?'\\u2014':r.zc.toFixed(2);"
 /* Node agreement (nsd). null until the item's block has been centred -- the
    same wait z_ctr has -- so a dash is the honest cell, never 0. It is dimmed
-   above 1 and highlighted below 0.6 so the eye finds the agreed items without
-   the column ever reordering anything: it is a confidence figure beside Z*,
-   not a second ranking key. */
+   above 1 and highlighted below 0.6. Below 1 stretches Z* when ?kdn= is above 0. */
 "var nsd=(r.nsd===undefined||r.nsd===null)?null:r.nsd;"
 /* Δn plus, in parentheses, the node count it is taken over — k, the cameras
    that entered this item's combine. A dash carries no count. */
@@ -1526,8 +1575,10 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "var mauCol=(r.mau===undefined||r.mau===null)?'#9aa':(Math.abs(r.mau)>3?'#ffd479':'');"
 "var det='Z '+zTxt+' \\u00b7 Conc '+concTxt"
 "+' \\u00b7 \\u0394n '+nsdTxt+' (k '+(r.k===undefined?'?':r.k)+')';"
-"if(st)det+='\\nweights: z '+(1-(st.p||0)).toFixed(2)"
-"+' \\u00b7 conc '+(st.p||0).toFixed(2);"
+"if(st)det+='\\n\\u0394n \\u00d7'+(st.a||0).toFixed(2)"
+"+' \\u00b7 Mau \\u00d7'+(st.b||0).toFixed(2)"
+"+' \\u00b7 Conc \\u00d7'+(st.g||0).toFixed(2)"
+"+' \\u00b7 AC \\u00d7'+(st.ac||0).toFixed(2);"
 "tb.innerHTML+='<tr><td'+(inP?' style=\"color:#90ee90;font-weight:700\" title=\"in the pool\"':'')+'>'+(i+1)+'</td><td>'+itm+'</td>"
 "'+(st?'<td title=\"'+det+'\">'+zs+'</td>'"
 "+'<td'+dim+'>'+zTxt+'</td><td'+dim+'>'+concTxt+'</td>'"
@@ -1807,9 +1858,9 @@ static esp_err_t status_handler(httpd_req_t *req)
          * pass_n_valid and no pass statistic sees it. */
         "\"pass_n_excl\":%d,\"pass_n_open\":%d,"
         "\"v_eff\":%.4f,\"flush_timeouts\":%lu,"
-        /* No channel σ and no key moments are published: rank_key() divides by
-         * the item's BLOCK σ. */
-        "\"pre_w\":%.3f,"
+        /* Z* factor weights of this session. rank_key() divides Z by the
+         * item's BLOCK σ and multiplies the four factors. */
+        "\"k_dn\":%.3f,\"k_mau\":%.3f,\"k_conc\":%.3f,\"k_ac\":%.3f,"
         "\"pre_n\":%d,"
         "\"score_dir\":\"%s\",\"score_sum\":\"%s\","
         "\"loop_sigma\":%.4f,"
@@ -1859,7 +1910,7 @@ static esp_err_t status_handler(httpd_req_t *req)
         g_status.pass_stouffer, g_status.pass_n_valid, g_status.pass_n_void,
         g_status.pass_n_excl, g_status.pass_n_open,
         g_status.v_eff, (unsigned long)g_status.flush_timeouts,
-        g_status.pre_w,
+        g_status.k_dn, g_status.k_mau, g_status.k_conc, g_status.k_ac,
         g_status.pre_n,
         score_str,
         SCORE_SUM_NAME[(g_status.score_sum >= 0 && g_status.score_sum < SCORE_SUM_N)
@@ -2597,7 +2648,7 @@ typedef struct {
     int        cal_ms;
     ScoreDir   score_dir;
     bool       fake_pool;
-    double     pre_w;
+    double     k_dn, k_mau, k_conc, k_ac;
     bool       from_form;
 } StartReq;
 
@@ -2640,18 +2691,28 @@ static bool start_parse_score(const char *val, StartReq *r, httpd_req_t *req)
     }
     return true;
 }
-static bool start_parse_wpre(const char *val, StartReq *r, httpd_req_t *req)
+static bool start_parse_w01(const char *val, double *dst, httpd_req_t *req,
+                           const char *name)
 {
     double p;
+    char msg[96];
     if (!parse_double_all(val, &p) || p < 0.0 || p > 1.0) {
-        start_refuse(req,
-            "wpre= is the concordance weight in the ranking key and must "
-            "be 0..1 (0 = the control arm, ranking unchanged)");
+        snprintf(msg, sizeof(msg),
+                 "%s= is a Z* factor weight and must be 0..1 (0 = off)", name);
+        start_refuse(req, msg);
         return false;
     }
-    r->pre_w = p;
+    *dst = p;
     return true;
 }
+static bool start_parse_kdn(const char *val, StartReq *r, httpd_req_t *req)
+{ return start_parse_w01(val, &r->k_dn, req, "kdn"); }
+static bool start_parse_kmau(const char *val, StartReq *r, httpd_req_t *req)
+{ return start_parse_w01(val, &r->k_mau, req, "kmau"); }
+static bool start_parse_kconc(const char *val, StartReq *r, httpd_req_t *req)
+{ return start_parse_w01(val, &r->k_conc, req, "kconc"); }
+static bool start_parse_kac(const char *val, StartReq *r, httpd_req_t *req)
+{ return start_parse_w01(val, &r->k_ac, req, "kac"); }
 static bool start_parse_maxruns(const char *val, StartReq *r, httpd_req_t *req)
 {
     int m;
@@ -2771,11 +2832,14 @@ static const StartKey start_keys[] = {
     { "rank",      START_GONE_V3, NULL },
     { "focus",     START_GONE_V3, NULL },
     { "went",
-      "went= no longer exists -- the spectral-entropy channel was "
-      "removed; ranking is z_ctr and optional ?wpre= only", NULL },
+      "went= no longer exists -- ranking is the Z* product "
+      "(kdn=, kmau=, kconc=, kac=)", NULL },
     { "wruns",
-      "wruns= no longer exists -- the runs ranking channel was "
-      "removed; ranking is z_ctr and optional ?wpre= only", NULL },
+      "wruns= no longer exists -- ranking is the Z* product "
+      "(kdn=, kmau=, kconc=, kac=)", NULL },
+    { "wpre",
+      "wpre= no longer exists -- Z* is z/sigma times kdn=, kmau=, "
+      "kconc= and kac= (each 0..1, 0 = that factor off)", NULL },
     { "baseline",
       "baseline= no longer exists -- the baseline phase was deleted; "
       "block centring is the drift reference", NULL },
@@ -2787,7 +2851,10 @@ static const StartKey start_keys[] = {
     { "run",       NULL, start_parse_run },
     { "gap",       NULL, start_parse_gap },
     { "score",     NULL, start_parse_score },
-    { "wpre",      NULL, start_parse_wpre },
+    { "kdn",       NULL, start_parse_kdn },
+    { "kmau",      NULL, start_parse_kmau },
+    { "kconc",     NULL, start_parse_kconc },
+    { "kac",       NULL, start_parse_kac },
     { "maxruns",   NULL, start_parse_maxruns },
     { "passes",    NULL, start_parse_passes },
     { "confirm",   NULL, start_parse_confirm },
@@ -2881,7 +2948,7 @@ typedef struct {
     int          run_segments;
     int          cal_budget_ms;
     ScoreDir     score_dir;
-    double       pre_w;
+    double       k_dn, k_mau, k_conc, k_ac;
     int          pre_n;
     ElottoState  state;
 } StartSnap;
@@ -2898,7 +2965,10 @@ static void start_snap_save(StartSnap *s)
     s->run_segments  = g_status.run_segments;
     s->cal_budget_ms = g_status.cal_budget_ms;
     s->score_dir     = g_status.score_dir;
-    s->pre_w         = g_status.pre_w;
+    s->k_dn          = g_status.k_dn;
+    s->k_mau         = g_status.k_mau;
+    s->k_conc        = g_status.k_conc;
+    s->k_ac          = g_status.k_ac;
     s->pre_n         = g_status.pre_n;
     s->state         = g_status.state;
 }
@@ -2915,7 +2985,10 @@ static void start_snap_restore(const StartSnap *s)
     g_status.run_segments  = s->run_segments;
     g_status.cal_budget_ms = s->cal_budget_ms;
     g_status.score_dir     = s->score_dir;
-    g_status.pre_w         = s->pre_w;
+    g_status.k_dn          = s->k_dn;
+    g_status.k_mau         = s->k_mau;
+    g_status.k_conc        = s->k_conc;
+    g_status.k_ac          = s->k_ac;
     g_status.pre_n         = s->pre_n;
     g_status.state         = s->state;
 }
@@ -2931,9 +3004,9 @@ static esp_err_t start_handler(httpd_req_t *req)
     {
         /* ⚠ NOTHING in g_status is written until every parameter has validated.
          * Every refusal below is a 400, and a 400 must leave the FINISHED
-         * session alone: /status still describes it, and rewriting `pre_w` there
-         * would relabel what the page shows about it. Parse into locals, commit
-         * once at the end. */
+         * session alone: /status still describes it, and rewriting the four
+         * Z* weights there would relabel what the page shows about it. Parse
+         * into locals, commit once at the end. */
         StartReq parsed = {
             .mode      = MODE_EUROJACKPOT,
             .runs_cap  = UNLIM_RUNS_DEFAULT,
@@ -2942,7 +3015,10 @@ static esp_err_t start_handler(httpd_req_t *req)
             .gap_ms    = -1,
             .cal_ms    = CAL_BUDGET_DEFAULT_MS,
             .score_dir = SCORE_DIR_HIGH,
-            .pre_w     = ENT_W_PRE_DEFAULT,
+            .k_dn      = ZSTAR_W_DEFAULT,
+            .k_mau     = ZSTAR_W_DEFAULT,
+            .k_conc    = ZSTAR_W_DEFAULT,
+            .k_ac      = ZSTAR_W_DEFAULT,
             .from_form = false,
         };
 
@@ -2996,7 +3072,10 @@ static esp_err_t start_handler(httpd_req_t *req)
         g_status.cal_budget_ms  = parsed.cal_ms;
         g_status.score_dir      = parsed.score_dir;
         g_status.fake_pool      = parsed.fake_pool;
-        g_status.pre_w          = parsed.pre_w;
+        g_status.k_dn           = parsed.k_dn;
+        g_status.k_mau          = parsed.k_mau;
+        g_status.k_conc         = parsed.k_conc;
+        g_status.k_ac           = parsed.k_ac;
         g_status.pre_n          = 0;
         g_status.state          = ELOTTO_RUNNING;
         /* PINNED to the core the extraction task is NOT on. See
@@ -3435,19 +3514,28 @@ static esp_err_t linearity_handler(httpd_req_t *req)
  * not the last UI value. Mode is not stored. */
 #define PREF_NS "elstart"
 
+static uint8_t pref_w100(double w)
+{
+    if (!(w > 0.0)) return 0;
+    if (w > 1.0) w = 1.0;
+    return (uint8_t)(w * 100.0 + 0.5);
+}
+
 static void prefs_save(void)
 {
     nvs_handle_t h;
     if (nvs_open(PREF_NS, NVS_READWRITE, &h) != ESP_OK) return;
     uint16_t run10 = (uint16_t)((g_status.run_target_ms + 50) / 100);
     uint16_t mx    = (uint16_t)g_status.runs_cap;
-    uint8_t  w100  = (uint8_t)(g_status.pre_w * 100.0 + 0.5);
-    if (w100 > 100) w100 = 100;
     nvs_set_u16(h, "run10", run10);
     nvs_set_u16(h, "maxruns", mx);
     nvs_set_u8(h,  "passes", (uint8_t)g_status.scoring_passes);
     nvs_set_u8(h,  "score", (uint8_t)g_status.score_dir);
-    nvs_set_u8(h,  "wpre", w100);
+    /* The old "wpre" blob is left unread. These four replace it. */
+    nvs_set_u8(h,  "kdn",   pref_w100(g_status.k_dn));
+    nvs_set_u8(h,  "kmau",  pref_w100(g_status.k_mau));
+    nvs_set_u8(h,  "kconc", pref_w100(g_status.k_conc));
+    nvs_set_u8(h,  "kac",   pref_w100(g_status.k_ac));
     nvs_commit(h);
     nvs_close(h);
 }
@@ -3490,20 +3578,25 @@ static void prefs_send(httpd_req_t *req)
     nvs_handle_t h;
     if (nvs_open(PREF_NS, NVS_READONLY, &h) != ESP_OK) return;
     uint16_t run10 = 0, maxruns = 0;
-    uint8_t score = 0xff, wpre = 0xff, passes = 0;
+    uint8_t score = 0xff, passes = 0;
+    uint8_t kdn = 0xff, kmau = 0xff, kconc = 0xff, kac = 0xff;
     bool any = false;
     /* maxruns and passes now have 0 as a real value (scoring-only / continuous),
-     * so remember them on presence, not on being non-zero. */
+     * so remember them on presence, not on being non-zero. The old "wpre"
+     * blob is not read: 0 is the new default, not the old concordance weight. */
     bool have_mx = false, have_passes = false;
     if (nvs_get_u16(h, "run10", &run10) == ESP_OK) any = true;
     if (nvs_get_u16(h, "maxruns", &maxruns) == ESP_OK) { any = true; have_mx = true; }
     if (nvs_get_u8(h,  "passes", &passes) == ESP_OK) { any = true; have_passes = true; }
     if (nvs_get_u8(h,  "score", &score) == ESP_OK) any = true;
-    if (nvs_get_u8(h,  "wpre", &wpre) == ESP_OK) any = true;
+    if (nvs_get_u8(h,  "kdn",   &kdn) == ESP_OK) any = true;
+    if (nvs_get_u8(h,  "kmau",  &kmau) == ESP_OK) any = true;
+    if (nvs_get_u8(h,  "kconc", &kconc) == ESP_OK) any = true;
+    if (nvs_get_u8(h,  "kac",   &kac) == ESP_OK) any = true;
     nvs_close(h);
     if (!any) return;
 
-    char js[700];
+    char js[1200];
     int p = 0;
     p += snprintf(js + p, sizeof(js) - p, "<script>(function(){var e;");
     if (run10 > 0)
@@ -3522,11 +3615,23 @@ static void prefs_send(httpd_req_t *req)
         p += snprintf(js + p, sizeof(js) - p, "DIR='%s';showSumPref();",
                       score == SCORE_DIR_LOW ? "low" : "high");
     }
-    if (wpre != 0xff)
+    if (kdn != 0xff)
         p += snprintf(js + p, sizeof(js) - p,
-            "e=document.getElementById('numPreW');if(e)e.value='%.2f';",
-            wpre / 100.0);
-    p += snprintf(js + p, sizeof(js) - p, "unlimHint();})();</script>");
+            "e=document.getElementById('numKdn');if(e)e.value='%.2f';",
+            kdn / 100.0);
+    if (kmau != 0xff)
+        p += snprintf(js + p, sizeof(js) - p,
+            "e=document.getElementById('numKmau');if(e)e.value='%.2f';",
+            kmau / 100.0);
+    if (kconc != 0xff)
+        p += snprintf(js + p, sizeof(js) - p,
+            "e=document.getElementById('numKconc');if(e)e.value='%.2f';",
+            kconc / 100.0);
+    if (kac != 0xff)
+        p += snprintf(js + p, sizeof(js) - p,
+            "e=document.getElementById('numKac');if(e)e.value='%.2f';",
+            kac / 100.0);
+    p += snprintf(js + p, sizeof(js) - p, "paintFormula();unlimHint();})();</script>");
     if (p > 0 && p < (int)sizeof(js))
         httpd_resp_send_chunk(req, js, p);
 }
