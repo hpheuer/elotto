@@ -151,10 +151,14 @@ ends** — in Eurojackpot both pools at once. The pool criterion is **freely
 selectable and remembered**: a Σ click writes it to NVS at once (any start, not only
 `confirm=1`), boot loads it (Z\* if none stored), a session start keeps it — it holds for the whole
 session and the following ones until the next click. The start form shows it read-only
-("Pool criterion"). `/status` `score_sum` names it. Direction: `?score=high|low|abs`, API default `high` — it only
-picks the pool. Remembered like the column: the form's select writes it to NVS at once
+("Pool criterion"). `/status` `score_sum` names it. Direction: `?score=high|low`, API default `high` — it only
+picks the pool. Remembered like the column: the Σ arrow writes it to NVS at once
 (`POST /scoresum?dir=`), and during the scoring it also applies to the running session.
-⚠ Δn is never negative, so `abs` on Σ Δn picks the same pool as `high`. The scoring table's
+On Σ Z\* the rank key is the absolute sum: `high` is the largest |Σ Z\*|, `low` the smallest;
+the cell and the stored sum keep the sign. Sums −12, +8, −3, +1 rank −12, +8, −3, +1.
+Every other column stays signed (`high` = largest, `low` = smallest). The scoring Top-10
+uses the same rule for Σ Z\* and for the Z\* column (that number's latest pass key): a larger
+magnitude ranks higher, the printed number keeps its sign. The scoring table's
 title names the pool criterion; the column arrows show the table sort. The UI shows pass k/n and the current top of the pool with the running sum, and
 **everything the pass shows**: a Top-10 of the numbers (Σ, Z\*, Z, Conc, Δn, AC — `GET
 /extremes?score=1`, `RunResult` rows in their own buffer, never in `results[]`; display
@@ -195,8 +199,10 @@ round is just a scoring (see the `?maxruns=0` rule under v3), endless.
   criterion** stay as rows — the Σ column (`score_sum`: Z\*, Z, Conc, Δn, AC, Mau) in the pool
   direction (`score_dir`: high = largest values, low = smallest; `rank_order()` in `sensor.c`).
   Both can only change during a scoring, so a round's compaction uses exactly the criterion its
-  pool was picked with. ⚠ **One tail only**: under `high` the most negative values leave at the
-  next round boundary. ⚠ A row without a value in that column (AC on a block's first item, Δn
+  pool was picked with. ⚠ **One tail only.** On Z\* the comparison is |Z\*|: `high` keeps the
+  largest magnitudes, `low` the smallest; the stored key stays signed. Items −3,0, +2,5, −0,4
+  under `high` keep −3,0 then +2,5. Every other column stays signed, so under `high` on Z the
+  most negative values leave. ⚠ A row without a value in that column (AC on a block's first item, Δn
   with k < 2) is never kept. ⚠ A criterion switched in a later scoring cannot bring back rows an
   earlier compaction merged. Quarantined rows are not kept — nothing reads them after
   their block closes. The rest merges into moments — pass mean/σ/χ²
@@ -299,12 +305,16 @@ what remains visible is an effect varying **between items inside a block**.
   Total Time). ⚠ The bottom row is shown only while a session runs — every session is rounds
 . The scoring has its own round-relative row (Numbers, Progress, Time/ETA).
 - **A view button over the table** switches items ↔ number scoring whenever both have data;
-  default follows the phase.
+  default follows the phase. Σ Z\* and the Z\* column rank by absolute value in the number
+  table and in the item table: the cell keeps its sign, a larger magnitude ranks higher.
+  The line under that Top-10 says so — ranked by |Z\*|, the cell keeps the sign, so 3 and −3
+  both sit at the top. The column header reads `|Z*|`. Every other column stays signed.
 - **One sortable table of ten**: Top-10, item counter + block badge. Columns: `Z*` (the
   product above), `Z`, `Conc`, `Δn`, `AC`, `Mau`. Every header has a plain-language tooltip.
   ⚠ **The table is the ten held rows best on the clicked column and direction, chosen on the
   master** — `GET /extremes?sort=key|z|conc|nsd|ac|mau&dir=high|low` (streamed JSON, `emit_run` row
-  shape, `held` = rows with a value in that column), polled every **5 s**; a header click fetches
+  shape, `held` = rows with a value in that column). On `key`, `high` is the largest |Z\*|,
+  `low` the smallest; the published `key` stays signed. Polled every **5 s**; a header click fetches
   at once but at most once per second, and a reply for a superseded sort is dropped. `dir=`
   without `sort=`, an unknown value and a truncated value or query (> 95 characters) answer **400**. It ranks every held row on the master's HTTP task, which shares the consumer core, so a
   1 s poll stole the master's extraction CPU. ⚠ **Held rows** are the compaction archive (chosen on
@@ -331,7 +341,8 @@ what remains visible is an effect varying **between items inside a block**.
   same header flips direction (arrow ▾/▴, ⇅ on the inactive ones), so the low end is one click away —
   which is why the old Bottom-5 table is gone. The sort never changes the compaction archive or the
   pool. An item without a value in the sorted column (`Δn` on a solo item) is not listed. `Δn` prints the node count it is taken over in parentheses — `0,79 (3)` is
-  three cameras. Until the first `/extremes` reply lands the table falls back to `/status` `top`.
+  three cameras. Until the first `/extremes` reply lands the table falls back to `/status` `top`,
+  the largest |Z\*| (the row keeps its sign).
   **`AC` is the ITEM autocorrelation**: u = centred combined z / block σ in MEASUREMENT order,
   AC_j = Σ_{L=1..4} u_j·u_{j−L} / √m (m = lags available) — **unit variance for independent
   items**, read against 0. + = it moved with its predecessors, − = it alternated. Coloured at

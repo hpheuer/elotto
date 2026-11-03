@@ -551,9 +551,14 @@ static int score_pick_best(const ScoreAcc *A, int ch, const bool *used)
     int b = 0;
     double bs = 0.0;
     bool first = true;
+    /* Σ Z* ranks by magnitude: high = largest |sum|, low = smallest.
+     * acc stays signed, and pool_*_z prints that sign. Equal |sum| keeps
+     * the lower number (strict >). Other columns stay signed. */
+    bool mag = (ch == SUM_KEY);
     for (int j = 1; j <= A->max_val; j++) {
         if (used[j] || !A->ok[ch][j]) continue;
         double s = A->acc[ch][j];
+        if (mag) s = fabs(s);
         double key = g_status.score_dir == SCORE_DIR_LOW ? -s : s;
         if (first || key > bs) { b = j; bs = key; first = false; }
     }
@@ -649,9 +654,13 @@ static void pool_log(const uint8_t *pm, int nm, const uint8_t *pe, int ne)
         np += snprintf(nums + np, sizeof(nums) - np, " +");
     for (int i = 0; i < ne && np < (int)sizeof(nums) - 4; i++)
         np += snprintf(nums + np, sizeof(nums) - np, " %d", pe[i]);
-    evlog("Pool by %s sum of %s:%s",
-          g_status.score_dir == SCORE_DIR_LOW ? "lowest" : "highest",
-          score_sum_label(score_sum_sel()), nums);
+    if (score_sum_sel() == SUM_KEY)
+        evlog("Pool by %s |sum| of Z*:%s",
+              g_status.score_dir == SCORE_DIR_LOW ? "smallest" : "largest", nums);
+    else
+        evlog("Pool by %s sum of %s:%s",
+              g_status.score_dir == SCORE_DIR_LOW ? "lowest" : "highest",
+              score_sum_label(score_sum_sel()), nums);
 }
 
 /* ── The scoring table (ScoreItem) ────────────────────────────────────────
@@ -1533,8 +1542,11 @@ double rank_key(const RunResult *r)
  * SAME column and direction that picked the pool: score_sum (Z*, Z, Conc, Δn,
  * AC, Mau) and score_dir (high = largest values, low = smallest). Both can only
  * change while a scoring runs, so a round's compaction uses exactly the
- * criterion its pool was picked with. ⚠ One direction, not both tails: under
- * `high` the most negative Z* leave at the next round boundary.
+ * criterion its pool was picked with. ⚠ One tail. On Z* (SUM_KEY) the
+ * comparison is |Z*|: high keeps the largest magnitudes, low the smallest.
+ * The stored key stays signed, and that is what the cell prints. Items
+ * −3, +2.5, −0.4 rank −3, +2.5, −0.4 under high. Every other column stays
+ * signed, so under high on Z the most negative values leave.
  * The value is the item's own column as the table shows it; a row without one
  * (NaN: AC on a block's first item, Δn with k < 2, Mau uncentred) is not
  * ranked and never kept.
@@ -1572,6 +1584,9 @@ static int rank_order(KeyIdx *ord, int ntot, bool need_centred, int ch, bool low
         if (need_centred && !result_centred(r)) continue;
         double v = item_crit(r, ch);
         if (!isfinite(v)) continue;
+        /* |Z*| only. high = largest magnitude, low = smallest. The row's
+         * key is not rewritten. */
+        if (ch == SUM_KEY) v = fabs(v);
         ord[m].a = low ? -v : v;
         ord[m].j = (uint16_t)j;
         m++;
@@ -1752,9 +1767,11 @@ static void recompute_pass_ranks(void)
      * instrument health on the LSB stream.
      *
      * Everything BELOW — the published tables — runs on rank_key() in units
-     * of the item's own block σ. No session moments of the key are
-     * kept: Z* is already standardised, and over a compacted results[] such a
-     * mean/σ would describe the surviving EXTREMES, not the session. */
+     * of the item's own block σ. top[] is the largest |rank_key|, low[] the
+     * smallest; the copied row keeps the signed key. No session moments of
+     * the key are kept: Z* is already standardised, and over a compacted
+     * results[] such a mean/σ would describe the surviving EXTREMES, not
+     * the session. */
     /* ⚠ pre_n is SEEDED with what compaction dropped, because the UI prints it
      * against pass_n_valid — and that one is seeded (nv = s_drop_n above). Two
      * counters over two different sets read as an instrument fault: after the
@@ -1782,21 +1799,21 @@ static void recompute_pass_ranks(void)
         const RunResult *r = &g_status.results[j];
         if (!result_ranked(r) || !result_centred(r)) continue;
 
-        double key = rank_key(r);
-        if (ltn < TOP_N || key > rank_key(&ltop[ltn - 1])) {
+        double mag = fabs(rank_key(r));
+        if (ltn < TOP_N || mag > fabs(rank_key(&ltop[ltn - 1]))) {
             if (ltn < TOP_N) ltn++;
             int p = ltn - 1;
-            while (p > 0 && rank_key(&ltop[p - 1]) < key) {
+            while (p > 0 && fabs(rank_key(&ltop[p - 1])) < mag) {
                 ltop[p] = ltop[p - 1];
                 p--;
             }
             ltop[p] = *r;
         }
 
-        if (lln < TOP_N || key < rank_key(&llow[lln - 1])) {
+        if (lln < TOP_N || mag < fabs(rank_key(&llow[lln - 1]))) {
             if (lln < TOP_N) lln++;
             int p = lln - 1;
-            while (p > 0 && rank_key(&llow[p - 1]) > key) {
+            while (p > 0 && fabs(rank_key(&llow[p - 1])) > mag) {
                 llow[p] = llow[p - 1];
                 p--;
             }
@@ -1813,8 +1830,9 @@ static void recompute_pass_ranks(void)
 }
 
 /* ── Round-boundary compaction ─────────────────────────────────────────────
- * Merge everything except the |rank_key| extremes into moments, so an
- * unlimited session runs until it is aborted instead of stopping at NUM_RUNS.
+ * Merge everything except the K best on the pool criterion into moments, so
+ * an unlimited session runs until it is aborted instead of stopping at
+ * NUM_RUNS. On Z* that order is |rank_key| (see rank_order).
  *
  * Called at every round boundary, after close_block() so every z_ctr is
  * FINAL. n ≤ PASS_KEEP_EXTREME is a no-op, so a short session keeps every row.

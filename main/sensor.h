@@ -19,7 +19,7 @@ typedef uint16_t node_mask_t;   // bit i = node i; MAX_NODES below must fit
 /* ── Round-boundary compaction  ──────────────────────────────────────
  * Unlimited rounds keep the 1000 RANKED items that rank best on the pool
  * criterion (score_sum column, score_dir direction — one tail, see
- * rank_order() in sensor.c). Quarantined rows are not kept: nothing reads them once their
+ * rank_order() in sensor.c). On Z* the tail is |Z*|. Quarantined rows are not kept: nothing reads them once their
  * block is closed. Everything else merges into pass moments. Offline re-analysis of the dropped
  * rows is not a goal. Every session is rounds, so every round
  * boundary calls pass_compact() (no-op while n ≤ 1000). */
@@ -241,12 +241,13 @@ _Static_assert(UNLIM_RUNS_MAX + PASS_KEEP_EXTREME <= NUM_RUNS,
  * confirm=1; /status names the four that ran. */
 #define ZSTAR_W_DEFAULT      0.0
 
-/* Phase-0 scoring direction (pre-registered). Only affects WHICH numbers enter
- * the pool — never the Phase-2 measurement statistics. Default HIGH matches
- * the historical "largest positive key" rule. */
+/* Phase-0 pool direction, and the item extreme direction on that column.
+ * HIGH = largest column sum, LOW = smallest, except Z* (SUM_KEY):
+ * HIGH = largest |value|, LOW = smallest |value|. The stored number stays
+ * signed — a number's Σ Z* and an item's Z* both. */
 typedef enum {
-    SCORE_DIR_HIGH = 0,   // pick largest rank_key
-    SCORE_DIR_LOW  = 1,   // pick smallest rank_key
+    SCORE_DIR_HIGH = 0,
+    SCORE_DIR_LOW  = 1,
 } ScoreDir;
 
 /* Stringify, so the HTML/JS copies of the numbers above are the SAME token the
@@ -833,9 +834,9 @@ typedef struct {
     // maximum answers neither. Upper triangle used; index 0 is the master.
     double           pair_r[MAX_NODES][MAX_NODES];
     int              result_count;       // valid entries in top[] (published)
-    RunResult        top[TOP_N];          // highest rank_key so far, desc
+    RunResult        top[TOP_N];          // largest |rank_key|, row keeps its sign
     int              low_count;           // valid entries in low[] (published)
-    RunResult        low[TOP_N];          // lowest rank_key so far, asc
+    RunResult        low[TOP_N];          // smallest |rank_key|, row keeps its sign
     volatile bool    abort_requested;
     // ── Current-item display (always on; session is unattended, D66) ──
     volatile bool    paused;              // hold BETWEEN runs (never inside one)

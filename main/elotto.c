@@ -303,6 +303,7 @@ static const char HTML[] =
 "<div class='frow wspan'>"
 "<label title='The column whose running sum picks the pool, and from which end. Column: the Σ marker "
 "in the number-scoring table header; end: the sort arrow of the Σ column (▾ highest, ▴ lowest). "
+"On Σ Z* the number stays signed and ▾ is the larger magnitude. "
 "The last choice is stored and used by every following session.'>Pool criterion:</label>"
 "<span id='sumPref' style='color:#f0c040;font-weight:700'>Σ Z*</span>"
 "</div>"
@@ -607,16 +608,21 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "+'/round ('+fmt(p.s)+' scoring + '+fmtEta(p.m)+' pass)';}"
 "h.innerHTML=rl('Euro '+e.p+'+'+e.q,pe,e.c)+'<br>'"
 "+rl('6of49 '+l.p,pl,l.c);}"
-/* Pool criterion with its direction: "highest Σ Δn", "lowest Σ Z*".
+/* Pool criterion with its direction. Σ Z* is magnitude: "largest |Σ Z*|" /
+   "smallest |Σ Z*|". Every other column stays "highest Σ Δn" / "lowest Σ …".
    DIR is the stored direction (NVS, set by prefs_send()); the Σ column's
    sort arrow in the scoring table flips it. */
 "var sumPrefC='key',DIR='high';"
+"function colName(c){return {key:'Z*',z:'Z',conc:'Conc',nsd:'\\u0394n',ac:'AC',mau:'Mau'}[c]||'Z*';}"
+/* high on Z* = largest |Σ|, low = smallest. The printed sum keeps its sign. */
+"function critPhrase(dir,col){col=col||'key';"
+"if(col==='key')return dir==='low'?'smallest |\\u03a3 Z*|':'largest |\\u03a3 Z*|';"
+"return (dir==='low'?'lowest ':'highest ')+'\\u03a3 '+colName(col);}"
 /* The direction is remembered at once, like the pool column (Σ click). */
 "function setDir(v){DIR=v;fetch('/scoresum?dir='+v,{method:'POST'}).catch(function(){});"
 "if(LD&&LD.state==='running'&&LD.scoring_pass>0)LD.score_dir=v;showSumPref();}"
 "function showSumPref(c){if(c)sumPrefC=c;var e=document.getElementById('sumPref');"
-"if(!e)return;var t='\\u03a3 '+({key:'Z*',z:'Z',conc:'Conc',nsd:'\\u0394n',ac:'AC',mau:'Mau'}[sumPrefC]||'Z*');"
-"e.textContent=(DIR==='low'?'lowest ':'highest ')+t;}"
+"if(!e)return;e.textContent=critPhrase(DIR,sumPrefC);}"
 "function setMode(mode){"
 "document.getElementById('subtitle').textContent="
 "mode===0?'Eurojackpot • 5 of 50 + 2 bonus numbers':'6 of 49 Lotto';}"
@@ -860,8 +866,6 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "setTimeout(function(){URL.revokeObjectURL(a.href);},1500);}"
 "function w3(x){return (Math.round((+x||0)*1000)/1000).toFixed(3);}"
 "function paramsOf(st){"
-"var dir=st.score_dir==='low'?'lowest ':'highest ';"
-"var col=({key:'Z*',z:'Z',conc:'Conc',nsd:'\\u0394n',ac:'AC',mau:'Mau'}[st.score_sum||'key']||'Z*');"
 "var a=+st.k_dn||0,b=+st.k_mau||0,g=+st.k_conc||0,dw=+st.k_ac||0;"
 "var runs=st.runs_cap,passes=st.scoring_passes;"
 "var L=[];"
@@ -871,7 +875,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "L.push('Runs per round: '+(runs===0?'0 (scoring only)':(runs==null?'':String(runs))));"
 "L.push('Scoring passes: '+(passes===0?'0 (continuous)':(passes==null?'':String(passes))));"
 "L.push('Sweep: '+(st.cal_budget_ms>0?(st.cal_budget_ms/1000)+' s':'off'));"
-"L.push('Pool criterion: '+dir+'\\u03a3 '+col);"
+"L.push('Pool criterion: '+critPhrase(st.score_dir,st.score_sum||'key'));"
 "L.push('\\u0394n \\u03b1: '+w3(a));"
 "L.push('Mau \\u03b2: '+w3(b));"
 "L.push('Conc \\u03b3: '+w3(g));"
@@ -898,6 +902,8 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "var rows=(sn.rows||[]).slice();"
 "rows.sort(function(a,b){var av=(a.sum||[])[ci],bv=(b.sum||[])[ci];"
 "if(av==null&&bv==null)return 0;if(av==null)return 1;if(bv==null)return -1;"
+/* Σ Z* (column 0): rank by |sum|, still write the signed sum below. */
+"if(ci===0){av=Math.abs(av);bv=Math.abs(bv);}"
 "return lowdir?av-bv:bv-av;});"
 "rows.forEach(function(row,i){var sm=row.sum||[];"
 "L.push([i+1,sn.euro?'euro':'main',row.n,pc,"
@@ -1459,19 +1465,33 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "function curSum(){return (LD&&LD.score_sum)||'key';}"
 "function sumLab(opt,c,t){return (opt&&curSum()===c)?'<span style=\"color:#f0c040\">'+t+'</span>':t;}"
 "function sumMark(opt,c){if(!opt||!(LD&&LD.state==='running'&&LD.scoring_pass>0))return '';var on=curSum()===c;"
-"return ' <span title=\"'+(on?'the pool is picked on the sum of this column':'pick the pool on the sum of this column')"
-"+'\" style=\"cursor:pointer;font-weight:700;color:'+(on?'#f0c040':'#667')+'\" "
+"var tip=(c==='key')"
+"?(on?('the pool is '+critPhrase(LD.score_dir,'key')+', the cell stays signed'):'pick the pool on |\\u03a3 Z*|')"
+":(on?'the pool is picked on the sum of this column':'pick the pool on the sum of this column');"
+"return ' <span title=\"'+tip+'\" style=\"cursor:pointer;font-weight:700;color:'+(on?'#f0c040':'#667')+'\" "
 "onclick=\"event.stopPropagation();setSum(\\''+c+'\\')\">\\u03a3</span>';}"
 "function setSum(c){fetch('/scoresum?c='+c,{method:'POST'}).catch(function(){});"
 "if(LD)LD.score_sum=c;showSumPref(c);lastSc=0;fetchScore();}"
+/* Scoring table only. Z* — the latest key, and Σ while the pool column is
+   Z* — compares |value|. The cell still prints the sign. ▾ (SSD<0) is the
+   larger magnitude, ▴ the smaller. Every other column stays signed. */
 "function scCmp(a,b){var x=colVal(a,SSK),y=colVal(b,SSK);"
-"if(x===null&&y===null)return 0;if(x===null)return 1;if(y===null)return -1;return SSD<0?y-x:x-y;}"
+"if(x===null&&y===null)return 0;if(x===null)return 1;if(y===null)return -1;"
+"if(SSK==='key'||(SSK==='sum'&&curSum()==='key')){x=Math.abs(x);y=Math.abs(y);}"
+"return SSD<0?y-x:x-y;}"
+/* Visible under the Top-10 while that table is ordered on Z*. The cell
+   itself stays signed: 3 and −3 are the same rank. */
+"function absRankNote(sum){"
+"return (sum?'Ranked by |\\u03a3 Z*|':'Ranked by |Z*|')"
+"+' \\u2014 the absolute value only. The cell keeps the sign, so 3 and \\u22123 both rank at the top.';}"
 "function exArrow(k){var K=SCM?SSK:SORTK,D=SCM?SSD:SORTD;"
 "if(K!==k)return ' <span style=\"color:#667\">\\u21c5</span>';"
 "return D<0?' \\u25be':' \\u25b4';}"
 /* While the scoring runs, the Σ column's arrow IS the pool direction:
-   ▾ = highest, ▴ = lowest. A second click on Σ flips the pool, a first
-   click only sorts on it in the direction the pool already has. */
+   ▾ = highest, ▴ = lowest. On Σ Z* those ends are the larger and the
+   smaller magnitude; the printed sum keeps its sign. A second click on Σ
+   flips the pool, a first click only sorts on it in the direction the pool
+   already has. */
 "function liveSc(){return LD&&LD.state==='running'&&LD.scoring_pass>0;}"
 "function sortBy(k){"
 "if(SCM&&k==='sum'&&liveSc()){if(SSK==='sum')setDir(LD.score_dir==='low'?'high':'low');"
@@ -1490,8 +1510,6 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "function renderScoreTable(){"
 "if(!LD)return;var d=LD,isEuro=d.mode==='euro';"
 "if(SSK==='sum'&&liveSc())SSD=d.score_dir==='low'?1:-1;"
-"var lab={sum:'\\u03a3 '+({key:'Z*',z:'Z',conc:'Conc',nsd:'\\u0394n',ac:'AC',mau:'Mau'}[curSum()]||'Z*'),"
-"key:'Z*',z_ctr:'Z',zc:'Conc',nsd:'\\u0394n',ac:'AC',mau:'Mau'};"
 "var s=SC.slice().sort(scCmp);"
 /* Pool members: the numbers the device picked from the sums so far.
    Marked by membership, not by position, so any sort shows them. The table
@@ -1503,7 +1521,9 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "document.getElementById('resTitle').innerHTML="
 "'\\uD83C\\uDFC6 Top '+top.length+' of '+SC.length+' \\u2014 scoring '"
 "+(d.scoring_pass>0?scoreSect(d)+'pass '+d.scoring_pass+((d.runs_cap===0&&d.scoring_passes===0)?'':'/'+(d.scoring_passes||" EL_STR(SCORE_PASSES_DEFAULT) ")):'done, round '+(d.round||1))"
-"+' \\u00b7 pool: '+(d.score_dir==='low'?'lowest ':'highest ')+lab.sum;"
+"+' \\u00b7 pool: '+critPhrase(d.score_dir,curSum());"
+"var byAbs=SSK==='key'||(SSK==='sum'&&curSum()==='key');"
+"document.getElementById('resSub').textContent=byAbs?absRankNote(SSK!=='key'):'';"
 "renderRunTable('resHead','resBody',top,isEuro,d,zW(d),{pool:pool});"
 "if(!top.length)document.getElementById('resBody').innerHTML="
 "'<tr><td colspan=\"11\" style=\"color:#d0b0b0;padding:10px\">No number scored yet.</td></tr>';}"
@@ -1535,12 +1555,14 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 /* One table: the master's ten on the active sort. The other end is one
    header click away (direction flips). Until the reply for a new sort lands
    the old ten stay up under their OWN label; before the first reply ever,
-   /status top (ordered by Z*) stands in. A column no held row has a value in
+   /status top (largest |Z*|, the cell keeps the sign) stands in. A column no held row has a value in
    yet says so instead of falling back. */
 "var lk=EXK.split('&dir='),inv={key:'key',z:'z_ctr',conc:'zc',nsd:'nsd',ac:'ac',mau:'mau'};"
-"if(EXF){top=EX.slice(0,10);"
-"title=' ('+(lk[1]==='low'?'lowest ':'highest ')+lab[inv[lk[0]]]+')';}"
-"else{top=(d.top||[]).slice(0,10);title=' (highest Z*)';}"
+"var rankAbs=true,col=null,lo=false;"
+"if(EXF){top=EX.slice(0,10);col=inv[lk[0]];lo=lk[1]==='low';rankAbs=(col==='key');"
+"title=' ('+(rankAbs?(lo?'smallest |Z*|, absolute value':'largest |Z*|, absolute value')"
+":((lo?'lowest ':'highest ')+lab[col]))+')';}"
+"else{top=(d.top||[]).slice(0,10);title=' (largest |Z*|, absolute value)';}"
 "document.getElementById('resTitle').innerHTML="
 "'\\uD83C\\uDFC6 Top '+top.length+' of '+(EXF?EXH:(d.comparisons||top.length))"
 "+(isEuro?' \\u2014 Eurojackpot':' \\u2014 6-of-49')+title;"
@@ -1550,11 +1572,11 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "+lab[inv[lk[0]]]+' value yet.</td></tr>';"
 /* How the pool being measured was picked, e.g. "9 numbers, scoring
    lowest Δn". Items of earlier rounds came from their own pools. */
-"var su={key:'Z*',z:'Z',conc:'Conc',nsd:'\\u0394n',ac:'AC',mau:'Mau'}[d.pool_used_sum]||'Z*';"
-"var dr=d.score_dir==='low'?'lowest ':'highest ';"
-"document.getElementById('resSub').textContent=(d.pool_used_n>0)"
+"var poolTxt=(d.pool_used_n>0)"
 "?('pool of round '+d.pool_used_round+': '+d.pool_used_n+' numbers, scoring '"
-"+dr+su):'';"
+"+critPhrase(d.score_dir,d.pool_used_sum)):'';"
+"var note=rankAbs?absRankNote(false):'';"
+"document.getElementById('resSub').textContent=poolTxt&&note?poolTxt+' '+note:(poolTxt||note);"
 "showQuiet(d,isEuro,st);}"
 /* The quiet end: the session's ten smallest |Z*|, ascending, in the item
    row shape. Fixed order, so the header carries no sort clicks -- those
@@ -1568,7 +1590,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "'The items of this session whose ranking key sat nearest 0, smallest first.';"
 "renderRunTable('resHeadQuiet','resBodyQuiet',QX,isEuro,d,st);"
 "document.getElementById('resHeadQuiet').innerHTML="
-"'<tr><th>#</th><th>Item</th><th>Z*</th><th>Z</th><th>Conc</th><th>\\u0394n</th><th>AC</th><th>Mau</th>'"
+"'<tr><th>#</th><th>Item</th><th>|Z*|</th><th>Z</th><th>Conc</th><th>\\u0394n</th><th>AC</th><th>Mau</th>'"
 "+'<th>Numbers</th>'+(isEuro?'<th>Bonus</th>':'')+'<th></th></tr>';"
 "c.style.display='block';}"
 /* Items and scoring numbers: the same rows, one renderer. `opt` is set
@@ -1586,10 +1608,16 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "function old(){var a=document.createElement('textarea');a.value=t;a.style.position='fixed';a.style.opacity='0';"
 "document.body.appendChild(a);a.select();try{document.execCommand('copy');done();}catch(e){}document.body.removeChild(a);}"
 "if(navigator.clipboard&&window.isSecureContext)navigator.clipboard.writeText(t).then(done,old);else old();}"
+"function sumTip(){return curSum()==='key'"
+"?'Running sum of this number\\u2019s Z*, printed with its sign. Ranked by |sum|: \\u25be larger magnitude, \\u25b4 smaller. A second click flips the pool. A green # marks a pool member.'"
+":'Running sum of this number\\u2019s pass values \\u2014 the pool is picked on it. While the scoring runs the arrow is the pool direction: \\u25be highest, \\u25b4 lowest; a second click flips it. A green # marks a pool member.';}"
+"function zTip(){return (SCM?'Latest Z* of this number':'This item\\u2019s Z*')"
+"+', sorted by |Z*|. The cell keeps the sign: \\u25be larger magnitude, \\u25b4 smaller. '"
+"+'Z* = (Z/\\u03c3) times the four factors shown at the top of the page. No block \\u03c3 yet gives 0. Click to sort.';}"
 "function renderRunTable(headId,bodyId,res,isEuro,d,st,opt){"
 "document.getElementById(headId).innerHTML="
-"'<tr><th>#</th>'+(opt?'<th style=\"cursor:pointer\" title=\"running sum of this number\\u2019s pass keys \\u2014 the pool is picked on it. While the scoring runs the arrow is the pool direction: \\u25be highest, \\u25b4 lowest; a second click flips it. A green # marks a pool member.\" onclick=\"sortBy(\\'sum\\')\">\\u03a3 '+{key:'Z*',z:'Z',conc:'Conc',nsd:'\\u0394n',ac:'AC',mau:'Mau'}[curSum()]+exArrow('sum')+'</th>':'<th>Item</th>')"
-"+(st?'<th style=\"cursor:pointer\" title=\"Z* = (Z/\\u03c3) times the four factors shown at the top of the page. No block \\u03c3 yet gives 0. Click to sort.\" onclick=\"sortBy(\\'key\\')\">'+sumLab(opt,'key','Z*')+exArrow('key')+sumMark(opt,'key')+'</th>'"
+"'<tr><th>#</th>'+(opt?'<th style=\"cursor:pointer\" title=\"'+sumTip()+'\" onclick=\"sortBy(\\'sum\\')\">\\u03a3 '+colName(curSum())+exArrow('sum')+'</th>':'<th>Item</th>')"
+"+(st?'<th style=\"cursor:pointer\" title=\"'+zTip()+'\" onclick=\"sortBy(\\'key\\')\">'+sumLab(opt,'key','|Z*|')+exArrow('key')+sumMark(opt,'key')+'</th>'"
 "+'<th style=\"cursor:pointer\" title=\"block-centred combined z. Click to sort the 50\" onclick=\"sortBy(\\'z_ctr\\')\">'+sumLab(opt,'z','Z')+exArrow('z_ctr')+sumMark(opt,'z')+'</th>'"
 "+'<th style=\"cursor:pointer\" title=\"leave-one-out half-window concordance. Click to sort the 50\" onclick=\"sortBy(\\'zc\\')\">'+sumLab(opt,'conc','Conc')+exArrow('zc')+sumMark(opt,'conc')+'</th>'"
 /* Plain-language tooltip: the operator is the only reader of this cell, and the
@@ -2148,8 +2176,8 @@ static esp_err_t status_handler(httpd_req_t *req)
         }
     buf_append(buf, sizeof(buf), &pos, "],");
 
-    // Top-N / Bottom-N by rank_key(), fallback for the table until /extremes
-    // lands. Updated after EVERY measured item.
+    // Largest / smallest |Z*|, fallback until /extremes lands. The row's
+    // key stays signed. Updated after EVERY measured item.
     bool euro = (g_status.mode == MODE_EUROJACKPOT);
 
     buf_append(buf, sizeof(buf), &pos, "\"top\":[");
