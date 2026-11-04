@@ -675,15 +675,15 @@ floor is load-bearing.
 ## Nodes
 | node | IP | MAC | COM | flash contents |
 |------|----|-----|-----|----------------|
-| master | 192.168.178.100 | 80:f1:b2:d2:e3:1d | COM4 | factory = updater, ota_0/ota_1 = elotto app |
-| slave0 | 192.168.178.103 (static lease) | 80:f1:b2:d2:e3:e5 | — | factory = updater, ota_0 = slave app |
-| slave1 | 192.168.178.145 (static lease) | e8:f6:0a:e0:ce:a8 | — | factory = updater, ota_0/ota_1 = slave app |
-| slave2 | 192.168.178.155 | e8:f6:0a:e0:c7:a1 | — | factory = updater, ota_0 = slave app |
-| slave3 | 192.168.178.83 (static lease) | e8:f6:0a:e0:d9:53 | COM10 | factory = updater, ota_0 = slave app · OV5647 |
-| slave4 | 192.168.178.172 (static lease) | 80:f1:b2:d6:58:80 | COM11 | factory = updater, ota_0 = slave app · OV5647 · **chip rev v3.2** |
-| slave5 | 192.168.178.166 (static lease) | 80:f1:b2:d6:58:81 | COM3 | factory = updater, ota_0 = slave app · OV5647 · **chip rev v3.2** |
-| slave6 | 192.168.178.173 (static lease) | 80:f1:b2:d6:5a:1a | COM4 | factory = updater, ota_0 = slave app · OV5647 · **chip rev v3.2** |
-| slave7 | 192.168.178.32 (static lease) | e8:f6:0a:e7:fe:13 | COM6 | factory = updater, ota_0 = slave app · OV5647 · **chip rev v3.2** |
+| master | 192.168.178.100 | 80:f1:b2:d2:e3:1d | COM4 | factory = updater, ota_0/ota_1 = elotto app · IMX219 |
+| slave0 | 192.168.178.103 (static lease) | 80:f1:b2:d2:e3:e5 | — | factory = updater, ota_0 = slave app · IMX219 |
+| slave1 | 192.168.178.145 (static lease) | e8:f6:0a:e0:ce:a8 | — | factory = updater, ota_0/ota_1 = slave app · IMX219 |
+| slave2 | 192.168.178.155 | e8:f6:0a:e0:c7:a1 | — | factory = updater, ota_0 = slave app · IMX219 |
+| slave3 | 192.168.178.83 (static lease) | e8:f6:0a:e0:d9:53 | COM10 | factory = updater, ota_0 = slave app · IMX219 |
+| slave4 | 192.168.178.172 (static lease) | 80:f1:b2:d6:58:80 | COM11 | factory = updater, ota_0 = slave app · IMX219 · **chip rev v3.2** |
+| slave5 | 192.168.178.166 (static lease) | 80:f1:b2:d6:58:81 | COM3 | factory = updater, ota_0 = slave app · IMX219 · **chip rev v3.2** |
+| slave6 | 192.168.178.173 (static lease) | 80:f1:b2:d6:5a:1a | COM4 | factory = updater, ota_0 = slave app · IMX219 · **chip rev v3.2** |
+| slave7 | 192.168.178.32 (static lease) | e8:f6:0a:e7:fe:13 | COM6 | factory = updater, ota_0 = slave app · IMX219 · **chip rev v3.2** |
 | slave8 | 192.168.178.181 (static lease) | e8:f6:0a:e8:15:94 | COM9 | factory = updater, ota_0 = slave app · IMX219 · **chip rev v3.2** |
 
 **Say master/slave0…slave8, never the IP ending.**
