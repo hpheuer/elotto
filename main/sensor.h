@@ -460,6 +460,10 @@ typedef struct {
      * it per node because "all four run the same code" is a policy, not a
      * fact. */
     char     fw_sha[17];
+    /* ",cam=" in the node's 'D' reply: "IMX219" / "OV5647". Empty = not
+     * reported (a slave image without the field). The master fills its own
+     * row from camera_sensor_name(). */
+    char     cam_sensor[8];
 } NodeStatus;
 
 // Per-BLOCK health record (v3; the struct and the /loops endpoint keep their
@@ -611,7 +615,22 @@ typedef struct {
     /* Master uptime when the jump was noted (ms). No RTC: the UI does
      * wall = now − (uptime_ms − t_ms). */
     int64_t  t_ms;
+    /* The measurement's own values, NaN until known. A pass item takes them
+     * from results[slot] (refreshed on every read, frozen when compaction
+     * moves the rows); a scoring run from its ScoreItem when its pass closes.
+     * slot = results[] row at the note, WSIG_NO_SLOT for a scoring run or a
+     * frozen row. */
+    uint16_t slot;
+    uint8_t  k;          // nodes in the combine, 0 = not known yet
+    float    z_raw;      // z_score
+    float    z_ctr;      // Z
+    float    zc;         // Conc (0 = none, the results[] convention)
+    float    nsd;        // Δn
+    float    ac;         // AC
+    float    mau;        // Mau
+    float    key;        // Z*
 } WsigEvent;
+#define WSIG_NO_SLOT 0xffffu
 
 /* One number of the scoring, in the pass's own row type: `r` is filled
  * exactly as a results[] row would be — index = the number, the number in
@@ -662,7 +681,8 @@ typedef struct {
     uint8_t  cnt[51][SCORE_SUM_N];
 } ScoreSnap;
 
-#define WSIG_TOP_N 10
+#define WSIG_TOP_N 10      /* /status and the card */
+#define WSIG_KEEP_N 1000   /* the whole board, PSRAM (~72 KB): /extremes?jumps=1, Save */
 /* ⚠ There is deliberately NO minimum jump. Noise-vs-finding is decided by
  * wsig_sd and the x-sigma column: ten rows at 2..3 sigma ARE the quiet
  * session, stated in the units that say so, and a real event pushes one of
@@ -786,8 +806,10 @@ typedef struct {
      * sticky node that keeps failing its gate produces all the rest. */
     TripRec          trip_hist[TRIPX_MAX];
     int              trip_n;
-    WsigEvent        wsig_top[WSIG_TOP_N];
-    int              wsig_n;              // entries in use, 0..WSIG_TOP_N
+    /* PSRAM, WSIG_KEEP_N rows, biggest |jump| first. /status reads the first
+     * WSIG_TOP_N unlocked; everything else goes through wsig_board_copy(). */
+    WsigEvent       *wsig_top;
+    int              wsig_n;              // entries in use, 0..WSIG_KEEP_N
     /* Measured spread of the jump itself, over every node-item of this
      * session. It is what turns a jump into a judgement.
      * ⚠ Published so the READER can scale, not so the software can: nothing
@@ -1003,6 +1025,10 @@ int results_extremes(RunResult *out, int max, int ch, bool low, int *held,
  * results[]. A row without a block σ has key 0 by default, not by measurement,
  * and never enters. */
 int results_quietest(RunResult *out, int max);
+/* The camera-jump board, biggest |jump| first, up to `max` rows. Pass items
+ * still in results[] are refreshed from their row first, so an open block
+ * shows its provisional values. Takes the archive lock. */
+int wsig_board_copy(WsigEvent *out, int max);
 
 /* Scoring-sum archive (ScoreSnap). Written by the sensor task, read by HTTP.
  * count is the number of snaps published; a snap is visible only after it is

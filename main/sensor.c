@@ -261,6 +261,12 @@ static void   wsig_collect(float out[MAX_NODES]);
 static void   series_ac(const double *u, int n, float *item, float zl[4]);
 static void   wsig_note(const RunResult *r, const float *wsig, node_mask_t mask,
                         uint8_t spass);
+static void   wsig_refresh(bool freeze);
+static void   wsig_fill_scoring(bool euro_pool, uint8_t spass);
+static void   archive_lock(void);
+static void   archive_unlock(void);
+static bool   result_centred(const RunResult *r);
+static ScoreItem *score_row(bool euro_pool, int k);
 
 /* Per-item node-z archive (PSRAM). results[j] stays lean; centring needs the
  * per-node series to recombine, drop a soft-failed node, or recompute r. */
@@ -958,6 +964,7 @@ static int score_run(int max_val, int pool_size, bool euro_pool,
             if (row->passes < 255) row->passes++;
         }
         closed++;
+        wsig_fill_scoring(euro_pool, (uint8_t)(pass + 1));
         score_publish_live(ix);
 
         /* ── Sweep candidate after every scoring pass   ────────
@@ -1883,6 +1890,7 @@ static void pass_compact(void)
      * (results_extremes) may be walking either array right
      * now. The selection above only reads, so it needs no lock. */
     archive_lock();
+    wsig_refresh(true);   /* before any row moves: the board keeps the values */
     int w = 0, dropped = 0;
     for (int j = 0; j < n; j++) {
         const RunResult *r = &g_status.results[j];
@@ -2029,23 +2037,28 @@ static void wsig_note(const RunResult *r, const float *wsig, node_mask_t mask,
          * the x-sigma column says whether they matter. See WSIG_TOP_N. */
         if (!(mask & (1u << i))) continue;        /* not in the combine */
 
-        /* Insertion sort on |jump|, biggest first. WSIG_TOP_N is 10, so the
-         * linear scan is cheaper than anything cleverer and runs once per
-         * node per item. */
-        int at = g_status.wsig_n;
-        for (int j = 0; j < g_status.wsig_n; j++) {
-            float e = g_status.wsig_top[j].jump;
+        if (!g_status.wsig_top) continue;
+
+        /* Binary search on |jump|, biggest first, then one memmove. Under the
+         * archive lock: wsig_board_copy() reads the whole board from the
+         * HTTP task. /status reads the first WSIG_TOP_N unlocked — a torn row
+         * shows mixed values for one poll, nothing else. */
+        archive_lock();
+        WsigEvent *B = g_status.wsig_top;
+        int n = g_status.wsig_n, lo = 0, hi = n;
+        while (lo < hi) {
+            int mid = (lo + hi) / 2;
+            float e = B[mid].jump;
             if (e < 0.0f) e = -e;
-            if (mag > e) { at = j; break; }
+            if (mag > e) hi = mid; else lo = mid + 1;
         }
-        if (at >= WSIG_TOP_N) continue;           /* smaller than every kept row */
+        int at = lo;
+        if (at >= WSIG_KEEP_N) { archive_unlock(); continue; }  /* smaller than every kept row */
+        int tail = (n < WSIG_KEEP_N ? n : WSIG_KEEP_N - 1) - at;
+        if (tail > 0) memmove(&B[at + 1], &B[at], (size_t)tail * sizeof(WsigEvent));
+        if (n < WSIG_KEEP_N) g_status.wsig_n = n + 1;
 
-        for (int j = (g_status.wsig_n < WSIG_TOP_N ? g_status.wsig_n
-                                                   : WSIG_TOP_N - 1); j > at; j--)
-            g_status.wsig_top[j] = g_status.wsig_top[j - 1];
-        if (g_status.wsig_n < WSIG_TOP_N) g_status.wsig_n++;
-
-        WsigEvent *e = &g_status.wsig_top[at];
+        WsigEvent *e = &B[at];
         e->round   = r->round;
         e->index   = r->index;
         e->node    = (uint8_t)i;
@@ -2056,7 +2069,81 @@ static void wsig_note(const RunResult *r, const float *wsig, node_mask_t mask,
         e->now  = now;
         e->jump = jump;
         e->t_ms = esp_timer_get_time() / 1000;
+        /* Values follow: a pass item from its results[] row (wsig_refresh),
+         * a scoring run when its pass closes (wsig_fill_scoring). */
+        e->slot = (spass == 0 && r >= g_status.results && r < g_status.results + NUM_RUNS)
+                  ? (uint16_t)(r - g_status.results) : (uint16_t)WSIG_NO_SLOT;
+        e->k = 0;
+        e->z_raw = e->z_ctr = e->zc = e->nsd = e->ac = e->mau = e->key = NAN;
+        archive_unlock();
     }
+}
+
+/* Copy a pass item's values from its results[] row. The caller holds the
+ * archive lock. `freeze`: compaction is about to move the rows, so the slot
+ * stops meaning anything — keep the values, drop the slot. The block is
+ * closed by then, so they are final. */
+static void wsig_refresh(bool freeze)
+{
+    WsigEvent *B = g_status.wsig_top;
+    if (!B) return;
+    int ntot = g_status.runs_completed;
+    if (ntot > NUM_RUNS) ntot = NUM_RUNS;
+    for (int i = 0; i < g_status.wsig_n; i++) {
+        WsigEvent *e = &B[i];
+        if (e->spass != 0 || e->slot == WSIG_NO_SLOT) continue;
+        if (e->slot < ntot) {
+            const RunResult *r = &g_status.results[e->slot];
+            if (r->round == e->round && r->index == e->index) {
+                e->k     = r->k;
+                e->z_raw = r->k ? (float)r->z_score : NAN;
+                e->z_ctr = r->k ? r->z_ctr : NAN;
+                e->zc    = r->k ? r->zc_ctr : NAN;
+                e->nsd   = r->node_sd;
+                e->ac    = r->acz;
+                e->mau   = r->mau;
+                e->key   = (r->k && result_centred(r)) ? (float)rank_key(r) : NAN;
+            }
+        }
+        if (freeze) e->slot = WSIG_NO_SLOT;
+    }
+}
+
+/* A scoring pass closed: its runs on the board take that number's values,
+ * which the ScoreItem row now holds for exactly this pass. */
+static void wsig_fill_scoring(bool euro_pool, uint8_t spass)
+{
+    WsigEvent *B = g_status.wsig_top;
+    if (!B) return;
+    archive_lock();
+    for (int i = 0; i < g_status.wsig_n; i++) {
+        WsigEvent *e = &B[i];
+        if (e->spass != spass || e->round != (uint16_t)g_status.round) continue;
+        if ((e->euro[0] != 0) != euro_pool) continue;
+        const ScoreItem *row = score_row(euro_pool, e->index);
+        if (!row) continue;
+        e->k     = row->r.k;
+        e->z_raw = row->r.k ? (float)row->r.z_score : NAN;
+        e->z_ctr = row->r.k ? row->r.z_ctr : NAN;
+        e->zc    = row->r.k ? row->r.zc_ctr : NAN;
+        e->nsd   = row->r.node_sd;
+        e->ac    = row->r.acz;
+        e->mau   = row->r.mau;
+        e->key   = row->key;
+    }
+    archive_unlock();
+}
+
+int wsig_board_copy(WsigEvent *out, int max)
+{
+    if (!out || max <= 0 || !g_status.wsig_top) return 0;
+    archive_lock();
+    wsig_refresh(false);
+    int n = g_status.wsig_n;
+    if (n > max) n = max;
+    memcpy(out, g_status.wsig_top, (size_t)n * sizeof(WsigEvent));
+    archive_unlock();
+    return n;
 }
 
 /* Record WHICH measurements carried a tripping block's spread.
@@ -2958,7 +3045,9 @@ void elotto_task(void *pvParam)
      * a jump across a reboot or a parameter change is not an event. */
     memset(g_status.trip_hist, 0, sizeof(g_status.trip_hist));
     g_status.trip_n = 0;
-    memset(g_status.wsig_top, 0, sizeof(g_status.wsig_top));
+    if (!g_status.wsig_top)
+        g_status.wsig_top = heap_caps_calloc(WSIG_KEEP_N, sizeof(WsigEvent),
+                                             MALLOC_CAP_SPIRAM);
     g_status.wsig_n = 0;
     for (int i = 0; i < MAX_NODES; i++) s_prev_wsig[i] = NAN;
     s_wsig_jsq = 0.0; s_wsig_jn = 0;

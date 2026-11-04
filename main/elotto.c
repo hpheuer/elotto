@@ -326,8 +326,8 @@ static const char HTML[] =
 "<button class='btn btn-abort' id='btnAbort' onclick='doAbort()'>&#9632; Abort</button>"
 // Save: four files. /extremes?n=1000 is the 1000 items best on the pool
 // criterion; /extremes?sums=1 is every number's six column sums; the third
-// file is the parameters that ran; the fourth is the camera-jumps board,
-// the ten rows /status wsig already holds. Chrome/Edge on a secure page ask
+// file is the parameters that ran; the fourth is the whole camera-jump
+// board (/extremes?jumps=1). Chrome/Edge on a secure page ask
 // for one folder. ⚠ On the master's http address that dialog does not
 // exist, so the four files go to the browser's download folder. Stays on
 // screen after Done/Abort, when Pause and Abort are hidden.
@@ -847,8 +847,9 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
    criterion (elotto_scored), built from the sums. Second: every number's six
    signed column sums (elotto_sums). Third: elotto_params_….txt, the parameters
    that ran, from /status at the click. Fourth: elotto_jumps_….csv, the
-   camera-jumps board — the ten rows /status wsig already holds, same labels
-   as the card (a scoring window is "scoring <pass>/<round>", the node is
+   whole camera-jump board from /extremes?jumps=1 (up to WSIG_KEEP_N rows,
+   each with the node's camera and its measurement's Z*, Z, Z_raw, Conc, Δn,
+   AC, Mau, k), same labels as the card (a scoring window is "scoring <pass>/<round>", the node is
    named from its address). ×σ is empty when wsig_sd is not positive.
    Chrome/Edge ask for one folder (showDirectoryPicker) and write all four
    there. ⚠ That call exists only on a secure page. On the master's http
@@ -889,7 +890,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "var d=new Date(),p=function(n){return (n<10?'0':'')+n;};"
 "var stamp=d.getFullYear()+p(d.getMonth()+1)+p(d.getDate())+'_'+p(d.getHours())+p(d.getMinutes());"
 "function filesOf(pair){"
-"var st=pair[0]||{},x=pair[1],s=pair[2];"
+"var st=pair[0]||{},x=pair[1],s=pair[2],j=pair[3];"
 "var snaps=(s&&s.snaps)?s.snaps:[];"
 "var scoreOnly=(st.runs_cap===0);"
 "var cont=(st.scoring_passes===0);"
@@ -926,21 +927,28 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "L2.push(c.join(';'));});});"
 "files.push({name:'elotto_sums_'+stamp+'.csv',body:textOf(L2)});}"
 "files.push({name:'elotto_params_'+stamp+'.txt',body:textOf(paramsOf(st))});"
-"var Lj=['Rank;Item;Node;Time;Was;Jump;\\u00d7\\u03c3;Numbers'+(st.mode==='euro'?';Euro':'')];"
-"(Array.isArray(st.wsig)?st.wsig:[]).slice(0,10).forEach(function(e,i){"
+/* The whole board from /extremes?jumps=1; if that fetch failed, the ten
+   /status rows without the measurement columns. */
+"var J=(j&&Array.isArray(j.jumps))?j.jumps:(Array.isArray(st.wsig)?st.wsig:[]);"
+"var Lj=['Rank;Item;Node;Camera;Time;Was;Now;Jump;\\u00d7\\u03c3;Numbers'+(st.mode==='euro'?';Euro':'')"
+"+';Z*;Z;Z_raw;Conc;\\u0394n;AC;Mau;k'];"
+"function n3(v){return (typeof v==='number')?f(v.toFixed(3)):'';}"
+"J.forEach(function(e,i){"
 "var itm=wsigItem(st,e),when=wsigWhen(st,e);"
 "var jmp=e.jump,jtxt=(typeof jmp==='number')?((jmp>0?'+':'')+f(jmp.toFixed(3))):'';"
 "var xs=(st.wsig_sd>0&&typeof jmp==='number')?f((Math.abs(jmp)/st.wsig_sd).toFixed(1)):'';"
-"var row=[i+1,itm,wsigNode(st,e.node),when,(typeof e.prev==='number'?f(e.prev.toFixed(3)):''),"
+"var row=[i+1,itm,wsigNode(st,e.node),wsigCam(st,e.node),when,n3(e.prev),n3(e.now),"
 "jtxt,xs,(e.nums||[]).join(' ')];"
 "if(st.mode==='euro')row.push((e.euro||[]).join(' '));"
+"row.push(f(e.key),f(e.z_ctr),f(e.z),f(e.zc),f(e.nsd),f(e.ac),f(e.mau),e.k?String(e.k):'');"
 "Lj.push(row.join(';'));});"
 "files.push({name:'elotto_jumps_'+stamp+'.csv',body:textOf(Lj)});"
 "return {files:files,sumsOk:!!s};}"
 "function fetchAll(){return Promise.all(["
 "fetch('/status').then(function(r){return r.json();}).catch(function(){return LD||{};}),"
 "fetch('/extremes?n=" EL_STR(PASS_KEEP_EXTREME) "').then(function(r){return r.json();}),"
-"fetch('/extremes?sums=1').then(function(r){return r.json();}).catch(function(){return null;})"
+"fetch('/extremes?sums=1').then(function(r){return r.json();}).catch(function(){return null;}),"
+"fetch('/extremes?jumps=1').then(function(r){return r.json();}).catch(function(){return null;})"
 "]);}"
 "function put(dir,built){"
 "if(!built.sumsOk)document.getElementById('msg').textContent='\\u26a0 Sums save failed';"
@@ -1723,6 +1731,8 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "var dt=new Date(Date.now()-(d.uptime_ms-e.t_ms));"
 "var z2=function(n){return (n<10?'0':'')+n;};"
 "return z2(dt.getDate())+'.'+z2(dt.getMonth()+1)+'. '+z2(dt.getHours())+':'+z2(dt.getMinutes());}"
+/* The chip a node bound (/status nodes[].cam_sensor); empty = not reported. */
+"function wsigCam(d,ix){var n=(d.nodes&&d.nodes[ix])?d.nodes[ix]:null;return (n&&n.cam_sensor)||'';}"
 "function wsigNode(d,ix){"
 "var n=(d.nodes&&d.nodes[ix])?d.nodes[ix]:null;"
 "var ip=n?(n.ip==='self'?'192.168.178.100':n.ip):'';"
@@ -2149,7 +2159,9 @@ static esp_err_t status_handler(httpd_req_t *req)
             "\"lost\":%lu,\"cam_mbit\":%.3f,\"cam_cons_mbit\":%.3f,\"cam_stalls\":%lu,"
             "\"cam_fault\":%d,\"reboots\":%lu,\"die_temp\":%s,"
             "\"cam_exp\":%lu,\"cam_gain\":%d,\"cam_cal\":%d,"
-            "\"cam_bias\":%.6f,\"cam_cal_mbit\":%.3f,\"cam_rsig\":%.4f}",
+            "\"cam_bias\":%.6f,\"cam_cal_mbit\":%.3f,\"cam_rsig\":%.4f,"
+            /* "" = a slave too old to name its chip in the 'P' reply. */
+            "\"cam_sensor\":\"%s\"}",
             i ? "," : "", i, i ? N->ip : "self", N->ok ? "true" : "false",
             N->soft_down ? "true" : "false",
             N->z_mean, (unsigned long)N->z_n, N->sigma,
@@ -2158,7 +2170,8 @@ static esp_err_t status_handler(httpd_req_t *req)
             (int)N->cam_fault, (unsigned long)N->reboots, dt_txt,
             (unsigned long)N->cam_exp, (int)N->cam_gain,
             (int)N->cam_cal_ok, N->cam_bias, N->cam_cal_mbit,
-            i ? N->cam_raw_sigma : (float)st_cam.raw_sigma);
+            i ? N->cam_raw_sigma : (float)st_cam.raw_sigma,
+            i ? N->cam_sensor : camera_sensor_name());
     }
     buf_append(buf, sizeof(buf), &pos, "],");
 
@@ -2438,6 +2451,61 @@ static esp_err_t extremes_sums(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* ?jumps=1 is the whole camera-jump board (WSIG_KEEP_N rows, biggest |jump|
+ * first) with each measurement's own values, for Save. /status keeps the
+ * first WSIG_TOP_N for the card. null = not known yet: a pass item before its
+ * block was centred, a scoring run before its pass closed. Copied under the
+ * archive lock, then streamed from the copy. */
+static void jnum(char *o, size_t n, const char *fmt, float v)
+{
+    if (isfinite(v)) snprintf(o, n, fmt, (double)v);
+    else             snprintf(o, n, "null");
+}
+
+static esp_err_t extremes_jumps(httpd_req_t *req)
+{
+    static WsigEvent *jb;   /* httpd serialises handlers */
+    if (!jb) jb = heap_caps_malloc((size_t)WSIG_KEEP_N * sizeof(WsigEvent),
+                                   MALLOC_CAP_SPIRAM);
+    int n = jb ? wsig_board_copy(jb, WSIG_KEEP_N) : 0;
+    char sb[384];
+    int sl = snprintf(sb, sizeof(sb), "{\"n\":%d,\"wsig_sd\":%.4f,\"jumps\":[",
+                      n, g_status.wsig_sd);
+    send_chunk(req, sb, sl, sizeof(sb));
+    for (int i = 0; i < n; i++) {
+        const WsigEvent *e = &jb[i];
+        char z[16], zr[16], zc[16], nsd[16], ac[16], mau[16], key[16];
+        jnum(z,   sizeof(z),   "%.4f", e->z_ctr);
+        jnum(zr,  sizeof(zr),  "%.4f", e->z_raw);
+        jnum(zc,  sizeof(zc),  "%.3f", e->zc);
+        jnum(nsd, sizeof(nsd), "%.3f", e->nsd);
+        jnum(ac,  sizeof(ac),  "%.2f", e->ac);
+        jnum(mau, sizeof(mau), "%.2f", e->mau);
+        jnum(key, sizeof(key), "%.4f", e->key);
+        char nums[32] = "", euro[12] = "";
+        int np = 0, ep = 0;
+        for (int m = 0; m < 6; m++)
+            if (e->nums[m]) np += snprintf(nums + np, sizeof(nums) - np, "%s%d",
+                                           np ? "," : "", (int)e->nums[m]);
+        for (int m = 0; m < 2; m++)
+            if (e->euro[m]) ep += snprintf(euro + ep, sizeof(euro) - ep, "%s%d",
+                                           ep ? "," : "", (int)e->euro[m]);
+        sl = snprintf(sb, sizeof(sb),
+            "%s{\"round\":%d,\"index\":%d,\"spass\":%d,\"node\":%d,"
+            "\"prev\":%.4f,\"now\":%.4f,\"jump\":%.4f,\"t_ms\":%lld,"
+            "\"nums\":[%s],\"euro\":[%s],\"k\":%d,"
+            "\"key\":%s,\"z_ctr\":%s,\"z\":%s,\"zc\":%s,\"nsd\":%s,"
+            "\"ac\":%s,\"mau\":%s}",
+            i ? "," : "", (int)e->round, (int)e->index, (int)e->spass, (int)e->node,
+            (double)e->prev, (double)e->now, (double)e->jump, (long long)e->t_ms,
+            nums, euro, (int)e->k, key, z, zr, zc, nsd, ac, mau);
+        send_chunk(req, sb, sl, sizeof(sb));
+    }
+    httpd_resp_send_chunk(req, "]}", 2);
+    httpd_resp_send_chunk(req, NULL, 0);
+    return ESP_OK;
+}
+
 static esp_err_t extremes_handler(httpd_req_t *req)
 {
     static RunResult *ex;   /* httpd serialises handlers, so one shared buffer */
@@ -2470,6 +2538,10 @@ static esp_err_t extremes_handler(httpd_req_t *req)
     if (qs < 0) goto bad;
     if (qs > 0 && v[0] == '1')
         return extremes_sums(req);
+    int qj = QPARAM("jumps");
+    if (qj < 0) goto bad;
+    if (qj > 0 && v[0] == '1')
+        return extremes_jumps(req);
     int  want = EXTREMES_MAX;
     int  qn = QPARAM("n");
     if (qn < 0) goto bad;
@@ -2564,7 +2636,7 @@ bad:
     httpd_resp_set_status(req, "400 Bad Request");
     httpd_resp_set_type(req, "text/plain");
     httpd_resp_sendstr(req, "n=1.." EL_STR(PASS_KEEP_EXTREME)
-                       ", sort=key|z|conc|nsd|ac|mau, dir=high|low (with sort=), sums=1, score=1");
+                       ", sort=key|z|conc|nsd|ac|mau, dir=high|low (with sort=), sums=1, jumps=1, score=1");
     return ESP_OK;
 }
 
@@ -3551,7 +3623,7 @@ static esp_err_t diagjson_handler(httpd_req_t *req)
                 "\"soft_down\":%s,\"lost\":%lu,\"reboots\":%lu,\"fw_sha\":\"%s\"}",
                 i ? "," : "", me ? "master" : N->ip,
                 N->ok ? "true" : "false", mb, cmb, (unsigned long)stl,
-                me ? camera_sensor_name() : "?",
+                me ? camera_sensor_name() : (N->cam_sensor[0] ? N->cam_sensor : "?"),
                 (unsigned long)enow, (unsigned long)gnow,
                 (unsigned long)N->cam_exp, (int)N->cam_cal_ok, N->cam_bias,
                 rb, rs, bi, sg, ct_txt,

@@ -118,7 +118,7 @@ across rounds a combination can recur — identity is **(round, index)**.
   prefix is always complete: aborts need no compaction. ⚠ RAM only — a master reboot or the
   next session start ends it. Save writes four files while it is still in RAM: the extremes
   CSV, the scoring-sum CSV, `elotto_params_….txt` (the parameters that ran), and
-  `elotto_jumps_….csv` (the camera-jumps board, the ten rows `/status` `wsig` already holds).
+  `elotto_jumps_….csv` (the whole camera-jump board, `/extremes?jumps=1`).
 - **Blocks are the statistics unit, and ONE BLOCK IS ONE ROUND**. The round boundary is the
   only block boundary: the pass parks there → `/loops` row, drift point, pairwise close, block
   centring, then a sweep candidate before the next round scores. The sweep timing is the dynamic
@@ -327,8 +327,10 @@ what remains visible is an effect varying **between items inside a block**.
   for every scoring still in RAM (high and low are that column sorted either way; an empty count
   is a missing value). Third, `elotto_params_….txt`: mode, measuring time, gap, runs per round,
   scoring passes, sweep budget, pool criterion and direction, the four weights, and the formula
-  with those weights. Fourth, `elotto_jumps_….csv`: the camera-jumps board, the ten rows
-  `/status` `wsig` already holds (was, jump, ×σ; the node named from its address). Chrome/Edge ask for one folder and write all four there. ⚠ That dialog
+  with those weights. Fourth, `elotto_jumps_….csv`: the whole camera-jump board from `/extremes?jumps=1`
+  (was, now, jump, ×σ, the node named from its address and its camera, and the measurement's
+  Z\*, Z, Z_raw, Conc, Δn, AC, Mau, k). A failed jumps fetch falls back to the ten `/status` rows
+  without the measurement columns. Chrome/Edge ask for one folder and write all four there. ⚠ That dialog
   exists only on a secure page; on the master's http address the four files go to the browser's
   download folder. Cancelling the dialog writes nothing. A failed sums fetch skips that file and
   warns; the other three are still written.
@@ -374,7 +376,12 @@ what remains visible is an effect varying **between items inside a block**.
   own camera noise from its previous measurement to this one, session-wide, named by
   (item/round), wall time (`dd.mm. HH:MM`) and the drawn numbers. Only a node that was in that
   item's combine enters it; every node's jump still feeds `wsig_sd`. Columns: was, jump, ×σ.
-  Save writes this board as `elotto_jumps_….csv` (those ten rows, no wider set).
+  The board keeps `WSIG_KEEP_N` 1000 rows (PSRAM); `/status` `wsig` and the card show the first
+  ten, Save writes all of them. Each row carries its measurement's values: a pass item from its
+  `results[]` row (provisional until its block is centred, frozen when compaction moves the rows),
+  a scoring run from its number's row when that pass closes — empty until then.
+  Camera = the chip the node named in its `P` reply (`/status` `nodes[].cam_sensor`; empty = a
+  slave image too old to send it).
   ⛔ **It is a SUSPICION list, not a ranking** — the top row
   is the measurement whose z deserves the LEAST trust. It excludes nothing.
   ⚠ One row per NODE: two nodes on the same item is a shared cause, one node alone is that camera.
@@ -624,7 +631,7 @@ image). ⚠ The repos must stay siblings on disk; build, flash and commit them t
 
 ### Wire protocol
 `P` discovery · `M<seg>` measure · `K<budget_ms>,<segs>` calibrate · `D` diagnostics · `A` abort ·
-`R` reboot. Replies `OK`, `Z:<z>[,<h1>,<h2>][,wsig=][,mau=]`, `D:`, `E:<reason>`, `V:<reason>` (void, not a
+`R` reboot. Replies `OK` (to `P`: `OK,cam=IMX219|OV5647`), `Z:<z>[,<h1>,<h2>][,wsig=][,mau=]`, `D:`, `E:<reason>`, `V:<reason>` (void, not a
 fault). `h1`/`h2` are z of the two halves of the same window; a node that sends none
 is ranked on the full window (leave-one-out still applies). Extra fields ignored.
 A slave whose `camera_init()` failed at boot (no camera attached) answers `P` with `E:no camera`:
@@ -642,7 +649,8 @@ floor is load-bearing.
 ### Resources
 - **PSRAM is mandatory**: capture buffers, the LSB-ones side ring (`s_ring_raw`), `loop_hist`,
   per-item per-node archives (`s_node_z` and the half-window copies, sized to `NUM_RUNS`),
-  and the scoring-sum log (`SCORE_SNAP_MAX` 128 snaps, ~225 KB).
+  the scoring-sum log (`SCORE_SNAP_MAX` 128 snaps, ~225 KB) and the camera-jump board
+  (`WSIG_KEEP_N` 1000 rows, ~72 KB).
   The word ring `s_ring` (64 KB) is **internal RAM**; `results[]` stays internal too:
   `NUM_RUNS` 1400.
 - ⚠ **The measurement path reads the ring in BLOCKS** — `camera_read_words()`, 112 words per call

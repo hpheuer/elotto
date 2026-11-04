@@ -384,6 +384,17 @@ void nodes_discover(void)
             inet_ntoa_r(from.sin_addr, g_status.nodes[idx].ip,
                         sizeof(g_status.nodes[idx].ip));
             g_status.nodes[idx].ok = true;
+            /* "OK,cam=IMX219|OV5647": which chip the node bound. Tagged and
+             * appended, so a slave too old to send it answers plain "OK" and
+             * its camera reads as unknown. */
+            const char *cm = strstr(payload, ",cam=");
+            if (cm) {
+                size_t L = strcspn(cm + 5, ", ");
+                if (L >= sizeof(g_status.nodes[idx].cam_sensor))
+                    L = sizeof(g_status.nodes[idx].cam_sensor) - 1;
+                memcpy(g_status.nodes[idx].cam_sensor, cm + 5, L);
+                g_status.nodes[idx].cam_sensor[L] = '\0';
+            }
             g_status.node_count++;
             g_status.node_ok++;
         }
