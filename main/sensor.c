@@ -1498,9 +1498,10 @@ static double zstar_w01(double w)
     return w > 1.0 ? 1.0 : w;
 }
 
-/* Z* = (Z/σ_z) · [1 + α·(1/Δn − 1)] · [1 + β·max(−Mau, 0)]
- *              · [1 + γ·max(Conc·sign(Z)/σ_c, 0)]
+/* Z* = (Z/σ_z) · [1 + γ·max(Conc·sign(Z)/σ_c, 0)] · [1 + α·(1/Δn − 1)]
  *              · [1 − δ·max(AC, 0)/(1+max(AC, 0))]
+ *              · [1 + β·max(−Mau, 0)]
+ * (written in the Top-10 column order; the product is commutative)
  *
  * α β γ δ are g_status.k_dn / k_mau / k_conc / k_ac, each 0..1.
  * A missing column (NaN, Δn ≤ 0, Conc 0, no σ_c, Z = 0, AC ≤ 0) leaves

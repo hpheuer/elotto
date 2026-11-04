@@ -23,9 +23,9 @@ Two markers, and only two:
 Rank lottery **numbers** (scoring → pool) and **combinations** (the pass) from camera readout noise.
 One key, the same function for both:
 
-Z\* = (Z/σ_z) · [1 + α·(1/Δn − 1)] · [1 + β·max(−Mau, 0)] · [1 + γ·max(Conc·sign(Z)/σ_c, 0)] · [1 − δ·max(AC, 0)/(1+max(AC, 0))]
+Z\* = (Z/σ_z) · [1 + γ·max(Conc·sign(Z)/σ_c, 0)] · [1 + α·(1/Δn − 1)] · [1 − δ·max(AC, 0)/(1+max(AC, 0))] · [1 + β·max(−Mau, 0)]
 
-α `?kdn=`, β `?kmau=`, γ `?kconc=`, δ `?kac=` are each 0..1 and independent (API and form default 0 = that factor stays 1). All four at 0 is Z/σ_z. A missing column leaves its factor at 1. Δn ≤ 0 does not divide. Scoring **selects** the pool on that key; the pass **ranks** items on the same key. The page shows the formula with the weights in force at the top, and the columns Z\*, Z, Conc, Δn, AC, Mau.
+α `?kdn=`, β `?kmau=`, γ `?kconc=`, δ `?kac=` are each 0..1 and independent (API and form default 0 = that factor stays 1). All four at 0 is Z/σ_z. A missing column leaves its factor at 1. Δn ≤ 0 does not divide. Scoring **selects** the pool on that key; the pass **ranks** items on the same key. The page shows the formula with the weights in force at the top, its factors and the weight fields in the column order Conc, Δn, AC, Mau, and the columns Z\*, Z, Conc, Δn, AC, Mau.
 
 - **z** — binomial of the camera LSBs in that window. Z is the block-centred Stouffer combine, σ_z that block's own σ (scoring: the pass span).
 - **conc** — half-window concordance of the same bits (same sign both **centred** halves, loudest node dropped). It stretches Z\* only when it has the same sign as Z.
@@ -240,7 +240,7 @@ round is just a scoring (see the `?maxruns=0` rule under v3), endless.
 ## The ranking channels
 One ranking key, `zstar_of()` in `sensor.c`, used by the scoring pass and by `rank_key()`:
 
-Z\* = (Z/σ_z) · [1 + α·(1/Δn − 1)] · [1 + β·max(−Mau, 0)] · [1 + γ·max(Conc·sign(Z)/σ_c, 0)] · [1 − δ·max(AC, 0)/(1+max(AC, 0))]
+Z\* = (Z/σ_z) · [1 + γ·max(Conc·sign(Z)/σ_c, 0)] · [1 + α·(1/Δn − 1)] · [1 − δ·max(AC, 0)/(1+max(AC, 0))] · [1 + β·max(−Mau, 0)]
 
 α β γ δ are `?kdn=` `?kmau=` `?kconc=` `?kac=`, each 0..1, default 0. 0 leaves that factor at 1. ⚠ The start form types each as a whole percent 0–100 and sends the fraction: 80 in the field is `?kdn=0.80`. `?kdn=80` is refused.
 - **Δn** — spread of the cameras on this item (each centred z / that camera's own σ). Independent cameras ≈ 1. Smaller than 1 stretches Z along its own sign; larger than 1 pulls Z toward 0. Δn = 1 → factor 1. Δn = 0,82 and α = 1 → 1 + (1/0,82 − 1) = 1,220. Δn ≤ 0 or missing → factor 1.
@@ -248,7 +248,7 @@ Z\* = (Z/σ_z) · [1 + α·(1/Δn − 1)] · [1 + β·max(−Mau, 0)] · [1 + γ
 - **Conc** — same sign as Z, scaled by |Conc|/σ_c. Opposite sign, Conc 0, missing σ_c, or Z = 0 → factor 1. |Conc|/σ_c = 1,55 and γ = 1 → 2,55. Conc is not a second entropy subtraction: when the window bias is stable it tracks Z, so a large same-sign Conc means the deviation held across both halves.
 - **AC** — this item against the 1..4 items measured just before it. A positive AC (a run) damps. AC = 4,12 and δ = 1 → 1 − 4,12/5,12 = 0,195. A negative AC leaves the factor at 1. The factor never goes negative. The first item of a round or pass has no predecessor → factor 1.
 
-Worked stack, all weights 1: Z/σ_z = −2, Δn = 0,82, Mau = −1,5, |Conc|/σ_c = 1,55, AC = 4,12 → −2 · 1,220 · 2,5 · 2,55 · 0,195 ≈ −3,03.
+Worked stack, all weights 1: Z/σ_z = −2, |Conc|/σ_c = 1,55, Δn = 0,82, AC = 4,12, Mau = −1,5 → −2 · 2,55 · 1,220 · 0,195 · 2,5 ≈ −3,03.
 
 ⚠ Z and Conc are each divided by their own σ of **that item's block**, frozen at close. There is **no** session-wide channel σ — `s_bsig[block].sig_p`/`sig_c` is the only scale, and `/loops` no longer publishes it. A key with no block σ is 0, never a fallback. The product is not re-standardised.
 ⚠ Uncentred z ranks NODES, not items — a live table is meaningless before the first block closes.
