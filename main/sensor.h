@@ -1029,6 +1029,7 @@ int results_quietest(RunResult *out, int max);
  * still in results[] are refreshed from their row first, so an open block
  * shows its provisional values. Takes the archive lock. */
 int wsig_board_copy(WsigEvent *out, int max);
+void wsig_board_refresh_top(void);
 
 /* Scoring-sum archive (ScoreSnap). Written by the sensor task, read by HTTP.
  * count is the number of snaps published; a snap is visible only after it is

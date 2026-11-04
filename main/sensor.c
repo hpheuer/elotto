@@ -261,7 +261,7 @@ static void   wsig_collect(float out[MAX_NODES]);
 static void   series_ac(const double *u, int n, float *item, float zl[4]);
 static void   wsig_note(const RunResult *r, const float *wsig, node_mask_t mask,
                         uint8_t spass);
-static void   wsig_refresh(bool freeze);
+static void   wsig_refresh(bool freeze, int limit);
 static void   wsig_fill_scoring(bool euro_pool, uint8_t spass);
 static void   archive_lock(void);
 static void   archive_unlock(void);
@@ -1890,7 +1890,7 @@ static void pass_compact(void)
      * (results_extremes) may be walking either array right
      * now. The selection above only reads, so it needs no lock. */
     archive_lock();
-    wsig_refresh(true);   /* before any row moves: the board keeps the values */
+    wsig_refresh(true, WSIG_KEEP_N);   /* before any row moves: the board keeps the values */
     int w = 0, dropped = 0;
     for (int j = 0; j < n; j++) {
         const RunResult *r = &g_status.results[j];
@@ -2083,13 +2083,14 @@ static void wsig_note(const RunResult *r, const float *wsig, node_mask_t mask,
  * archive lock. `freeze`: compaction is about to move the rows, so the slot
  * stops meaning anything — keep the values, drop the slot. The block is
  * closed by then, so they are final. */
-static void wsig_refresh(bool freeze)
+static void wsig_refresh(bool freeze, int limit)
 {
     WsigEvent *B = g_status.wsig_top;
     if (!B) return;
     int ntot = g_status.runs_completed;
     if (ntot > NUM_RUNS) ntot = NUM_RUNS;
-    for (int i = 0; i < g_status.wsig_n; i++) {
+    int n = g_status.wsig_n < limit ? g_status.wsig_n : limit;
+    for (int i = 0; i < n; i++) {
         WsigEvent *e = &B[i];
         if (e->spass != 0 || e->slot == WSIG_NO_SLOT) continue;
         if (e->slot < ntot) {
@@ -2134,11 +2135,21 @@ static void wsig_fill_scoring(bool euro_pool, uint8_t spass)
     archive_unlock();
 }
 
+/* /status: refresh only the rows it publishes (the first WSIG_TOP_N), so the
+ * card's Z* is current without walking the whole board on every poll. */
+void wsig_board_refresh_top(void)
+{
+    if (!g_status.wsig_top) return;
+    archive_lock();
+    wsig_refresh(false, WSIG_TOP_N);
+    archive_unlock();
+}
+
 int wsig_board_copy(WsigEvent *out, int max)
 {
     if (!out || max <= 0 || !g_status.wsig_top) return 0;
     archive_lock();
-    wsig_refresh(false);
+    wsig_refresh(false, max);
     int n = g_status.wsig_n;
     if (n > max) n = max;
     memcpy(out, g_status.wsig_top, (size_t)n * sizeof(WsigEvent));

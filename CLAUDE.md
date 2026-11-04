@@ -375,7 +375,7 @@ what remains visible is an effect varying **between items inside a block**.
 - **A third table, the camera-sigma jump board**: the ten largest changes in a node's
   own camera noise from its previous measurement to this one, session-wide, named by
   (item/round), wall time (`dd.mm. HH:MM`) and the drawn numbers. Only a node that was in that
-  item's combine enters it; every node's jump still feeds `wsig_sd`. Columns: was, jump, ×σ.
+  item's combine enters it; every node's jump still feeds `wsig_sd`. Columns: node (`m`, `s0`…`s8`), was, jump, ×σ, Z\* (empty until known).
   The board keeps `WSIG_KEEP_N` 1000 rows (PSRAM); `/status` `wsig` and the card show the first
   ten, Save writes all of them. Each row carries its measurement's values: a pass item from its
   `results[]` row (provisional until its block is centred, frozen when compaction moves the rows),

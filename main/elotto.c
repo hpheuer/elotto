@@ -263,24 +263,6 @@ static const char HTML[] =
 "</div>"
 "<div class='wgrid'>"
 "<div class='frow'>"
-"<label for='numKdn' title='Percent of the full delta-n correction, 0 to 100. "
-"A smaller delta-n stretches Z* along the sign of Z. "
-"At delta-n = 1 the factor is 1. 0 leaves this factor at 1.'>&#916;n</label>"
-"<span class='wpct'>"
-"<input id='numKdn' class='fin' type='number' min='0' max='100' step='1' value='0' "
-"oninput='onW(this)' onblur='onW(this,1)'>"
-"<span class='pu'>%</span></span>"
-"</div>"
-"<div class='frow'>"
-"<label for='numKmau' title='Percent of the full Mau correction, 0 to 100. "
-"A negative Mau stretches Z* along the sign of Z. "
-"Zero or positive Mau leaves the factor at 1. 0 leaves this factor at 1.'>Mau</label>"
-"<span class='wpct'>"
-"<input id='numKmau' class='fin' type='number' min='0' max='100' step='1' value='0' "
-"oninput='onW(this)' onblur='onW(this,1)'>"
-"<span class='pu'>%</span></span>"
-"</div>"
-"<div class='frow'>"
 "<label for='numKconc' title='Percent of the full Conc correction, 0 to 100. "
 "Conc stretches Z* only when it has the same sign as Z, by |Conc| / sigma of Conc. "
 "The other sign leaves the factor at 1. 0 leaves this factor at 1.'>Conc</label>"
@@ -290,11 +272,29 @@ static const char HTML[] =
 "<span class='pu'>%</span></span>"
 "</div>"
 "<div class='frow'>"
+"<label for='numKdn' title='Percent of the full delta-n correction, 0 to 100. "
+"A smaller delta-n stretches Z* along the sign of Z. "
+"At delta-n = 1 the factor is 1. 0 leaves this factor at 1.'>&#916;n</label>"
+"<span class='wpct'>"
+"<input id='numKdn' class='fin' type='number' min='0' max='100' step='1' value='0' "
+"oninput='onW(this)' onblur='onW(this,1)'>"
+"<span class='pu'>%</span></span>"
+"</div>"
+"<div class='frow'>"
 "<label for='numKac' title='Percent of the full AC correction, 0 to 100. "
 "A positive AC damps Z*, so a run is not rewarded. "
 "A negative AC leaves the factor at 1. 0 leaves this factor at 1.'>AC</label>"
 "<span class='wpct'>"
 "<input id='numKac' class='fin' type='number' min='0' max='100' step='1' value='0' "
+"oninput='onW(this)' onblur='onW(this,1)'>"
+"<span class='pu'>%</span></span>"
+"</div>"
+"<div class='frow'>"
+"<label for='numKmau' title='Percent of the full Mau correction, 0 to 100. "
+"A negative Mau stretches Z* along the sign of Z. "
+"Zero or positive Mau leaves the factor at 1. 0 leaves this factor at 1.'>Mau</label>"
+"<span class='wpct'>"
+"<input id='numKmau' class='fin' type='number' min='0' max='100' step='1' value='0' "
 "oninput='onW(this)' onblur='onW(this,1)'>"
 "<span class='pu'>%</span></span>"
 "</div>"
@@ -1736,6 +1736,8 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "return z2(dt.getDate())+'.'+z2(dt.getMonth()+1)+'. '+z2(dt.getHours())+':'+z2(dt.getMinutes());}"
 /* The chip a node bound (/status nodes[].cam_sensor); empty = not reported. */
 "function wsigCam(d,ix){var n=(d.nodes&&d.nodes[ix])?d.nodes[ix]:null;return (n&&n.cam_sensor)||'';}"
+/* Card only: master -> m, slaveN -> sN. The CSV keeps the full name. */
+"function wsigShort(d,ix){var n=wsigNode(d,ix);return n==='master'?'m':n.replace(/^slave/,'s');}"
 "function wsigNode(d,ix){"
 "var n=(d.nodes&&d.nodes[ix])?d.nodes[ix]:null;"
 "var ip=n?(n.ip==='self'?'192.168.178.100':n.ip):'';"
@@ -1803,11 +1805,12 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "'Largest change in a node\\u2019s camera noise from its previous measurement to this one.'"
 "+((d.wsig_sd>0)?' Jump-to-jump noise this session: \\u00b1'+d.wsig_sd.toFixed(4)+' over '+d.wsig_sd_n+' node-measurements.':'');"
 "document.getElementById('resHeadWsig').innerHTML="
-"'<tr><th>#</th><th>Item/Round</th><th>Node</th>'"
+"'<tr><th>#</th><th>Item/Round</th><th title=\"m = master, s0..s8 = slave0..slave8\">Node</th>'"
 "+'<th title=\"when the jump happened (day.month. hour:minute)\">time</th>'"
 "+'<th title=\"that node\\u2019s camera sigma on its previous measurement. A quiet window reads 1,0\">was</th>'"
 "+'<th title=\"the change to this measurement; the board ranks its size, either direction\">jump</th>'"
 "+'<th title=\"the jump measured in this session\\u2019s own jump-to-jump noise. Below about 3 this is ordinary sampling scatter\">\\u00d7\\u03c3</th>'"
+"+'<th title=\"Z* of this measurement. Empty until its block (scoring: its pass) has been centred\">Z*</th>'"
 "+'<th>Numbers</th>'+(isEuro?'<th>Bonus</th>':'')+'<th></th></tr>';"
 "var tb=document.getElementById('resBodyWsig');tb.innerHTML='';"
 "if(ev.length===0){"
@@ -1828,10 +1831,11 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
    the one distinction this table exists to make. */
 "var when=wsigWhen(d,e);"
 "tb.innerHTML+='<tr><td>'+(i+1)+'</td><td>'+itm+'</td>'"
-"+'<td>'+wsigNode(d,e.node)+'</td><td>'+when+'</td>'"
+"+'<td>'+wsigShort(d,e.node)+'</td><td>'+when+'</td>'"
 "+'<td>'+e.prev.toFixed(3)+'</td>'"
 "+'<td><b>'+sgn+e.jump.toFixed(3)+'</b></td>'"
 "+'<td>'+((d.wsig_sd>0)?(Math.abs(e.jump)/d.wsig_sd).toFixed(1):'\\u2014')+'</td>'"
+"+'<td>'+((typeof e.key==='number')?e.key.toFixed(2):'\\u2014')+'</td>'"
 "+'<td>'+nums+'</td>'+(isEuro?'<td>'+estr+'</td>':'')+cpCell(e.nums,isEuro?e.euro:null)+'</tr>';"
 "}"
 "document.getElementById('resCardWsig').style.display='block';"
@@ -2241,6 +2245,7 @@ static esp_err_t status_handler(httpd_req_t *req)
         buf_append(buf, sizeof(buf), &pos, "]}");
     }
     buf_append(buf, sizeof(buf), &pos, "],");
+    wsig_board_refresh_top();
     buf_append(buf, sizeof(buf), &pos,
         "\"wsig_sd\":%.4f,\"wsig_sd_n\":%d,\"wsig\":[",
         g_status.wsig_sd, g_status.wsig_sd_n);
@@ -2252,9 +2257,12 @@ static esp_err_t status_handler(httpd_req_t *req)
         const WsigEvent *e = &g_status.wsig_top[i];
         buf_append(buf, sizeof(buf), &pos,
             "%s{\"round\":%d,\"index\":%d,\"spass\":%d,\"node\":%d,"
-            "\"prev\":%.4f,\"jump\":%.4f,\"t_ms\":%lld,\"nums\":[",
+            "\"prev\":%.4f,\"jump\":%.4f,\"t_ms\":%lld,",
             i ? "," : "", (int)e->round, (int)e->index, (int)e->spass, (int)e->node,
             e->prev, e->jump, (long long)e->t_ms);
+        /* Z* of the measurement; null until known (see WsigEvent). */
+        if (isfinite(e->key)) buf_append(buf, sizeof(buf), &pos, "\"key\":%.4f,\"nums\":[", (double)e->key);
+        else                  buf_append(buf, sizeof(buf), &pos, "\"key\":null,\"nums\":[");
         bool f1 = true;
         for (int m = 0; m < 6; m++) {
             if (!e->nums[m]) continue;
