@@ -175,7 +175,7 @@ static const char HTML[] =
 ".frow>label,.frow>span:first-child{color:#f0c040;font-size:.9em;text-align:right}"
 ".fin{width:80px;padding:5px 8px;border-radius:6px;border:1px solid #a08030;"
 "background:#0a2e0a;color:#fff;font-size:1em;text-align:center}"
-".wgrid{grid-column:1 / -1;display:grid;grid-template-columns:repeat(4,1fr);gap:6px 12px}"
+".wgrid{grid-column:1 / -1;display:grid;grid-template-columns:repeat(5,1fr);gap:6px 12px}"
 ".wgrid .frow{grid-column:auto;grid-template-columns:1fr;justify-items:start;gap:2px}"
 ".wgrid .frow>label{text-align:left;font-size:.82em}"
 ".wgrid .fin{width:100%;max-width:96px;box-sizing:border-box}"
@@ -218,7 +218,7 @@ static const char HTML[] =
 "color:#e8f5e8;margin:0 auto 14px;max-width:980px;padding:8px 12px;"
 "border:1px solid rgba(240,192,64,.35);border-radius:8px;"
 "background:rgba(0,0,0,.25)'>"
-"Z* = (Z/&#963;) &#183; [1 + 0.00&#183;max(Conc&#183;sign(Z)/&#963;c, 0)]"
+"Z* = sign(Z)&#183;|Z/&#963;|^1.00 &#183; [1 + 0.00&#183;max(Conc&#183;sign(Z)/&#963;c, 0)]"
 " &#183; [1 + 0.00&#183;(1/&#916;n &#8722; 1)]"
 " &#183; [1 &#8722; 0.00&#183;max(AC, 0)/(1+max(AC, 0))]"
 " &#183; [1 + 0.00&#183;max(&#8722;Mau, 0)]"
@@ -261,7 +261,24 @@ static const char HTML[] =
 " value='" EL_STR(SCORE_PASSES_DEFAULT) "' min='0'"
 " max='" EL_STR(SCORE_PASSES_MAX) "' step='1' oninput='unlimHint()'>"
 "</div>"
+"<div class='frow'>"
+"<label for='numFix' title='Numbers fixed in EVERY combination of the pass: the best-scored "
+"ones on the pool criterion. The rest of each combination comes from the next-best numbers, "
+"as many as fit Runs per round. 6 of 49: 3 to 6, Euro-Lotto: 2 to 5 main numbers; the bonus "
+"pool is sized as always. 0 = off. Needs Runs per round above 0.'>Fixed numbers:</label>"
+"<input id='numFix' class='fin' type='number' value='0' min='0' max='6' step='1' "
+"oninput='unlimHint()'>"
+"</div>"
 "<div class='wgrid'>"
+"<div class='frow'>"
+"<label for='numKz' title='Exponent on |Z / sigma| in percent, 0 to 100. "
+"100 = Z / sigma as measured. 0 keeps only the sign of Z, the four factors "
+"then carry the magnitude.'>Z</label>"
+"<span class='wpct'>"
+"<input id='numKz' class='fin' type='number' min='0' max='100' step='1' value='100' "
+"oninput='onW(this)' onblur='onW(this,1)'>"
+"<span class='pu'>%</span></span>"
+"</div>"
 "<div class='frow'>"
 "<label for='numKconc' title='Percent of the full Conc correction, 0 to 100. "
 "Conc stretches Z* only when it has the same sign as Z, by |Conc| / sigma of Conc. "
@@ -532,11 +549,12 @@ NODE_NAMES_JS
    screen would be read as a wrong parameter. */
 "function nCk(n,k){if(k<0||k>n)return 0;if(k>n-k)k=n-k;var r=1;"
 "for(var i=0;i<k;i++)r=r*(n-i)/(i+1);return Math.round(r);}"
-"function unlimPool(euro,cap){"
-"var nm=euro?5:6,pmax=euro?" EL_STR(POOL_MAIN_50) ":" EL_STR(POOL_MAIN_49) ";"
+"function unlimPool(euro,cap,fix){fix=fix||0;"
+"var nm=euro?5:6,pmax=fix>0?(euro?50:49):(euro?" EL_STR(POOL_MAIN_50) ":" EL_STR(POOL_MAIN_49) ");"
+"if(fix>=nm)pmax=nm;"
 "var qmin=euro?2:0,qmax=euro?" EL_STR(POOL_EURO_12) ":0;"
 "var bp=nm,bq=qmin,bc=0;"
-"for(var p=nm;p<=pmax;p++){var cm=nCk(p,nm);"
+"for(var p=nm;p<=pmax;p++){var cm=nCk(p-fix,nm-fix);"
 "for(var q=qmin;q<=qmax;q++){var t=cm*(euro?nCk(q,2):1);"
 "if(t>cap)continue;"
 "if(t>bc||(t===bc&&(q>bq||(q===bq&&p>bp)))){bc=t;bp=p;bq=q;}}}"
@@ -597,7 +615,9 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 ":'Runs 0 \\u2192 nur Number-Scoring (kein Pass), jede Runde neu, endlos bis Abort';return;}"
 "if(!(c>=1)){h.innerHTML='';return;}"
 "if(pp===0){h.innerHTML='\\u26a0 Passes 0 geht nur mit Runs per round 0';return;}"
-"var e=unlimPool(true,c),l=unlimPool(false,c);"
+"var fx=formFix();"
+"if(fx>0&&!fixOk(true,fx)&&!fixOk(false,fx)){h.innerHTML='\\u26a0 Fixed numbers: 6 of 49 3\\u20136, Euro-Lotto 2\\u20135';return;}"
+"var e=unlimPool(true,c,fixOk(true,fx)?fx:0),l=unlimPool(false,c,fixOk(false,fx)?fx:0);"
 /* A round IS a block, so this preview is also the block length. No
    warning: every legal value of THIS field predicts a round dominated by
    the scoring, so the split is the honest thing to show and the length stays
@@ -605,8 +625,14 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "var pe=roundParts(true,e.c),pl=roundParts(false,l.c);"
 "function rl(lbl,p,q){return lbl+' = '+q+' runs · ≈ '+fmt(p.s+p.m+p.i)"
 "+'/round ('+fmt(p.s)+' scoring + '+fmtEta(p.m)+' pass)';}"
-"h.innerHTML=rl('Euro '+e.p+'+'+e.q,pe,e.c)+'<br>'"
-"+rl('6of49 '+l.p,pl,l.c);}"
+"function fl(eu,p){if(!(fx>0))return String(p);"
+"return fx+' fixed + '+(p-fx);}"
+"h.innerHTML=(fixOk(true,fx)?rl('Euro '+fl(true,e.p)+'+'+e.q,pe,e.c):'Euro: fixed '+fx+' n/a (2\\u20135)')+'<br>'"
+"+(fixOk(false,fx)?rl('6of49 '+fl(false,l.p),pl,l.c):'6of49: fixed '+fx+' n/a (3\\u20136)');}"
+/* Fixed numbers: 0 = off, 6 of 49 3..6, Euro-Lotto 2..5 (sensor.h FIX_MIN_*). */
+"function formFix(){var v=parseInt(document.getElementById('numFix').value);return (v>0)?v:0;}"
+"function fixOk(euro,f){if(!(f>0))return true;"
+"return euro?(f>=" EL_STR(FIX_MIN_50) "&&f<=5):(f>=" EL_STR(FIX_MIN_49) "&&f<=6);}"
 /* Pool criterion with its direction. Σ Z* is magnitude: "largest |Σ Z*|" /
    "smallest |Σ Z*|". Every other column stays "highest Σ Δn" / "lowest Σ …".
    DIR is the stored direction (NVS, set by prefs_send()); the Σ column's
@@ -644,17 +670,19 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "function fmtW(x){return (Math.round(x*100)/100).toFixed(2);}"
 "function paintFormula(d){"
 "var live=d&&(d.state==='running'||((d.state==='done'||d.state==='aborted')&&!formulaDirty));"
-"var a,b,g,c;"
-"if(live){a=+d.k_dn||0;b=+d.k_mau||0;g=+d.k_conc||0;c=+d.k_ac||0;}"
-"else{a=wShow('numKdn');b=wShow('numKmau');g=wShow('numKconc');c=wShow('numKac');}"
+"var a,b,g,c,kz;"
+"if(live){a=+d.k_dn||0;b=+d.k_mau||0;g=+d.k_conc||0;c=+d.k_ac||0;kz=kzOf(d);}"
+"else{a=wShow('numKdn');b=wShow('numKmau');g=wShow('numKconc');c=wShow('numKac');kz=wShow('numKz');}"
 "var el=document.getElementById('formulaBar');if(!el)return;"
-"el.innerHTML='Z* = (Z/\\u03c3) \\u00b7 [1 + '+fmtW(g)+'\\u00b7max(Conc\\u00b7sign(Z)/\\u03c3c, 0)]'"
+"el.innerHTML='Z* = sign(Z)\\u00b7|Z/\\u03c3|^'+fmtW(kz)+' \\u00b7 [1 + '+fmtW(g)+'\\u00b7max(Conc\\u00b7sign(Z)/\\u03c3c, 0)]'"
 "+' \\u00b7 [1 + '+fmtW(a)+'\\u00b7(1/\\u0394n \\u2212 1)]'"
 "+' \\u00b7 [1 \\u2212 '+fmtW(c)+'\\u00b7max(AC, 0)/(1+max(AC, 0))]'"
 "+' \\u00b7 [1 + '+fmtW(b)+'\\u00b7max(\\u2212Mau, 0)]'"
 "+\"<div style='font-size:.78em;color:#8fae8f;margin-top:2px'>0 leaves that factor at 1</div>\";"
 "}"
-"function zW(d){return {a:+d.k_dn||0,b:+d.k_mau||0,g:+d.k_conc||0,ac:+d.k_ac||0};}"
+"function zW(d){return {a:+d.k_dn||0,b:+d.k_mau||0,g:+d.k_conc||0,ac:+d.k_ac||0,z:kzOf(d)};}"
+/* k_z missing (older firmware) is the old base Z/σ, exponent 1. */
+"function kzOf(d){return (d&&d.k_z!=null)?+d.k_z:1;}"
 "window.onload=function(){"
 "fetch('/status').then(function(r){return r.json();}).then(function(d){"
 "evPoll(d);showSumPref(d.score_sum);paintFormula(d);"
@@ -750,7 +778,19 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "if(d.loops_done>0||d.state==='running')"
 "p.push(pItem('Blocks',(d.loops_done||0)+((d.state==='running')?1:0)));"
 "if(d.paused_ms>0)p.push(pItem('Paused',fmt(d.paused_ms)+' (excluded)'));"
-"b.innerHTML=p.join(\" <span style='opacity:.3'>\u00b7</span> \");"
+"var sep=\" <span style='opacity:.3'>\u00b7</span> \";"
+/* Second line: every value the session was started with, from /status. */
+"var q=[];"
+"q.push(pItem('Runs/round',d.runs_cap===0?'0 (scoring only)':d.runs_cap));"
+"q.push(pItem('Passes',d.scoring_passes===0?'0 (continuous)':d.scoring_passes));"
+"q.push(pItem('Fixed',d.pool_fix>0?d.pool_fix:'off'));"
+"q.push(pItem('Pool',critPhrase(d.score_dir,d.score_sum||'key')));"
+"q.push(pItem('Z','^'+fmtW(kzOf(d))));"
+"q.push(pItem('Conc',fmtW(+d.k_conc||0)));"
+"q.push(pItem('\\u0394n',fmtW(+d.k_dn||0)));"
+"q.push(pItem('AC',fmtW(+d.k_ac||0)));"
+"q.push(pItem('Mau',fmtW(+d.k_mau||0)));"
+"b.innerHTML=p.join(sep)+'<br>'+q.join(sep);"
 "}"
 /* The numbers scoring picked, under the bar that picked them. Same chips as the
    result tables and the Focus panel, so a bonus number reads as a star here too.
@@ -768,8 +808,10 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "if(d.scoring_pass>0){pb.innerHTML=\"<span style='color:#6ab0e8'>\"+nn+' numbers</span>';return;}"
 "var h=\"<span style='color:#6ab0e8'>\""
 "+nn+' numbers'+(cc?(', '+cc+' combos'):'')+\":</span> \";"
-"d.pool_main.forEach(function(x){"
-"h+=\"<span class='num'>\"+x.n+\"</span>\";"
+"var pf=d.pool_fix>0?d.pool_fix:0;"
+"d.pool_main.forEach(function(x,i){"
+"if(pf&&i===pf)h+=\"<span style='color:#6ab0e8;margin:0 6px'>|</span>\";"
+"h+=\"<span class='num'\"+(i<pf?\" style='outline:2px solid #f0c040' title='fixed in every combination'\":'')+\">\"+x.n+\"</span>\";"
 "if(x.z!=null)h+=\"<span style='font-size:.72em;margin:0 6px 0 2px;opacity:.85'>\"+"
 "x.z.toFixed(2)+\"</span>\";});"
 "if(d.pool_euro)d.pool_euro.forEach(function(x){"
@@ -801,7 +843,11 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "function clampW(id){var e=document.getElementById(id);var v=parseFloat(e.value);"
 "if(!(v>=0)||!isFinite(v))v=0;if(v>100)v=100;v=Math.round(v);e.value=String(v);"
 "return (v/100).toFixed(2);}"
-"var kdn=clampW('numKdn'),kmau=clampW('numKmau'),kconc=clampW('numKconc'),kac=clampW('numKac');"
+"var kdn=clampW('numKdn'),kmau=clampW('numKmau'),kconc=clampW('numKconc'),kac=clampW('numKac'),kz=clampW('numKz');"
+"var fix=formFix();document.getElementById('numFix').value=fix;"
+"if(fix>0&&mxr===0){document.getElementById('runsErr').textContent='\\u26a0 Fixed numbers need Runs per round above 0';return;}"
+"if(!fixOk(mode===0,fix)){document.getElementById('runsErr').textContent="
+"'\\u26a0 Fixed numbers: '+(mode===0?'Euro-Lotto 2\\u20135':'6 of 49 3\\u20136')+' (0 = off)';return;}"
 "paintFormula();"
 "document.getElementById('runsErr').textContent='';"
 "document.getElementById('pfScore').style.width='0%';"
@@ -811,7 +857,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "fetch('/start?mode='+mode"
 "+'&run='+runS"
 "+'&score='+score"
-"+'&kdn='+kdn+'&kmau='+kmau+'&kconc='+kconc+'&kac='+kac"
+"+'&kdn='+kdn+'&kmau='+kmau+'&kconc='+kconc+'&kac='+kac+'&kz='+kz+'&fix='+fix"
 "+'&maxruns='+mxr+'&passes='+passes+'&confirm=1',{method:'POST'})"
 ".then(function(r){if(!r.ok){"
 "document.getElementById('runsErr').textContent="
@@ -870,7 +916,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "setTimeout(function(){URL.revokeObjectURL(a.href);},1500);}"
 "function w3(x){return (Math.round((+x||0)*1000)/1000).toFixed(3);}"
 "function paramsOf(st){"
-"var a=+st.k_dn||0,b=+st.k_mau||0,g=+st.k_conc||0,dw=+st.k_ac||0;"
+"var a=+st.k_dn||0,b=+st.k_mau||0,g=+st.k_conc||0,dw=+st.k_ac||0,kz=kzOf(st);"
 "var runs=st.runs_cap,passes=st.scoring_passes;"
 "var L=[];"
 "L.push('Mode: '+(st.mode==='euro'?'Eurojackpot 5+2':(st.mode?'6 of 49':'')));"
@@ -878,13 +924,15 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "L.push('Gap: '+(+st.gap_s||0).toFixed(2)+' s');"
 "L.push('Runs per round: '+(runs===0?'0 (scoring only)':(runs==null?'':String(runs))));"
 "L.push('Scoring passes: '+(passes===0?'0 (continuous)':(passes==null?'':String(passes))));"
+"L.push('Fixed numbers: '+(st.pool_fix>0?st.pool_fix:'0 (off)'));"
 "L.push('Sweep: '+(st.cal_budget_ms>0?(st.cal_budget_ms/1000)+' s':'off'));"
 "L.push('Pool criterion: '+critPhrase(st.score_dir,st.score_sum||'key'));"
+"L.push('Z exponent: '+w3(kz));"
 "L.push('Conc: '+w3(g));"
 "L.push('\\u0394n: '+w3(a));"
 "L.push('AC: '+w3(dw));"
 "L.push('Mau: '+w3(b));"
-"L.push('Z* = (Z/\\u03c3) \\u00b7 [1 + '+w3(g)+'\\u00b7max(Conc\\u00b7sign(Z)/\\u03c3c, 0)]'"
+"L.push('Z* = sign(Z)\\u00b7|Z/\\u03c3|^'+w3(kz)+' \\u00b7 [1 + '+w3(g)+'\\u00b7max(Conc\\u00b7sign(Z)/\\u03c3c, 0)]'"
 "+' \\u00b7 [1 + '+w3(a)+'\\u00b7(1/\\u0394n \\u2212 1)]'"
 "+' \\u00b7 [1 \\u2212 '+w3(dw)+'\\u00b7max(AC, 0)/(1+max(AC, 0))]'"
 "+' \\u00b7 [1 + '+w3(b)+'\\u00b7max(\\u2212Mau, 0)]');"
@@ -1701,7 +1749,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "var mauCol=(r.mau===undefined||r.mau===null)?'#9aa':(Math.abs(r.mau)>3?'#ffd479':'');"
 "var det='Z '+zTxt+' \\u00b7 Conc '+concTxt"
 "+' \\u00b7 \\u0394n '+nsdTxt+' (k '+(r.k===undefined?'?':r.k)+')';"
-"if(st)det+='\\n\\u0394n \\u00d7'+(st.a||0).toFixed(2)"
+"if(st)det+='\\nZ ^'+(st.z==null?1:st.z).toFixed(2)+' \\u00b7 \\u0394n \\u00d7'+(st.a||0).toFixed(2)"
 "+' \\u00b7 Mau \\u00d7'+(st.b||0).toFixed(2)"
 "+' \\u00b7 Conc \\u00d7'+(st.g||0).toFixed(2)"
 "+' \\u00b7 AC \\u00d7'+(st.ac||0).toFixed(2);"
@@ -1996,6 +2044,7 @@ static esp_err_t status_handler(httpd_req_t *req)
         /* Z* factor weights of this session. rank_key() divides Z by the
          * item's BLOCK σ and multiplies the four factors. */
         "\"k_dn\":%.3f,\"k_mau\":%.3f,\"k_conc\":%.3f,\"k_ac\":%.3f,"
+        "\"k_z\":%.3f,\"pool_fix\":%d,"
         "\"pre_n\":%d,"
         "\"score_dir\":\"%s\",\"score_sum\":\"%s\","
         "\"loop_sigma\":%.4f,"
@@ -2046,6 +2095,7 @@ static esp_err_t status_handler(httpd_req_t *req)
         g_status.pass_n_excl, g_status.pass_n_open,
         g_status.v_eff, (unsigned long)g_status.flush_timeouts,
         g_status.k_dn, g_status.k_mau, g_status.k_conc, g_status.k_ac,
+        g_status.k_z, g_status.pool_fix,
         g_status.pre_n,
         score_str,
         SCORE_SUM_NAME[(g_status.score_sum >= 0 && g_status.score_sum < SCORE_SUM_N)
@@ -2838,7 +2888,8 @@ typedef struct {
     int        cal_ms;
     ScoreDir   score_dir;
     bool       fake_pool;
-    double     k_dn, k_mau, k_conc, k_ac;
+    double     k_dn, k_mau, k_conc, k_ac, k_z;
+    int        fix;
     bool       from_form;
 } StartReq;
 
@@ -2903,6 +2954,30 @@ static bool start_parse_kconc(const char *val, StartReq *r, httpd_req_t *req)
 { return start_parse_w01(val, &r->k_conc, req, "kconc"); }
 static bool start_parse_kac(const char *val, StartReq *r, httpd_req_t *req)
 { return start_parse_w01(val, &r->k_ac, req, "kac"); }
+static bool start_parse_kz(const char *val, StartReq *r, httpd_req_t *req)
+{
+    double p;
+    if (!parse_double_all(val, &p) || p < 0.0 || p > 1.0) {
+        start_refuse(req, "kz= is the exponent on |Z/sigma| and must be 0..1 "
+                     "(1 = Z/sigma, 0 = sign of Z only)");
+        return false;
+    }
+    r->k_z = p;
+    return true;
+}
+/* The mode-dependent range (6 of 49: 3..6, Eurojackpot: 2..5) is checked
+ * after the walk, once mode= is known. */
+static bool start_parse_fix(const char *val, StartReq *r, httpd_req_t *req)
+{
+    int m;
+    if (!parse_int_all(val, &m) || m < 0 || m > 6) {
+        start_refuse(req, "fix= must be 0 (off), " EL_STR(FIX_MIN_49)
+                     "..6 for 6 of 49 or " EL_STR(FIX_MIN_50) "..5 for Eurojackpot");
+        return false;
+    }
+    r->fix = m;
+    return true;
+}
 static bool start_parse_maxruns(const char *val, StartReq *r, httpd_req_t *req)
 {
     int m;
@@ -3045,6 +3120,8 @@ static const StartKey start_keys[] = {
     { "kmau",      NULL, start_parse_kmau },
     { "kconc",     NULL, start_parse_kconc },
     { "kac",       NULL, start_parse_kac },
+    { "kz",        NULL, start_parse_kz },
+    { "fix",       NULL, start_parse_fix },
     { "maxruns",   NULL, start_parse_maxruns },
     { "passes",    NULL, start_parse_passes },
     { "confirm",   NULL, start_parse_confirm },
@@ -3138,7 +3215,8 @@ typedef struct {
     int          run_segments;
     int          cal_budget_ms;
     ScoreDir     score_dir;
-    double       k_dn, k_mau, k_conc, k_ac;
+    double       k_dn, k_mau, k_conc, k_ac, k_z;
+    int          pool_fix;
     int          pre_n;
     ElottoState  state;
 } StartSnap;
@@ -3159,6 +3237,8 @@ static void start_snap_save(StartSnap *s)
     s->k_mau         = g_status.k_mau;
     s->k_conc        = g_status.k_conc;
     s->k_ac          = g_status.k_ac;
+    s->k_z           = g_status.k_z;
+    s->pool_fix      = g_status.pool_fix;
     s->pre_n         = g_status.pre_n;
     s->state         = g_status.state;
 }
@@ -3179,6 +3259,8 @@ static void start_snap_restore(const StartSnap *s)
     g_status.k_mau         = s->k_mau;
     g_status.k_conc        = s->k_conc;
     g_status.k_ac          = s->k_ac;
+    g_status.k_z           = s->k_z;
+    g_status.pool_fix      = s->pool_fix;
     g_status.pre_n         = s->pre_n;
     g_status.state         = s->state;
 }
@@ -3209,6 +3291,8 @@ static esp_err_t start_handler(httpd_req_t *req)
             .k_mau     = ZSTAR_W_DEFAULT,
             .k_conc    = ZSTAR_W_DEFAULT,
             .k_ac      = ZSTAR_W_DEFAULT,
+            .k_z       = ZSTAR_KZ_DEFAULT,
+            .fix       = 0,
             .from_form = false,
         };
 
@@ -3228,6 +3312,20 @@ static esp_err_t start_handler(httpd_req_t *req)
                 "passes=0 (continuous scoring) needs maxruns=0; otherwise "
                 "passes must be " EL_STR(SCORE_PASSES_MIN) ".."
                 EL_STR(SCORE_PASSES_MAX));
+
+        /* fix= needs a pass (maxruns >= 1) and the mode's range. */
+        if (parsed.fix != 0) {
+            bool eu = (parsed.mode == MODE_EUROJACKPOT);
+            if (parsed.runs_cap == 0)
+                return start_refuse(req,
+                    "fix= needs a combination pass; maxruns=0 has none");
+            if (eu && (parsed.fix < FIX_MIN_50 || parsed.fix > 5))
+                return start_refuse(req,
+                    "fix= for Eurojackpot must be 0 or " EL_STR(FIX_MIN_50) "..5");
+            if (!eu && (parsed.fix < FIX_MIN_49 || parsed.fix > 6))
+                return start_refuse(req,
+                    "fix= for 6 of 49 must be 0 or " EL_STR(FIX_MIN_49) "..6");
+        }
 
         /* ?gap= omitted → 40 % of the resolved window, floor GAP_S_MIN. */
         if (parsed.gap_ms < 0) {
@@ -3266,6 +3364,8 @@ static esp_err_t start_handler(httpd_req_t *req)
         g_status.k_mau          = parsed.k_mau;
         g_status.k_conc         = parsed.k_conc;
         g_status.k_ac           = parsed.k_ac;
+        g_status.k_z            = parsed.k_z;
+        g_status.pool_fix       = parsed.fix;
         g_status.pre_n          = 0;
         g_status.state          = ELOTTO_RUNNING;
         /* PINNED to the core the extraction task is NOT on. See
@@ -3726,6 +3826,8 @@ static void prefs_save(void)
     nvs_set_u8(h,  "kmau",  pref_w100(g_status.k_mau));
     nvs_set_u8(h,  "kconc", pref_w100(g_status.k_conc));
     nvs_set_u8(h,  "kac",   pref_w100(g_status.k_ac));
+    nvs_set_u8(h,  "kz",    pref_w100(g_status.k_z));
+    nvs_set_u8(h,  "fix",   (uint8_t)g_status.pool_fix);
     nvs_commit(h);
     nvs_close(h);
 }
@@ -3769,7 +3871,7 @@ static void prefs_send(httpd_req_t *req)
     if (nvs_open(PREF_NS, NVS_READONLY, &h) != ESP_OK) return;
     uint16_t run10 = 0, maxruns = 0;
     uint8_t score = 0xff, passes = 0;
-    uint8_t kdn = 0xff, kmau = 0xff, kconc = 0xff, kac = 0xff;
+    uint8_t kdn = 0xff, kmau = 0xff, kconc = 0xff, kac = 0xff, kz = 0xff, fix = 0xff;
     bool any = false;
     /* maxruns and passes now have 0 as a real value (scoring-only / continuous),
      * so remember them on presence, not on being non-zero. The old "wpre"
@@ -3783,6 +3885,8 @@ static void prefs_send(httpd_req_t *req)
     if (nvs_get_u8(h,  "kmau",  &kmau) == ESP_OK) any = true;
     if (nvs_get_u8(h,  "kconc", &kconc) == ESP_OK) any = true;
     if (nvs_get_u8(h,  "kac",   &kac) == ESP_OK) any = true;
+    if (nvs_get_u8(h,  "kz",    &kz) == ESP_OK) any = true;
+    if (nvs_get_u8(h,  "fix",   &fix) == ESP_OK) any = true;
     nvs_close(h);
     if (!any) return;
 
@@ -3823,6 +3927,14 @@ static void prefs_send(httpd_req_t *req)
         p += snprintf(js + p, sizeof(js) - p,
             "e=document.getElementById('numKac');if(e)e.value='%u';",
             (unsigned)(kac > 100 ? 100 : kac));
+    if (kz != 0xff)
+        p += snprintf(js + p, sizeof(js) - p,
+            "e=document.getElementById('numKz');if(e)e.value='%u';",
+            (unsigned)(kz > 100 ? 100 : kz));
+    if (fix != 0xff)
+        p += snprintf(js + p, sizeof(js) - p,
+            "e=document.getElementById('numFix');if(e)e.value='%u';",
+            (unsigned)(fix > 6 ? 0 : fix));
     p += snprintf(js + p, sizeof(js) - p, "paintFormula();unlimHint();})();</script>");
     if (p > 0 && p < (int)sizeof(js))
         httpd_resp_send_chunk(req, js, p);

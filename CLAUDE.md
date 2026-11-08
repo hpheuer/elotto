@@ -23,9 +23,9 @@ Two markers, and only two:
 Rank lottery **numbers** (scoring → pool) and **combinations** (the pass) from camera readout noise.
 One key, the same function for both:
 
-Z\* = (Z/σ_z) · [1 + γ·max(Conc·sign(Z)/σ_c, 0)] · [1 + α·(1/Δn − 1)] · [1 − δ·max(AC, 0)/(1+max(AC, 0))] · [1 + β·max(−Mau, 0)]
+Z\* = sign(Z)·|Z/σ_z|^κ · [1 + γ·max(Conc·sign(Z)/σ_c, 0)] · [1 + α·(1/Δn − 1)] · [1 − δ·max(AC, 0)/(1+max(AC, 0))] · [1 + β·max(−Mau, 0)]
 
-α `?kdn=`, β `?kmau=`, γ `?kconc=`, δ `?kac=` are each 0..1 and independent (API and form default 0 = that factor stays 1). All four at 0 is Z/σ_z. A missing column leaves its factor at 1. Δn ≤ 0 does not divide. Scoring **selects** the pool on that key; the pass **ranks** items on the same key. The page shows the formula with the weights in force at the top, its factors and the weight fields in the column order Conc, Δn, AC, Mau, and the columns Z\*, Z, Conc, Δn, AC, Mau.
+α `?kdn=`, β `?kmau=`, γ `?kconc=`, δ `?kac=` are each 0..1 and independent (API and form default 0 = that factor stays 1). κ `?kz=` 0..1 is the exponent on |Z/σ_z| (default 1 = Z/σ_z; 0 = sign of Z only, the factors carry the magnitude; form field Z in percent, default 100). All four at 0 and κ = 1 is Z/σ_z. A missing column leaves its factor at 1. Δn ≤ 0 does not divide. Scoring **selects** the pool on that key; the pass **ranks** items on the same key. The page shows the formula with the weights in force at the top, its factors and the weight fields in the column order Conc, Δn, AC, Mau, and the columns Z\*, Z, Conc, Δn, AC, Mau.
 
 - **z** — binomial of the camera LSBs in that window. Z is the block-centred Stouffer combine, σ_z that block's own σ (scoring: the pass span).
 - **conc** — half-window concordance of the same bits (same sign both **centred** halves, loudest node dropped). It stretches Z\* only when it has the same sign as Z.
@@ -85,7 +85,7 @@ across rounds a combination can recur — identity is **(round, index)**.
 - **No loops, no Runs cap, no ranking modes.** `/start` is a **whitelist**: an unknown
   key answers **400**. Deleted keys (`loops`, `runs`, `rank`, `focus`, `went`, `wruns`,
   `baseline`, `calint`, `unlimited=0`, `wpre`) keep a specific 400. Allowed: `mode`, `run`, `gap`,
-  `score`, `kdn`, `kmau`, `kconc`, `kac`, `maxruns`, `passes`, `confirm`, `cal`, `unlimited`. An empty key (`?=x`), a value over
+  `score`, `kdn`, `kmau`, `kconc`, `kac`, `kz`, `fix`, `maxruns`, `passes`, `confirm`, `cal`, `unlimited`. An empty key (`?=x`), a value over
   `START_VAL_MAX` 31 characters and a query string over 255 characters each answer **400** as well
   — a truncated value or query must never read as "key absent" and resolve to the default.
   ⚠ **A refused /start changes nothing**: parameters are parsed into locals and committed to
@@ -193,6 +193,14 @@ round is just a scoring (see the `?maxruns=0` rule under v3), endless.
 
 - **Pool sizing maximises COMBINATIONS MEASURED, nothing else**; the bonus preference is only the
   tie-break.
+- **Fixed numbers** `?fix=x` (form "Fixed numbers", 0 = off, remembered): the x best-scored main
+  numbers on the pool criterion are in **every** combination of the pass; the other nm−x come from
+  the next-best numbers, sized like any pool (main space C(p−x, nm−x) · C(q,2) ≤ `?maxruns=`, the
+  free part may grow to every remaining number). 6 of 49: x = 3..6, Eurojackpot: x = 2..5; the
+  bonus pool is sized as always. Needs `?maxruns=` ≥ 10, else **400**; a value outside the mode's
+  range **400**. `/status` `pool_fix`; `pool_main` lists the fixed numbers first.
+  ⚠ x = nm is ONE main combination: 6 of 49 x = 6 measures a single item per round, so its block
+  has no σ and every Z\* of it is 0.
 - **Results ACCUMULATE** — `results[]` is never cleared between rounds; every statistic runs on the
   union of all rounds.
 - **Every round compact at the boundary**: the 1000 items that rank best on the **pool
@@ -240,7 +248,7 @@ round is just a scoring (see the `?maxruns=0` rule under v3), endless.
 ## The ranking channels
 One ranking key, `zstar_of()` in `sensor.c`, used by the scoring pass and by `rank_key()`:
 
-Z\* = (Z/σ_z) · [1 + γ·max(Conc·sign(Z)/σ_c, 0)] · [1 + α·(1/Δn − 1)] · [1 − δ·max(AC, 0)/(1+max(AC, 0))] · [1 + β·max(−Mau, 0)]
+Z\* = sign(Z)·|Z/σ_z|^κ · [1 + γ·max(Conc·sign(Z)/σ_c, 0)] · [1 + α·(1/Δn − 1)] · [1 − δ·max(AC, 0)/(1+max(AC, 0))] · [1 + β·max(−Mau, 0)]
 
 α β γ δ are `?kdn=` `?kmau=` `?kconc=` `?kac=`, each 0..1, default 0. 0 leaves that factor at 1. ⚠ The start form types each as a whole percent 0–100 and sends the fraction: 80 in the field is `?kdn=0.80`. `?kdn=80` is refused.
 - **Δn** — spread of the cameras on this item (each centred z / that camera's own σ). Independent cameras ≈ 1. Smaller than 1 stretches Z along its own sign; larger than 1 pulls Z toward 0. Δn = 1 → factor 1. Δn = 0,82 and α = 1 → 1 + (1/0,82 − 1) = 1,220. Δn ≤ 0 or missing → factor 1.

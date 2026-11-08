@@ -31,6 +31,14 @@ typedef uint16_t node_mask_t;   // bit i = node i; MAX_NODES below must fit
 #define POOL_MAIN_49    15   // C(15,6) = 5005 combinations
 #define POOL_MAIN_50    12   // C(12,5) =  792 combinations
 #define POOL_EURO_12     5   // C(5,2)  =   10 combinations
+/* Fixed-number mode (?fix=x): the x best-scored main numbers sit in EVERY
+ * combination of the pass; the other nm−x come from the next-best numbers.
+ * 6 of 49: x = 3..6, Eurojackpot: x = 2..5 (the bonus pool is sized as
+ * always). 0 = off. The free part may grow to every remaining number
+ * (x = nm−1 needs only C(p−x,1) ≤ maxruns), so the pool arrays hold 50. */
+#define POOL_SLOTS      50
+#define FIX_MIN_49       3
+#define FIX_MIN_50       2
 /* Phase-0 scoring: every number `?passes=` times (g_status.scoring_passes),
  * fresh shuffle each pass, keys summed, then the pool is the top by that sum.
  * Not back-to-back. Each pass is centred and scaled on its own
@@ -240,6 +248,10 @@ _Static_assert(UNLIM_RUNS_MAX + PASS_KEEP_EXTREME <= NUM_RUNS,
  * Omitted → 0, so Z* = z_ctr / block σ. The form stores them only on
  * confirm=1; /status names the four that ran. */
 #define ZSTAR_W_DEFAULT      0.0
+/* ?kz= is the exponent on |Z/σ_z|, 0..1: base = sign(Z)·|Z/σ_z|^kz.
+ * 1 (default) is Z/σ_z, 0 keeps only the sign of Z and the four factors
+ * carry the magnitude. */
+#define ZSTAR_KZ_DEFAULT     1.0
 
 /* Phase-0 pool direction, and the item extreme direction on that column.
  * HIGH = largest column sum, LOW = smallest, except Z* (SUM_KEY):
@@ -827,6 +839,8 @@ typedef struct {
     double           k_mau;               // ?kmau= Mau stretch (negative Mau)
     double           k_conc;              // ?kconc= Conc, same sign as Z
     double           k_ac;                // ?kac=  positive AC damps
+    double           k_z;                 // ?kz=   exponent on |Z/σ_z|
+    int              pool_fix;            // ?fix=  numbers in every combination, 0 = off
     int              pre_n;               // ranked items carrying a CONCORDANCE
                                           // value (zc_ctr != 0). 0 on an item
                                           // means the leave-one-out drop left
@@ -965,8 +979,10 @@ typedef struct {
      * exactly: at pool_n_main == pool_need_main (and, for Eurojackpot,
      * pool_n_euro == 2) there is exactly ONE combination — measured once per
      * round, like everything else. */
-    uint8_t          pool_main[POOL_MAIN_49];   // proposed/confirmed main numbers
-    float            pool_main_z[POOL_MAIN_49]; // their scoring z, for display
+    /* With pool_fix > 0 the first pool_fix entries are the fixed numbers
+     * (sorted), the rest the free part (sorted). */
+    uint8_t          pool_main[POOL_SLOTS];     // proposed/confirmed main numbers
+    float            pool_main_z[POOL_SLOTS];   // their scoring z, for display
     uint8_t          pool_euro[POOL_EURO_12];   // Eurojackpot bonus pool
     float            pool_euro_z[POOL_EURO_12];
     uint8_t          pool_n_main;         // slots filled

@@ -21,6 +21,7 @@
 
 ElottoStatus g_status = {
     .state = ELOTTO_IDLE,
+    .k_z   = ZSTAR_KZ_DEFAULT,
     /* -1, not 0: 0 is a legitimate uptime and would read as "the link
      * dropped at boot" on a board whose link has been up the whole time. */
     .eth_last_down_ms = -1,
@@ -187,17 +188,22 @@ static int comb(int n, int r)
  *
  * The minimum (p = draw size, q = 2) is one combination, so any cap >= 1 has a
  * solution. */
-static void unlimited_pool_sizes(bool euro, int nm, int cap,
+/* fix > 0 (?fix=): the first `fix` pool numbers are in every combination, so
+ * the main space is C(p−fix, nm−fix) and p may grow to every number. At
+ * fix == nm the main space is 1 whatever p is, so p stays nm. */
+static void unlimited_pool_sizes(bool euro, int nm, int fix, int cap,
                                  int *out_nm, int *out_ne)
 {
-    int p_max = euro ? POOL_MAIN_50 : POOL_MAIN_49;
+    int p_max = fix > 0 ? (euro ? 50 : 49)
+                        : (euro ? POOL_MAIN_50 : POOL_MAIN_49);
+    if (fix >= nm) p_max = nm;
     int q_min = euro ? 2 : 0;
     int q_max = euro ? POOL_EURO_12 : 0;
     int  best_p = nm, best_q = q_min;
     long best_c = 0;
 
     for (int p = nm; p <= p_max; p++) {
-        long cm = comb(p, nm);
+        long cm = comb(p - fix, nm - fix);
         for (int q = q_min; q <= q_max; q++) {
             long total = cm * (euro ? comb(q, 2) : 1);
             if (total > cap) continue;
@@ -601,7 +607,18 @@ static void score_publish_live(int ix)
 /* The final pick, on the column selected NOW — called once the whole scoring
  * (both runs in Eurojackpot) is over. Sorted ascending for a stable
  * combination enumeration; out_z follows the sort. */
-static bool score_pick_pool(int ix, uint8_t *pool, float *out_z)
+/* `fix` > 0: the first `fix` picks (the best) are the fixed numbers; the
+ * fixed part and the free part are each sorted on their own, fixed first. */
+static void pool_sort(uint8_t *pool, int n)
+{
+    for (int i = 1; i < n; i++) {
+        uint8_t key = pool[i]; int j = i - 1;
+        while (j >= 0 && pool[j] > key) { pool[j+1] = pool[j]; j--; }
+        pool[j+1] = key;
+    }
+}
+
+static bool score_pick_pool(int ix, uint8_t *pool, float *out_z, int fix)
 {
     const ScoreAcc *A = &s_sacc[ix];
     int ch = score_sum_sel();
@@ -619,11 +636,9 @@ static bool score_pick_pool(int ix, uint8_t *pool, float *out_z)
         pool[i] = (uint8_t)b;
         used[b] = true;
     }
-    for (int i = 1; i < A->pool_size; i++) {
-        uint8_t key = pool[i]; int j = i - 1;
-        while (j >= 0 && pool[j] > key) { pool[j+1] = pool[j]; j--; }
-        pool[j+1] = key;
-    }
+    if (fix < 0 || fix > A->pool_size) fix = 0;
+    pool_sort(pool, fix);
+    pool_sort(pool + fix, A->pool_size - fix);
     if (out_z)
         for (int i = 0; i < A->pool_size; i++)
             out_z[i] = (float)A->acc[ch][pool[i]];
@@ -649,13 +664,19 @@ static void fake_pick_pool(int max_val, int n, uint8_t *pool, float *out_z)
 
 /* One Log line for the whole pool: main and bonus numbers are picked on the
  * same criterion. */
-static void pool_log(const uint8_t *pm, int nm, const uint8_t *pe, int ne)
+static void pool_log(const uint8_t *pm, int nm, const uint8_t *pe, int ne,
+                     int fix)
 {
-    char nums[80];
+    char nums[200];
     int  np = 0;
     nums[0] = '\0';
-    for (int i = 0; i < nm && np < (int)sizeof(nums) - 4; i++)
+    if (fix > 0)
+        np += snprintf(nums + np, sizeof(nums) - np, " fixed");
+    for (int i = 0; i < nm && np < (int)sizeof(nums) - 4; i++) {
+        if (fix > 0 && i == fix)
+            np += snprintf(nums + np, sizeof(nums) - np, " | free");
         np += snprintf(nums + np, sizeof(nums) - np, " %d", pm[i]);
+    }
     if (ne > 0 && np < (int)sizeof(nums) - 4)
         np += snprintf(nums + np, sizeof(nums) - np, " +");
     for (int i = 0; i < ne && np < (int)sizeof(nums) - 4; i++)
@@ -1498,7 +1519,7 @@ static double zstar_w01(double w)
     return w > 1.0 ? 1.0 : w;
 }
 
-/* Z* = (Z/σ_z) · [1 + γ·max(Conc·sign(Z)/σ_c, 0)] · [1 + α·(1/Δn − 1)]
+/* Z* = sign(Z)·|Z/σ_z|^kz · [1 + γ·max(Conc·sign(Z)/σ_c, 0)] · [1 + α·(1/Δn − 1)]
  *              · [1 − δ·max(AC, 0)/(1+max(AC, 0))]
  *              · [1 + β·max(−Mau, 0)]
  * (written in the Top-10 column order; the product is commutative)
@@ -1513,7 +1534,12 @@ static double zstar_of(double z, double sz, double nsd, double mau,
                        double conc, double sc, double ac)
 {
     if (!(sz > 0.0) || !isfinite(z)) return 0.0;
+    /* Base sign(Z)·|Z/σ_z|^kz. kz = 1 is Z/σ_z exactly (no pow call), kz = 0
+     * is the sign alone; Z = 0 stays 0 for every kz. */
     double zp = z / sz;
+    double kz = zstar_w01(g_status.k_z);
+    if (kz < 1.0 && zp != 0.0)
+        zp = (zp > 0.0 ? 1.0 : -1.0) * pow(fabs(zp), kz);
     double f  = 1.0;
     double a  = zstar_w01(g_status.k_dn);
     if (isfinite(nsd) && nsd > 0.0 && a > 0.0)
@@ -3117,6 +3143,12 @@ void elotto_task(void *pvParam)
     bool euro    = (g_status.mode == MODE_EUROJACKPOT);
     int  nm      = euro ? 5 : 6;
     int  mx      = euro ? 50 : 49;
+    /* ?fix= numbers in every combination; /start validated the range, this
+     * only guards against a stale value from a curl-less path. */
+    int  fix     = g_status.pool_fix;
+    if (fix != 0 && (fix < (euro ? FIX_MIN_50 : FIX_MIN_49) || fix > nm)) fix = 0;
+    if (g_status.runs_cap == 0) fix = 0;
+    g_status.pool_fix = fix;
 
     /* passes==0 is the continuous-scoring flag (only legal with maxruns==0),
      * NOT an out-of-range value to reset. */
@@ -3137,7 +3169,7 @@ void elotto_task(void *pvParam)
     g_status.scoring_total = (accumulate ? 1 : g_status.scoring_passes)
                              * (mx + (euro ? 12 : 0));
 
-    uint8_t pool_main[POOL_MAIN_49] = {0};   // 15 slots, enough for both modes
+    uint8_t pool_main[POOL_SLOTS] = {0};     // fixed mode may hold every number
     uint8_t pool_euro[POOL_EURO_12] = {0};
     // Pool sizes are variables, not constants: unlimited mode derives both
     // from the per-round run cap, and every count downstream is derived from
@@ -3151,18 +3183,18 @@ void elotto_task(void *pvParam)
     } else if (g_status.unlimited) {
         if (g_status.runs_cap < 1 || g_status.runs_cap > UNLIM_RUNS_MAX)
             g_status.runs_cap = UNLIM_RUNS_DEFAULT;
-        unlimited_pool_sizes(euro, nm, g_status.runs_cap, &pool_nm, &pool_ne);
+        unlimited_pool_sizes(euro, nm, fix, g_status.runs_cap, &pool_nm, &pool_ne);
     }
     g_status.runs_total = scoring_only ? 0
-                        : comb(pool_nm, nm) * (euro ? comb(pool_ne, 2) : 1);
+                        : comb(pool_nm - fix, nm - fix) * (euro ? comb(pool_ne, 2) : 1);
 
     // Pairwise independence check across all nodes (per-block centered)
     pairs_reset();
     session_clock_start();
-    evlog("Session started - %s, run %.1f s, %d runs/round, sweep %s",
+    evlog("Session started - %s, run %.1f s, %d runs/round, sweep %s, fixed %d",
           euro ? "Eurojackpot" : "6 of 49", g_status.run_target_ms / 1000.0,
           g_status.runs_cap,
-          g_status.cal_budget_ms > 0 ? "on" : "off");
+          g_status.cal_budget_ms > 0 ? "on" : "off", fix);
 
     /* Block index of the pass. Declared HERE, before the first goto done, so
      * the abort path can centre the open block (see done:). */
@@ -3237,7 +3269,7 @@ void elotto_task(void *pvParam)
          * round because the cap is fixed while nothing else here is. No pass in
          * scoring-only mode, so the pool stays empty. */
         if (g_status.unlimited && !scoring_only)
-            unlimited_pool_sizes(euro, nm, g_status.runs_cap, &pool_nm, &pool_ne);
+            unlimited_pool_sizes(euro, nm, fix, g_status.runs_cap, &pool_nm, &pool_ne);
         /* The pool is already withdrawn — at the top of the round, and at
          * session start before the state went RUNNING. Nothing to clear here. */
         memset(pool_main, 0, sizeof(pool_main));
@@ -3267,8 +3299,8 @@ void elotto_task(void *pvParam)
             /* The pick, on the column selected at the END of the scoring
              * — main and bonus pool alike. No pool without a pass. */
             if (!scoring_only) {
-                if (!score_pick_pool(0, pool_main, g_status.pool_main_z)) goto done;
-                if (euro && !score_pick_pool(1, pool_euro, g_status.pool_euro_z)) goto done;
+                if (!score_pick_pool(0, pool_main, g_status.pool_main_z, fix)) goto done;
+                if (euro && !score_pick_pool(1, pool_euro, g_status.pool_euro_z, 0)) goto done;
             }
         }
         if (scoring_only) {
@@ -3281,7 +3313,7 @@ void elotto_task(void *pvParam)
             if (g_status.abort_requested) goto done;
             continue;
         }
-        pool_log(pool_main, pool_nm, pool_euro, euro ? pool_ne : 0);
+        pool_log(pool_main, pool_nm, pool_euro, euro ? pool_ne : 0, fix);
         g_status.pool_used_n     = pool_nm + (euro ? pool_ne : 0);
         g_status.pool_used_sum   = score_sum_sel();
         g_status.pool_used_round = round;
@@ -3301,7 +3333,7 @@ void elotto_task(void *pvParam)
         /* Everything derived from the pool sizes — the operator may have removed
          * numbers, and in unlimited mode the sizes are the cap's answer. At the
          * minimum (pool == draw size) this is exactly ONE combination. */
-        int main_combos = comb(pool_nm, nm);
+        int main_combos = comb(pool_nm - fix, nm - fix);
         int euro_combos = euro ? comb(pool_ne, 2) : 1;
         int full_combos = main_combos * euro_combos;
         /* s_perm is NUM_RUNS wide and the shuffle below indexes the WHOLE
@@ -3422,7 +3454,17 @@ void elotto_task(void *pvParam)
              * Eurojackpot writes only 5 of the 6 nums: clear the tail, or a
              * stale nums[5] shows up as a sixth number. */
             memset(r->nums, 0, sizeof(r->nums));
-            nth_combination(pool_main, pool_nm, nm, mi, r->nums);
+            if (fix > 0) {
+                /* The fixed numbers plus the mi-th choice of the free part,
+                 * merged ascending. */
+                uint8_t fr[6] = {0};
+                if (nm > fix)
+                    nth_combination(pool_main + fix, pool_nm - fix, nm - fix, mi, fr);
+                for (int a = 0; a < fix; a++) r->nums[a] = pool_main[a];
+                for (int a = 0; a < nm - fix; a++) r->nums[fix + a] = fr[a];
+                pool_sort(r->nums, nm);
+            } else
+                nth_combination(pool_main, pool_nm, nm, mi, r->nums);
             if (euro)
                 nth_combination(pool_euro, pool_ne, 2, ei, r->euro);
             else
