@@ -694,7 +694,7 @@ typedef struct {
 } ScoreSnap;
 
 #define WSIG_TOP_N 10      /* /status and the card */
-#define WSIG_KEEP_N 1000   /* the whole board, PSRAM (~72 KB): /extremes?jumps=1, Save */
+#define WSIG_KEEP_N 100    /* the whole board, PSRAM (~7 KB): /extremes?jumps=1, Save */
 /* ⚠ There is deliberately NO minimum jump. Noise-vs-finding is decided by
  * wsig_sd and the x-sigma column: ten rows at 2..3 sigma ARE the quiet
  * session, stated in the units that say so, and a real event pushes one of

@@ -384,7 +384,7 @@ what remains visible is an effect varying **between items inside a block**.
   own camera noise from its previous measurement to this one, session-wide, named by
   (item/round), wall time (`dd.mm. HH:MM`) and the drawn numbers. Only a node that was in that
   item's combine enters it; every node's jump still feeds `wsig_sd`. Columns: node (`m`, `s0`…`s8`), was, jump, ×σ, Z\* (empty until known).
-  The board keeps `WSIG_KEEP_N` 1000 rows (PSRAM); `/status` `wsig` and the card show the first
+  The board keeps `WSIG_KEEP_N` 100 rows (PSRAM); `/status` `wsig` and the card show the first
   ten, Save writes all of them. Each row carries its measurement's values: a pass item from its
   `results[]` row (provisional until its block is centred, frozen when compaction moves the rows),
   a scoring run from its number's row when that pass closes — empty until then.
@@ -668,7 +668,7 @@ floor is load-bearing.
 - **PSRAM is mandatory**: capture buffers, the LSB-ones side ring (`s_ring_raw`), `loop_hist`,
   per-item per-node archives (`s_node_z` and the half-window copies, sized to `NUM_RUNS`),
   the scoring-sum log (`SCORE_SNAP_MAX` 128 snaps, ~225 KB) and the camera-jump board
-  (`WSIG_KEEP_N` 1000 rows, ~72 KB).
+  (`WSIG_KEEP_N` 100 rows, ~7 KB).
   The word ring `s_ring` (64 KB) is **internal RAM**; `results[]` stays internal too:
   `NUM_RUNS` 1400.
 - ⚠ **The measurement path reads the ring in BLOCKS** — `camera_read_words()`, 112 words per call
