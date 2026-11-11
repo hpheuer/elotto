@@ -273,6 +273,10 @@ static void   archive_lock(void);
 static void   archive_unlock(void);
 static bool   result_centred(const RunResult *r);
 static void   session_limit_check(void);
+/* The full table (see full_push()): rows, their Z*, rows in use. */
+static RunResult *s_full;
+static float     *s_full_key;
+static int        s_full_n;
 static ScoreItem *score_row(bool euro_pool, int k);
 
 /* Per-item node-z archive (PSRAM). results[j] stays lean; centring needs the
@@ -1769,10 +1773,6 @@ int results_quietest(RunResult *out, int max)
  * weights are fixed; NaN = that block has no σ). A row is here or in
  * results[], never both. Written by the sensor task under the archive lock,
  * read by results_extremes() once the session is over. */
-static RunResult *s_full;
-static float     *s_full_key;
-static int        s_full_n;
-
 static void full_push(const RunResult *r)
 {
     if (!s_full || !s_full_key || s_full_n >= FULL_MAX) return;
