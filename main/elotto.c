@@ -890,6 +890,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "document.getElementById('nodeCard').style.display='none';"
 "document.getElementById('resCardWsig').style.display='none';"
 "document.getElementById('resCardTrip').style.display='none';"
+"RX=[];document.getElementById('resCardRec').style.display='none';"
 "document.getElementById('msg').textContent='';"
 "setMode(mode);"
 "if(timer)clearInterval(timer);"
@@ -1456,7 +1457,6 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "sl.innerHTML+='<br>'+s4;}"
 "document.getElementById('resCard').style.display='block';"
 "document.getElementById('nodeCard').style.display='block';"
-"fetchRec(d);"
 "if(SCM){LD=d;document.getElementById('resSub').textContent='';fetchScore();showWsig(d);showTrip(d);return;}"
 "if(!d.top||d.top.length===0){"
 "document.getElementById('resTitle').innerHTML='\\uD83C\\uDFC6 Top 10';"
@@ -1573,9 +1573,9 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "if(now-lastSc<5000){renderScoreTable();return;}"
 "lastSc=now;"
 "fetch('/extremes?score=1').then(function(r){return r.json();}).then(function(x){"
-"SC=(x&&x.extremes)?x.extremes:[];renderScoreTable();}).catch(function(){});}"
+"SC=(x&&x.extremes)?x.extremes:[];RX=(x&&x.rec)?x.rec:[];renderScoreTable();}).catch(function(){});}"
 "function renderScoreTable(){"
-"if(!LD)return;var d=LD,isEuro=d.mode==='euro';"
+"if(!LD)return;var d=LD,isEuro=d.mode==='euro';showRec(d);"
 "if(SSK==='sum'&&liveSc())SSD=d.score_dir==='low'?1:-1;"
 "var s=SC.slice().sort(scCmp);"
 /* Pool members: the numbers the device picked from the sums so far.
@@ -1613,7 +1613,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "lastEx=now;"
 "fetch('/extremes?sort='+k).then(function(r){return r.json();}).then(function(x){"
 "if(k!==exKey())return;"
-"EX=(x&&x.extremes)?x.extremes:[];QX=(x&&x.quiet)?x.quiet:[];EXH=(x&&x.held)||0;EXK=k;EXF=true;"
+"EX=(x&&x.extremes)?x.extremes:[];QX=(x&&x.quiet)?x.quiet:[];RX=(x&&x.rec)?x.rec:[];EXH=(x&&x.held)||0;EXK=k;EXF=true;"
 "renderExtremeTables();}).catch(function(){});}"
 "function renderExtremeTables(){"
 "if(!LD)return;var d=LD,isEuro=d.mode==='euro',st=zW(d);"
@@ -1644,18 +1644,13 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "+critPhrase(d.score_dir,d.pool_used_sum)):'';"
 "var note=rankAbs?absRankNote(false,lo):'';"
 "document.getElementById('resSub').textContent=poolTxt&&note?poolTxt+' '+note:(poolTxt||note);"
-"showQuiet(d,isEuro,st);}"
+"showQuiet(d,isEuro,st);showRec(d);}"
 /* The record board: five fixed rows (largest |Z|, largest |Conc|, smallest
-   Δn, most negative AC, most negative Mau), 5 s poll like /extremes. The
+   Delta-n, most negative AC, most negative Mau). RX comes with the item
+   reply and with the scoring reply (`rec`), no request of its own. The
    first column names the record, the second the measurement: item/round, or
    "scoring pass/round" for a scoring run (its number stands in Numbers). */
-"var RX=[],lastRec=0;"
-"function fetchRec(d){"
-"var now=Date.now();"
-"if(now-lastRec<5000){showRec(d);return;}"
-"lastRec=now;"
-"fetch('/extremes?rec=1').then(function(r){return r.json();}).then(function(x){"
-"RX=(x&&x.rec)?x.rec:[];showRec(d);}).catch(function(){});}"
+"var RX=[];"
 "function showRec(d){"
 "var c=document.getElementById('resCardRec');"
 "if(!RX.length){c.style.display='none';return;}"
@@ -2604,6 +2599,30 @@ static esp_err_t extremes_jumps(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* `"rec":[…]` — the record board, one row per column (largest |Z|, largest
+ * |Conc|, smallest Δn, most negative AC, most negative Mau), item row shape
+ * plus `rec` (0..4, that order) and `spass` (scoring pass, 0 = a pass item).
+ * Columns without a value yet are left out. It rides in the item reply and in
+ * the ?score=1 reply, so the page needs no request of its own for it. */
+static void send_records(httpd_req_t *req)
+{
+    RecRow rec[REC_N];
+    results_records(rec);
+    char rb[448];
+    httpd_resp_send_chunk(req, "\"rec\":[", 7);
+    bool first = true;
+    for (int c = 0; c < REC_N; c++) {
+        if (!rec[c].set) continue;
+        char tail[40];
+        snprintf(tail, sizeof(tail), ",\"rec\":%d,\"spass\":%d", c, (int)rec[c].spass);
+        if (!first) httpd_resp_send_chunk(req, ",", 1);
+        int rl = emit_row(rb, sizeof(rb), &rec[c].r, (double)rec[c].key, tail);
+        send_chunk(req, rb, rl, sizeof(rb));
+        first = false;
+    }
+    httpd_resp_send_chunk(req, "]", 1);
+}
+
 static esp_err_t extremes_handler(httpd_req_t *req)
 {
     static RunResult *ex;   /* httpd serialises handlers, so one shared buffer */
@@ -2640,31 +2659,6 @@ static esp_err_t extremes_handler(httpd_req_t *req)
     if (qj < 0) goto bad;
     if (qj > 0 && v[0] == '1')
         return extremes_jumps(req);
-    /* ?rec=1: the record board — one row per column (largest |Z|, largest
-     * |Conc|, smallest Δn, most negative AC, most negative Mau), item row
-     * shape plus `rec` (0..4, that order) and `spass` (scoring pass, 0 = a
-     * pass item). Columns without a value yet are left out. */
-    int qr = QPARAM("rec");
-    if (qr < 0) goto bad;
-    if (qr > 0 && v[0] == '1') {
-        RecRow rec[REC_N];
-        results_records(rec);
-        char rb[448];
-        httpd_resp_send_chunk(req, "{\"rec\":[", 8);
-        bool first = true;
-        for (int c = 0; c < REC_N; c++) {
-            if (!rec[c].set) continue;
-            char tail[40];
-            snprintf(tail, sizeof(tail), ",\"rec\":%d,\"spass\":%d", c, (int)rec[c].spass);
-            if (!first) httpd_resp_send_chunk(req, ",", 1);
-            int rl = emit_row(rb, sizeof(rb), &rec[c].r, (double)rec[c].key, tail);
-            send_chunk(req, rb, rl, sizeof(rb));
-            first = false;
-        }
-        httpd_resp_send_chunk(req, "]}", 2);
-        httpd_resp_send_chunk(req, NULL, 0);
-        return ESP_OK;
-    }
     int  want = EXTREMES_MAX;
     int  qn = QPARAM("n");
     if (qn < 0) goto bad;
@@ -2720,7 +2714,9 @@ static esp_err_t extremes_handler(httpd_req_t *req)
             send_chunk(req, sb, sl, sizeof(sb));
             first = false;
         }
-        httpd_resp_send_chunk(req, "]}", 2);
+        httpd_resp_send_chunk(req, "],", 2);
+        send_records(req);
+        httpd_resp_send_chunk(req, "}", 1);
         httpd_resp_send_chunk(req, NULL, 0);
         return ESP_OK;
     }
@@ -2751,7 +2747,9 @@ static esp_err_t extremes_handler(httpd_req_t *req)
         len = emit_run(buf, sizeof(buf), &ex[i], euro);
         send_chunk(req, buf, len, sizeof(buf));
     }
-    httpd_resp_send_chunk(req, "]}", 2);
+    httpd_resp_send_chunk(req, "],", 2);
+    send_records(req);
+    httpd_resp_send_chunk(req, "}", 1);
     httpd_resp_send_chunk(req, NULL, 0);
     return ESP_OK;
 
@@ -2759,7 +2757,7 @@ bad:
     httpd_resp_set_status(req, "400 Bad Request");
     httpd_resp_set_type(req, "text/plain");
     httpd_resp_sendstr(req, "n=1.." EL_STR(PASS_KEEP_EXTREME)
-                       ", sort=key|z|conc|nsd|ac|mau, dir=high|low (with sort=), sums=1, jumps=1, score=1, rec=1");
+                       ", sort=key|z|conc|nsd|ac|mau, dir=high|low (with sort=), sums=1, jumps=1, score=1");
     return ESP_OK;
 }
 

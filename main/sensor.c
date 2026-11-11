@@ -989,7 +989,10 @@ static int score_run(int max_val, int pool_size, bool euro_pool,
             if (row->r.k > 0) {
                 RunResult rr = row->r;
                 rr.acz = (float)acp[k];
-                rec_offer_scoring(&rr, (float)key, pass + 1);
+                /* The pass and round the page shows: a continuous scoring
+                 * stamps the row's round once and counts passes in pass_base. */
+                rr.round = (uint16_t)g_status.round;
+                rec_offer_scoring(&rr, (float)key, g_status.scoring_pass);
             }
         }
         closed++;
@@ -1765,7 +1768,7 @@ static void rec_offer(RecRow *B, const RunResult *r, float key, uint16_t spass)
 static void rec_offer_scoring(const RunResult *r, float key, int pass)
 {
     archive_lock();
-    rec_offer(s_rec, r, key, (uint16_t)(pass > 0 ? pass : 1));
+    rec_offer(s_rec, r, key, (uint16_t)(pass < 1 ? 1 : pass > 65535 ? 65535 : pass));
     archive_unlock();
 }
 
