@@ -1050,6 +1050,13 @@ int results_extremes(RunResult *out, int max, int ch, bool low, int *held,
  * results[]. A row without a block σ has key 0 by default, not by measurement,
  * and never enters. */
 int results_quietest(RunResult *out, int max);
+
+/* Every ranked pass item of a finished session, row by row (Save's full
+ * table): the index space is the full table's rows, then those still in
+ * results[]. results_full_row() is false for a slot without a ranked, centred
+ * item; *key is that row's Z* (NaN = its block has no σ). */
+int  results_full_span(void);
+bool results_full_row(int i, RunResult *out, double *key);
 /* The camera-jump board, biggest |jump| first, up to `max` rows. Pass items
  * still in results[] are refreshed from their row first, so an open block
  * shows its provisional values. Takes the archive lock. */

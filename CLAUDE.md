@@ -76,7 +76,7 @@ Modes: Eurojackpot (5 of 50 + 2 of 12, 7920 combinations) and 6 of 49 (5005).
 
 ---
 
-## v3 — rounds until Abort
+## v3 — rounds until Abort or 72 h
 **This file is the contract, as rounds.** (`docs/PLAN.md` is a stub.) A round scores every number, keeps as many of
 the best as fit `?maxruns=` (default 100), measures that space once in a Fisher–Yates order,
 then scores again. Ends on **Abort**, after `SESSION_MAX_MS` 72 h of session time (pauses
@@ -107,7 +107,7 @@ across rounds a combination can recur — identity is **(round, index)**.
   40 % of run, no floor; `?gap=0` is legal — the flush on `M`, not the gap, separates items. `?cal=` 0..`CAL_BUDGET_MAX_MS` (0 = no sweep),
   `?maxruns=` **0 or 10..400** (`UNLIM_RUNS_MAX`); out of range **400**, no fallback. **`?maxruns=0`
   is scoring-only**: no combination pass, the session just scores numbers round after round,
-  endlessly until Abort — `results[]`, blocks, compaction, drift and the pairwise matrix are
+  until Abort or the 72 h limit — `results[]`, blocks, compaction, drift and the pairwise matrix are
   bypassed entirely (no pass → none of their counters move), no pool is picked (`pool_n_main/euro`
   stay 0), and the Top-10 comes from the sorted scoring table. ⚠ **`?passes=0` is the
   continuous-scoring flag and is legal ONLY with `?maxruns=0`** (else **400**): one never-ending
@@ -191,7 +191,7 @@ or combination (pass). `confirm=1` writes NVS form prefs only.
 score every number → keep as many of the best as fit `maxruns` runs → measure that space once in a
 fresh Fisher–Yates order → score again. Ends on **Abort** or a session limit (72 h, full table); the `results[]`-full stop survives
 as backstop for a compaction that cannot allocate. ⚠ **`maxruns=0` drops the measure step** — the
-round is just a scoring (see the `?maxruns=0` rule under v3), endless.
+round is just a scoring (see the `?maxruns=0` rule under v3).
 
 - **Pool sizing maximises COMBINATIONS MEASURED, nothing else**; the bonus preference is only the
   tie-break.
@@ -224,7 +224,14 @@ round is just a scoring (see the `?maxruns=0` rule under v3), endless.
   chooses from the full table plus the rows still in `results[]` — every ranked pass item of the
   session; `held` is that count. ⚠ Only after the session: one request scans the whole table on
   the HTTP task. ⚠ Scoring runs are not in it. When fewer than `UNLIM_RUNS_MAX` rows are left the
-  session ends, so the table is never incomplete. RAM only, like `results[]`.
+  session ends, so the table is never incomplete. RAM only, like `results[]`. The selection of a
+  finished session is kept, so the page's repeat polls cost no scan. Allocation failed at the
+  start: the Log says so and the held rows stay the set. Save writes the whole table as a fifth
+  file, `elotto_all<n>_….csv` (by round and combination), from `GET /extremes?full=1&from=<i>` in
+  pages of 2000 index slots (`span`, `next`; **409** while a session runs), with a progress bar
+  in the message line.
+  ⚠ Block σ is kept for `BSIG_MAX` 8192 blocks (`sensor.c`), not `LOOP_HIST` 1024 — a row past
+  it would have no Z\*.
   ⚠ The counter and round-base semantics after a compaction (`completed`/`runs_completed`,
   `round_base`/`round_item_base`) are subtle and documented at their definitions in `sensor.h` —
   read them before touching anything that counts or indexes items; getting them wrong is what broke

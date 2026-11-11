@@ -277,6 +277,7 @@ static void   session_limit_check(void);
 static RunResult *s_full;
 static float     *s_full_key;
 static int        s_full_n;
+static bool       s_sel_valid;   /* results_extremes() keeps its selection */
 static ScoreItem *score_row(bool euro_pool, int k);
 
 /* Per-item node-z archive (PSRAM). results[j] stays lean; centring needs the
@@ -477,7 +478,10 @@ static bool s_open_centred;
 /* Per-block ranking σ. Indexed by results[].block. Frozen at close_block
  * so compaction can drop the rows and rank_key() still divides by the σ of the
  * WHOLE block, not of the surviving extremes. The open block is recomputed
- * from the live rows each time the tables refresh. PSRAM: LOOP_HIST × ~16 B.
+ * from the live rows each time the tables refresh. PSRAM: BSIG_MAX × 12 B.
+ * BSIG_MAX is every block a 72 h session can close (the shortest legal round
+ * is ~60 runs), far past the LOOP_HIST rows /loops keeps — a row of the full
+ * table must still find its σ.
  * ⚠ NOT loops_done / loop_hist: an aborted block is centred and ranked without
  * a /loops row, and still needs a σ. */
 typedef struct {
@@ -485,6 +489,7 @@ typedef struct {
     float    sig_c;    // sample σ of zc_ctr (nonzero items); 0 = unknown
     uint8_t  frozen;   // 1 = closed (or aborted-and-centred); do not recompute
 } BlockRankSig;
+#define BSIG_MAX 8192
 static BlockRankSig *s_bsig;
 
 /* Consecutive clean blocks while a node is soft_down (sticky clear). */
@@ -1470,7 +1475,7 @@ static bool result_centred(const RunResult *r)
  * the instrument of that span, not the ranking set. */
 static void block_sig_compute(int block_idx, bool freeze)
 {
-    if (block_idx < 0 || block_idx >= LOOP_HIST || !s_bsig) return;
+    if (block_idx < 0 || block_idx >= BSIG_MAX || !s_bsig) return;
     BlockRankSig *B = &s_bsig[block_idx];
     if (B->frozen && !freeze) return;
 
@@ -1500,7 +1505,7 @@ static void block_sig_refresh_open(void)
 {
     if (!s_open_centred) return;
     int b = s_blocks_centred;
-    if (b < 0 || b >= LOOP_HIST || !s_bsig) return;
+    if (b < 0 || b >= BSIG_MAX || !s_bsig) return;
     if (s_bsig[b].frozen) return;
     block_sig_compute(b, false);
 }
@@ -1509,7 +1514,7 @@ static void block_sig_of(const RunResult *r, double *out_p, double *out_c)
 {
     double sz = 0.0, sc = 0.0;
     int b = r ? (int)r->block : -1;
-    if (s_bsig && b >= 0 && b < LOOP_HIST) {
+    if (s_bsig && b >= 0 && b < BSIG_MAX) {
         sz = (double)s_bsig[b].sig_p;
         sc = (double)s_bsig[b].sig_c;
     }
@@ -1670,54 +1675,109 @@ int results_extremes(RunResult *out, int max, int ch, bool low, int *held,
     static KeyIdx *ord;
     if (!ord) ord = heap_caps_malloc((size_t)NUM_RUNS * sizeof(KeyIdx), MALLOC_CAP_SPIRAM);
     if (!ord) return 0;
+    /* sel[] and every caller's buffer are this long. */
+    if (max > PASS_KEEP_EXTREME) max = PASS_KEEP_EXTREME;
     archive_lock();
     int ntot = g_status.runs_completed;
     if (ntot > NUM_RUNS) ntot = NUM_RUNS;
-    int m = rank_order(ord, ntot, true, ch, low);
-    int total = m;
-    if (m > max) m = max;
+    int m, total;
 
     /* The session is over: choose from the full table as well. One pass over
      * it, keeping the `max` best in `sel` (sorted, seeded with the held rows'
      * best) — no sort of the whole table. id ≥ 0 is a results[] row, < 0 the
      * full-table row ~id. While a session runs the held rows are the set: a
-     * scan this long belongs nowhere near the consumer core. */
+     * scan this long belongs nowhere near the consumer core.
+     * Nothing moves once the session is over, so the selection is kept and a
+     * repeat of the same request (the page polls every 5 s) copies it out
+     * without a scan; the next session start drops it (s_sel_valid). */
     typedef struct { double a; int32_t id; } FullSel;
     static FullSel *sel;
+    static int c_ch, c_low, c_max, c_n, c_total;
     bool full = g_status.state != ELOTTO_RUNNING && s_full && s_full_key && s_full_n > 0;
     if (full && !sel)
         sel = heap_caps_malloc((size_t)PASS_KEEP_EXTREME * sizeof(FullSel), MALLOC_CAP_SPIRAM);
     if (full && sel) {
-        if (max > PASS_KEEP_EXTREME) max = PASS_KEEP_EXTREME;
-        int c = 0;
-        for (; c < m; c++) { sel[c].a = ord[c].a; sel[c].id = (int32_t)ord[c].j; }
-        for (int i = 0; i < s_full_n; i++) {
-            double v = (ch == SUM_KEY) ? fabs((double)s_full_key[i])
-                                       : item_crit(&s_full[i], ch);
-            if (!isfinite(v)) continue;
-            total++;
-            double a = low ? -v : v;
-            if (c >= max && !(a > sel[c - 1].a)) continue;
-            int lo = 0, hi = c;                 /* first slot worse than a */
-            while (lo < hi) {
-                int mid = (lo + hi) / 2;
-                if (sel[mid].a >= a) lo = mid + 1; else hi = mid;
+        if (!(s_sel_valid && c_ch == ch && c_low == (int)low && c_max == max)) {
+            m = rank_order(ord, ntot, true, ch, low);
+            total = m;
+            if (m > max) m = max;
+            int c = 0;
+            for (; c < m; c++) { sel[c].a = ord[c].a; sel[c].id = (int32_t)ord[c].j; }
+            for (int i = 0; i < s_full_n; i++) {
+                double v = (ch == SUM_KEY) ? fabs((double)s_full_key[i])
+                                           : item_crit(&s_full[i], ch);
+                if (!isfinite(v)) continue;
+                total++;
+                double a = low ? -v : v;
+                if (c >= max && !(a > sel[c - 1].a)) continue;
+                int lo = 0, hi = c;                 /* first slot worse than a */
+                while (lo < hi) {
+                    int mid = (lo + hi) / 2;
+                    if (sel[mid].a >= a) lo = mid + 1; else hi = mid;
+                }
+                int end = (c < max) ? c : max - 1;
+                memmove(&sel[lo + 1], &sel[lo], (size_t)(end - lo) * sizeof(FullSel));
+                sel[lo].a  = a;
+                sel[lo].id = ~(int32_t)i;
+                if (c < max) c++;
             }
-            int end = (c < max) ? c : max - 1;
-            memmove(&sel[lo + 1], &sel[lo], (size_t)(end - lo) * sizeof(FullSel));
-            sel[lo].a  = a;
-            sel[lo].id = ~(int32_t)i;
-            if (c < max) c++;
+            c_ch = ch; c_low = (int)low; c_max = max; c_n = c; c_total = total;
+            s_sel_valid = true;
         }
-        for (int i = 0; i < c; i++)
+        m = c_n;
+        total = c_total;
+        for (int i = 0; i < m; i++)
             out[i] = sel[i].id >= 0 ? g_status.results[sel[i].id] : s_full[~sel[i].id];
-        m = c;
     } else {
+        m = rank_order(ord, ntot, true, ch, low);
+        total = m;
+        if (m > max) m = max;
         for (int i = 0; i < m; i++) out[i] = g_status.results[ord[i].j];
     }
     if (held) *held = total;
     archive_unlock();
     return m;
+}
+
+/* ── The full table, row by row (Save) ────────────────────────────────────
+ * results_full_span() is the index space: the full table's rows, then the
+ * rows still in results[]. results_full_row() copies row i and its Z* (NaN =
+ * its block has no σ); false = that slot holds no ranked, centred item (a
+ * void or quarantined row still in results[]) and is skipped. Meant for a
+ * finished session — the caller refuses while one runs. */
+int results_full_span(void)
+{
+    archive_lock();
+    int ntot = g_status.runs_completed;
+    if (ntot > NUM_RUNS) ntot = NUM_RUNS;
+    int n = (s_full && s_full_key ? s_full_n : 0) + ntot;
+    archive_unlock();
+    return n;
+}
+
+bool results_full_row(int i, RunResult *out, double *key)
+{
+    bool ok = false;
+    archive_lock();
+    int nf = (s_full && s_full_key) ? s_full_n : 0;
+    int ntot = g_status.runs_completed;
+    if (ntot > NUM_RUNS) ntot = NUM_RUNS;
+    if (i >= 0 && i < nf) {
+        *out = s_full[i];
+        *key = (double)s_full_key[i];
+        ok = true;
+    } else if (i >= nf && i - nf < ntot) {
+        const RunResult *r = &g_status.results[i - nf];
+        if (result_ranked(r) && result_centred(r)) {
+            double sz = 0.0;
+            block_sig_of(r, &sz, NULL);
+            *out = *r;
+            *key = sz > 0.0 ? rank_key(r) : NAN;
+            ok = true;
+        }
+    }
+    archive_unlock();
+    return ok;
 }
 
 /* ── The quiet board ──────────────────────────────────────────────────────
@@ -1793,8 +1853,13 @@ static bool s_limit_end;
 static void session_end_limit(const char *why)
 {
     if (g_status.abort_requested) return;
-    snprintf(g_status.fault, sizeof(g_status.fault), "%s — session ended", why);
-    printf("%s\n", g_status.fault);
+    /* Appended: `fault` may already name a dropped node, and that must
+     * survive the end of the session. */
+    size_t fl = strlen(g_status.fault);
+    if (fl < sizeof(g_status.fault))
+        snprintf(g_status.fault + fl, sizeof(g_status.fault) - fl,
+                 "%s%s — session ended", fl ? " · " : "", why);
+    printf("%s — session ended\n", why);
     evlog("%s - session ended", why);
     s_limit_end = true;
     g_status.abort_requested = true;
@@ -2090,7 +2155,7 @@ static void series_ac(const double *u, int n, float *item, float zl[4])
  * u = (z_ctr − block mean) / block σ; VOID rows are not in the series. */
 static void block_ac_compute(int block_idx)
 {
-    if (!s_bsig || block_idx < 0 || block_idx >= LOOP_HIST) return;
+    if (!s_bsig || block_idx < 0 || block_idx >= BSIG_MAX) return;
     double sp = (double)s_bsig[block_idx].sig_p;
     int ntot = g_status.runs_completed;
     if (ntot > NUM_RUNS) ntot = NUM_RUNS;
@@ -2606,7 +2671,7 @@ static void record_loop(double loop_mean, int loop_idx)
         L->sigma = (float)g_status.loop_sigma;
         /* Ranking scale of THIS block. Frozen just before this call, so
          * the row can say what rank_key() divided by. 0 = too few items. */
-        if (loop_idx >= 0 && loop_idx < LOOP_HIST && s_bsig) {
+        if (loop_idx >= 0 && loop_idx < BSIG_MAX && s_bsig) {
         }
         L->nodes = (uint8_t)g_status.node_count;
         L->t_s   = (uint32_t)(g_status.elapsed_ms / 1000);
@@ -3084,16 +3149,9 @@ void elotto_task(void *pvParam)
     archive_lock();
     s_quiet_n = 0;
     s_full_n  = 0;
+    s_sel_valid = false;
     archive_unlock();
     s_limit_end = false;
-    /* The full table. Without it the session still runs; the Top-10 then
-     * chooses from the held rows after the session as it does during it. */
-    if (!s_full)
-        s_full = heap_caps_malloc((size_t)FULL_MAX * sizeof(RunResult), MALLOC_CAP_SPIRAM);
-    if (!s_full_key)
-        s_full_key = heap_caps_malloc((size_t)FULL_MAX * sizeof(float), MALLOC_CAP_SPIRAM);
-    if (!s_full || !s_full_key)
-        printf("pass: no PSRAM for the full table — the Top-10 stays on the held rows\n");
     // unlimited / runs_cap / scoring_passes are session parameters from /start and are NOT reset
     // here — they tag the session.
     g_status.round           = 0;
@@ -3133,9 +3191,9 @@ void elotto_task(void *pvParam)
     s_open_centred           = false;
     g_status.loop_hist_n     = 0;
     if (!s_bsig)
-        s_bsig = heap_caps_calloc(LOOP_HIST, sizeof(BlockRankSig), MALLOC_CAP_SPIRAM);
+        s_bsig = heap_caps_calloc(BSIG_MAX, sizeof(BlockRankSig), MALLOC_CAP_SPIRAM);
     else
-        memset(s_bsig, 0, LOOP_HIST * sizeof(BlockRankSig));
+        memset(s_bsig, 0, BSIG_MAX * sizeof(BlockRankSig));
     g_status.drift_slope     = 0.0;
     g_status.drift_t         = 0.0;
     g_status.off_first       = 0.0;
@@ -3295,6 +3353,25 @@ void elotto_task(void *pvParam)
           euro ? "Eurojackpot" : "6 of 49", g_status.run_target_ms / 1000.0,
           g_status.runs_cap,
           g_status.cal_budget_ms > 0 ? "on" : "off", fix);
+
+    /* The full table. Without it the session still runs and the Top-10
+     * chooses from the held rows after the session as it does during it —
+     * said in the Log, after the start line, so the operator can see it. */
+    archive_lock();
+    if (!s_full)
+        s_full = heap_caps_malloc((size_t)FULL_MAX * sizeof(RunResult), MALLOC_CAP_SPIRAM);
+    if (!s_full_key)
+        s_full_key = heap_caps_malloc((size_t)FULL_MAX * sizeof(float), MALLOC_CAP_SPIRAM);
+    bool full_ok = s_full && s_full_key;
+    if (!full_ok) {
+        heap_caps_free(s_full);
+        heap_caps_free(s_full_key);
+        s_full = NULL;
+        s_full_key = NULL;
+    }
+    archive_unlock();
+    if (!full_ok)
+        evlog("No memory for the full table - Top-10 and Save stay on the held rows");
 
     /* Block index of the pass. Declared HERE, before the first goto done, so
      * the abort path can centre the open block (see done:). */

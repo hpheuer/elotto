@@ -241,8 +241,8 @@ static const char HTML[] =
 "</div>"
 "<div class='frow'>"
 "<label for='numUnlimRuns' title='Measurement runs ONE round may spend. The pool is sized so its whole "
-"combination space fits inside it. Rounds repeat until Abort. 0 = only score numbers, no "
-"combination pass, endless.'>"
+"combination space fits inside it. Rounds repeat until Abort or 72 h of session time. 0 = only score numbers, no "
+"combination pass.'>"
 "Runs per round:</label>"
 "<span style='display:flex;align-items:center;gap:8px'>"
 "<input id='numUnlimRuns' class='fin' type='number'"
@@ -756,7 +756,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "b.style.display='';"
 "var p=[];"
 "p.push(pItem('Mode',d.mode==='euro'?'Eurojackpot 5+2':'6 of 49'));"
-"if(d.runs_cap===0)p.push(pItem('Scoring',(d.scoring_passes===0)?'continuous, endless':'only, endless'));"
+"if(d.runs_cap===0)p.push(pItem('Scoring',(d.scoring_passes===0)?'continuous':'only'));"
 "p.push(pItem('Measuring',(d.run_s||0).toFixed(1)+' s'));"
 "p.push(pItem('Gap',(d.gap_s||0).toFixed((d.gap_s||0)<1?2:1)+' s'));"
 "p.push(pItem('Segments',d.run_segs||0));"
@@ -900,9 +900,11 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
    each with the node's camera and its measurement's Z*, Z, Z_raw, Conc, Δn,
    AC, Mau, k), same labels as the card (a scoring window is "scoring <pass>/<round>", the node is
    named from its address). ×σ is empty when wsig_sd is not positive.
-   Chrome/Edge ask for one folder (showDirectoryPicker) and write all four
+   Fifth, once the session is over: elotto_all<n>_….csv, every ranked pass
+   item of the session (the full table, /extremes?full=1 in pages).
+   Chrome/Edge ask for one folder (showDirectoryPicker) and write all of them
    there. ⚠ That call exists only on a secure page. On the master's http
-   address it is absent, and the four files go to the download folder.
+   address it is absent, and the files go to the download folder.
    Cancelling the dialog writes nothing. The picker must run in the click,
    before the fetches, or the browser drops the user gesture. */
 "function doSave(){"
@@ -941,7 +943,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "var d=new Date(),p=function(n){return (n<10?'0':'')+n;};"
 "var stamp=d.getFullYear()+p(d.getMonth()+1)+p(d.getDate())+'_'+p(d.getHours())+p(d.getMinutes());"
 "function filesOf(pair){"
-"var st=pair[0]||{},x=pair[1],s=pair[2],j=pair[3];"
+"var st=pair[0]||{},x=pair[1],s=pair[2],j=pair[3],all=pair[4];"
 "var snaps=(s&&s.snaps)?s.snaps:[];"
 "var scoreOnly=(st.runs_cap===0);"
 "var cont=(st.scoring_passes===0);"
@@ -994,12 +996,34 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "row.push(f(e.key),f(e.z_ctr),f(e.z),f(e.zc),f(e.nsd),f(e.ac),f(e.mau),e.k?String(e.k):'');"
 "Lj.push(row.join(';'));});"
 "files.push({name:'elotto_jumps_'+stamp+'.csv',body:textOf(Lj)});"
+/* Fifth, only once the session is over: every ranked pass item, by round
+   and combination (fetchFull). */
+"if(all&&all.length){"
+"all.sort(function(a,b){return (a.round-b.round)||(a.run-b.run);});"
+"var La=['Round;Comb;Numbers;Euro;Z*;Z;Z_raw;Conc;\\u0394n;AC;Mau;k'];"
+"all.forEach(function(r){La.push([r.round,r.run,(r.nums||[]).join(' '),(r.euro||[]).join(' '),"
+"f(r.key),f(r.z_ctr),f(r.z),f(r.zc),f(r.nsd),f(r.ac),f(r.mau),r.k].join(';'));});"
+"files.push({name:'elotto_all'+all.length+'_'+stamp+'.csv',body:textOf(La)});}"
 "return {files:files,sumsOk:!!s};}"
+/* The full table, page by page (/extremes?full=1&from=), with a bar in the
+   message line while it loads. null while a session runs (409) or on any
+   failure: the other files are still written. */
+"function fetchFull(){"
+"var R=[],m=document.getElementById('msg');"
+"function page(from){"
+"return fetch('/extremes?full=1&from='+from).then(function(r){return r.ok?r.json():null;}).then(function(x){"
+"if(!x)return null;"
+"R=R.concat(x.rows||[]);"
+"m.innerHTML='Full table <progress value=\"'+x.next+'\" max=\"'+(x.span||1)+'\"></progress> '+x.next+' / '+x.span;"
+"if(x.next<x.span)return page(x.next);"
+"m.textContent='';return R;});}"
+"return page(0).catch(function(){m.textContent='\\u26a0 Full table save failed';return null;});}"
 "function fetchAll(){return Promise.all(["
 "fetch('/status').then(function(r){return r.json();}).catch(function(){return LD||{};}),"
 "fetch('/extremes?n=" EL_STR(PASS_KEEP_EXTREME) "').then(function(r){return r.json();}),"
 "fetch('/extremes?sums=1').then(function(r){return r.json();}).catch(function(){return null;}),"
-"fetch('/extremes?jumps=1').then(function(r){return r.json();}).catch(function(){return null;})"
+"fetch('/extremes?jumps=1').then(function(r){return r.json();}).catch(function(){return null;}),"
+"fetchFull()"
 "]);}"
 "function put(dir,built){"
 "if(!built.sumsOk)document.getElementById('msg').textContent='\\u26a0 Sums save failed';"
@@ -2567,6 +2591,43 @@ static esp_err_t extremes_jumps(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* ?full=1[&from=<i>]: every ranked pass item of the finished session, in
+ * pages of FULL_PAGE index slots (item row shape, unsorted). `span` is the
+ * index space, `next` where the following page starts; the page is done when
+ * next == span. Paged so Save can show progress and no single reply holds the
+ * HTTP task for the whole table. 409 while a session runs. */
+#define FULL_PAGE 2000
+static esp_err_t extremes_full(httpd_req_t *req, int from)
+{
+    if (g_status.state == ELOTTO_RUNNING) {
+        httpd_resp_set_status(req, "409 Conflict");
+        httpd_resp_set_type(req, "text/plain");
+        httpd_resp_sendstr(req, "session running - the full table is served once it is over");
+        return ESP_OK;
+    }
+    int span = results_full_span();
+    if (from > span) from = span;
+    int next = from + FULL_PAGE;
+    if (next > span) next = span;
+    char sb[448];
+    int sl = snprintf(sb, sizeof(sb), "{\"span\":%d,\"from\":%d,\"next\":%d,\"rows\":[",
+                      span, from, next);
+    send_chunk(req, sb, sl, sizeof(sb));
+    bool first = true;
+    for (int i = from; i < next; i++) {
+        RunResult r;
+        double    key;
+        if (!results_full_row(i, &r, &key)) continue;
+        if (!first) httpd_resp_send_chunk(req, ",", 1);
+        sl = emit_row(sb, sizeof(sb), &r, key, "");
+        send_chunk(req, sb, sl, sizeof(sb));
+        first = false;
+    }
+    httpd_resp_send_chunk(req, "]}", 2);
+    httpd_resp_send_chunk(req, NULL, 0);
+    return ESP_OK;
+}
+
 static esp_err_t extremes_handler(httpd_req_t *req)
 {
     static RunResult *ex;   /* httpd serialises handlers, so one shared buffer */
@@ -2603,6 +2664,19 @@ static esp_err_t extremes_handler(httpd_req_t *req)
     if (qj < 0) goto bad;
     if (qj > 0 && v[0] == '1')
         return extremes_jumps(req);
+    int qf = QPARAM("full");
+    if (qf < 0) goto bad;
+    if (qf > 0 && v[0] == '1') {
+        long fv = 0;
+        int  qfr = QPARAM("from");
+        if (qfr < 0) goto bad;
+        if (qfr > 0) {
+            char *end;
+            fv = strtol(v, &end, 10);
+            if (end == v || *end || fv < 0 || fv > FULL_MAX + NUM_RUNS) goto bad;
+        }
+        return extremes_full(req, (int)fv);
+    }
     int  want = EXTREMES_MAX;
     int  qn = QPARAM("n");
     if (qn < 0) goto bad;
@@ -2697,7 +2771,7 @@ bad:
     httpd_resp_set_status(req, "400 Bad Request");
     httpd_resp_set_type(req, "text/plain");
     httpd_resp_sendstr(req, "n=1.." EL_STR(PASS_KEEP_EXTREME)
-                       ", sort=key|z|conc|nsd|ac|mau, dir=high|low (with sort=), sums=1, jumps=1, score=1");
+                       ", sort=key|z|conc|nsd|ac|mau, dir=high|low (with sort=), sums=1, jumps=1, score=1, full=1[&from=]");
     return ESP_OK;
 }
 
