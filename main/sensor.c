@@ -1781,7 +1781,10 @@ int results_records(RecRow *out)
     if (ntot > NUM_RUNS) ntot = NUM_RUNS;
     for (int j = 0; j < ntot; j++) {
         const RunResult *r = &g_status.results[j];
-        if (result_ranked(r) && result_centred(r)) rec_offer(out, r, NAN, 0);
+        /* Closed blocks only: an open block's values still move with every
+         * item, and a record must not appear and then vanish at the close. */
+        if (result_ranked(r) && (int)r->block < s_blocks_centred)
+            rec_offer(out, r, NAN, 0);
     }
     archive_unlock();
     int n = 0;

@@ -408,6 +408,7 @@ what remains visible is an effect varying **between items inside a block**.
   out). It survives compaction: `pass_compact()` offers every
   ranked, centred row it merges, a scoring pass offers its numbers at its close, and
   `results_records()` merges the board with the rows still in `results[]`. Cleared at session start.
+  A pass item enters only once its block is closed, so a record appears at the round boundary.
   ⛔ Z and Conc are compared as the columns print them, not divided by a block σ — the record is
   the largest value the column showed, so a loud block wins more easily. Quarantined rows never enter.
 - **A fourth table, Closest to chance**: the session's ten ranked, centred items with the
