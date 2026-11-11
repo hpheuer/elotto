@@ -272,7 +272,7 @@ static void   wsig_fill_scoring(bool euro_pool, uint8_t spass);
 static void   archive_lock(void);
 static void   archive_unlock(void);
 static bool   result_centred(const RunResult *r);
-static void   rec_offer_scoring(const RunResult *r, float key, int pass);
+static void   session_limit_check(void);
 static ScoreItem *score_row(bool euro_pool, int k);
 
 /* Per-item node-z archive (PSRAM). results[j] stays lean; centring needs the
@@ -873,6 +873,7 @@ static int score_run(int max_val, int pool_size, bool euro_pool,
             uint8_t t = order[0]; order[0] = order[1]; order[1] = t;
         }
         for (int idx = 0; idx < n_order; idx++) {
+            session_limit_check();
             if (g_status.abort_requested) goto snap;
             pause_gate();
             if (g_status.abort_requested) goto snap;
@@ -984,16 +985,6 @@ static int score_run(int max_val, int pool_size, bool euro_pool,
                 if (isfinite(v[c]) && row->sum_n[c] < 255) row->sum_n[c]++;
             }
             if (row->passes < 255) row->passes++;
-            /* The record board takes this pass's own values (AC included —
-             * the display row may still hold an earlier pass's). */
-            if (row->r.k > 0) {
-                RunResult rr = row->r;
-                rr.acz = (float)acp[k];
-                /* The pass and round the page shows: a continuous scoring
-                 * stamps the row's round once and counts passes in pass_base. */
-                rr.round = (uint16_t)g_status.round;
-                rec_offer_scoring(&rr, (float)key, g_status.scoring_pass);
-            }
         }
         closed++;
         wsig_fill_scoring(euro_pool, (uint8_t)(pass + 1));
@@ -1679,9 +1670,48 @@ int results_extremes(RunResult *out, int max, int ch, bool low, int *held,
     int ntot = g_status.runs_completed;
     if (ntot > NUM_RUNS) ntot = NUM_RUNS;
     int m = rank_order(ord, ntot, true, ch, low);
-    if (held) *held = m;
+    int total = m;
     if (m > max) m = max;
-    for (int i = 0; i < m; i++) out[i] = g_status.results[ord[i].j];
+
+    /* The session is over: choose from the full table as well. One pass over
+     * it, keeping the `max` best in `sel` (sorted, seeded with the held rows'
+     * best) — no sort of the whole table. id ≥ 0 is a results[] row, < 0 the
+     * full-table row ~id. While a session runs the held rows are the set: a
+     * scan this long belongs nowhere near the consumer core. */
+    typedef struct { double a; int32_t id; } FullSel;
+    static FullSel *sel;
+    bool full = g_status.state != ELOTTO_RUNNING && s_full && s_full_key && s_full_n > 0;
+    if (full && !sel)
+        sel = heap_caps_malloc((size_t)PASS_KEEP_EXTREME * sizeof(FullSel), MALLOC_CAP_SPIRAM);
+    if (full && sel) {
+        if (max > PASS_KEEP_EXTREME) max = PASS_KEEP_EXTREME;
+        int c = 0;
+        for (; c < m; c++) { sel[c].a = ord[c].a; sel[c].id = (int32_t)ord[c].j; }
+        for (int i = 0; i < s_full_n; i++) {
+            double v = (ch == SUM_KEY) ? fabs((double)s_full_key[i])
+                                       : item_crit(&s_full[i], ch);
+            if (!isfinite(v)) continue;
+            total++;
+            double a = low ? -v : v;
+            if (c >= max && !(a > sel[c - 1].a)) continue;
+            int lo = 0, hi = c;                 /* first slot worse than a */
+            while (lo < hi) {
+                int mid = (lo + hi) / 2;
+                if (sel[mid].a >= a) lo = mid + 1; else hi = mid;
+            }
+            int end = (c < max) ? c : max - 1;
+            memmove(&sel[lo + 1], &sel[lo], (size_t)(end - lo) * sizeof(FullSel));
+            sel[lo].a  = a;
+            sel[lo].id = ~(int32_t)i;
+            if (c < max) c++;
+        }
+        for (int i = 0; i < c; i++)
+            out[i] = sel[i].id >= 0 ? g_status.results[sel[i].id] : s_full[~sel[i].id];
+        m = c;
+    } else {
+        for (int i = 0; i < m; i++) out[i] = g_status.results[ord[i].j];
+    }
+    if (held) *held = total;
     archive_unlock();
     return m;
 }
@@ -1733,63 +1763,47 @@ int results_quietest(RunResult *out, int max)
     return m;
 }
 
-/* ── The record board (RecRow, sensor.h) ─────────────────────────────────
- * One row per column. Written by the sensor task under the archive lock. */
-static RecRow s_rec[SCORE_SUM_N];
+/* ── The full table (FULL_MAX, sensor.h) ─────────────────────────────────
+ * Every ranked row pass_compact() merges, in the order it left results[],
+ * with its Z* frozen beside it (the block is closed, its σ and the session's
+ * weights are fixed; NaN = that block has no σ). A row is here or in
+ * results[], never both. Written by the sensor task under the archive lock,
+ * read by results_extremes() once the session is over. */
+static RunResult *s_full;
+static float     *s_full_key;
+static int        s_full_n;
 
-/* How extreme a row is on column c (a ScoreSum, read through item_crit() like
- * every sort) — larger wins. Z and Conc by magnitude, Δn / AC / Mau the
- * smallest value. NaN = no value (Conc 0 is "no concordance", the results[]
- * convention; SUM_KEY has no record). */
-static double rec_val(int c, const RunResult *r)
+static void full_push(const RunResult *r)
 {
-    if (c == SUM_KEY) return NAN;
-    double v = item_crit(r, c);
-    if (c == SUM_Z)    return fabs(v);
-    if (c == SUM_CONC) return v == 0.0 ? NAN : fabs(v);
-    return -v;
+    if (!s_full || !s_full_key || s_full_n >= FULL_MAX) return;
+    double sz = 0.0;
+    block_sig_of(r, &sz, NULL);
+    s_full[s_full_n]     = *r;
+    s_full_key[s_full_n] = sz > 0.0 ? (float)rank_key(r) : NAN;
+    s_full_n++;
 }
 
-/* spass 0 = a pass item: its Z* is taken from its block here, once, when it
- * takes a row. A scoring run brings its pass key. */
-static void rec_offer(RecRow *B, const RunResult *r, float key, uint16_t spass)
+/* ── The session ends by itself ───────────────────────────────────────────
+ * At SESSION_MAX_MS of session time, or when the full table has less than one
+ * round's worth of rows left. It takes the abort path — the open block is
+ * centred, the measured prefix published — but the state is DONE and `fault`
+ * and the Log say why. */
+static bool s_limit_end;
+
+static void session_end_limit(const char *why)
 {
-    for (int c = 0; c < SCORE_SUM_N; c++) {
-        double v = rec_val(c, r);
-        if (!isfinite(v)) continue;
-        if (B[c].set && !(v > rec_val(c, &B[c].r))) continue;
-        B[c].r     = *r;
-        B[c].key   = spass ? key : (float)rank_key(r);
-        B[c].spass = spass;
-        B[c].set   = 1;
-    }
+    if (g_status.abort_requested) return;
+    snprintf(g_status.fault, sizeof(g_status.fault), "%s — session ended", why);
+    printf("%s\n", g_status.fault);
+    evlog("%s - session ended", why);
+    s_limit_end = true;
+    g_status.abort_requested = true;
 }
 
-static void rec_offer_scoring(const RunResult *r, float key, int pass)
+static void session_limit_check(void)
 {
-    archive_lock();
-    rec_offer(s_rec, r, key, (uint16_t)(pass < 1 ? 1 : pass > 65535 ? 65535 : pass));
-    archive_unlock();
-}
-
-int results_records(RecRow *out)
-{
-    if (!out) return 0;
-    archive_lock();
-    memcpy(out, s_rec, sizeof(s_rec));
-    int ntot = g_status.runs_completed;
-    if (ntot > NUM_RUNS) ntot = NUM_RUNS;
-    for (int j = 0; j < ntot; j++) {
-        const RunResult *r = &g_status.results[j];
-        /* Closed blocks only: an open block's values still move with every
-         * item, and a record must not appear and then vanish at the close. */
-        if (result_ranked(r) && (int)r->block < s_blocks_centred)
-            rec_offer(out, r, NAN, 0);
-    }
-    archive_unlock();
-    int n = 0;
-    for (int c = 0; c < SCORE_SUM_N; c++) n += out[c].set ? 1 : 0;
-    return n;
+    if (elapsed_ms_now() >= SESSION_MAX_MS)
+        session_end_limit("72 h session limit reached");
 }
 
 /* ── What compaction left behind ──────────────────────────────────────────
@@ -2003,7 +2017,7 @@ static void pass_compact(void)
                  * rank_key() uses — it must not be counted as one. */
                 if (r->zc_ctr != 0.0f) s_drop_pn++;
                 if (quiet_eligible(r)) quiet_insert(s_quiet, &s_quiet_n, QUIET_N, r);
-                if (result_centred(r)) rec_offer(s_rec, r, NAN, 0);
+                full_push(r);
             }
             dropped++;
             continue;
@@ -2017,6 +2031,11 @@ static void pass_compact(void)
     g_status.runs_completed = w;   /* rows held; items_done is unchanged */
     g_status.compacted     += dropped;
     archive_unlock();
+
+    /* One compaction merges at most UNLIM_RUNS_MAX rows (NUM_RUNS − the
+     * survivors), so this much room guarantees the next one fits whole. */
+    if (s_full && FULL_MAX - s_full_n < UNLIM_RUNS_MAX)
+        session_end_limit("full table of measurements is full");
 
     heap_caps_free(keep);
 
@@ -3064,8 +3083,17 @@ void elotto_task(void *pvParam)
     s_drop_pn = 0;
     archive_lock();
     s_quiet_n = 0;
-    memset(s_rec, 0, sizeof(s_rec));
+    s_full_n  = 0;
     archive_unlock();
+    s_limit_end = false;
+    /* The full table. Without it the session still runs; the Top-10 then
+     * chooses from the held rows after the session as it does during it. */
+    if (!s_full)
+        s_full = heap_caps_malloc((size_t)FULL_MAX * sizeof(RunResult), MALLOC_CAP_SPIRAM);
+    if (!s_full_key)
+        s_full_key = heap_caps_malloc((size_t)FULL_MAX * sizeof(float), MALLOC_CAP_SPIRAM);
+    if (!s_full || !s_full_key)
+        printf("pass: no PSRAM for the full table — the Top-10 stays on the held rows\n");
     // unlimited / runs_cap / scoring_passes are session parameters from /start and are NOT reset
     // here — they tag the session.
     g_status.round           = 0;
@@ -3505,6 +3533,7 @@ void elotto_task(void *pvParam)
 
         g_status.phase = PHASE_MEASURING;
         for (int j = 0; j < round_total; j++) {
+            session_limit_check();
             if (g_status.abort_requested) { slave_abort(); goto done; }
             // Between runs, never inside one: the run just finished is kept and
             // j does not advance, so nothing is lost or duplicated.
@@ -3670,8 +3699,9 @@ finalize:
     focus_off();
     g_status.paused     = false;
     g_status.elapsed_ms = elapsed_ms_now();
-    g_status.state = g_status.abort_requested ? ELOTTO_ABORTED : ELOTTO_DONE;
-    evlog("Session %s after %d items", g_status.abort_requested ? "aborted" : "done",
+    bool aborted = g_status.abort_requested && !s_limit_end;
+    g_status.state = aborted ? ELOTTO_ABORTED : ELOTTO_DONE;
+    evlog("Session %s after %d items", aborted ? "aborted" : "done",
           g_status.items_done);
     vTaskDelete(NULL);
 }

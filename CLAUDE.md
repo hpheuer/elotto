@@ -79,7 +79,9 @@ Modes: Eurojackpot (5 of 50 + 2 of 12, 7920 combinations) and 6 of 49 (5005).
 ## v3 — rounds until Abort
 **This file is the contract, as rounds.** (`docs/PLAN.md` is a stub.) A round scores every number, keeps as many of
 the best as fit `?maxruns=` (default 100), measures that space once in a Fisher–Yates order,
-then scores again. Ends on **Abort**. Inside a round each combination is measured exactly once;
+then scores again. Ends on **Abort**, after `SESSION_MAX_MS` 72 h of session time (pauses
+excluded), or when the full table is full — the last two end as `done` with the reason in
+`/status` `fault` and in the Log, the open block centred like an abort. Inside a round each combination is measured exactly once;
 across rounds a combination can recur — identity is **(round, index)**.
 
 - **No loops, no Runs cap, no ranking modes.** `/start` is a **whitelist**: an unknown
@@ -187,7 +189,7 @@ or combination (pass). `confirm=1` writes NVS form prefs only.
 ### Rounds
 **Runs per round** (default 100); `POST /start?maxruns=<n>` (`unlimited` on by default). A **round** =
 score every number → keep as many of the best as fit `maxruns` runs → measure that space once in a
-fresh Fisher–Yates order → score again. Ends only on **Abort**; the `results[]`-full stop survives
+fresh Fisher–Yates order → score again. Ends on **Abort** or a session limit (72 h, full table); the `results[]`-full stop survives
 as backstop for a compaction that cannot allocate. ⚠ **`maxruns=0` drops the measure step** — the
 round is just a scoring (see the `?maxruns=0` rule under v3), endless.
 
@@ -215,7 +217,14 @@ round is just a scoring (see the `?maxruns=0` rule under v3), endless.
   earlier compaction merged. Quarantined rows are not kept — nothing reads them after
   their block closes. The rest merges into moments — pass mean/σ/χ²
   stay exact. `n ≤ 1000` is a no-op, so a short session keeps every row. The Top-10
-  (`GET /extremes`) chooses from this archive plus the open round.
+  (`GET /extremes`) chooses from this archive plus the open round while the session runs.
+- **The full table**: every ranked row a compaction merges is first copied to PSRAM with its
+  Z\* (`FULL_MAX` 250000 rows, ~13 MB; no per-camera values — Δn carries the agreement). Once
+  the session is over, `/extremes` (Top-10, any column and direction, and Save's `?n=1000`)
+  chooses from the full table plus the rows still in `results[]` — every ranked pass item of the
+  session; `held` is that count. ⚠ Only after the session: one request scans the whole table on
+  the HTTP task. ⚠ Scoring runs are not in it. When fewer than `UNLIM_RUNS_MAX` rows are left the
+  session ends, so the table is never incomplete. RAM only, like `results[]`.
   ⚠ The counter and round-base semantics after a compaction (`completed`/`runs_completed`,
   `round_base`/`round_item_base`) are subtle and documented at their definitions in `sensor.h` —
   read them before touching anything that counts or indexes items; getting them wrong is what broke
@@ -326,8 +335,8 @@ what remains visible is an effect varying **between items inside a block**.
   at once but at most once per second, and a reply for a superseded sort is dropped. `dir=`
   without `sort=`, an unknown value and a truncated value or query (> 95 characters) answer **400**. It ranks every held row on the master's HTTP task, which shares the consumer core, so a
   1 s poll stole the master's extraction CPU. ⚠ **Held rows** are the compaction archive (chosen on
-  the pool criterion) plus the open round, so another column's extremes are those of that archive,
-  not of the session. Without `?sort=` the set is chosen on the pool criterion. `?n=1..1000`
+  the pool criterion) plus the open round, so while the session runs another column's extremes are those of that archive,
+  not of the session; after the session the set is every ranked pass item (the full table). Without `?sort=` the set is chosen on the pool criterion. `?n=1..1000`
   widens it (default 10, else **400**); the **Save** button beside Abort (also shown after Done/Abort) writes
   four files in one step. First, `/extremes?n=1000` as a CSV for a German Excel (`;`, decimal
   comma, BOM), ranked best-first on the pool criterion (`crit`/`dir` in the reply and the file
@@ -399,18 +408,6 @@ what remains visible is an effect varying **between items inside a block**.
   when empty.
   ⚠ Scoring windows enter it too, named `scoring <pass>/<round>` with the number in the
   Numbers column — not an item identity.
-- **Session extremes (the record board)**: one row per column — largest |Z|, largest |Conc|,
-  smallest Δn, most negative AC, most negative Mau — each the session's most extreme measurement
-  on it, with all its other values; the record cell is bold. Pass items and scoring runs compete
-  for the same row; a scoring run reads `scoring <pass>/<round>` with its number in Numbers.
-  It rides as `rec` in the `/extremes` item reply and in the `?score=1` reply — no request of its
-  own (`rec` = `z|conc|nsd|ac|mau`, `spass` 0 = pass item; a column without a value yet is left
-  out). It survives compaction: `pass_compact()` offers every
-  ranked, centred row it merges, a scoring pass offers its numbers at its close, and
-  `results_records()` merges the board with the rows still in `results[]`. Cleared at session start.
-  A pass item enters only once its block is closed, so a record appears at the round boundary.
-  ⛔ Z and Conc are compared as the columns print them, not divided by a block σ — the record is
-  the largest value the column showed, so a loud block wins more easily. Quarantined rows never enter.
 - **A fourth table, Closest to chance**: the session's ten ranked, centred items with the
   smallest `|Z*|`, ascending, same columns as the Top-10, fixed order (no sort clicks).
   `/extremes` carries it as `quiet`. ⚠ Compaction keeps only the extremes, so `pass_compact()`
@@ -670,7 +667,8 @@ floor is load-bearing.
 - **PSRAM is mandatory**: capture buffers, the LSB-ones side ring (`s_ring_raw`), `loop_hist`,
   per-item per-node archives (`s_node_z` and the half-window copies, sized to `NUM_RUNS`),
   the scoring-sum log (`SCORE_SNAP_MAX` 128 snaps, ~225 KB) and the camera-jump board
-  (`WSIG_KEEP_N` 100 rows, ~7 KB).
+  (`WSIG_KEEP_N` 100 rows, ~7 KB), and the full table (`FULL_MAX` 250000 rows, ~13 MB of the
+  ~22 MB free in a session).
   The word ring `s_ring` (64 KB) is **internal RAM**; `results[]` stays internal too:
   `NUM_RUNS` 1400.
 - ⚠ **The measurement path reads the ring in BLOCKS** — `camera_read_words()`, 112 words per call
