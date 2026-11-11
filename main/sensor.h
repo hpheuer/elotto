@@ -892,13 +892,20 @@ typedef struct {
     float            focus_gap_ms;        // measured mean dark gap between runs —
                                           // the gate asks whether the ~200 ms was
                                           // free (existing overhead) or paid for
-    int              run_target_ms;       // requested window (from ?run=), for status
-    int              gap_ms;              // intentional blank between runs (?gap=)
+    /* Two windows: the pass (?run=) and the number scoring (?srun=, omitted =
+     * ?run=). Each phase measures and gaps on its own pair; the sweep uses
+     * the pass pair, a scoring-only session (maxruns=0) the scoring pair. */
+    int              run_target_ms;       // pass window (from ?run=)
+    int              gap_ms;              // pass blank between runs (?gap=)
+    int              score_target_ms;     // scoring window (from ?srun=)
+    int              score_gap_ms;        // scoring blank (?gap=, else 40 % of srun)
+    int              score_segments;      // segment count of the scoring window
+    uint32_t         win_n_score, win_n_pass;  // windows triggered per phase, per session
     /* Runs voided because the pre-window ring flush did not finish in
      * ONSET_SETTLE_MS. Published in /status: a silent
      * safeguard that fires is indistinguishable from one that never had to. */
     uint32_t         flush_timeouts;   /* per SESSION -- cleared at session start */
-    int              run_segments;        // segment count derived for this session
+    int              run_segments;        // segment count of the pass window
     FocusState       focus;
     bool             slave_connected;     // at least one slave answered discovery
     int              node_count;          // nodes discovered, master included (>= 1)

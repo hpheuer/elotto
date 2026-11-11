@@ -236,6 +236,16 @@ static const char HTML[] =
 "</span>"
 "</div>"
 "<div class='frow'>"
+"<label for='numSRunS' title='Measuring time of one number in the number scoring. "
+"The combination pass uses Measuring Time.'>Scoring Time (s):</label>"
+"<span style='display:flex;align-items:center;gap:8px'>"
+"<input id='numSRunS' class='fin' type='number'"
+" value='" EL_STR(RUN_S_DEFAULT) "' min='" EL_STR(RUN_S_MIN) "'"
+" max='" EL_STR(RUN_S_MAX) "' step='0.1' oninput='unlimHint()'>"
+"<span style='color:#8fae8f;font-size:.85em;white-space:nowrap'>per number</span>"
+"</span>"
+"</div>"
+"<div class='frow'>"
 "<span>Entropy:</span>"
 "<span style='font-size:.92em'>&#128247; camera readout noise (OV5647 / IMX219)</span>"
 "</div>"
@@ -589,17 +599,18 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
    time, mirrored here for the preview. */
 "function gapFor(runS){var g=runS*0.4;"
 "if(g<" EL_STR(GAP_S_MIN) ")g=" EL_STR(GAP_S_MIN) ";if(g>" EL_STR(GAP_S_MAX) ")g=" EL_STR(GAP_S_MAX) ";return g;}"
+"function formRunS(id){var v=parseFloat(document.getElementById(id).value);"
+"if(!(v>0))v=" EL_STR(RUN_S_DEFAULT) ";else if(v<" EL_STR(RUN_S_MIN) ")v=" EL_STR(RUN_S_MIN) ";"
+"if(v>" EL_STR(RUN_S_MAX) ")v=" EL_STR(RUN_S_MAX) ";return v;}"
 "function roundParts(euro,combos){"
-"var runS=parseFloat(document.getElementById('numRunS').value);"
-"if(!(runS>0))runS=" EL_STR(RUN_S_DEFAULT) ";else if(runS<" EL_STR(RUN_S_MIN) ")runS=" EL_STR(RUN_S_MIN) ";"
-"if(runS>" EL_STR(RUN_S_MAX) ")runS=" EL_STR(RUN_S_MAX) ";"
-"var gapS=gapFor(runS);"
-"var cyc=cycleMs(segsFor(runS),gapS,lastSlowMbit);"
+"var runS=formRunS('numRunS'),srunS=formRunS('numSRunS');"
+"var cyc=cycleMs(segsFor(runS),gapFor(runS),lastSlowMbit);"
+"var scyc=cycleMs(segsFor(srunS),gapFor(srunS),lastSlowMbit);"
 /* Sweeps per round: the round boundary, one mid-scoring per scoring run (two
    of them in Eurojackpot, main numbers and euro numbers), and one before the
    pass. None is a function of elapsed time; there is still no time trigger. */
 "var ins=(euro?4:3)*" EL_STR(CAL_BUDGET_DEFAULT_MS) ";"
-"return {s:(euro?62:49)*formPasses()*cyc,m:combos*cyc,i:ins};}"
+"return {s:(euro?62:49)*formPasses()*scyc,m:combos*cyc,i:ins};}"
 "function formPasses(){var n=parseInt(document.getElementById('numPasses').value);"
 "if(isNaN(n))n=" EL_STR(SCORE_PASSES_DEFAULT) ";"
 "if(n<0)n=0;else if(n>0&&n<" EL_STR(SCORE_PASSES_MIN) ")n=" EL_STR(SCORE_PASSES_MIN) ";"
@@ -757,14 +768,16 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "var p=[];"
 "p.push(pItem('Mode',d.mode==='euro'?'Eurojackpot 5+2':'6 of 49'));"
 "if(d.runs_cap===0)p.push(pItem('Scoring',(d.scoring_passes===0)?'continuous':'only'));"
-"p.push(pItem('Measuring',(d.run_s||0).toFixed(1)+' s'));"
-"p.push(pItem('Gap',(d.gap_s||0).toFixed((d.gap_s||0)<1?2:1)+' s'));"
-"p.push(pItem('Segments',d.run_segs||0));"
+"function gs(g){g=g||0;return g.toFixed(g<1?2:1)+' s';}"
+"p.push(pItem('Scoring',(d.srun_s||0).toFixed(1)+' s \\u00b7 gap '+gs(d.sgap_s)+' \\u00b7 '+(d.srun_segs||0)+' seg'));"
+"if(d.runs_cap!==0)p.push(pItem('Measuring',(d.run_s||0).toFixed(1)+' s \\u00b7 gap '+gs(d.gap_s)+' \\u00b7 '+(d.run_segs||0)+' seg'));"
+/* The current phase's window: scoring's pair while numbers are scored. */
+"var sc=(d.phase==='scoring');"
 "var n=(d.scoring_done||0)+(d.completed||0);"
 "if(n>=5&&d.elapsed_ms>0)"
 "p.push(pItem('per run',(d.elapsed_ms/n/1000).toFixed(1)+' s measured'));"
-"else p.push(pItem('per run','\u2248 '+(cycleMs(d.run_segs||segsFor(d.run_s||0),"
-"d.gap_s||0,slowMbit(d))/1000).toFixed(1)+' s est.'));"
+"else p.push(pItem('per run','\u2248 '+(cycleMs(sc?(d.srun_segs||segsFor(d.srun_s||0)):(d.run_segs||segsFor(d.run_s||0)),"
+"sc?(d.sgap_s||0):(d.gap_s||0),slowMbit(d))/1000).toFixed(1)+' s est.'));"
 "if(d.focus_win_ms>0)p.push(pItem('window/gap',Math.round(d.focus_win_ms)"
 "+' / '+Math.round(d.focus_gap_ms||0)+' ms'));"
 /* Dynamic interval: 15 min, doubling on every ok sweep up to 2 h. */
@@ -822,10 +835,9 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "}"
 "function doStart(mode){"
 "curMode=mode;"
-"var runS=parseFloat(document.getElementById('numRunS').value);"
-"if(!(runS>0))runS=" EL_STR(RUN_S_DEFAULT) ";else if(runS<" EL_STR(RUN_S_MIN) ")runS=" EL_STR(RUN_S_MIN) ";"
-"if(runS>" EL_STR(RUN_S_MAX) ")runS=" EL_STR(RUN_S_MAX) ";"
+"var runS=formRunS('numRunS'),srunS=formRunS('numSRunS');"
 "document.getElementById('numRunS').value=runS;"
+"document.getElementById('numSRunS').value=srunS;"
 "var mxr=parseInt(document.getElementById('numUnlimRuns').value);"
 "if(isNaN(mxr))mxr=" EL_STR(UNLIM_RUNS_DEFAULT) ";"
 "if(mxr<0)mxr=0;"
@@ -855,7 +867,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "document.getElementById('measArea').style.display='none';"
 "document.getElementById('stats2').style.display='none';"
 "fetch('/start?mode='+mode"
-"+'&run='+runS"
+"+'&run='+runS+'&srun='+srunS"
 "+'&score='+score"
 "+'&kdn='+kdn+'&kmau='+kmau+'&kconc='+kconc+'&kac='+kac+'&kz='+kz+'&fix='+fix"
 "+'&maxruns='+mxr+'&passes='+passes+'&confirm=1',{method:'POST'})"
@@ -924,6 +936,8 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "var runs=st.runs_cap,passes=st.scoring_passes;"
 "var L=[];"
 "L.push('Mode: '+(st.mode==='euro'?'Eurojackpot 5+2':(st.mode?'6 of 49':'')));"
+"L.push('Scoring time: '+(+st.srun_s||0).toFixed(2)+' s');"
+"L.push('Scoring gap: '+(+st.sgap_s||0).toFixed(2)+' s');"
 "L.push('Measuring time: '+(+st.run_s||0).toFixed(2)+' s');"
 "L.push('Gap: '+(+st.gap_s||0).toFixed(2)+' s');"
 "L.push('Runs per round: '+(runs===0?'0 (scoring only)':(runs==null?'':String(runs))));"
@@ -1519,13 +1533,17 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
    consumption still shows something, and it stays visibly a different
    quantity. */
 /* The cell is the USED rate — bits that entered this node's z per
-   second of session time (z_n windows × run_segs × 224 bits / elapsed_ms). The
+   second of session time (z_n windows × mean segments × 224 bits / elapsed_ms;
+   the mean weights srun_segs and run_segs by the session's scoring and pass
+   window counts win_score / win_pass). The
    reading rate (consumption while a window reads) and the extraction rate
    (everything the sensor produced, most of it dropped in the gaps) move to the
    hover text. */
 "function usedMbit(N,d){"
 "var n=(N&&N.z_n)||0;if(!d||!(n>0)||!(d.elapsed_ms>0)||!(d.run_segs>0))return 0;"
-"return n*d.run_segs*" EL_STR(GCP_SEGMENT_BITS) "/(d.elapsed_ms/1000)/1e6;}"
+"var ws=d.win_score||0,wp=d.win_pass||0,sg=d.srun_segs||d.run_segs;"
+"var seg=(ws+wp>0)?(ws*sg+wp*d.run_segs)/(ws+wp):d.run_segs;"
+"return n*seg*" EL_STR(GCP_SEGMENT_BITS) "/(d.elapsed_ms/1000)/1e6;}"
 "function mbitTxt(H,N,d){"
 "var u=usedMbit(N,d);return u>0?u.toFixed(2):'\\u2013';}"
 "function mbitTitle(H,N,d){"
@@ -2103,6 +2121,8 @@ static esp_err_t status_handler(httpd_req_t *req)
         "\"paused\":%s,\"paused_ms\":%lld,"
         "\"focus_win_ms\":%.1f,\"focus_gap_ms\":%.1f,"
         "\"run_s\":%.2f,\"gap_s\":%.2f,\"run_segs\":%d,"
+        "\"srun_s\":%.2f,\"sgap_s\":%.2f,\"srun_segs\":%d,"
+        "\"win_score\":%lu,\"win_pass\":%lu,"
         "\"cal_budget_ms\":%d,\"cal_ms\":%d,\"cal_elapsed_ms\":%d,"
         "\"cal_did_sweep\":%d,\"settle_left_ms\":%d,\"ev_seq\":%lu,"
         "\"cal_interval_ms\":%d,\"cal_due_ms\":%d,"
@@ -2159,6 +2179,9 @@ static esp_err_t status_handler(httpd_req_t *req)
         g_status.focus_win_ms, g_status.focus_gap_ms,
         g_status.run_target_ms / 1000.0, g_status.gap_ms / 1000.0,
         g_status.run_segments,
+        g_status.score_target_ms / 1000.0, g_status.score_gap_ms / 1000.0,
+        g_status.score_segments,
+        (unsigned long)g_status.win_n_score, (unsigned long)g_status.win_n_pass,
         g_status.cal_budget_ms, g_status.cal_ms,
         /* Live sweep progress, 0 when none is in flight. cal_ms is only written
          * when a sweep ENDS, so it cannot drive a bar while one runs. */
@@ -2989,7 +3012,8 @@ typedef struct {
     int        runs_cap;
     int        passes;
     int        run_ms;
-    int        gap_ms;      /* <0 = omitted, derive from run_ms after the walk */
+    int        srun_ms;     /* <0 = omitted, scoring uses run_ms */
+    int        gap_ms;      /* <0 = omitted, derive per phase after the walk */
     int        cal_ms;
     ScoreDir   score_dir;
     bool       fake_pool;
@@ -3014,6 +3038,17 @@ static bool start_parse_run(const char *val, StartReq *r, httpd_req_t *req)
         return false;
     }
     r->run_ms = (int)(rs * 1000.0 + 0.5);
+    return true;
+}
+static bool start_parse_srun(const char *val, StartReq *r, httpd_req_t *req)
+{
+    double rs;
+    if (!parse_double_all(val, &rs) || !(rs >= RUN_S_MIN && rs <= RUN_S_MAX)) {
+        start_refuse(req, "srun= must be between " EL_STR(RUN_S_MIN) " and "
+                     EL_STR(RUN_S_MAX) " seconds");
+        return false;
+    }
+    r->srun_ms = (int)(rs * 1000.0 + 0.5);
     return true;
 }
 static bool start_parse_gap(const char *val, StartReq *r, httpd_req_t *req)
@@ -3219,6 +3254,7 @@ static const StartKey start_keys[] = {
       "length with maxruns=<n>; cal=0 turns the sweep off", NULL },
     { "mode",      NULL, start_parse_mode },
     { "run",       NULL, start_parse_run },
+    { "srun",      NULL, start_parse_srun },
     { "gap",       NULL, start_parse_gap },
     { "score",     NULL, start_parse_score },
     { "kdn",       NULL, start_parse_kdn },
@@ -3318,6 +3354,7 @@ typedef struct {
     int          run_target_ms;
     int          gap_ms;
     int          run_segments;
+    int          score_target_ms, score_gap_ms, score_segments;
     int          cal_budget_ms;
     ScoreDir     score_dir;
     double       k_dn, k_mau, k_conc, k_ac, k_z;
@@ -3336,6 +3373,9 @@ static void start_snap_save(StartSnap *s)
     s->run_target_ms = g_status.run_target_ms;
     s->gap_ms        = g_status.gap_ms;
     s->run_segments  = g_status.run_segments;
+    s->score_target_ms = g_status.score_target_ms;
+    s->score_gap_ms    = g_status.score_gap_ms;
+    s->score_segments  = g_status.score_segments;
     s->cal_budget_ms = g_status.cal_budget_ms;
     s->score_dir     = g_status.score_dir;
     s->k_dn          = g_status.k_dn;
@@ -3358,6 +3398,9 @@ static void start_snap_restore(const StartSnap *s)
     g_status.run_target_ms = s->run_target_ms;
     g_status.gap_ms        = s->gap_ms;
     g_status.run_segments  = s->run_segments;
+    g_status.score_target_ms = s->score_target_ms;
+    g_status.score_gap_ms    = s->score_gap_ms;
+    g_status.score_segments  = s->score_segments;
     g_status.cal_budget_ms = s->cal_budget_ms;
     g_status.score_dir     = s->score_dir;
     g_status.k_dn          = s->k_dn;
@@ -3368,6 +3411,25 @@ static void start_snap_restore(const StartSnap *s)
     g_status.pool_fix      = s->pool_fix;
     g_status.pre_n         = s->pre_n;
     g_status.state         = s->state;
+}
+
+/* The auto gap: 40 % of a phase's window, clamped to GAP_S_MIN..GAP_S_MAX. */
+static int start_auto_gap_ms(int win_ms)
+{
+    int g = (int)(win_ms * 0.4 + 0.5);
+    if (g < (int)(GAP_S_MIN * 1000)) g = (int)(GAP_S_MIN * 1000);
+    if (g > (int)(GAP_S_MAX * 1000)) g = (int)(GAP_S_MAX * 1000);
+    return g;
+}
+
+/* Segment count of a window, same rule as segs_from_run_ms() in sensor.c. */
+static int start_segs_ms(int ms)
+{
+    if (ms < 100) ms = 100;
+    long long n = ((long long)ms * RUN_SEGS_REF + RUN_MS_REF / 2) / RUN_MS_REF;
+    if (n < 500) n = 500;
+    if (n > EL_SEG_MAX) n = EL_SEG_MAX;
+    return (int)n;
 }
 
 static esp_err_t start_handler(httpd_req_t *req)
@@ -3389,6 +3451,7 @@ static esp_err_t start_handler(httpd_req_t *req)
             .runs_cap  = UNLIM_RUNS_DEFAULT,
             .passes    = SCORE_PASSES_DEFAULT,
             .run_ms    = RUN_S_DEFAULT * 1000,
+            .srun_ms   = -1,
             .gap_ms    = -1,
             .cal_ms    = CAL_BUDGET_DEFAULT_MS,
             .score_dir = SCORE_DIR_HIGH,
@@ -3432,22 +3495,17 @@ static esp_err_t start_handler(httpd_req_t *req)
                     "fix= for 6 of 49 must be 0 or " EL_STR(FIX_MIN_49) "..6");
         }
 
-        /* ?gap= omitted → 40 % of the resolved window, floor GAP_S_MIN. */
+        /* ?srun= omitted → the scoring measures as long as the pass.
+         * ?gap= present → both phases; omitted → 40 % of each phase's own
+         * window, floor GAP_S_MIN. */
+        if (parsed.srun_ms < 0) parsed.srun_ms = parsed.run_ms;
+        int sgap_ms = parsed.gap_ms;
         if (parsed.gap_ms < 0) {
-            parsed.gap_ms = (int)(parsed.run_ms * 0.4 + 0.5);
-            if (parsed.gap_ms < (int)(GAP_S_MIN * 1000))
-                parsed.gap_ms = (int)(GAP_S_MIN * 1000);
-            if (parsed.gap_ms > (int)(GAP_S_MAX * 1000))
-                parsed.gap_ms = (int)(GAP_S_MAX * 1000);
+            parsed.gap_ms = start_auto_gap_ms(parsed.run_ms);
+            sgap_ms       = start_auto_gap_ms(parsed.srun_ms);
         }
-        int segments;
-        {
-            int ms = parsed.run_ms < 100 ? 100 : parsed.run_ms;
-            long long n = ((long long)ms * RUN_SEGS_REF + RUN_MS_REF / 2) / RUN_MS_REF;
-            if (n < 500) n = 500;
-            if (n > EL_SEG_MAX) n = EL_SEG_MAX;
-            segments = (int)n;
-        }
+        int segments  = start_segs_ms(parsed.run_ms);
+        int ssegments = start_segs_ms(parsed.srun_ms);
 
         /* ── COMMIT. No 400 past here. A 500 restores the snapshot so /status
          * of the finished session stays labelled. RUNNING is
@@ -3462,6 +3520,9 @@ static esp_err_t start_handler(httpd_req_t *req)
         g_status.run_target_ms  = parsed.run_ms;
         g_status.gap_ms         = parsed.gap_ms;
         g_status.run_segments   = segments;
+        g_status.score_target_ms = parsed.srun_ms;
+        g_status.score_gap_ms   = sgap_ms;
+        g_status.score_segments = ssegments;
         g_status.cal_budget_ms  = parsed.cal_ms;
         g_status.score_dir      = parsed.score_dir;
         g_status.fake_pool      = parsed.fake_pool;
@@ -3923,6 +3984,7 @@ static void prefs_save(void)
     uint16_t run10 = (uint16_t)((g_status.run_target_ms + 50) / 100);
     uint16_t mx    = (uint16_t)g_status.runs_cap;
     nvs_set_u16(h, "run10", run10);
+    nvs_set_u16(h, "srun10", (uint16_t)((g_status.score_target_ms + 50) / 100));
     nvs_set_u16(h, "maxruns", mx);
     nvs_set_u8(h,  "passes", (uint8_t)g_status.scoring_passes);
     nvs_set_u8(h,  "score", (uint8_t)g_status.score_dir);
@@ -3974,7 +4036,7 @@ static void prefs_send(httpd_req_t *req)
 {
     nvs_handle_t h;
     if (nvs_open(PREF_NS, NVS_READONLY, &h) != ESP_OK) return;
-    uint16_t run10 = 0, maxruns = 0;
+    uint16_t run10 = 0, srun10 = 0, maxruns = 0;
     uint8_t score = 0xff, passes = 0;
     uint8_t kdn = 0xff, kmau = 0xff, kconc = 0xff, kac = 0xff, kz = 0xff, fix = 0xff;
     bool any = false;
@@ -3983,6 +4045,7 @@ static void prefs_send(httpd_req_t *req)
      * blob is not read: 0 is the new default, not the old concordance weight. */
     bool have_mx = false, have_passes = false;
     if (nvs_get_u16(h, "run10", &run10) == ESP_OK) any = true;
+    if (nvs_get_u16(h, "srun10", &srun10) == ESP_OK) any = true;
     if (nvs_get_u16(h, "maxruns", &maxruns) == ESP_OK) { any = true; have_mx = true; }
     if (nvs_get_u8(h,  "passes", &passes) == ESP_OK) { any = true; have_passes = true; }
     if (nvs_get_u8(h,  "score", &score) == ESP_OK) any = true;
@@ -4002,6 +4065,12 @@ static void prefs_send(httpd_req_t *req)
         p += snprintf(js + p, sizeof(js) - p,
             "e=document.getElementById('numRunS');if(e)e.value='%.1f';",
             run10 / 10.0);
+    /* No stored scoring time (older NVS) → the field follows the stored ?run=. */
+    if (srun10 == 0) srun10 = run10;
+    if (srun10 > 0)
+        p += snprintf(js + p, sizeof(js) - p,
+            "e=document.getElementById('numSRunS');if(e)e.value='%.1f';",
+            srun10 / 10.0);
     if (have_mx)
         p += snprintf(js + p, sizeof(js) - p,
             "e=document.getElementById('numUnlimRuns');if(e)e.value='%u';",

@@ -120,24 +120,29 @@ static void camera_source_begin(void)
         node_camera_failed(0, "not streaming at session start");
 }
 
-/* Segments for one run. v3: ONE count for every phase — scoring and
- * the measurement pass all use g_status.run_segments behind g_status.gap_ms.
- * The count travels on the wire (`M<seg>`) so a slave cannot disagree about
- * it. Defaults are filled in on /start if unset. */
-static int segments_for(void)
+/* Segments for one run of a phase: the number scoring uses
+ * g_status.score_segments behind score_gap_ms (?srun=), the pass
+ * g_status.run_segments behind gap_ms (?run=). The count travels on the wire
+ * (`M<seg>`) so a slave cannot disagree about it. Defaults are filled in on
+ * /start if unset. */
+static int segments_for(bool scoring)
 {
     if (g_status.run_segments <= 0)
         g_status.run_segments = segs_from_run_ms(
             g_status.run_target_ms > 0 ? g_status.run_target_ms
                                        : RUN_S_DEFAULT * 1000);
-    return g_status.run_segments;
+    if (g_status.score_segments <= 0)
+        g_status.score_segments = segs_from_run_ms(
+            g_status.score_target_ms > 0 ? g_status.score_target_ms
+                                         : g_status.run_target_ms);
+    return scoring ? g_status.score_segments : g_status.run_segments;
 }
 
-static int gap_for(void)
+static int gap_for(bool scoring)
 {
-    /* /start always resolves gap_ms, and 0 is a legal gap. */
-    if (g_status.gap_ms < 0) return SCORE_GAP_MS;
-    return g_status.gap_ms;
+    /* /start always resolves both gaps, and 0 is a legal gap. */
+    int g = scoring ? g_status.score_gap_ms : g_status.gap_ms;
+    return g < 0 ? SCORE_GAP_MS : g;
 }
 
 /* The master's own run, via the shared primitive in components/elotto_gcp — the
@@ -921,7 +926,7 @@ static int score_run(int max_val, int pool_size, bool euro_pool,
                 score_publish_live(1);
             }
             g_status.elapsed_ms = elapsed_ms_now();
-            run_gap_ms(gap_for());
+            run_gap_ms(gap_for(true));
         }
         last = n_order ? order[n_order - 1] : 0;
         double zc_ctr[51], conc[51], nsd[51];
@@ -1175,9 +1180,10 @@ typedef struct {
     int     k;
 } WindowMeas;
 
-static int measure_window(WindowMeas *w)
+static int measure_window(WindowMeas *w, bool scoring)
 {
-    int nseg = segments_for();
+    int nseg = segments_for(scoring);
+    if (scoring) g_status.win_n_score++; else g_status.win_n_pass++;
     slave_trigger(nseg);
     bool   fresh = onset_settle();
     double zm = 0.0, h1m = 0.0, h2m = 0.0;
@@ -1237,7 +1243,7 @@ static void score_one_run(bool *ok, float znode[MAX_NODES],
                           float wsig[MAX_NODES])
 {
     WindowMeas m;
-    int k = measure_window(&m);
+    int k = measure_window(&m, true);
     /* Before the next 'M' overwrites them — same rule as the pass. */
     wsig_collect(wsig);
     float acv = NAN;   /* item AC, set when the pass closes */
@@ -3317,6 +3323,7 @@ void elotto_task(void *pvParam)
     // After abort_requested is cleared, so a camera that is not ready can abort
     // the session immediately instead of having the flag wiped by the reset above.
     camera_source_begin();
+    g_status.win_n_score = g_status.win_n_pass = 0;
 
     bool euro    = (g_status.mode == MODE_EUROJACKPOT);
     int  nm      = euro ? 5 : 6;
@@ -3369,8 +3376,9 @@ void elotto_task(void *pvParam)
     // Pairwise independence check across all nodes (per-block centered)
     pairs_reset();
     session_clock_start();
-    evlog("Session started - %s, run %.1f s, %d runs/round, sweep %s, fixed %d",
-          euro ? "Eurojackpot" : "6 of 49", g_status.run_target_ms / 1000.0,
+    evlog("Session started - %s, scoring %.1f s, run %.1f s, %d runs/round, sweep %s, fixed %d",
+          euro ? "Eurojackpot" : "6 of 49", g_status.score_target_ms / 1000.0,
+          g_status.run_target_ms / 1000.0,
           g_status.runs_cap,
           g_status.cal_budget_ms > 0 ? "on" : "off", fix);
 
@@ -3689,7 +3697,7 @@ void elotto_task(void *pvParam)
             // Identical to the scoring window by construction now: both go
             // through measure_window(), which is the point of it.
             WindowMeas w;
-            int k = measure_window(&w);
+            int k = measure_window(&w, false);
             double  z = w.z;
             node_mask_t mask = w.mask;
 
@@ -3747,7 +3755,7 @@ void elotto_task(void *pvParam)
             g_status.items_done++;               // session progress; compaction never lowers it
             if (k > 0) publish_valid(r);      // top/low + pass health
             g_status.elapsed_ms     = elapsed_ms_now();
-            run_gap_ms(gap_for());
+            run_gap_ms(gap_for(false));
         }
         /* The round's final block. Always closed here, so a
          * round is never centred together with the one after it — the pool changed

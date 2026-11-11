@@ -86,7 +86,7 @@ across rounds a combination can recur — identity is **(round, index)**.
 
 - **No loops, no Runs cap, no ranking modes.** `/start` is a **whitelist**: an unknown
   key answers **400**. Deleted keys (`loops`, `runs`, `rank`, `focus`, `went`, `wruns`,
-  `baseline`, `calint`, `unlimited=0`, `wpre`) keep a specific 400. Allowed: `mode`, `run`, `gap`,
+  `baseline`, `calint`, `unlimited=0`, `wpre`) keep a specific 400. Allowed: `mode`, `run`, `srun`, `gap`,
   `score`, `kdn`, `kmau`, `kconc`, `kac`, `kz`, `fix`, `maxruns`, `passes`, `confirm`, `cal`, `unlimited`. An empty key (`?=x`), a value over
   `START_VAL_MAX` 31 characters and a query string over 255 characters each answer **400** as well
   — a truncated value or query must never read as "key absent" and resolve to the default.
@@ -100,11 +100,16 @@ across rounds a combination can recur — identity is **(round, index)**.
   Compaction keeps at most 1000 rows (the ranked extremes) and the next round is appended after
   them, so `?maxruns=` is capped at `UNLIM_RUNS_MAX` 400 = `NUM_RUNS` − 1000 and a round is never
   truncated.
-- **Measuring time is a session parameter.** `?run=<s>` is **0,2–22 s, default 5**; out of range
-  answers **400**, no fallback. The 22 s ceiling is `EL_SEG_MAX` 2000000 divided by the measured
+- **Measuring time is a session parameter, one per phase.** `?run=<s>` is the pass (per item),
+  `?srun=<s>` the number scoring (per number; omitted = `?run=`); each **0,2–22 s**, `run` default
+  5; out of range answers **400**, no fallback. Each phase triggers its own segment count
+  (`run_segs` / `srun_segs` in `/status`). The 22 s ceiling is `EL_SEG_MAX` 2000000 divided by the measured
   rate (`EL_SEG_MAX / (RUN_SEGS_REF/RUN_MS_REF)`), not a camera limit — the rate held flat to there.
-  `?gap=<s>` if present must be 0–10 s, else **400**; omitted →
-  40 % of run, no floor; `?gap=0` is legal — the flush on `M`, not the gap, separates items. `?cal=` 0..`CAL_BUDGET_MAX_MS` (0 = no sweep),
+  `?gap=<s>` if present must be 0–10 s, else **400**, and applies to both phases; omitted →
+  40 % of each phase's own window (`gap_s` / `sgap_s`), no floor; `?gap=0` is legal — the flush on `M`, not the gap, separates items.
+  The sweep's mini-runs use the pass window; in a `?maxruns=0` session the scoring window.
+  ⚠ z is normalised by √segments, so a number's scoring z and an item's z are comparable in unit;
+  the scoring sums and the pass blocks are never mixed anyway. `?cal=` 0..`CAL_BUDGET_MAX_MS` (0 = no sweep),
   `?maxruns=` **0 or 10..400** (`UNLIM_RUNS_MAX`); out of range **400**, no fallback. **`?maxruns=0`
   is scoring-only**: no combination pass, the session just scores numbers round after round,
   until Abort or the 72 h limit — `results[]`, blocks, compaction, drift and the pairwise matrix are
@@ -136,7 +141,7 @@ across rounds a combination can recur — identity is **(round, index)**.
   (⚠ With `?maxruns=0` there is no pass and therefore no block at all.) The form
   predicts the round length and **no longer warns**: with 20 scoring passes the scoring is
   1240 of a Eurojackpot round's ~1340 cycles, so no legal `?maxruns=` could clear a 30-minute bar.
-  It prints the scoring/pass split instead, which names `?run=` — the parameter that sets the
+  It prints the scoring/pass split instead, which names `?srun=` — the parameter that sets the
   length. A long round stays the operator's call.
 - Pause stops the clock; Abort publishes the measured prefix.
 
@@ -144,8 +149,8 @@ across rounds a combination can recur — identity is **(round, index)**.
 **Phase 0 — scoring.** It starts 2 s after the sweep before it (`SCORE_START_PAUSE_MS`, a visible
 break for the operator). Each number 1..N is measured **`?passes=` times** (1..`SCORE_PASSES_MAX` 100, default 20; form
 "Scoring passes"; **0 = continuous, `?maxruns=0` only** — one pass per round, sums never reset),
-each pass a
-full session window in a fresh Fisher–Yates order (never the same number back-to-back).
+each pass one
+`?srun=` window per number in a fresh Fisher–Yates order (never the same number back-to-back).
 After each pass every column — Z\*, Z, Conc, Δn, AC, Mau — is added to that number's own running sum;
 the pool is the top by ONE of those sums, the one selected on the page (Σ marker in a column
 header, `POST /scoresum?c=key|z|conc|nsd|ac|mau`) **when the whole scoring
@@ -357,7 +362,8 @@ what remains visible is an effect varying **between items inside a block**.
   with those weights. Fourth, `elotto_jumps_….csv`: the whole camera-jump board from `/extremes?jumps=1`
   (was, now, jump, ×σ, the node named from its address and its camera, and the measurement's
   Z\*, Z, Z_raw, Conc, Δn, AC, Mau, k). A failed jumps fetch falls back to the ten `/status` rows
-  without the measurement columns. Chrome/Edge ask for one folder and write all four there. ⚠ That dialog
+  without the measurement columns. The params file names both windows (scoring time and gap,
+  measuring time and gap). Chrome/Edge ask for one folder and write all four there. ⚠ That dialog
   exists only on a secure page; on the master's http address the four files go to the browser's
   download folder. Cancelling the dialog writes nothing. A failed sums fetch skips that file and
   warns; the other three are still written.
@@ -435,7 +441,7 @@ what remains visible is an effect varying **between items inside a block**.
   block was simply wide.
   ⚠ The block number shown is 1-based like `/loops`; `results[].block` is 0-based.
 - **The start form remembers its last values** (NVS, survives reboot and OTA): measuring time,
-  runs per round, scoring passes, direction, and the four Z\* weights as whole percents 0–100
+  scoring time, runs per round, scoring passes, direction, and the four Z\* weights as whole percents 0–100
   (the request sends the fraction). `/` serves them as a script chunk
   appended to the page. ⚠ **Only a start carrying `confirm=1` writes them** — i.e. only the
   web UI. A curl start that omits `kdn` / `kmau` / `kconc` / `kac` runs at 0 and does not
@@ -739,7 +745,8 @@ true on the target.
   purely because the master's consumer was slower and its ring overflowed. `/diag` shows the
   second; use the first only for the sensor ceiling  and `/camtest`. The node table's
   Mbit/s is a THIRD figure, the **used** rate: bits that entered the node's z per second of session
-  time (`z_n` × `run_segs` × 224 / `elapsed_ms`) — ~5,4 against 18,7 produced at `?run=0,5`; the
+  time (`z_n` × segments × 224 / `elapsed_ms`, segments = `srun_segs` and `run_segs` weighted by
+the session's `win_score` / `win_pass` window counts) — ~5,4 against 18,7 produced at `?run=0,5`; the
   other two are in its hover text.
 - ⚠ **If `focus_win_ms` ever doubles** (~5,13 s → ~10,2 s at identical parameters), suspect an
   unpinned task in the measuring path, not the camera  — signature: consumption halves

@@ -491,6 +491,15 @@ const camera_cal_t *elotto_last_calibration(void)
 
 static bool cal_abort_cb(void) { return g_status.abort_requested; }
 
+/* The sweep's mini-run length: the pass window, or the scoring window in a
+ * scoring-only session (maxruns=0), whose pass window measures nothing. */
+static int sweep_segments(void)
+{
+    if (g_status.runs_cap == 0 && g_status.score_segments > 0)
+        return g_status.score_segments;
+    return g_status.run_segments;
+}
+
 static void calibrate_master(int budget_ms)
 {
     NodeStatus *N = &g_status.nodes[0];
@@ -500,7 +509,7 @@ static void calibrate_master(int budget_ms)
         s_cal = heap_caps_calloc(1, sizeof(camera_cal_t), MALLOC_CAP_SPIRAM);
     if (!s_cal) { printf("cal: no PSRAM for the sweep table -- skipped\n"); return; }
 
-    camera_cal_set_z_scale(gcp_z_per_bias(g_status.run_segments));
+    camera_cal_set_z_scale(gcp_z_per_bias(sweep_segments()));
     bool ok = camera_calibrate(budget_ms, cal_abort_cb, s_cal);
     /* Step 0 re-measures the setting in force at entry without changing it. */
     s_cal_e0[0]     = s_cal->nsteps > 0 ? s_cal->step[0].exposure : 0;
@@ -575,7 +584,7 @@ bool calibrate_all(const char *why)
     memset(s_cal_e0, 0, sizeof(s_cal_e0));
     int64_t t0 = esp_timer_get_time();
     g_status.cal_start_us = t0;          // publishes the live bar; cleared below
-    slave_calibrate_start(g_status.cal_budget_ms, g_status.run_segments);  // trigger first, then measure
+    slave_calibrate_start(g_status.cal_budget_ms, sweep_segments());  // trigger first, then measure
     calibrate_master(g_status.cal_budget_ms);
     if (!g_status.abort_requested) slave_calibrate_wait(g_status.cal_budget_ms);
     g_status.cal_ms = (int)((esp_timer_get_time() - t0) / 1000);
