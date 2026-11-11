@@ -118,8 +118,8 @@ across rounds a combination can recur — identity is **(round, index)**.
   per-node rate still varies, so `focus_win_ms` is set by the **slowest** node.
 - **`results[]` is in MEASUREMENT order** (`.index` = combination id, `.block` stamped), so the
   prefix is always complete: aborts need no compaction. ⚠ RAM only — a master reboot or the
-  next session start ends it. Save writes four files while it is still in RAM: the extremes
-  CSV, the scoring-sum CSV, `elotto_params_….txt` (the parameters that ran), and
+  next session start ends it. Save writes four files while it is still in RAM: the pass items
+  (every one once the session is over, the held extremes while it runs), the scoring-sum CSV, `elotto_params_….txt` (the parameters that ran), and
   `elotto_jumps_….csv` (the whole camera-jump board, `/extremes?jumps=1`).
 - **Blocks are the statistics unit, and ONE BLOCK IS ONE ROUND**. The round boundary is the
   only block boundary: the pass parks there → `/loops` row, drift point, pairwise close, block
@@ -226,10 +226,8 @@ round is just a scoring (see the `?maxruns=0` rule under v3).
   the HTTP task. ⚠ Scoring runs are not in it. When fewer than `UNLIM_RUNS_MAX` rows are left the
   session ends, so the table is never incomplete. RAM only, like `results[]`. The selection of a
   finished session is kept, so the page's repeat polls cost no scan. Allocation failed at the
-  start: the Log says so and the held rows stay the set. Save writes the whole table as a fifth
-  file, `elotto_all<n>_….csv` (by round and combination), from `GET /extremes?full=1&from=<i>` in
-  pages of 2000 index slots (`span`, `next`; **409** while a session runs), with a progress bar
-  in the message line.
+  start: the Log says so and the held rows stay the set. Save writes the whole table
+  (`elotto_all<n>_….csv`).
   ⚠ Block σ is kept for `BSIG_MAX` 8192 blocks (`sensor.c`), not `LOOP_HIST` 1024 — a row past
   it would have no Z\*.
   ⚠ The counter and round-base semantics after a compaction (`completed`/`runs_completed`,
@@ -345,9 +343,12 @@ what remains visible is an effect varying **between items inside a block**.
   the pool criterion) plus the open round, so while the session runs another column's extremes are those of that archive,
   not of the session; after the session the set is every ranked pass item (the full table). Without `?sort=` the set is chosen on the pool criterion. `?n=1..1000`
   widens it (default 10, else **400**); the **Save** button beside Abort (also shown after Done/Abort) writes
-  four files in one step. First, `/extremes?n=1000` as a CSV for a German Excel (`;`, decimal
-  comma, BOM), ranked best-first on the pool criterion (`crit`/`dir` in the reply and the file
-  name). Second, `elotto_sums_…` from `/extremes?sums=1`: every number's six signed column sums
+  four files in one step, CSVs for a German Excel (`;`, decimal comma, BOM). First, the pass
+  items. Once the session is over: `elotto_all<n>_…`, every ranked pass item by round and
+  combination, from `/extremes?full=1&from=<i>` in pages of 2000 index slots (`span`, `next`),
+  with a progress bar in the message line. While it runs (`full=1` answers **409**):
+  `elotto_top…` from `/extremes?n=1000`, the held extremes ranked best-first on the pool
+  criterion (`crit`/`dir` in the reply and the file name). Second, `elotto_sums_…` from `/extremes?sums=1`: every number's six signed column sums
   for every scoring still in RAM (high and low are that column sorted either way; an empty count
   is a missing value). Third, `elotto_params_….txt`: mode, measuring time, gap, runs per round,
   scoring passes, sweep budget, pool criterion and direction, the four weights, and the formula
@@ -358,7 +359,7 @@ what remains visible is an effect varying **between items inside a block**.
   exists only on a secure page; on the master's http address the four files go to the browser's
   download folder. Cancelling the dialog writes nothing. A failed sums fetch skips that file and
   warns; the other three are still written.
-  ⚠ In **scoring-only mode** (`maxruns=0`) `/extremes?n=` is empty (no pass), so the first file is
+  ⚠ In **scoring-only mode** (`maxruns=0`) there is no pass, so the first file is
   built client-side from the sums instead — the scoring numbers ranked by the selected criterion
   (`elotto_scored_<crit>_<dir>_…`). Save fetches `/status` so the criterion, direction, mode and
   the weights are the ones in force at the click. ⚠ A continuous scoring's true pass count is the snap's
@@ -445,7 +446,7 @@ what remains visible is an effect varying **between items inside a block**.
 ## ⛔ A session is a closed unit 
 Everything is judged **inside one session**: its blocks, its pairwise matrix, its tables. Sessions
 are never compared, pooled or merged. Save writes four files of the session still in RAM (the
-extremes on the pool criterion, every number's six scoring sums, the parameters that ran, and the camera-jumps board). A reboot or the next start drops them. Parameters,
+pass items, every number's six scoring sums, the parameters that ran, and the camera-jumps board). A reboot or the next start drops them. Parameters,
 firmware and instrument may change freely between sessions; what must hold is that they do not change
 **within** one.
 

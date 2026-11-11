@@ -890,18 +890,20 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "document.getElementById('btnPause').style.display=run?'':'none';"
 "document.getElementById('btnAbort').style.display=run?'':'none';}"
 /* Four files. The CSVs are for a German Excel: ';' separator, decimal
-   comma, UTF-8 BOM. First: the extremes on the pool criterion (elotto_top).
-   ⚠ In scoring-only mode (Runs 0) there is no pass, so /extremes?n= is empty;
-   the first file is instead the scoring numbers ranked by the selected
-   criterion (elotto_scored), built from the sums. Second: every number's six
+   comma, UTF-8 BOM. First, the pass items: once the session is over
+   elotto_all<n>_….csv, every ranked pass item (the full table,
+   /extremes?full=1 in pages, by round and combination); while it runs
+   elotto_top, the held extremes on the pool criterion — the full table is
+   not served then.
+   ⚠ In scoring-only mode (Runs 0) there is no pass; the first file is
+   instead the scoring numbers ranked by the selected criterion
+   (elotto_scored), built from the sums. Second: every number's six
    signed column sums (elotto_sums). Third: elotto_params_….txt, the parameters
    that ran, from /status at the click. Fourth: elotto_jumps_….csv, the
    whole camera-jump board from /extremes?jumps=1 (up to WSIG_KEEP_N rows,
    each with the node's camera and its measurement's Z*, Z, Z_raw, Conc, Δn,
    AC, Mau, k), same labels as the card (a scoring window is "scoring <pass>/<round>", the node is
    named from its address). ×σ is empty when wsig_sd is not positive.
-   Fifth, once the session is over: elotto_all<n>_….csv, every ranked pass
-   item of the session (the full table, /extremes?full=1 in pages).
    Chrome/Edge ask for one folder (showDirectoryPicker) and write all of them
    there. ⚠ That call exists only on a secure page. On the master's http
    address it is absent, and the files go to the download folder.
@@ -963,8 +965,8 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "L.push([i+1,sn.euro?'euro':'main',row.n,pc,"
 "f(sm[0]),f(sm[1]),f(sm[2]),f(sm[3]),f(sm[4]),f(sm[5])].join(';'));});});"
 "files.push({name:'elotto_scored_'+((st.score_sum||'key')+'_'+(st.score_dir||'high'))+'_'+stamp+'.csv',body:textOf(L)});"
-"}else{"
-"var R=(x&&x.extremes)?x.extremes:[];"
+"}else if(x){"
+"var R=x.extremes||[];"
 "var cr=(x&&x.crit)?x.crit+'_'+x.dir:'';"
 "var L=['Rank;Round;Comb;Numbers;Euro;Z*;Z;Z_raw;Conc;\\u0394n;AC;Mau;k'];"
 "R.forEach(function(r,i){L.push([i+1,r.round,r.run,(r.nums||[]).join(' '),(r.euro||[]).join(' '),"
@@ -996,8 +998,8 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "row.push(f(e.key),f(e.z_ctr),f(e.z),f(e.zc),f(e.nsd),f(e.ac),f(e.mau),e.k?String(e.k):'');"
 "Lj.push(row.join(';'));});"
 "files.push({name:'elotto_jumps_'+stamp+'.csv',body:textOf(Lj)});"
-/* Fifth, only once the session is over: every ranked pass item, by round
-   and combination (fetchFull). */
+/* Once the session is over: every ranked pass item, by round and
+   combination (fetchFull), in place of elotto_top. */
 "if(all&&all.length){"
 "all.sort(function(a,b){return (a.round-b.round)||(a.run-b.run);});"
 "var La=['Round;Comb;Numbers;Euro;Z*;Z;Z_raw;Conc;\\u0394n;AC;Mau;k'];"
@@ -1018,13 +1020,15 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "if(x.next<x.span)return page(x.next);"
 "m.textContent='';return R;});}"
 "return page(0).catch(function(){m.textContent='\\u26a0 Full table save failed';return null;});}"
-"function fetchAll(){return Promise.all(["
+/* The full table first: it answers at once while a session runs (409), and
+   only then are the extremes (elotto_top) fetched in its place. */
+"function fetchAll(){return fetchFull().then(function(all){return Promise.all(["
 "fetch('/status').then(function(r){return r.json();}).catch(function(){return LD||{};}),"
-"fetch('/extremes?n=" EL_STR(PASS_KEEP_EXTREME) "').then(function(r){return r.json();}),"
+"all?null:fetch('/extremes?n=" EL_STR(PASS_KEEP_EXTREME) "').then(function(r){return r.json();}),"
 "fetch('/extremes?sums=1').then(function(r){return r.json();}).catch(function(){return null;}),"
 "fetch('/extremes?jumps=1').then(function(r){return r.json();}).catch(function(){return null;}),"
-"fetchFull()"
-"]);}"
+"all"
+"]);});}"
 "function put(dir,built){"
 "if(!built.sumsOk)document.getElementById('msg').textContent='\\u26a0 Sums save failed';"
 "if(dir){var chain=Promise.resolve();"
