@@ -225,9 +225,10 @@ round is just a scoring (see the `?maxruns=0` rule under v3).
   session; `held` is that count. ⚠ Only after the session: one request scans the whole table on
   the HTTP task. ⚠ Scoring runs are not in it. When fewer than `UNLIM_RUNS_MAX` rows are left the
   session ends, so the table is never incomplete. RAM only, like `results[]`. The selection of a
-  finished session is kept, so the page's repeat polls cost no scan. Allocation failed at the
-  start: the Log says so and the held rows stay the set. Save writes the whole table
-  (`elotto_all<n>_….csv`).
+  finished session is kept, so the page's repeat polls cost no scan. It is allocated at the
+  session start in ten pieces; pieces that cannot be had shorten the table (the session then
+  ends earlier) and the Log says by how much, none at all leaves the held rows as the set.
+  Save writes the whole table (`elotto_all<n>_….csv`).
   ⚠ Block σ is kept for `BSIG_MAX` 8192 blocks (`sensor.c`), not `LOOP_HIST` 1024 — a row past
   it would have no Z\*.
   ⚠ The counter and round-base semantics after a compaction (`completed`/`runs_completed`,
@@ -346,7 +347,8 @@ what remains visible is an effect varying **between items inside a block**.
   four files in one step, CSVs for a German Excel (`;`, decimal comma, BOM). First, the pass
   items. Once the session is over: `elotto_all<n>_…`, every ranked pass item by round and
   combination, from `/extremes?full=1&from=<i>` in pages of 2000 index slots (`span`, `next`),
-  with a progress bar in the message line. While it runs (`full=1` answers **409**):
+  with a progress bar in the message line; it is written after the other three, when it has
+  loaded, and if it cannot be had the held extremes are written instead. While it runs (`full=1` answers **409**):
   `elotto_top…` from `/extremes?n=1000`, the held extremes ranked best-first on the pool
   criterion (`crit`/`dir` in the reply and the file name). Second, `elotto_sums_…` from `/extremes?sums=1`: every number's six signed column sums
   for every scoring still in RAM (high and low are that column sorted either way; an empty count

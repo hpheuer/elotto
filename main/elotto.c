@@ -944,8 +944,23 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "return L;}"
 "var d=new Date(),p=function(n){return (n<10?'0':'')+n;};"
 "var stamp=d.getFullYear()+p(d.getMonth()+1)+p(d.getDate())+'_'+p(d.getHours())+p(d.getMinutes());"
+/* The held extremes on the pool criterion (a running session), and every
+   ranked pass item by round and combination (a finished one). */
+"function topFile(x){"
+"var R=x.extremes||[];"
+"var cr=x.crit?x.crit+'_'+x.dir:'';"
+"var L=['Rank;Round;Comb;Numbers;Euro;Z*;Z;Z_raw;Conc;\\u0394n;AC;Mau;k'];"
+"R.forEach(function(r,i){L.push([i+1,r.round,r.run,(r.nums||[]).join(' '),(r.euro||[]).join(' '),"
+"f(r.key),f(r.z_ctr),f(r.z),f(r.zc),f(r.nsd),f(r.ac),f(r.mau),r.k].join(';'));});"
+"return {name:'elotto_top'+R.length+(cr?'_'+cr:'')+'_'+stamp+'.csv',body:textOf(L)};}"
+"function allFile(all){"
+"all.sort(function(a,b){return (a.round-b.round)||(a.run-b.run);});"
+"var La=['Round;Comb;Numbers;Euro;Z*;Z;Z_raw;Conc;\\u0394n;AC;Mau;k'];"
+"all.forEach(function(r){La.push([r.round,r.run,(r.nums||[]).join(' '),(r.euro||[]).join(' '),"
+"f(r.key),f(r.z_ctr),f(r.z),f(r.zc),f(r.nsd),f(r.ac),f(r.mau),r.k].join(';'));});"
+"return {name:'elotto_all'+all.length+'_'+stamp+'.csv',body:textOf(La)};}"
 "function filesOf(pair){"
-"var st=pair[0]||{},x=pair[1],s=pair[2],j=pair[3],all=pair[4];"
+"var st=pair[0]||{},x=pair[1],s=pair[2],j=pair[3];"
 "var snaps=(s&&s.snaps)?s.snaps:[];"
 "var scoreOnly=(st.runs_cap===0);"
 "var cont=(st.scoring_passes===0);"
@@ -966,12 +981,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "f(sm[0]),f(sm[1]),f(sm[2]),f(sm[3]),f(sm[4]),f(sm[5])].join(';'));});});"
 "files.push({name:'elotto_scored_'+((st.score_sum||'key')+'_'+(st.score_dir||'high'))+'_'+stamp+'.csv',body:textOf(L)});"
 "}else if(x){"
-"var R=x.extremes||[];"
-"var cr=(x&&x.crit)?x.crit+'_'+x.dir:'';"
-"var L=['Rank;Round;Comb;Numbers;Euro;Z*;Z;Z_raw;Conc;\\u0394n;AC;Mau;k'];"
-"R.forEach(function(r,i){L.push([i+1,r.round,r.run,(r.nums||[]).join(' '),(r.euro||[]).join(' '),"
-"f(r.key),f(r.z_ctr),f(r.z),f(r.zc),f(r.nsd),f(r.ac),f(r.mau),r.k].join(';'));});"
-"files.push({name:'elotto_top'+R.length+(cr?'_'+cr:'')+'_'+stamp+'.csv',body:textOf(L)});"
+"files.push(topFile(x));"
 "}"
 "if(s&&snaps.length){"
 "var L2=['Round;Kind;Number;Passes;Z*;nZ*;Z;nZ;Conc;nConc;\\u0394n;n\\u0394n;AC;nAC;Mau;nMau'];"
@@ -998,36 +1008,29 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "row.push(f(e.key),f(e.z_ctr),f(e.z),f(e.zc),f(e.nsd),f(e.ac),f(e.mau),e.k?String(e.k):'');"
 "Lj.push(row.join(';'));});"
 "files.push({name:'elotto_jumps_'+stamp+'.csv',body:textOf(Lj)});"
-/* Once the session is over: every ranked pass item, by round and
-   combination (fetchFull), in place of elotto_top. */
-"if(all&&all.length){"
-"all.sort(function(a,b){return (a.round-b.round)||(a.run-b.run);});"
-"var La=['Round;Comb;Numbers;Euro;Z*;Z;Z_raw;Conc;\\u0394n;AC;Mau;k'];"
-"all.forEach(function(r){La.push([r.round,r.run,(r.nums||[]).join(' '),(r.euro||[]).join(' '),"
-"f(r.key),f(r.z_ctr),f(r.z),f(r.zc),f(r.nsd),f(r.ac),f(r.mau),r.k].join(';'));});"
-"files.push({name:'elotto_all'+all.length+'_'+stamp+'.csv',body:textOf(La)});}"
 "return {files:files,sumsOk:!!s};}"
 /* The full table, page by page (/extremes?full=1&from=), with a bar in the
-   message line while it loads. null while a session runs (409) or on any
-   failure: the other files are still written. */
+   message line while it loads; the line gets its earlier text back after.
+   null on a refusal (409, a session started meanwhile) or any failure. */
 "function fetchFull(){"
-"var R=[],m=document.getElementById('msg');"
+"var R=[],m=document.getElementById('msg'),keep=m.textContent;"
 "function page(from){"
 "return fetch('/extremes?full=1&from='+from).then(function(r){return r.ok?r.json():null;}).then(function(x){"
-"if(!x)return null;"
-"R=R.concat(x.rows||[]);"
+"if(!x){m.textContent=keep;return null;}"
+"(x.rows||[]).forEach(function(r){R.push(r);});"
 "m.innerHTML='Full table <progress value=\"'+x.next+'\" max=\"'+(x.span||1)+'\"></progress> '+x.next+' / '+x.span;"
 "if(x.next<x.span)return page(x.next);"
-"m.textContent='';return R;});}"
+"m.textContent=keep;return R;});}"
 "return page(0).catch(function(){m.textContent='\\u26a0 Full table save failed';return null;});}"
-/* The full table first: it answers at once while a session runs (409), and
-   only then are the extremes (elotto_top) fetched in its place. */
-"function fetchAll(){return fetchFull().then(function(all){return Promise.all(["
-"fetch('/status').then(function(r){return r.json();}).catch(function(){return LD||{};}),"
-"all?null:fetch('/extremes?n=" EL_STR(PASS_KEEP_EXTREME) "').then(function(r){return r.json();}),"
+/* /status first: its state says whether the pass items are the held
+   extremes (running: fetched here) or the full table (over: fetched after
+   the small files are written, see save()). */
+"function fetchAll(){"
+"return fetch('/status').then(function(r){return r.json();}).catch(function(){return LD||{};}).then(function(st){"
+"return Promise.all([st,"
+"st.state==='running'?fetch('/extremes?n=" EL_STR(PASS_KEEP_EXTREME) "').then(function(r){return r.json();}):null,"
 "fetch('/extremes?sums=1').then(function(r){return r.json();}).catch(function(){return null;}),"
-"fetch('/extremes?jumps=1').then(function(r){return r.json();}).catch(function(){return null;}),"
-"all"
+"fetch('/extremes?jumps=1').then(function(r){return r.json();}).catch(function(){return null;})"
 "]);});}"
 "function put(dir,built){"
 "if(!built.sumsOk)document.getElementById('msg').textContent='\\u26a0 Sums save failed';"
@@ -1042,9 +1045,18 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "var pick=(typeof showDirectoryPicker==='function')"
 "?showDirectoryPicker({id:'elotto-save',mode:'readwrite',startIn:'downloads'})"
 ":Promise.resolve(null);"
-"pick.then(function(dir){return fetchAll().then(function(pair){return put(dir,filesOf(pair));});}"
-",function(err){if(err&&err.name==='AbortError')return;"
-"return fetchAll().then(function(pair){return put(null,filesOf(pair));});})"
+/* The small files are written at once, close to the click. The full table
+   of a finished session follows as its own file when it has loaded — it can
+   take a while. If it cannot be had, the held extremes are written instead. */
+"function save(dir){return fetchAll().then(function(pair){"
+"var st=pair[0]||{};"
+"var first=Promise.resolve(put(dir,filesOf(pair)));"
+"if(st.state==='running'||st.runs_cap===0)return first;"
+"return first.then(fetchFull).then(function(all){"
+"if(all)return all.length?put(dir,{files:[allFile(all)],sumsOk:true}):null;"
+"return fetch('/extremes?n=" EL_STR(PASS_KEEP_EXTREME) "').then(function(r){return r.json();})"
+".then(function(x){return put(dir,{files:[topFile(x)],sumsOk:true});});});});}"
+"pick.then(save,function(err){if(err&&err.name==='AbortError')return;return save(null);})"
 ".catch(function(){document.getElementById('msg').textContent='\\u26a0 Save failed';});}"
 "function doAbort(){"
 "fetch('/abort',{method:'POST'});"
@@ -2613,21 +2625,31 @@ static esp_err_t extremes_full(httpd_req_t *req, int from)
     if (from > span) from = span;
     int next = from + FULL_PAGE;
     if (next > span) next = span;
-    char sb[448];
-    int sl = snprintf(sb, sizeof(sb), "{\"span\":%d,\"from\":%d,\"next\":%d,\"rows\":[",
-                      span, from, next);
-    send_chunk(req, sb, sl, sizeof(sb));
+    /* Rows are collected and sent a buffer at a time, not one chunk each: a
+     * page is ~100 socket writes instead of ~4000. httpd serialises handlers,
+     * so one static buffer. A row is under FULL_ROW_MAX characters. */
+    #define FULL_ROW_MAX 448
+    static char pg[4096];
+    int pos = snprintf(pg, sizeof(pg), "{\"span\":%d,\"from\":%d,\"next\":%d,\"rows\":[",
+                       span, from, next);
     bool first = true;
     for (int i = from; i < next; i++) {
         RunResult r;
         double    key;
         if (!results_full_row(i, &r, &key)) continue;
-        if (!first) httpd_resp_send_chunk(req, ",", 1);
-        sl = emit_row(sb, sizeof(sb), &r, key, "");
-        send_chunk(req, sb, sl, sizeof(sb));
+        if (pos > (int)sizeof(pg) - FULL_ROW_MAX - 1) {
+            httpd_resp_send_chunk(req, pg, pos);
+            pos = 0;
+        }
+        if (!first) pg[pos++] = ',';
+        int rl = emit_row(pg + pos, FULL_ROW_MAX, &r, key, "");
+        if (rl >= FULL_ROW_MAX) rl = FULL_ROW_MAX - 1;   /* snprintf's would-be length */
+        pos += rl;
         first = false;
     }
-    httpd_resp_send_chunk(req, "]}", 2);
+    #undef FULL_ROW_MAX
+    pos += snprintf(pg + pos, sizeof(pg) - (size_t)pos, "]}");
+    httpd_resp_send_chunk(req, pg, pos);
     httpd_resp_send_chunk(req, NULL, 0);
     return ESP_OK;
 }

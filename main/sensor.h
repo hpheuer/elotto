@@ -20,8 +20,8 @@ typedef uint16_t node_mask_t;   // bit i = node i; MAX_NODES below must fit
  * Unlimited rounds keep the 1000 RANKED items that rank best on the pool
  * criterion (score_sum column, score_dir direction — one tail, see
  * rank_order() in sensor.c). On Z* the tail is |Z*|. Quarantined rows are not kept: nothing reads them once their
- * block is closed. Everything else merges into pass moments. Offline re-analysis of the dropped
- * rows is not a goal. Every session is rounds, so every round
+ * block is closed. Everything else merges into pass moments; the ranked rows among it are
+ * first copied to the full table (FULL_MAX). Every session is rounds, so every round
  * boundary calls pass_compact() (no-op while n ≤ 1000). */
 #define PASS_KEEP_EXTREME 1000
 /* The quiet board: the session's QUIET_N items with the smallest |rank_key|.
@@ -31,7 +31,9 @@ typedef uint16_t node_mask_t;   // bit i = node i; MAX_NODES below must fit
 /* The full table: every ranked row compaction merges is first copied here
  * (PSRAM, 48 B a row plus its Z*), so after the session the Top-10 and Save
  * choose from EVERY pass item measured, not from the 1000 survivors.
- * 250000 rows is ~13 MB; 72 h at the fastest legal parameters is ~190000.
+ * 250000 rows is ~13 MB, allocated in ten pieces; 72 h at the fastest legal
+ * parameters is ~190000. Pieces that cannot be had shorten the table, and
+ * the Log says by how much.
  * ⚠ When fewer than one round's worth of rows is left the session ENDS (see
  * session_end_limit()) — the table is never incomplete. */
 #define FULL_MAX         250000

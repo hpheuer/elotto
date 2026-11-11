@@ -274,9 +274,17 @@ static void   archive_unlock(void);
 static bool   result_centred(const RunResult *r);
 static void   session_limit_check(void);
 /* The full table (see full_push()): rows, their Z*, rows in use. */
-static RunResult *s_full;
-static float     *s_full_key;
+/* In FULL_CHUNK-row pieces: one 12 MB block need not exist in a PSRAM heap
+ * the camera buffers have already cut up. s_full_cap is the rows there is
+ * room for (0 = no table), s_full_n the rows in use. */
+#define FULL_CHUNK  25000
+#define FULL_CHUNKS (FULL_MAX / FULL_CHUNK)
+static RunResult *s_full[FULL_CHUNKS];
+static float     *s_full_key[FULL_CHUNKS];
+static int        s_full_cap;
 static int        s_full_n;
+#define FULL_ROW(i) (s_full[(i) / FULL_CHUNK][(i) % FULL_CHUNK])
+#define FULL_KEY(i) (s_full_key[(i) / FULL_CHUNK][(i) % FULL_CHUNK])
 static bool       s_sel_valid;   /* results_extremes() keeps its selection */
 static ScoreItem *score_row(bool euro_pool, int k);
 
@@ -1693,7 +1701,7 @@ int results_extremes(RunResult *out, int max, int ch, bool low, int *held,
     typedef struct { double a; int32_t id; } FullSel;
     static FullSel *sel;
     static int c_ch, c_low, c_max, c_n, c_total;
-    bool full = g_status.state != ELOTTO_RUNNING && s_full && s_full_key && s_full_n > 0;
+    bool full = g_status.state != ELOTTO_RUNNING && s_full_n > 0;
     if (full && !sel)
         sel = heap_caps_malloc((size_t)PASS_KEEP_EXTREME * sizeof(FullSel), MALLOC_CAP_SPIRAM);
     if (full && sel) {
@@ -1704,8 +1712,8 @@ int results_extremes(RunResult *out, int max, int ch, bool low, int *held,
             int c = 0;
             for (; c < m; c++) { sel[c].a = ord[c].a; sel[c].id = (int32_t)ord[c].j; }
             for (int i = 0; i < s_full_n; i++) {
-                double v = (ch == SUM_KEY) ? fabs((double)s_full_key[i])
-                                           : item_crit(&s_full[i], ch);
+                double v = (ch == SUM_KEY) ? fabs((double)FULL_KEY(i))
+                                           : item_crit(&FULL_ROW(i), ch);
                 if (!isfinite(v)) continue;
                 total++;
                 double a = low ? -v : v;
@@ -1727,7 +1735,7 @@ int results_extremes(RunResult *out, int max, int ch, bool low, int *held,
         m = c_n;
         total = c_total;
         for (int i = 0; i < m; i++)
-            out[i] = sel[i].id >= 0 ? g_status.results[sel[i].id] : s_full[~sel[i].id];
+            out[i] = sel[i].id >= 0 ? g_status.results[sel[i].id] : FULL_ROW(~sel[i].id);
     } else {
         m = rank_order(ord, ntot, true, ch, low);
         total = m;
@@ -1750,7 +1758,7 @@ int results_full_span(void)
     archive_lock();
     int ntot = g_status.runs_completed;
     if (ntot > NUM_RUNS) ntot = NUM_RUNS;
-    int n = (s_full && s_full_key ? s_full_n : 0) + ntot;
+    int n = s_full_n + ntot;
     archive_unlock();
     return n;
 }
@@ -1759,12 +1767,12 @@ bool results_full_row(int i, RunResult *out, double *key)
 {
     bool ok = false;
     archive_lock();
-    int nf = (s_full && s_full_key) ? s_full_n : 0;
+    int nf = s_full_n;
     int ntot = g_status.runs_completed;
     if (ntot > NUM_RUNS) ntot = NUM_RUNS;
     if (i >= 0 && i < nf) {
-        *out = s_full[i];
-        *key = (double)s_full_key[i];
+        *out = FULL_ROW(i);
+        *key = (double)FULL_KEY(i);
         ok = true;
     } else if (i >= nf && i - nf < ntot) {
         const RunResult *r = &g_status.results[i - nf];
@@ -1835,11 +1843,11 @@ int results_quietest(RunResult *out, int max)
  * read by results_extremes() once the session is over. */
 static void full_push(const RunResult *r)
 {
-    if (!s_full || !s_full_key || s_full_n >= FULL_MAX) return;
+    if (s_full_n >= s_full_cap) return;
     double sz = 0.0;
     block_sig_of(r, &sz, NULL);
-    s_full[s_full_n]     = *r;
-    s_full_key[s_full_n] = sz > 0.0 ? (float)rank_key(r) : NAN;
+    FULL_ROW(s_full_n) = *r;
+    FULL_KEY(s_full_n) = sz > 0.0 ? (float)rank_key(r) : NAN;
     s_full_n++;
 }
 
@@ -2099,7 +2107,7 @@ static void pass_compact(void)
 
     /* One compaction merges at most UNLIM_RUNS_MAX rows (NUM_RUNS − the
      * survivors), so this much room guarantees the next one fits whole. */
-    if (s_full && FULL_MAX - s_full_n < UNLIM_RUNS_MAX)
+    if (s_full_cap > 0 && s_full_cap - s_full_n < UNLIM_RUNS_MAX)
         session_end_limit("full table of measurements is full");
 
     heap_caps_free(keep);
@@ -3358,20 +3366,30 @@ void elotto_task(void *pvParam)
      * chooses from the held rows after the session as it does during it —
      * said in the Log, after the start line, so the operator can see it. */
     archive_lock();
-    if (!s_full)
-        s_full = heap_caps_malloc((size_t)FULL_MAX * sizeof(RunResult), MALLOC_CAP_SPIRAM);
-    if (!s_full_key)
-        s_full_key = heap_caps_malloc((size_t)FULL_MAX * sizeof(float), MALLOC_CAP_SPIRAM);
-    bool full_ok = s_full && s_full_key;
-    if (!full_ok) {
-        heap_caps_free(s_full);
-        heap_caps_free(s_full_key);
-        s_full = NULL;
-        s_full_key = NULL;
+    int full_cap = 0;
+    for (int c = 0; c < FULL_CHUNKS; c++) {
+        if (!s_full[c])
+            s_full[c] = heap_caps_malloc((size_t)FULL_CHUNK * sizeof(RunResult),
+                                         MALLOC_CAP_SPIRAM);
+        if (!s_full_key[c])
+            s_full_key[c] = heap_caps_malloc((size_t)FULL_CHUNK * sizeof(float),
+                                             MALLOC_CAP_SPIRAM);
+        if (!s_full[c] || !s_full_key[c]) {
+            heap_caps_free(s_full[c]);
+            heap_caps_free(s_full_key[c]);
+            s_full[c]     = NULL;
+            s_full_key[c] = NULL;
+            break;
+        }
+        full_cap += FULL_CHUNK;
     }
+    s_full_cap = full_cap;
     archive_unlock();
-    if (!full_ok)
+    /* A short table ends the session early (pass_compact()), so say how short. */
+    if (full_cap == 0)
         evlog("No memory for the full table - Top-10 and Save stay on the held rows");
+    else if (full_cap < FULL_MAX)
+        evlog("Full table: room for %d of %d measurements only", full_cap, FULL_MAX);
 
     /* Block index of the pass. Declared HERE, before the first goto done, so
      * the abort path can centre the open block (see done:). */
