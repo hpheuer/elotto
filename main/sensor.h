@@ -1055,10 +1055,11 @@ int results_quietest(RunResult *out, int max);
 
 /* Every ranked pass item of a finished session, row by row (Save's full
  * table): the index space is the full table's rows, then those still in
- * results[]. results_full_row() is false for a slot without a ranked, centred
- * item; *key is that row's Z* (NaN = its block has no σ). */
-int  results_full_span(void);
-bool results_full_row(int i, RunResult *out, double *key);
+ * results[]. results_full_rows() copies the ranked, centred items of slots
+ * [from, to), at most `max`, with their Z* (rank_key()) under one lock;
+ * *next is the slot to go on from. Returns the rows copied. */
+int results_full_span(void);
+int results_full_rows(int from, int to, RunResult *out, double *key, int max, int *next);
 /* The camera-jump board, biggest |jump| first, up to `max` rows. Pass items
  * still in results[] are refreshed from their row first, so an open block
  * shows its provisional values. Takes the archive lock. */

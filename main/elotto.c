@@ -1709,7 +1709,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 ":'Running sum of this number\\u2019s pass values \\u2014 the pool is picked on it. While the scoring runs the arrow is the pool direction: \\u25be highest, \\u25b4 lowest; a second click flips it. A green # marks a pool member.';}"
 "function zTip(){return (SCM?'Latest Z* of this number':'This item\\u2019s Z*')"
 "+', sorted by |Z*|. The cell keeps the sign: \\u25be larger magnitude, \\u25b4 smaller. '"
-"+'Z* = (Z/\\u03c3) times the four factors shown at the top of the page. No block \\u03c3 yet gives 0. Click to sort.';}"
+"+'Z* = sign(Z)\\u00b7|Z/\\u03c3|^exponent times the four factors, as the formula at the top of the page shows with the weights in force. No block \\u03c3 yet gives 0. Click to sort.';}"
 "function renderRunTable(headId,bodyId,res,isEuro,d,st,opt){"
 "document.getElementById(headId).innerHTML="
 "'<tr><th>#</th>'+(opt?'<th style=\"cursor:pointer\" title=\"'+sumTip()+'\" onclick=\"sortBy(\\'sum\\')\">\\u03a3 '+colName(curSum())+exArrow('sum')+'</th>':'<th>Item/Round</th>')"
@@ -2632,21 +2632,26 @@ static esp_err_t extremes_full(httpd_req_t *req, int from)
     static char pg[4096];
     int pos = snprintf(pg, sizeof(pg), "{\"span\":%d,\"from\":%d,\"next\":%d,\"rows\":[",
                        span, from, next);
+    /* Read FULL_BATCH rows under one lock, then format and send them. */
+    #define FULL_BATCH 64
+    static RunResult rb[FULL_BATCH];
+    static double    kb[FULL_BATCH];
     bool first = true;
-    for (int i = from; i < next; i++) {
-        RunResult r;
-        double    key;
-        if (!results_full_row(i, &r, &key)) continue;
-        if (pos > (int)sizeof(pg) - FULL_ROW_MAX - 1) {
-            httpd_resp_send_chunk(req, pg, pos);
-            pos = 0;
+    for (int i = from; i < next; ) {
+        int n = results_full_rows(i, next, rb, kb, FULL_BATCH, &i);
+        for (int j = 0; j < n; j++) {
+            if (pos > (int)sizeof(pg) - FULL_ROW_MAX - 1) {
+                httpd_resp_send_chunk(req, pg, pos);
+                pos = 0;
+            }
+            if (!first) pg[pos++] = ',';
+            int rl = emit_row(pg + pos, FULL_ROW_MAX, &rb[j], kb[j], "");
+            if (rl >= FULL_ROW_MAX) rl = FULL_ROW_MAX - 1;   /* snprintf's would-be length */
+            pos += rl;
+            first = false;
         }
-        if (!first) pg[pos++] = ',';
-        int rl = emit_row(pg + pos, FULL_ROW_MAX, &r, key, "");
-        if (rl >= FULL_ROW_MAX) rl = FULL_ROW_MAX - 1;   /* snprintf's would-be length */
-        pos += rl;
-        first = false;
     }
+    #undef FULL_BATCH
     #undef FULL_ROW_MAX
     pos += snprintf(pg + pos, sizeof(pg) - (size_t)pos, "]}");
     httpd_resp_send_chunk(req, pg, pos);

@@ -1628,6 +1628,28 @@ static double item_crit(const RunResult *r, int ch)
     }
 }
 
+/* Z* as a RANKING value: NaN when the row's block has no σ — rank_key()
+ * gives 0 there, which would top the low end without having been measured
+ * as quiet. The one place that rule lives: rank_order(), the full table's
+ * frozen key and its scan all go through it. */
+static double ranked_key(const RunResult *r)
+{
+    double sz = 0.0;
+    block_sig_of(r, &sz, NULL);
+    return sz > 0.0 ? rank_key(r) : NAN;
+}
+
+/* A column value as the sort key of rank_order() and of the full-table scan,
+ * larger = better: Z* by magnitude (the row's key is not rewritten), every
+ * other column signed; `low` turns the order round. NaN in, NaN out = the
+ * row is not ranked on that column. */
+static double sort_val(double v, int ch, bool low)
+{
+    if (!isfinite(v)) return NAN;
+    if (ch == SUM_KEY) v = fabs(v);
+    return low ? -v : v;
+}
+
 static int rank_order(KeyIdx *ord, int ntot, bool need_centred, int ch, bool low)
 {
     int m = 0;
@@ -1635,18 +1657,9 @@ static int rank_order(KeyIdx *ord, int ntot, bool need_centred, int ch, bool low
         const RunResult *r = &g_status.results[j];
         if (!result_ranked(r)) continue;
         if (need_centred && !result_centred(r)) continue;
-        double v = item_crit(r, ch);
-        if (!isfinite(v)) continue;
-        /* |Z*| only. high = largest magnitude, low = smallest. The row's
-         * key is not rewritten. ⚠ A block without σ gives key 0, which would
-         * top the low end without having been measured as quiet. */
-        if (ch == SUM_KEY) {
-            double sz = 0.0;
-            block_sig_of(r, &sz, NULL);
-            if (!(sz > 0.0)) continue;
-            v = fabs(v);
-        }
-        ord[m].a = low ? -v : v;
+        double a = sort_val((ch == SUM_KEY) ? ranked_key(r) : item_crit(r, ch), ch, low);
+        if (!isfinite(a)) continue;
+        ord[m].a = a;
         ord[m].j = (uint16_t)j;
         m++;
     }
@@ -1712,11 +1725,10 @@ int results_extremes(RunResult *out, int max, int ch, bool low, int *held,
             int c = 0;
             for (; c < m; c++) { sel[c].a = ord[c].a; sel[c].id = (int32_t)ord[c].j; }
             for (int i = 0; i < s_full_n; i++) {
-                double v = (ch == SUM_KEY) ? fabs((double)FULL_KEY(i))
-                                           : item_crit(&FULL_ROW(i), ch);
-                if (!isfinite(v)) continue;
+                double a = sort_val((ch == SUM_KEY) ? (double)FULL_KEY(i)
+                                                    : item_crit(&FULL_ROW(i), ch), ch, low);
+                if (!isfinite(a)) continue;
                 total++;
-                double a = low ? -v : v;
                 if (c >= max && !(a > sel[c - 1].a)) continue;
                 int lo = 0, hi = c;                 /* first slot worse than a */
                 while (lo < hi) {
@@ -1749,9 +1761,10 @@ int results_extremes(RunResult *out, int max, int ch, bool low, int *held,
 
 /* ── The full table, row by row (Save) ────────────────────────────────────
  * results_full_span() is the index space: the full table's rows, then the
- * rows still in results[]. results_full_row() copies row i and its Z* (NaN =
- * its block has no σ); false = that slot holds no ranked, centred item (a
- * void or quarantined row still in results[]) and is skipped. Meant for a
+ * rows still in results[]. results_full_rows() copies the ranked, centred
+ * items of slots [from, to) — at most `max` — with their Z* (rank_key(), the
+ * cell every table prints) under ONE lock, skips a void or quarantined row
+ * still in results[], and sets *next to the slot to go on from. Meant for a
  * finished session — the caller refuses while one runs. */
 int results_full_span(void)
 {
@@ -1763,29 +1776,29 @@ int results_full_span(void)
     return n;
 }
 
-bool results_full_row(int i, RunResult *out, double *key)
+int results_full_rows(int from, int to, RunResult *out, double *key, int max, int *next)
 {
-    bool ok = false;
+    int n = 0, i = from < 0 ? 0 : from;
     archive_lock();
     int nf = s_full_n;
     int ntot = g_status.runs_completed;
     if (ntot > NUM_RUNS) ntot = NUM_RUNS;
-    if (i >= 0 && i < nf) {
-        *out = FULL_ROW(i);
-        *key = (double)FULL_KEY(i);
-        ok = true;
-    } else if (i >= nf && i - nf < ntot) {
-        const RunResult *r = &g_status.results[i - nf];
-        if (result_ranked(r) && result_centred(r)) {
-            double sz = 0.0;
-            block_sig_of(r, &sz, NULL);
-            *out = *r;
-            *key = sz > 0.0 ? rank_key(r) : NAN;
-            ok = true;
+    if (to > nf + ntot) to = nf + ntot;
+    for (; i < to && n < max; i++) {
+        const RunResult *r;
+        if (i < nf) {
+            r = &FULL_ROW(i);
+        } else {
+            r = &g_status.results[i - nf];
+            if (!result_ranked(r) || !result_centred(r)) continue;
         }
+        out[n] = *r;
+        key[n] = rank_key(r);
+        n++;
     }
     archive_unlock();
-    return ok;
+    *next = i;
+    return n;
 }
 
 /* ── The quiet board ──────────────────────────────────────────────────────
@@ -1837,17 +1850,16 @@ int results_quietest(RunResult *out, int max)
 
 /* ── The full table (FULL_MAX, sensor.h) ─────────────────────────────────
  * Every ranked row pass_compact() merges, in the order it left results[],
- * with its Z* frozen beside it (the block is closed, its σ and the session's
- * weights are fixed; NaN = that block has no σ). A row is here or in
+ * with its ranked_key() frozen beside it for the scan (the block is closed,
+ * its σ and the session's weights are fixed). The CELL is never read from it:
+ * every table and Save print rank_key() of the row. A row is here or in
  * results[], never both. Written by the sensor task under the archive lock,
  * read by results_extremes() once the session is over. */
 static void full_push(const RunResult *r)
 {
     if (s_full_n >= s_full_cap) return;
-    double sz = 0.0;
-    block_sig_of(r, &sz, NULL);
     FULL_ROW(s_full_n) = *r;
-    FULL_KEY(s_full_n) = sz > 0.0 ? (float)rank_key(r) : NAN;
+    FULL_KEY(s_full_n) = (float)ranked_key(r);
     s_full_n++;
 }
 
@@ -2187,7 +2199,7 @@ static void block_ac_compute(int block_idx)
 }
 
 /* Offer one item's per-node camera sigmas to the jump board, keeping the
- * WSIG_TOP_N largest |jump| of the whole session.
+ * WSIG_KEEP_N largest |jump| of the whole session.
  *
  * A fixed insertion-sorted array rather than a pass over results[]: results[]
  * is compacted at every round boundary, so a table computed from it would show
@@ -2224,7 +2236,7 @@ static void wsig_note(const RunResult *r, const float *wsig, node_mask_t mask,
         g_status.wsig_sd   = (s_wsig_jn > 1) ? sqrt(s_wsig_jsq / (double)s_wsig_jn) : 0.0;
 
         /* No floor: the board keeps the largest of whatever happened, and
-         * the x-sigma column says whether they matter. See WSIG_TOP_N. */
+         * the x-sigma column says whether they matter. See WSIG_KEEP_N. */
         if (!(mask & (1u << i))) continue;        /* not in the combine */
 
         if (!g_status.wsig_top) continue;
@@ -2269,6 +2281,20 @@ static void wsig_note(const RunResult *r, const float *wsig, node_mask_t mask,
     }
 }
 
+/* A board row takes its measurement's values. `key` is that measurement's
+ * Z*, NaN while it has none. A void run (k = 0) has no z of any kind. */
+static void wsig_values(WsigEvent *e, const RunResult *r, float key)
+{
+    e->k     = r->k;
+    e->z_raw = r->k ? (float)r->z_score : NAN;
+    e->z_ctr = r->k ? r->z_ctr : NAN;
+    e->zc    = r->k ? r->zc_ctr : NAN;
+    e->nsd   = r->node_sd;
+    e->ac    = r->acz;
+    e->mau   = r->mau;
+    e->key   = key;
+}
+
 /* Copy a pass item's values from its results[] row. The caller holds the
  * archive lock. `freeze`: compaction is about to move the rows, so the slot
  * stops meaning anything — keep the values, drop the slot. The block is
@@ -2286,14 +2312,7 @@ static void wsig_refresh(bool freeze, int limit)
         if (e->slot < ntot) {
             const RunResult *r = &g_status.results[e->slot];
             if (r->round == e->round && r->index == e->index) {
-                e->k     = r->k;
-                e->z_raw = r->k ? (float)r->z_score : NAN;
-                e->z_ctr = r->k ? r->z_ctr : NAN;
-                e->zc    = r->k ? r->zc_ctr : NAN;
-                e->nsd   = r->node_sd;
-                e->ac    = r->acz;
-                e->mau   = r->mau;
-                e->key   = (r->k && result_centred(r)) ? (float)rank_key(r) : NAN;
+                wsig_values(e, r, (r->k && result_centred(r)) ? (float)rank_key(r) : NAN);
             }
         }
         if (freeze) e->slot = WSIG_NO_SLOT;
@@ -2313,14 +2332,7 @@ static void wsig_fill_scoring(bool euro_pool, uint8_t spass)
         if ((e->euro[0] != 0) != euro_pool) continue;
         const ScoreItem *row = score_row(euro_pool, e->index);
         if (!row) continue;
-        e->k     = row->r.k;
-        e->z_raw = row->r.k ? (float)row->r.z_score : NAN;
-        e->z_ctr = row->r.k ? row->r.z_ctr : NAN;
-        e->zc    = row->r.k ? row->r.zc_ctr : NAN;
-        e->nsd   = row->r.node_sd;
-        e->ac    = row->r.acz;
-        e->mau   = row->r.mau;
-        e->key   = row->key;
+        wsig_values(e, &row->r, row->key);
     }
     archive_unlock();
 }
