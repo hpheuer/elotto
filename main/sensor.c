@@ -1735,26 +1735,26 @@ int results_quietest(RunResult *out, int max)
 
 /* ── The record board (RecRow, sensor.h) ─────────────────────────────────
  * One row per column. Written by the sensor task under the archive lock. */
-static RecRow s_rec[REC_N];
+static RecRow s_rec[SCORE_SUM_N];
 
-/* How extreme a row is on record column c — larger wins. NaN = no value
- * (Conc 0 is "no concordance", the results[] convention). */
+/* How extreme a row is on column c (a ScoreSum, read through item_crit() like
+ * every sort) — larger wins. Z and Conc by magnitude, Δn / AC / Mau the
+ * smallest value. NaN = no value (Conc 0 is "no concordance", the results[]
+ * convention; SUM_KEY has no record). */
 static double rec_val(int c, const RunResult *r)
 {
-    switch (c) {
-    case REC_Z:    return fabs((double)r->z_ctr);
-    case REC_CONC: return r->zc_ctr == 0.0f ? NAN : fabs((double)r->zc_ctr);
-    case REC_NSD:  return -(double)r->node_sd;
-    case REC_AC:   return -(double)r->acz;
-    default:       return -(double)r->mau;
-    }
+    if (c == SUM_KEY) return NAN;
+    double v = item_crit(r, c);
+    if (c == SUM_Z)    return fabs(v);
+    if (c == SUM_CONC) return v == 0.0 ? NAN : fabs(v);
+    return -v;
 }
 
 /* spass 0 = a pass item: its Z* is taken from its block here, once, when it
  * takes a row. A scoring run brings its pass key. */
 static void rec_offer(RecRow *B, const RunResult *r, float key, uint16_t spass)
 {
-    for (int c = 0; c < REC_N; c++) {
+    for (int c = 0; c < SCORE_SUM_N; c++) {
         double v = rec_val(c, r);
         if (!isfinite(v)) continue;
         if (B[c].set && !(v > rec_val(c, &B[c].r))) continue;
@@ -1785,7 +1785,7 @@ int results_records(RecRow *out)
     }
     archive_unlock();
     int n = 0;
-    for (int c = 0; c < REC_N; c++) n += out[c].set ? 1 : 0;
+    for (int c = 0; c < SCORE_SUM_N; c++) n += out[c].set ? 1 : 0;
     return n;
 }
 

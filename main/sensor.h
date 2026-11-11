@@ -1042,23 +1042,23 @@ int results_extremes(RunResult *out, int max, int ch, bool low, int *held,
  * and never enters. */
 int results_quietest(RunResult *out, int max);
 
-/* The record board: ONE row per column, the session's most extreme
- * measurement on it — REC_Z largest |Z|, REC_CONC largest |Conc|, REC_NSD
- * smallest Δn, REC_AC most negative AC, REC_MAU most negative Mau. Pass items
+/* The record board: ONE row per column, indexed by ScoreSum, the session's
+ * most extreme measurement on it — SUM_Z largest |Z|, SUM_CONC largest |Conc|,
+ * SUM_NSD smallest Δn, SUM_AC most negative AC, SUM_MAU most negative Mau;
+ * the SUM_KEY slot is never set (the Top-10 holds the |Z*| extremes). Pass items
  * and scoring runs compete for the same row; the row carries every other
  * column of that measurement. It exists because compaction keeps only the
  * pool criterion's extremes: pass_compact() offers every ranked, centred row
  * it merges, a scoring pass offers its numbers when it closes, and
  * results_records() merges the board with the rows still in results[].
  * Cleared at session start. */
-enum { REC_Z = 0, REC_CONC, REC_NSD, REC_AC, REC_MAU, REC_N };
 typedef struct {
     RunResult r;
     float     key;     // Z* of that measurement, frozen when it took the row
     uint16_t  spass;   // scoring pass (1-based) for a scoring run, 0 = pass item
     uint8_t   set;     // 0 = no measurement carried a value in this column yet
 } RecRow;
-/* Fills out[REC_N] under the archive lock; returns how many rows are set. */
+/* Fills out[SCORE_SUM_N] under the archive lock; returns how many rows are set. */
 int results_records(RecRow *out);
 /* The camera-jump board, biggest |jump| first, up to `max` rows. Pass items
  * still in results[] are refreshed from their row first, so an open block

@@ -1655,17 +1655,16 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "var c=document.getElementById('resCardRec');"
 "if(!RX.length){c.style.display='none';return;}"
 "var isEuro=d.mode==='euro';"
-"var lab=['largest |Z|','largest |Conc|','smallest \\u0394n','most negative AC','most negative Mau'];"
-"renderRunTable('resHeadRec','resBodyRec',RX,isEuro,d,zW(d));"
-"document.getElementById('resHeadRec').innerHTML="
-"'<tr><th>Extreme</th><th>Item/Round</th><th>Z*</th><th>Z</th><th>Conc</th><th>\\u0394n</th><th>AC</th><th>Mau</th>'"
-"+'<th>Numbers</th>'+(isEuro?'<th>Bonus</th>':'')+'<th></th></tr>';"
-"var tr=document.getElementById('resBodyRec').rows;"
-"for(var i=0;i<tr.length&&i<RX.length;i++){var r=RX[i],td=tr[i].cells;"
-"td[0].textContent=lab[r.rec]||'';td[0].style.whiteSpace='nowrap';"
-"if(r.spass)td[1].textContent='scoring '+r.spass+'/'+r.round;"
-"if(td[3+r.rec]){td[3+r.rec].style.fontWeight='700';td[3+r.rec].style.opacity='1';}}"
+"var M={z:['largest |Z|','z_ctr'],conc:['largest |Conc|','zc'],nsd:['smallest \\u0394n','nsd'],"
+"ac:['most negative AC','ac'],mau:['most negative Mau','mau']};"
+"RX.forEach(function(r){var m=M[r.rec];if(m){r.lab=m[0];r.hi=m[1];}});"
+"renderRunTable('resHeadRec','resBodyRec',RX,isEuro,d,zW(d),null,{first:'Extreme',z:'Z*'});"
 "c.style.display='block';}"
+/* The header of a table without sort clicks (Closest to chance, Session
+   extremes): the Top-10's columns, plain. */
+"function plainHead(p,isEuro){"
+"return '<tr><th>'+p.first+'</th><th>Item/Round</th><th>'+p.z+'</th><th>Z</th><th>Conc</th><th>\\u0394n</th><th>AC</th><th>Mau</th>'"
+"+'<th>Numbers</th>'+(isEuro?'<th>Bonus</th>':'')+'<th></th></tr>';}"
 /* The quiet end: the session's ten smallest |Z*|, ascending, in the item
    row shape. Fixed order, so the header carries no sort clicks -- those
    belong to the Top-10. */
@@ -1676,10 +1675,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "'\\u2248 Closest to chance '+QX.length+' (smallest |Z*|)';"
 "document.getElementById('resSubQuiet').textContent="
 "'The items of this session whose ranking key sat nearest 0, smallest first.';"
-"renderRunTable('resHeadQuiet','resBodyQuiet',QX,isEuro,d,st);"
-"document.getElementById('resHeadQuiet').innerHTML="
-"'<tr><th>#</th><th>Item/Round</th><th>|Z*|</th><th>Z</th><th>Conc</th><th>\\u0394n</th><th>AC</th><th>Mau</th>'"
-"+'<th>Numbers</th>'+(isEuro?'<th>Bonus</th>':'')+'<th></th></tr>';"
+"renderRunTable('resHeadQuiet','resBodyQuiet',QX,isEuro,d,st,null,{first:'#',z:'|Z*|'});"
 "c.style.display='block';}"
 /* Items and scoring numbers: the same rows, one renderer. `opt` is set
    for the scoring — the Item column becomes the running sum \u03a3 (the number
@@ -1702,8 +1698,12 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "function zTip(){return (SCM?'Latest Z* of this number':'This item\\u2019s Z*')"
 "+', sorted by |Z*|. The cell keeps the sign: \\u25be larger magnitude, \\u25b4 smaller. '"
 "+'Z* = (Z/\\u03c3) times the four factors shown at the top of the page. No block \\u03c3 yet gives 0. Click to sort.';}"
-"function renderRunTable(headId,bodyId,res,isEuro,d,st,opt){"
-"document.getElementById(headId).innerHTML="
+/* `plain` ({first, z}: the titles of the first and the Z* column) gives the
+   header without sort clicks. A row may carry `lab` (its first cell instead
+   of the running number), `hi` (the column key whose cell is bold) and
+   `spass` (a scoring run: the item cell reads "scoring pass/round"). */
+"function renderRunTable(headId,bodyId,res,isEuro,d,st,opt,plain){"
+"document.getElementById(headId).innerHTML=plain?plainHead(plain,isEuro):"
 "'<tr><th>#</th>'+(opt?'<th style=\"cursor:pointer\" title=\"'+sumTip()+'\" onclick=\"sortBy(\\'sum\\')\">\\u03a3 '+colName(curSum())+exArrow('sum')+'</th>':'<th>Item/Round</th>')"
 "+(st?'<th style=\"cursor:pointer\" title=\"'+zTip()+'\" onclick=\"sortBy(\\'key\\')\">'+sumLab(opt,'key','|Z*|')+exArrow('key')+sumMark(opt,'key')+'</th>'"
 "+'<th style=\"cursor:pointer\" title=\"block-centred combined z. Click to sort the 50\" onclick=\"sortBy(\\'z_ctr\\')\">'+sumLab(opt,'z','Z')+exArrow('z_ctr')+sumMark(opt,'z')+'</th>'"
@@ -1761,7 +1761,8 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "estr+='<span class=\"num euro\">'+r.euro[j]+'</span>';"
 "var z=r.z,kk=(r.key===undefined?(r.z_ctr===undefined?z:r.z_ctr):r.key);"
 "var zs=(kk===null)?'\\u2014':kk.toFixed(3);"
-"var itm=(d.unlimited&&r.round)?(r.run+'/'+r.round):r.run;"
+"var itm=r.spass?('scoring '+r.spass+'/'+r.round):((d.unlimited&&r.round)?(r.run+'/'+r.round):r.run);"
+"var cs=function(k,col){var s=(col?'color:'+col+';':'')+(r.hi===k?'font-weight:700;':'');return s?' style=\"'+s+'\"':'';};"
 "var dim=(opt&&r.key===null)?' style=\"opacity:.55\"':'';"
 "var inP=opt&&opt.pool[(r.euro&&r.euro.length?'e':'m')+r.run];"
 "if(opt)itm='<b title=\"over '+(r.sum_n===undefined?r.passes:r.sum_n)+' of '+r.passes+' closed passes\">'+r.sum.toFixed(3)+'</b>';"
@@ -1785,12 +1786,12 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "+' \\u00b7 Mau \\u00d7'+(st.b||0).toFixed(2)"
 "+' \\u00b7 Conc \\u00d7'+(st.g||0).toFixed(2)"
 "+' \\u00b7 AC \\u00d7'+(st.ac||0).toFixed(2);"
-"tb.innerHTML+='<tr><td'+(inP?' style=\"color:#90ee90;font-weight:700\" title=\"in the pool\"':'')+'>'+(i+1)+'</td><td>'+itm+'</td>"
+"tb.innerHTML+='<tr><td'+(inP?' style=\"color:#90ee90;font-weight:700\" title=\"in the pool\"':(r.lab?' style=\"white-space:nowrap\"':''))+'>'+(r.lab||(i+1))+'</td><td>'+itm+'</td>"
 "'+(st?'<td title=\"'+det+'\">'+zs+'</td>'"
-"+'<td'+dim+'>'+zTxt+'</td><td'+dim+'>'+concTxt+'</td>'"
-"+'<td'+(nsdCol?' style=\"color:'+nsdCol+'\"':'')+'>'+nsdTxt+'</td>'"
-"+'<td'+(acCol?' style=\"color:'+acCol+'\"':'')+'>'+acTxt+'</td>'"
-"+'<td'+(mauCol?' style=\"color:'+mauCol+'\"':'')+'>'+mauTxt+'</td>':'')+'"
+"+'<td'+(dim||cs('z_ctr',''))+'>'+zTxt+'</td><td'+(dim||cs('zc',''))+'>'+concTxt+'</td>'"
+"+'<td'+cs('nsd',nsdCol)+'>'+nsdTxt+'</td>'"
+"+'<td'+cs('ac',acCol)+'>'+acTxt+'</td>'"
+"+'<td'+cs('mau',mauCol)+'>'+mauTxt+'</td>':'')+'"
 "<td>'+nums+'</td>"
 "'+(isEuro?'<td>'+estr+'</td>':'')+cpCell(r.nums,isEuro?r.euro:null)+'</tr>';"
 "}"
@@ -2601,20 +2602,22 @@ static esp_err_t extremes_jumps(httpd_req_t *req)
 
 /* `"rec":[…]` — the record board, one row per column (largest |Z|, largest
  * |Conc|, smallest Δn, most negative AC, most negative Mau), item row shape
- * plus `rec` (0..4, that order) and `spass` (scoring pass, 0 = a pass item).
- * Columns without a value yet are left out. It rides in the item reply and in
- * the ?score=1 reply, so the page needs no request of its own for it. */
+ * plus `rec` (the column's ScoreSum name: z, conc, nsd, ac, mau) and `spass`
+ * (scoring pass, 0 = a pass item). Columns without a value yet are left out.
+ * It rides in the item reply and in the ?score=1 reply, so the page needs no
+ * request of its own for it. */
 static void send_records(httpd_req_t *req)
 {
-    RecRow rec[REC_N];
+    RecRow rec[SCORE_SUM_N];
     results_records(rec);
     char rb[448];
     httpd_resp_send_chunk(req, "\"rec\":[", 7);
     bool first = true;
-    for (int c = 0; c < REC_N; c++) {
+    for (int c = 0; c < SCORE_SUM_N; c++) {
         if (!rec[c].set) continue;
-        char tail[40];
-        snprintf(tail, sizeof(tail), ",\"rec\":%d,\"spass\":%d", c, (int)rec[c].spass);
+        char tail[48];
+        snprintf(tail, sizeof(tail), ",\"rec\":\"%s\",\"spass\":%d",
+                 SCORE_SUM_NAME[c], (int)rec[c].spass);
         if (!first) httpd_resp_send_chunk(req, ",", 1);
         int rl = emit_row(rb, sizeof(rb), &rec[c].r, (double)rec[c].key, tail);
         send_chunk(req, rb, rl, sizeof(rb));

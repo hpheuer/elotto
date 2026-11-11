@@ -404,7 +404,7 @@ what remains visible is an effect varying **between items inside a block**.
   on it, with all its other values; the record cell is bold. Pass items and scoring runs compete
   for the same row; a scoring run reads `scoring <pass>/<round>` with its number in Numbers.
   It rides as `rec` in the `/extremes` item reply and in the `?score=1` reply — no request of its
-  own (`rec` 0..4 in that order, `spass` 0 = pass item; a column without a value yet is left
+  own (`rec` = `z|conc|nsd|ac|mau`, `spass` 0 = pass item; a column without a value yet is left
   out). It survives compaction: `pass_compact()` offers every
   ranked, centred row it merges, a scoring pass offers its numbers at its close, and
   `results_records()` merges the board with the rows still in `results[]`. Cleared at session start.
