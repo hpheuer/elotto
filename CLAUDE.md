@@ -281,7 +281,7 @@ Worked stack, all weights 1: Z/σ_z = −2, |Conc|/σ_c = 1,55, Δn = 0,82, AC =
 ⚠ Z and Conc are each divided by their own σ of **that item's block**, frozen at close. There is **no** session-wide channel σ — `s_bsig[block].sig_p`/`sig_c` is the only scale, and `/loops` no longer publishes it. A key with no block σ is 0, never a fallback. The product is not re-standardised.
 ⚠ Uncentred z ranks NODES, not items — a live table is meaningless before the first block closes.
 ⛔ **The key is UNBOUNDED — nothing truncates an extreme item**. Z/σ_z sits inside its block (`|Z/σ_z| ≤ (n−1)/√n`). The product of the factors does not: a small Δn or a large negative Mau can pass that ceiling, and a quiet block can then produce a large key. ⚠ The last round of a session is short because Abort cut it.
-UI: **Z\*** is the product, **Z**, **Conc**, **Δn**, **AC**, **Mau**. The formula with the session's four numbers stays at the top of the page. While a session runs it is read from `/status`; while the start form is what is being edited it follows the inputs. A reload of a finished session shows that session's weights until an input changes.
+UI: **Z\*** is the product, **Z**, **Conc**, **Δn**, **AC**, **Mau**. The formula with the session's four numbers stays at the top of the page; a factor whose weight is 0 is left out of it (at κ = 0 the base reads `sign(Z)`), the Save params file keeps all four. While a session runs it is read from `/status`; while the start form is what is being edited it follows the inputs. A reload of a finished session shows that session's weights until an input changes.
 
 **Concordance.** Per node, split the window at the **frame-pair boundary nearest the
 middle**  (nseg/2 if the window holds none) and **centre each half on that node's own
