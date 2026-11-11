@@ -272,6 +272,7 @@ static void   wsig_fill_scoring(bool euro_pool, uint8_t spass);
 static void   archive_lock(void);
 static void   archive_unlock(void);
 static bool   result_centred(const RunResult *r);
+static void   rec_offer_scoring(const RunResult *r, float key, int pass);
 static ScoreItem *score_row(bool euro_pool, int k);
 
 /* Per-item node-z archive (PSRAM). results[j] stays lean; centring needs the
@@ -983,6 +984,13 @@ static int score_run(int max_val, int pool_size, bool euro_pool,
                 if (isfinite(v[c]) && row->sum_n[c] < 255) row->sum_n[c]++;
             }
             if (row->passes < 255) row->passes++;
+            /* The record board takes this pass's own values (AC included —
+             * the display row may still hold an earlier pass's). */
+            if (row->r.k > 0) {
+                RunResult rr = row->r;
+                rr.acz = (float)acp[k];
+                rec_offer_scoring(&rr, (float)key, pass + 1);
+            }
         }
         closed++;
         wsig_fill_scoring(euro_pool, (uint8_t)(pass + 1));
@@ -1722,6 +1730,62 @@ int results_quietest(RunResult *out, int max)
     return m;
 }
 
+/* ── The record board (RecRow, sensor.h) ─────────────────────────────────
+ * One row per column. Written by the sensor task under the archive lock. */
+static RecRow s_rec[REC_N];
+
+/* How extreme a row is on record column c — larger wins. NaN = no value
+ * (Conc 0 is "no concordance", the results[] convention). */
+static double rec_val(int c, const RunResult *r)
+{
+    switch (c) {
+    case REC_Z:    return fabs((double)r->z_ctr);
+    case REC_CONC: return r->zc_ctr == 0.0f ? NAN : fabs((double)r->zc_ctr);
+    case REC_NSD:  return -(double)r->node_sd;
+    case REC_AC:   return -(double)r->acz;
+    default:       return -(double)r->mau;
+    }
+}
+
+/* spass 0 = a pass item: its Z* is taken from its block here, once, when it
+ * takes a row. A scoring run brings its pass key. */
+static void rec_offer(RecRow *B, const RunResult *r, float key, uint16_t spass)
+{
+    for (int c = 0; c < REC_N; c++) {
+        double v = rec_val(c, r);
+        if (!isfinite(v)) continue;
+        if (B[c].set && !(v > rec_val(c, &B[c].r))) continue;
+        B[c].r     = *r;
+        B[c].key   = spass ? key : (float)rank_key(r);
+        B[c].spass = spass;
+        B[c].set   = 1;
+    }
+}
+
+static void rec_offer_scoring(const RunResult *r, float key, int pass)
+{
+    archive_lock();
+    rec_offer(s_rec, r, key, (uint16_t)(pass > 0 ? pass : 1));
+    archive_unlock();
+}
+
+int results_records(RecRow *out)
+{
+    if (!out) return 0;
+    archive_lock();
+    memcpy(out, s_rec, sizeof(s_rec));
+    int ntot = g_status.runs_completed;
+    if (ntot > NUM_RUNS) ntot = NUM_RUNS;
+    for (int j = 0; j < ntot; j++) {
+        const RunResult *r = &g_status.results[j];
+        if (result_ranked(r) && result_centred(r)) rec_offer(out, r, NAN, 0);
+    }
+    archive_unlock();
+    int n = 0;
+    for (int c = 0; c < REC_N; c++) n += out[c].set ? 1 : 0;
+    return n;
+}
+
 /* ── What compaction left behind ──────────────────────────────────────────
  * Moments of the items pass_compact() dropped, so every pass statistic stays
  * EXACT over the whole session while results[] holds only the survivors.
@@ -1933,6 +1997,7 @@ static void pass_compact(void)
                  * rank_key() uses — it must not be counted as one. */
                 if (r->zc_ctr != 0.0f) s_drop_pn++;
                 if (quiet_eligible(r)) quiet_insert(s_quiet, &s_quiet_n, QUIET_N, r);
+                if (result_centred(r)) rec_offer(s_rec, r, NAN, 0);
             }
             dropped++;
             continue;
@@ -2993,6 +3058,7 @@ void elotto_task(void *pvParam)
     s_drop_pn = 0;
     archive_lock();
     s_quiet_n = 0;
+    memset(s_rec, 0, sizeof(s_rec));
     archive_unlock();
     // unlimited / runs_cap / scoring_passes are session parameters from /start and are NOT reset
     // here — they tag the session.

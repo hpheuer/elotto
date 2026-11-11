@@ -399,6 +399,16 @@ what remains visible is an effect varying **between items inside a block**.
   when empty.
   ⚠ Scoring windows enter it too, named `scoring <pass>/<round>` with the number in the
   Numbers column — not an item identity.
+- **Session extremes (the record board)**: one row per column — largest |Z|, largest |Conc|,
+  smallest Δn, most negative AC, most negative Mau — each the session's most extreme measurement
+  on it, with all its other values; the record cell is bold. Pass items and scoring runs compete
+  for the same row; a scoring run reads `scoring <pass>/<round>` with its number in Numbers.
+  `GET /extremes?rec=1` (`rec` 0..4 in that order, `spass` 0 = pass item; a column without a
+  value yet is left out), polled every 5 s. It survives compaction: `pass_compact()` offers every
+  ranked, centred row it merges, a scoring pass offers its numbers at its close, and
+  `results_records()` merges the board with the rows still in `results[]`. Cleared at session start.
+  ⚠ Z and Conc are compared as the columns print them (not divided by a block σ), so a scoring
+  run and a pass item meet on different scales. Quarantined rows never enter.
 - **A fourth table, Closest to chance**: the session's ten ranked, centred items with the
   smallest `|Z*|`, ascending, same columns as the Top-10, fixed order (no sort clicks).
   `/extremes` carries it as `quiet`. ⚠ Compaction keeps only the extremes, so `pass_compact()`

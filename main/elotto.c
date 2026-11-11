@@ -455,6 +455,16 @@ static const char HTML[] =
 "<tbody id='resBody'></tbody></table>"
 "</div>"
 /* One sortable Top-10; the low end is a header click away (direction flip). */
+/* The record board: one row per column, the session's most extreme
+   measurement on it (/extremes?rec=1). Survives compaction. */
+"<div class='card' id='resCardRec' style='display:none'>"
+"<h3 style='color:#c0a0e8;margin-bottom:4px'>&#9889; Session extremes</h3>"
+"<div style='font-size:.78em;opacity:.7;margin-bottom:6px'>One row per column: the most extreme "
+"measurement of this session on it, pass item or scoring run, with all its other values. "
+"The cell that holds the record is bold.</div>"
+"<table><thead id='resHeadRec'></thead>"
+"<tbody id='resBodyRec'></tbody></table>"
+"</div>"
 /* The camera-sigma jump board. Deliberately the LAST card and in a
    different colour from the ranking table: it is a suspicion list, not a ranking.
    What stands at the top is the item whose bits were least quiet while they
@@ -1446,6 +1456,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "sl.innerHTML+='<br>'+s4;}"
 "document.getElementById('resCard').style.display='block';"
 "document.getElementById('nodeCard').style.display='block';"
+"fetchRec(d);"
 "if(SCM){LD=d;document.getElementById('resSub').textContent='';fetchScore();showWsig(d);showTrip(d);return;}"
 "if(!d.top||d.top.length===0){"
 "document.getElementById('resTitle').innerHTML='\\uD83C\\uDFC6 Top 10';"
@@ -1634,6 +1645,32 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "var note=rankAbs?absRankNote(false,lo):'';"
 "document.getElementById('resSub').textContent=poolTxt&&note?poolTxt+' '+note:(poolTxt||note);"
 "showQuiet(d,isEuro,st);}"
+/* The record board: five fixed rows (largest |Z|, largest |Conc|, smallest
+   Δn, most negative AC, most negative Mau), 5 s poll like /extremes. The
+   first column names the record, the second the measurement: item/round, or
+   "scoring pass/round" for a scoring run (its number stands in Numbers). */
+"var RX=[],lastRec=0;"
+"function fetchRec(d){"
+"var now=Date.now();"
+"if(now-lastRec<5000){showRec(d);return;}"
+"lastRec=now;"
+"fetch('/extremes?rec=1').then(function(r){return r.json();}).then(function(x){"
+"RX=(x&&x.rec)?x.rec:[];showRec(d);}).catch(function(){});}"
+"function showRec(d){"
+"var c=document.getElementById('resCardRec');"
+"if(!RX.length){c.style.display='none';return;}"
+"var isEuro=d.mode==='euro';"
+"var lab=['largest |Z|','largest |Conc|','smallest \\u0394n','most negative AC','most negative Mau'];"
+"renderRunTable('resHeadRec','resBodyRec',RX,isEuro,d,zW(d));"
+"document.getElementById('resHeadRec').innerHTML="
+"'<tr><th>Extreme</th><th>Item/Round</th><th>Z*</th><th>Z</th><th>Conc</th><th>\\u0394n</th><th>AC</th><th>Mau</th>'"
+"+'<th>Numbers</th>'+(isEuro?'<th>Bonus</th>':'')+'<th></th></tr>';"
+"var tr=document.getElementById('resBodyRec').rows;"
+"for(var i=0;i<tr.length&&i<RX.length;i++){var r=RX[i],td=tr[i].cells;"
+"td[0].textContent=lab[r.rec]||'';td[0].style.whiteSpace='nowrap';"
+"if(r.spass)td[1].textContent='scoring '+r.spass+'/'+r.round;"
+"if(td[3+r.rec]){td[3+r.rec].style.fontWeight='700';td[3+r.rec].style.opacity='1';}}"
+"c.style.display='block';}"
 /* The quiet end: the session's ten smallest |Z*|, ascending, in the item
    row shape. Fixed order, so the header carries no sort clicks -- those
    belong to the Top-10. */
@@ -2603,6 +2640,31 @@ static esp_err_t extremes_handler(httpd_req_t *req)
     if (qj < 0) goto bad;
     if (qj > 0 && v[0] == '1')
         return extremes_jumps(req);
+    /* ?rec=1: the record board — one row per column (largest |Z|, largest
+     * |Conc|, smallest Δn, most negative AC, most negative Mau), item row
+     * shape plus `rec` (0..4, that order) and `spass` (scoring pass, 0 = a
+     * pass item). Columns without a value yet are left out. */
+    int qr = QPARAM("rec");
+    if (qr < 0) goto bad;
+    if (qr > 0 && v[0] == '1') {
+        RecRow rec[REC_N];
+        results_records(rec);
+        char rb[448];
+        httpd_resp_send_chunk(req, "{\"rec\":[", 8);
+        bool first = true;
+        for (int c = 0; c < REC_N; c++) {
+            if (!rec[c].set) continue;
+            char tail[40];
+            snprintf(tail, sizeof(tail), ",\"rec\":%d,\"spass\":%d", c, (int)rec[c].spass);
+            if (!first) httpd_resp_send_chunk(req, ",", 1);
+            int rl = emit_row(rb, sizeof(rb), &rec[c].r, (double)rec[c].key, tail);
+            send_chunk(req, rb, rl, sizeof(rb));
+            first = false;
+        }
+        httpd_resp_send_chunk(req, "]}", 2);
+        httpd_resp_send_chunk(req, NULL, 0);
+        return ESP_OK;
+    }
     int  want = EXTREMES_MAX;
     int  qn = QPARAM("n");
     if (qn < 0) goto bad;
@@ -2697,7 +2759,7 @@ bad:
     httpd_resp_set_status(req, "400 Bad Request");
     httpd_resp_set_type(req, "text/plain");
     httpd_resp_sendstr(req, "n=1.." EL_STR(PASS_KEEP_EXTREME)
-                       ", sort=key|z|conc|nsd|ac|mau, dir=high|low (with sort=), sums=1, jumps=1, score=1");
+                       ", sort=key|z|conc|nsd|ac|mau, dir=high|low (with sort=), sums=1, jumps=1, score=1, rec=1");
     return ESP_OK;
 }
 
