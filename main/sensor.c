@@ -256,7 +256,8 @@ static void score_build_keys(const float zn[][MAX_NODES],
                              const node_mask_t *mask,
                              const bool *scored, int max_val,
                              double *zc_out, double *nsd_out);
-static double zstar_of(double z, double sz, double nsd, double mau);
+static double zstar_of(double z, double sz, double nsd, double mau,
+                       double ser, double disp);
 static void   center_block(int block_idx);  // forward: publish_valid centres the OPEN block
 static void   wsig_collect(float out[MAX_NODES]);
 static void   wsig_note(const RunResult *r, const float *wsig, node_mask_t mask,
@@ -925,7 +926,8 @@ static int score_run(int max_val, int pool_size, bool euro_pool,
             ScoreItem *row = score_row(euro_pool, k);
             /* This pass's value per column. A missing one adds nothing. */
             double v[SCORE_SUM_N];
-            double key = zstar_of(zc_ctr[k], g_status.score_sig_z, nsd[k], maup[k]);
+            double key = zstar_of(zc_ctr[k], g_status.score_sig_z, nsd[k], maup[k],
+                                  serp[k], dispp[k]);
             v[SUM_KEY]  = key;
             v[SUM_Z]    = zc_ctr[k];
             v[SUM_DISP] = dispp[k];
@@ -1362,17 +1364,20 @@ static double zstar_w01(double w)
     return w > 1.0 ? 1.0 : w;
 }
 
-/* Z* = sign(Z)·|Z/σ_z|^kz · [1 + α·(1/Δn − 1)]
- *              · [1 + β·max(−Mau, 0)]
+/* Z* = sign(Z)·|Z/σ_z|^kz · [1 + ζ·|Disp|] · [1 + α·(1/Δn − 1)]
+ *              · [1 + ε·|Ser|] · [1 + β·max(−Mau, 0)]
  * (written in the Top-10 column order; the product is commutative)
  *
- * α β are g_status.k_dn / k_mau, each 0..1.
+ * α β ε ζ are g_status.k_dn / k_mau / k_ser / k_disp, each 0..1.
+ * Ser and Disp stretch by their MAGNITUDE: either sign is the cameras
+ * departing together from the rest of the block.
  * A missing column (NaN, Δn ≤ 0) leaves
  * its factor at 1. No σ_z → 0, never a fallback of 1.
  * ⛔ UNBOUNDED. Z/σ_z sits inside its block, the product of the factors
  * does not: a small Δn or a large negative Mau can exceed (n−1)/√n.
  * Nothing here truncates an extreme. */
-static double zstar_of(double z, double sz, double nsd, double mau)
+static double zstar_of(double z, double sz, double nsd, double mau,
+                       double ser, double disp)
 {
     if (!(sz > 0.0) || !isfinite(z)) return 0.0;
     /* Base sign(Z)·|Z/σ_z|^kz. kz = 1 is Z/σ_z exactly (no pow call), kz = 0
@@ -1388,6 +1393,12 @@ static double zstar_of(double z, double sz, double nsd, double mau)
     double b = zstar_w01(g_status.k_mau);
     if (isfinite(mau) && mau < 0.0 && b > 0.0)
         f *= 1.0 + b * (-mau);
+    double e = zstar_w01(g_status.k_ser);
+    if (isfinite(ser) && e > 0.0)
+        f *= 1.0 + e * fabs(ser);
+    double d = zstar_w01(g_status.k_disp);
+    if (isfinite(disp) && d > 0.0)
+        f *= 1.0 + d * fabs(disp);
     return zp * f;
 }
 
@@ -1395,7 +1406,7 @@ double rank_key(const RunResult *r)
 {
     if (!r) return 0.0;
     return zstar_of((double)r->z_ctr, block_sig_of(r), (double)r->node_sd,
-                    (double)r->mau);
+                    (double)r->mau, (double)r->ser, (double)r->disp);
 }
 
 /* ── Ranking of the held rows by the pool criterion ──────────────────────

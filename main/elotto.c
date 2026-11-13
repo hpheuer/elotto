@@ -287,11 +287,25 @@ static const char HTML[] =
 "<span class='pu'>%</span></span>"
 "</div>"
 "<div class='frow'>"
+"<label for='numKdisp' title='Percent of the full Disp correction, 0 to 100. A Disp away from 0, either sign, stretches Z* by its size. 0 leaves this factor at 1.'>Disp</label>"
+"<span class='wpct'>"
+"<input id='numKdisp' class='fin' type='number' min='0' max='100' step='1' value='0' "
+"oninput='onW(this)' onblur='onW(this,1)'>"
+"<span class='pu'>%</span></span>"
+"</div>"
+"<div class='frow'>"
 "<label for='numKdn' title='Percent of the full delta-n correction, 0 to 100. "
 "A smaller delta-n stretches Z* along the sign of Z. "
 "At delta-n = 1 the factor is 1. 0 leaves this factor at 1.'>&#916;n</label>"
 "<span class='wpct'>"
 "<input id='numKdn' class='fin' type='number' min='0' max='100' step='1' value='0' "
+"oninput='onW(this)' onblur='onW(this,1)'>"
+"<span class='pu'>%</span></span>"
+"</div>"
+"<div class='frow'>"
+"<label for='numKser' title='Percent of the full Ser correction, 0 to 100. A Ser away from 0, either sign, stretches Z* by its size. 0 leaves this factor at 1.'>Ser</label>"
+"<span class='wpct'>"
+"<input id='numKser' class='fin' type='number' min='0' max='100' step='1' value='0' "
 "oninput='onW(this)' onblur='onW(this,1)'>"
 "<span class='pu'>%</span></span>"
 "</div>"
@@ -653,19 +667,21 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "function fmtW(x){return (Math.round(x*100)/100).toFixed(2);}"
 "function paintFormula(d){"
 "var live=d&&(d.state==='running'||((d.state==='done'||d.state==='aborted')&&!formulaDirty));"
-"var a,b,kz;"
-"if(live){a=+d.k_dn||0;b=+d.k_mau||0;kz=kzOf(d);}"
-"else{a=wShow('numKdn');b=wShow('numKmau');kz=wShow('numKz');}"
+"var a,b,e,g,kz;"
+"if(live){a=+d.k_dn||0;b=+d.k_mau||0;e=+d.k_ser||0;g=+d.k_disp||0;kz=kzOf(d);}"
+"else{a=wShow('numKdn');b=wShow('numKmau');e=wShow('numKser');g=wShow('numKdisp');kz=wShow('numKz');}"
 "var el=document.getElementById('formulaBar');if(!el)return;"
 /* A factor whose weight prints as 0.00 is exactly 1 and is left out; at
    exponent 0 the base is sign(Z) alone. Save's params file keeps all of them. */
 "function on(w){return fmtW(w)!=='0.00';}"
 "var s='Z* = sign(Z)'+(on(kz)?'\\u00b7|Z/\\u03c3|^'+fmtW(kz):'');"
+"if(on(g))s+=' \\u00b7 [1 + '+fmtW(g)+'\\u00b7|Disp|]';"
 "if(on(a))s+=' \\u00b7 [1 + '+fmtW(a)+'\\u00b7(1/\\u0394n \\u2212 1)]';"
+"if(on(e))s+=' \\u00b7 [1 + '+fmtW(e)+'\\u00b7|Ser|]';"
 "if(on(b))s+=' \\u00b7 [1 + '+fmtW(b)+'\\u00b7max(\\u2212Mau, 0)]';"
 "el.innerHTML=s+\"<div style='font-size:.78em;color:#8fae8f;margin-top:2px'>factors with weight 0 are 1 and not shown</div>\";"
 "}"
-"function zW(d){return {a:+d.k_dn||0,b:+d.k_mau||0,z:kzOf(d)};}"
+"function zW(d){return {a:+d.k_dn||0,b:+d.k_mau||0,e:+d.k_ser||0,g:+d.k_disp||0,z:kzOf(d)};}"
 /* k_z missing (older firmware) is the old base Z/σ, exponent 1. */
 "function kzOf(d){return (d&&d.k_z!=null)?+d.k_z:1;}"
 "window.onload=function(){"
@@ -774,6 +790,8 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "q.push(pItem('Pool',critPhrase(d.score_dir,d.score_sum||'key')));"
 "q.push(pItem('Z','^'+fmtW(kzOf(d))));"
 "q.push(pItem('\\u0394n',fmtW(+d.k_dn||0)));"
+"q.push(pItem('Disp',fmtW(+d.k_disp||0)));"
+"q.push(pItem('Ser',fmtW(+d.k_ser||0)));"
 "q.push(pItem('Mau',fmtW(+d.k_mau||0)));"
 "b.innerHTML=p.join(sep)+'<br>'+q.join(sep);"
 "}"
@@ -827,7 +845,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "function clampW(id){var e=document.getElementById(id);var v=parseFloat(e.value);"
 "if(!(v>=0)||!isFinite(v))v=0;if(v>100)v=100;v=Math.round(v);e.value=String(v);"
 "return (v/100).toFixed(2);}"
-"var kdn=clampW('numKdn'),kmau=clampW('numKmau'),kz=clampW('numKz');"
+"var kdn=clampW('numKdn'),kmau=clampW('numKmau'),kser=clampW('numKser'),kdisp=clampW('numKdisp'),kz=clampW('numKz');"
 "var fix=formFix();document.getElementById('numFix').value=fix;"
 "if(fix>0&&mxr===0){document.getElementById('runsErr').textContent='\\u26a0 Fixed numbers need Runs per round above 0';return;}"
 "if(!fixOk(mode===0,fix)){document.getElementById('runsErr').textContent="
@@ -841,7 +859,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "fetch('/start?mode='+mode"
 "+'&run='+runS+'&srun='+srunS"
 "+'&score='+score"
-"+'&kdn='+kdn+'&kmau='+kmau+'&kz='+kz+'&fix='+fix"
+"+'&kdn='+kdn+'&kmau='+kmau+'&kser='+kser+'&kdisp='+kdisp+'&kz='+kz+'&fix='+fix"
 "+'&maxruns='+mxr+'&passes='+passes+'&confirm=1',{method:'POST'})"
 ".then(function(r){if(!r.ok){"
 "document.getElementById('runsErr').textContent="
@@ -904,7 +922,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "setTimeout(function(){URL.revokeObjectURL(a.href);},1500);}"
 "function w3(x){return (Math.round((+x||0)*1000)/1000).toFixed(3);}"
 "function paramsOf(st){"
-"var a=+st.k_dn||0,b=+st.k_mau||0,kz=kzOf(st);"
+"var a=+st.k_dn||0,b=+st.k_mau||0,e=+st.k_ser||0,g=+st.k_disp||0,kz=kzOf(st);"
 "var runs=st.runs_cap,passes=st.scoring_passes;"
 "var L=[];"
 "L.push('Mode: '+(st.mode==='euro'?'Eurojackpot 5+2':(st.mode?'6 of 49':'')));"
@@ -918,10 +936,14 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "L.push('Sweep: '+(st.cal_budget_ms>0?(st.cal_budget_ms/1000)+' s':'off'));"
 "L.push('Pool criterion: '+critPhrase(st.score_dir,st.score_sum||'key'));"
 "L.push('Z exponent: '+w3(kz));"
+"L.push('Disp: '+w3(g));"
 "L.push('\\u0394n: '+w3(a));"
+"L.push('Ser: '+w3(e));"
 "L.push('Mau: '+w3(b));"
 "L.push('Z* = sign(Z)\\u00b7|Z/\\u03c3|^'+w3(kz)"
+"+' \\u00b7 [1 + '+w3(g)+'\\u00b7|Disp|]'"
 "+' \\u00b7 [1 + '+w3(a)+'\\u00b7(1/\\u0394n \\u2212 1)]'"
+"+' \\u00b7 [1 + '+w3(e)+'\\u00b7|Ser|]'"
 "+' \\u00b7 [1 + '+w3(b)+'\\u00b7max(\\u2212Mau, 0)]');"
 "L.push('0 leaves that factor at 1');"
 "return L;}"
@@ -1669,13 +1691,13 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 ":'Running sum of this number\\u2019s pass values \\u2014 the pool is picked on it. While the scoring runs the arrow is the pool direction: \\u25be highest, \\u25b4 lowest; a second click flips it. A green # marks a pool member.';}"
 "function zTip(){return (SCM?'Latest Z* of this number':'This item\\u2019s Z*')"
 "+', sorted by |Z*|. The cell keeps the sign: \\u25be larger magnitude, \\u25b4 smaller. '"
-"+'Z* = sign(Z)\\u00b7|Z/\\u03c3|^exponent times the two factors, as the formula at the top of the page shows with the weights in force. No block \\u03c3 yet gives 0. Click to sort.';}"
+"+'Z* = sign(Z)\\u00b7|Z/\\u03c3|^exponent times the four factors, as the formula at the top of the page shows with the weights in force. No block \\u03c3 yet gives 0. Click to sort.';}"
 "function renderRunTable(headId,bodyId,res,isEuro,d,st,opt){"
 "document.getElementById(headId).innerHTML="
 "'<tr><th>#</th>'+(opt?'<th style=\"cursor:pointer\" title=\"'+sumTip()+'\" onclick=\"sortBy(\\'sum\\')\">\\u03a3 '+colName(curSum())+exArrow('sum')+'</th>':'<th>Item/Round</th>')"
 "+(st?'<th style=\"cursor:pointer\" title=\"'+zTip()+'\" onclick=\"sortBy(\\'key\\')\">'+sumLab(opt,'key','|Z*|')+exArrow('key')+sumMark(opt,'key')+'</th>'"
 "+'<th style=\"cursor:pointer\" title=\"block-centred combined z. Click to sort the 50\" onclick=\"sortBy(\\'z_ctr\\')\">'+sumLab(opt,'z','Z')+exArrow('z_ctr')+sumMark(opt,'z')+'</th>'"
-/* Disp: the dispersion of the bits inside the window, the cameras together. Never in Z*. */
+/* Disp: the dispersion of the bits inside the window, the cameras together. Stretches Z* by |Disp| when ?kdisp= is above 0. */
 "+'<th title=\"Did the cameras\\u2019 ones come in bursts more on this item than on the others, together?\\n"
 "Each camera cuts its window into pieces of 3200 bits and takes the spread of the ones-count "
 "over those pieces. That spread is taken against the camera\\u2019s own average over the block, "
@@ -1684,7 +1706,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "large + = the ones-rate wandered inside the window more than usual\\n"
 "large \\u2212 = the bits were more even than usual\\n"
 "\\u2014 = block (scoring: pass) still open, or no camera reported it\\n"
-"It never enters Z*. Its running sum can pick the pool. Click to sort.\" "
+"When its weight at the top is above 0, a Disp away from 0, either sign, stretches Z*. Its running sum can also pick the pool. Click to sort.\" "
 "style=\"cursor:pointer\" onclick=\"sortBy(\\'disp\\')\">'+sumLab(opt,'disp','Disp')+exArrow('disp')+sumMark(opt,'disp')+'</th>'"
 /* Plain-language tooltip: the operator is the only reader of this cell, and the
    column is worthless if its meaning has to be looked up. English like the rest
@@ -1701,7 +1723,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "When its weight at the top is above 0, a smaller \\u0394n stretches Z* along the sign of Z. "
 "Its running sum can also pick the pool. Click to sort.\" style=\"cursor:pointer\" onclick=\"sortBy(\\'nsd\\')\">"
 "'+sumLab(opt,'nsd','\\u0394n')+exArrow('nsd')+sumMark(opt,'nsd')+'</th>'"
-/* Ser: the serial order of the bits, the cameras together. Never in Z*. */
+/* Ser: the serial order of the bits, the cameras together. Stretches Z* by |Ser| when ?kser= is above 0. */
 "+'<th title=\"Did the cameras\\u2019 bits repeat more on this item than on the others, together?\\n"
 "Each camera counts how often a bit equals the bit 1, 2, 3 or 4 places before it. That figure "
 "is taken against the camera\\u2019s own average over the block, combined over the cameras, "
@@ -1710,7 +1732,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "large + = the cameras\\u2019 bits repeated more than usual on this item\\n"
 "large \\u2212 = they alternated more than usual\\n"
 "\\u2014 = block (scoring: pass) still open, or no camera reported it\\n"
-"It never enters Z*. Its running sum can pick the pool. Click to sort.\" "
+"When its weight at the top is above 0, a Ser away from 0, either sign, stretches Z*. Its running sum can also pick the pool. Click to sort.\" "
 "style=\"cursor:pointer\" onclick=\"sortBy(\\'ser\\')\">'+sumLab(opt,'ser','Ser')+exArrow('ser')+sumMark(opt,'ser')+'</th>'"
 /* Mau: Maurer's universal test over this item's window. A negative Mau
    stretches Z* when ?kmau= is above 0. Its Σ may still pick the pool. */
@@ -1761,7 +1783,8 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "var det='Z '+zTxt"
 "+' \\u00b7 \\u0394n '+nsdTxt+' (k '+(r.k===undefined?'?':r.k)+')';"
 "if(st)det+='\\nZ ^'+(st.z==null?1:st.z).toFixed(2)+' \\u00b7 \\u0394n \\u00d7'+(st.a||0).toFixed(2)"
-"+' \\u00b7 Mau \\u00d7'+(st.b||0).toFixed(2);"
+"+' \\u00b7 Mau \\u00d7'+(st.b||0).toFixed(2)"
+"+' \\u00b7 Ser \\u00d7'+(st.e||0).toFixed(2)+' \\u00b7 Disp \\u00d7'+(st.g||0).toFixed(2);"
 "tb.innerHTML+='<tr><td'+(inP?' style=\"color:#90ee90;font-weight:700\" title=\"in the pool\"':'')+'>'+(i+1)+'</td><td>'+itm+'</td>"
 "'+(st?'<td title=\"'+det+'\">'+zs+'</td>'"
 "+'<td'+dim+'>'+zTxt+'</td><td'+(dispCol?' style=\"color:'+dispCol+'\"':'')+'>'+dispTxt+'</td>'"
@@ -2056,8 +2079,8 @@ static esp_err_t status_handler(httpd_req_t *req)
         "\"pass_n_excl\":%d,\"pass_n_open\":%d,"
         "\"v_eff\":%.4f,\"flush_timeouts\":%lu,"
         /* Z* factor weights of this session. rank_key() divides Z by the
-         * item's BLOCK σ and multiplies the two factors. */
-        "\"k_dn\":%.3f,\"k_mau\":%.3f,"
+         * item's BLOCK σ and multiplies the four factors. */
+        "\"k_dn\":%.3f,\"k_mau\":%.3f,\"k_ser\":%.3f,\"k_disp\":%.3f,"
         "\"k_z\":%.3f,\"pool_fix\":%d,"
         "\"score_dir\":\"%s\",\"score_sum\":\"%s\","
         "\"loop_sigma\":%.4f,"
@@ -2107,7 +2130,7 @@ static esp_err_t status_handler(httpd_req_t *req)
         g_status.pass_stouffer, g_status.pass_n_valid, g_status.pass_n_void,
         g_status.pass_n_excl, g_status.pass_n_open,
         g_status.v_eff, (unsigned long)g_status.flush_timeouts,
-        g_status.k_dn, g_status.k_mau,
+        g_status.k_dn, g_status.k_mau, g_status.k_ser, g_status.k_disp,
         g_status.k_z, g_status.pool_fix,
         score_str,
         SCORE_SUM_NAME[(g_status.score_sum >= 0 && g_status.score_sum < SCORE_SUM_N)
@@ -2956,7 +2979,7 @@ typedef struct {
     int        cal_ms;
     ScoreDir   score_dir;
     bool       fake_pool;
-    double     k_dn, k_mau, k_z;
+    double     k_dn, k_mau, k_ser, k_disp, k_z;
     int        fix;
     bool       from_form;
 } StartReq;
@@ -3029,6 +3052,10 @@ static bool start_parse_kdn(const char *val, StartReq *r, httpd_req_t *req)
 { return start_parse_w01(val, &r->k_dn, req, "kdn"); }
 static bool start_parse_kmau(const char *val, StartReq *r, httpd_req_t *req)
 { return start_parse_w01(val, &r->k_mau, req, "kmau"); }
+static bool start_parse_kser(const char *val, StartReq *r, httpd_req_t *req)
+{ return start_parse_w01(val, &r->k_ser, req, "kser"); }
+static bool start_parse_kdisp(const char *val, StartReq *r, httpd_req_t *req)
+{ return start_parse_w01(val, &r->k_disp, req, "kdisp"); }
 static bool start_parse_kz(const char *val, StartReq *r, httpd_req_t *req)
 {
     double p;
@@ -3173,13 +3200,13 @@ static const StartKey start_keys[] = {
     { "focus",     START_GONE_V3, NULL },
     { "went",
       "went= no longer exists -- ranking is the Z* product "
-      "(kdn=, kmau=)", NULL },
+      "(kdn=, kmau=, kser=, kdisp=)", NULL },
     { "wruns",
       "wruns= no longer exists -- ranking is the Z* product "
-      "(kdn=, kmau=)", NULL },
+      "(kdn=, kmau=, kser=, kdisp=)", NULL },
     { "wpre",
-      "wpre= no longer exists -- Z* is z/sigma times kdn= and kmau= "
-      "(each 0..1, 0 = that factor off)", NULL },
+      "wpre= no longer exists -- Z* is z/sigma times kdn=, kmau=, "
+      "kser= and kdisp= (each 0..1, 0 = that factor off)", NULL },
     { "baseline",
       "baseline= no longer exists -- the baseline phase was deleted; "
       "block centring is the drift reference", NULL },
@@ -3194,6 +3221,8 @@ static const StartKey start_keys[] = {
     { "score",     NULL, start_parse_score },
     { "kdn",       NULL, start_parse_kdn },
     { "kmau",      NULL, start_parse_kmau },
+    { "kser",      NULL, start_parse_kser },
+    { "kdisp",     NULL, start_parse_kdisp },
     { "kz",        NULL, start_parse_kz },
     { "fix",       NULL, start_parse_fix },
     { "maxruns",   NULL, start_parse_maxruns },
@@ -3290,7 +3319,7 @@ typedef struct {
     int          score_target_ms, score_gap_ms, score_segments;
     int          cal_budget_ms;
     ScoreDir     score_dir;
-    double       k_dn, k_mau, k_z;
+    double       k_dn, k_mau, k_ser, k_disp, k_z;
     int          pool_fix;
     ElottoState  state;
 } StartSnap;
@@ -3312,6 +3341,8 @@ static void start_snap_save(StartSnap *s)
     s->score_dir     = g_status.score_dir;
     s->k_dn          = g_status.k_dn;
     s->k_mau         = g_status.k_mau;
+    s->k_ser         = g_status.k_ser;
+    s->k_disp        = g_status.k_disp;
     s->k_z           = g_status.k_z;
     s->pool_fix      = g_status.pool_fix;
     s->state         = g_status.state;
@@ -3334,6 +3365,8 @@ static void start_snap_restore(const StartSnap *s)
     g_status.score_dir     = s->score_dir;
     g_status.k_dn          = s->k_dn;
     g_status.k_mau         = s->k_mau;
+    g_status.k_ser         = s->k_ser;
+    g_status.k_disp        = s->k_disp;
     g_status.k_z           = s->k_z;
     g_status.pool_fix      = s->pool_fix;
     g_status.state         = s->state;
@@ -3383,6 +3416,8 @@ static esp_err_t start_handler(httpd_req_t *req)
             .score_dir = SCORE_DIR_HIGH,
             .k_dn      = ZSTAR_W_DEFAULT,
             .k_mau     = ZSTAR_W_DEFAULT,
+            .k_ser     = ZSTAR_W_DEFAULT,
+            .k_disp    = ZSTAR_W_DEFAULT,
             .k_z       = ZSTAR_KZ_DEFAULT,
             .fix       = 0,
             .from_form = false,
@@ -3452,6 +3487,8 @@ static esp_err_t start_handler(httpd_req_t *req)
         g_status.fake_pool      = parsed.fake_pool;
         g_status.k_dn           = parsed.k_dn;
         g_status.k_mau          = parsed.k_mau;
+        g_status.k_ser          = parsed.k_ser;
+        g_status.k_disp         = parsed.k_disp;
         g_status.k_z            = parsed.k_z;
         g_status.pool_fix       = parsed.fix;
         g_status.state          = ELOTTO_RUNNING;
@@ -3912,6 +3949,8 @@ static void prefs_save(void)
     /* The old "wpre" blob is left unread. These replace it. */
     nvs_set_u8(h,  "kdn",   pref_w100(g_status.k_dn));
     nvs_set_u8(h,  "kmau",  pref_w100(g_status.k_mau));
+    nvs_set_u8(h,  "kser",  pref_w100(g_status.k_ser));
+    nvs_set_u8(h,  "kdisp", pref_w100(g_status.k_disp));
     nvs_set_u8(h,  "kz",    pref_w100(g_status.k_z));
     nvs_set_u8(h,  "fix",   (uint8_t)g_status.pool_fix);
     nvs_commit(h);
@@ -3957,7 +3996,7 @@ static void prefs_send(httpd_req_t *req)
     if (nvs_open(PREF_NS, NVS_READONLY, &h) != ESP_OK) return;
     uint16_t run10 = 0, srun10 = 0, maxruns = 0;
     uint8_t score = 0xff, passes = 0;
-    uint8_t kdn = 0xff, kmau = 0xff, kz = 0xff, fix = 0xff;
+    uint8_t kdn = 0xff, kmau = 0xff, kser = 0xff, kdisp = 0xff, kz = 0xff, fix = 0xff;
     bool any = false;
     /* maxruns and passes now have 0 as a real value (scoring-only / continuous),
      * so remember them on presence, not on being non-zero. The old "wpre"
@@ -3970,12 +4009,14 @@ static void prefs_send(httpd_req_t *req)
     if (nvs_get_u8(h,  "score", &score) == ESP_OK) any = true;
     if (nvs_get_u8(h,  "kdn",   &kdn) == ESP_OK) any = true;
     if (nvs_get_u8(h,  "kmau",  &kmau) == ESP_OK) any = true;
+    if (nvs_get_u8(h,  "kser",  &kser) == ESP_OK) any = true;
+    if (nvs_get_u8(h,  "kdisp", &kdisp) == ESP_OK) any = true;
     if (nvs_get_u8(h,  "kz",    &kz) == ESP_OK) any = true;
     if (nvs_get_u8(h,  "fix",   &fix) == ESP_OK) any = true;
     nvs_close(h);
     if (!any) return;
 
-    char js[1200];
+    static char js[1800];   /* httpd serialises handlers */
     int p = 0;
     p += snprintf(js + p, sizeof(js) - p, "<script>(function(){var e;");
     if (run10 > 0)
@@ -4010,6 +4051,14 @@ static void prefs_send(httpd_req_t *req)
         p += snprintf(js + p, sizeof(js) - p,
             "e=document.getElementById('numKmau');if(e)e.value='%u';",
             (unsigned)(kmau > 100 ? 100 : kmau));
+    if (kser != 0xff)
+        p += snprintf(js + p, sizeof(js) - p,
+            "e=document.getElementById('numKser');if(e)e.value='%u';",
+            (unsigned)(kser > 100 ? 100 : kser));
+    if (kdisp != 0xff)
+        p += snprintf(js + p, sizeof(js) - p,
+            "e=document.getElementById('numKdisp');if(e)e.value='%u';",
+            (unsigned)(kdisp > 100 ? 100 : kdisp));
     if (kz != 0xff)
         p += snprintf(js + p, sizeof(js) - p,
             "e=document.getElementById('numKz');if(e)e.value='%u';",

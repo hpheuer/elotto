@@ -251,7 +251,7 @@ _Static_assert(UNLIM_RUNS_MAX + PASS_KEEP_EXTREME <= NUM_RUNS,
  * than a small k does. */
 #define NODE_SOFT_MIN_COMBINE  1     // never soft-exclude below this many live nodes
 /* Z* factor weights, each independently 0..1. 0 turns that factor off
- * (the factor stays 1). ?kdn= Δn, ?kmau= Mau.
+ * (the factor stays 1). ?kdn= Δn, ?kmau= Mau, ?kser= Ser, ?kdisp= Disp.
  * Omitted → 0, so Z* = z_ctr / block σ. The form stores them only on
  * confirm=1; /status names the ones that ran. */
 #define ZSTAR_W_DEFAULT      0.0
@@ -335,7 +335,8 @@ typedef struct {
      * block, Stouffer over the combined nodes, then divided by the block's own
      * σ of that combine — unit variance within the block, read against 0.
      * + = the cameras' ones came in bursts more on this item than on the rest
-     * of the block, together; − = more evenly. Never in Z*.
+     * of the block, together; − = more evenly. Enters Z* through ?kdisp=, by
+     * its magnitude.
      * NaN until the block (scoring: the pass) is centred, or no node reported. */
     float      disp;
     /* NODE AGREEMENT on this item: sample σ across the contributing nodes of
@@ -368,7 +369,8 @@ typedef struct {
      * node's mean over the block, Stouffer over the combined nodes, then
      * divided by the block's own σ of that combine — unit variance within the
      * block, read against 0. + = the cameras' bits repeated more on this item
-     * than on the rest of the block, together. Never in Z*.
+     * than on the rest of the block, together. Enters Z* through ?kser=, by
+     * its magnitude.
      * NaN until the block (scoring: the pass) is centred, or no node reported. */
     float      ser;
 } RunResult;
@@ -837,11 +839,13 @@ typedef struct {
     double           v_eff;               // Var(Σz_i/√k) under measured σ and r
                                           // (1.0 = independent unit nodes)
     /* ── Z* factor weights ─────────────────────────────────────────
-     * Each 0..1, independent. 0 leaves that factor at 1, so both at 0
+     * Each 0..1, independent. 0 leaves that factor at 1, so all four at 0
      * is Z* = z_ctr/σ. They rank; they do not test. pass_mean/pass_sigma/
      * pass_chi2 stay on z alone. */
     double           k_dn;                // ?kdn=  Δn stretch
     double           k_mau;               // ?kmau= Mau stretch (negative Mau)
+    double           k_ser;               // ?kser= Ser stretch (|Ser|)
+    double           k_disp;              // ?kdisp= Disp stretch (|Disp|)
     double           k_z;                 // ?kz=   exponent on |Z/σ_z|
     int              pool_fix;            // ?fix=  numbers in every combination, 0 = off
     double           loop_sigma;          // per-run σ of the LAST CLOSED BLOCK (1.0 = ideal)
@@ -1028,8 +1032,8 @@ const camera_cal_t *elotto_last_calibration(void);
  * poll. Idempotent. */
 void results_archive_init(void);
 
-/* Z* of one row: (z_ctr / block σ) times the Δn and Mau factors
- * at g_status.k_dn / k_mau. 0 when that block has no σ.
+/* Z* of one row: (z_ctr / block σ) times the Δn, Mau, Ser and Disp factors
+ * at g_status.k_dn / k_mau / k_ser / k_disp. 0 when that block has no σ.
  * The ONE accessor every table and every survivor choice goes through. */
 double rank_key(const RunResult *r);
 

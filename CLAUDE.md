@@ -69,7 +69,7 @@ across rounds a combination can recur — identity is **(round, index)**.
 - **No loops, no Runs cap, no ranking modes.** `/start` is a **whitelist**: an unknown
   key answers **400**. Deleted keys (`loops`, `runs`, `rank`, `focus`, `went`, `wruns`,
   `baseline`, `calint`, `unlimited=0`, `wpre`) keep a specific 400. Allowed: `mode`, `run`, `srun`, `gap`,
-  `score`, `kdn`, `kmau`, `kz`, `fix`, `maxruns`, `passes`, `confirm`, `cal`, `unlimited`, `fakepool` (TEST: `1` skips the scoring and draws a random pool). An empty key (`?=x`), a value over
+  `score`, `kdn`, `kmau`, `kser`, `kdisp`, `kz`, `fix`, `maxruns`, `passes`, `confirm`, `cal`, `unlimited`, `fakepool` (TEST: `1` skips the scoring and draws a random pool). An empty key (`?=x`), a value over
   `START_VAL_MAX` 31 characters and a query string over 255 characters each answer **400** as well
   — a truncated value or query must never read as "key absent" and resolve to the default.
   ⚠ **A refused /start changes nothing**: parameters are parsed into locals and committed to
@@ -145,7 +145,7 @@ to the last pool member. **The scoring key is the pass key** — `zstar_of()`, a
 ⚠ Scoring has no `/loops` block; the scoring span **is** the block. Per-node centre over the
 numbers each camera actually answered, then
 the same product as the pass. σ is that span's own. Uncentred LSB ranks nodes.
-⚠ Both weights at 0 is z alone (Z/σ). `score_build_keys()` centres the span and publishes its σ; it does not build the key.
+⚠ All four weights at 0 is z alone (Z/σ). `score_build_keys()` centres the span and publishes its σ; it does not build the key.
 The six sums of every number (main and euro each their own record) are kept for every scoring
 of the session until the next session start: `SCORE_SNAP_MAX` 128 earliest, PSRAM,
 `GET /extremes?sums=1`. A scoring aborted before any pass closed stores nothing; one aborted
@@ -227,20 +227,20 @@ stop survives as backstop for a compaction that cannot allocate.
 ## The ranking channels
 One ranking key, `zstar_of()` in `sensor.c`, used by the scoring pass and by `rank_key()`:
 
-Z\* = sign(Z)·|Z/σ_z|^κ · [1 + α·(1/Δn − 1)] · [1 + β·max(−Mau, 0)]
+Z\* = sign(Z)·|Z/σ_z|^κ · [1 + ζ·|Disp|] · [1 + α·(1/Δn − 1)] · [1 + ε·|Ser|] · [1 + β·max(−Mau, 0)]
 
-α β are `?kdn=` `?kmau=`, each 0..1 and independent, default 0 = that factor stays 1. κ `?kz=` 0..1 is the exponent on |Z/σ_z| (default 1; 0 = sign of Z only, the factors carry the magnitude). Both at 0 and κ = 1 is Z/σ_z. A missing column leaves its factor at 1. ⚠ The start form types each weight as a whole percent 0–100 and sends the fraction: 80 in the field is `?kdn=0.80`. `?kdn=80` is refused. A column enters Z\* only through its weight; as the pool criterion it still picks the pool and the extreme set on its own sum.
+α β ε ζ are `?kdn=` `?kmau=` `?kser=` `?kdisp=`, each 0..1 and independent, default 0 = that factor stays 1. κ `?kz=` 0..1 is the exponent on |Z/σ_z| (default 1; 0 = sign of Z only, the factors carry the magnitude). All four at 0 and κ = 1 is Z/σ_z. A missing column leaves its factor at 1. ⚠ The start form types each weight as a whole percent 0–100 and sends the fraction: 80 in the field is `?kdn=0.80`. `?kdn=80` is refused. A column enters Z\* only through its weight; as the pool criterion it still picks the pool and the extreme set on its own sum.
 - **Z** — binomial of the camera LSBs in that window, block-centred Stouffer combine; σ_z is that block's own σ (scoring: the pass span).
 - **Δn** — node agreement: σ across the contributing nodes of their block-centred z, each node divided by ITS OWN σ over that block. Independent cameras ≈ 1, so read it against 1, not against 0. Smaller than 1 stretches Z along its own sign; larger than 1 pulls Z toward 0. Δn = 0,82 and α = 1 → 1 + (1/0,82 − 1) = 1,220. Δn ≤ 0 or missing → factor 1. The cell prints the node count: `0,79 (3)`, highlighted below 0,6 and dimmed above 1,0. ⚠ **—** until the item's block has been centred, and whenever fewer than two nodes have a block σ; never 0 for "unknown" — 0 would read as perfect agreement. ⚠ Small Δn is agreement, not evidence — centring has already removed the block-wide common mode that would otherwise produce it.
 - **Mau** — Maurer's universal test (NIST SP 800-22 §2.9) over the item's own window: per node, over exactly the bits z counts (`gcp_last_maurer()` in `elotto_gcp`, `,mau=`, `/camlog` `mau`), L = 8 (byte blocks, MSB first), Q = 2560 init blocks, K = the rest; z = (f_n − 7,1836656) / (c·√(3,238/K)), c = 0,7 − 0,1 + 8·K^(−3/8)/15. Then centred on that node's block mean (scoring: pass mean; a node with < 2 values stays out), Stouffer over the combined nodes, divided by the block's own σ of that combine — unit variance, read against 0, − = more compressible, coloured at |Mau| > 3. Only a negative Mau stretches: Mau = −1,5 and β = 1 → 2,5. Zero, positive or missing → factor 1; a positive Mau does not flip the sign of Z. **—** until centred. ⚠ Below NIST's minimum at short `?run=` (L = 8 wants ≥ 2,07 Mbit per window); the c(L,K) correction keeps σ right, the centring removes the per-camera offset.
-- **Disp** — the dispersion of the bits inside the window, built like Mau and never in Z\*: per node the camera's per-mini-run σ over its window (3200-bit pieces; `,wsig=`, `/camlog` `wsig`), centred on that node's block mean (scoring: pass mean; a node with < 2 values stays out), Stouffer over the combined nodes, divided by the block's own σ of that combine — unit variance, read against 0, coloured at |Disp| > 3. + = the cameras' ones-rate wandered inside the window more on this item than on the rest of the block, together; − = more evenly. ⚠ A node publishes no window σ below 200 pieces (640 000 bit) and is then missing from the combine. **—** until centred.
-- **Ser** — the serial order of the bits, built like Mau and never in Z\*: per node the Stouffer z of its window's lag-1..4 bit agreement (`gcp_last_serial()`, `,ser=`; the four lags are the `acz` of its `/camlog`), centred on that node's block mean (scoring: pass mean; a node with < 2 values stays out), Stouffer over the combined nodes, divided by the block's own σ of that combine — unit variance, read against 0, coloured at |Ser| > 3. + = the cameras' bits repeated more on this item than on the rest of the block, together. ⚠ The node reduces the four lags to one number; the master only centres and combines. ⚠ One camera's excursion is diluted by √k here — it stays in that node's `/camlog` (`acz`, `bchi`, `ser`). **—** until centred.
+- **Disp** — the dispersion of the bits inside the window, built like Mau: per node the camera's per-mini-run σ over its window (3200-bit pieces; `,wsig=`, `/camlog` `wsig`), centred on that node's block mean (scoring: pass mean; a node with < 2 values stays out), Stouffer over the combined nodes, divided by the block's own σ of that combine — unit variance, read against 0, coloured at |Disp| > 3. + = the cameras' ones-rate wandered inside the window more on this item than on the rest of the block, together; − = more evenly. Either sign stretches, by the magnitude: Disp = −1,2 and ζ = 1 → 2,2; missing → factor 1. ⚠ A node publishes no window σ below 200 pieces (640 000 bit) and is then missing from the combine. **—** until centred.
+- **Ser** — the serial order of the bits, built like Mau: per node the Stouffer z of its window's lag-1..4 bit agreement (`gcp_last_serial()`, `,ser=`; the four lags are the `acz` of its `/camlog`), centred on that node's block mean (scoring: pass mean; a node with < 2 values stays out), Stouffer over the combined nodes, divided by the block's own σ of that combine — unit variance, read against 0, coloured at |Ser| > 3. + = the cameras' bits repeated more on this item than on the rest of the block, together. Either sign stretches, by the magnitude: Ser = 0,8 and ε = 1 → 1,8; missing → factor 1. ⚠ The node reduces the four lags to one number; the master only centres and combines. ⚠ One camera's excursion is diluted by √k here — it stays in that node's `/camlog` (`acz`, `bchi`, `ser`). **—** until centred.
 
-Worked stack, both weights 1: Z/σ_z = −2, Δn = 0,82, Mau = −1,5 → −2 · 1,220 · 2,5 = −6,10.
+Worked stack, all weights 1: Z/σ_z = −2, Disp = −1,2, Δn = 0,82, Ser = 0,8, Mau = −1,5 → −2 · 2,2 · 1,220 · 1,8 · 2,5 ≈ −24,16.
 
 ⚠ Z is divided by the σ of **that item's block**, frozen at close. There is **no** session-wide σ — `s_bsig[block].sig_p` is the only scale, and `/loops` no longer publishes it. A key with no block σ is 0, never a fallback. The product is not re-standardised.
 ⚠ Uncentred z ranks NODES, not items — a live table is meaningless before the first block closes.
-⛔ **The key is UNBOUNDED — nothing truncates an extreme item**. Z/σ_z sits inside its block (`|Z/σ_z| ≤ (n−1)/√n`). The product of the factors does not: a small Δn or a large negative Mau can pass that ceiling, and a quiet block can then produce a large key. ⚠ The last round of a session is short because Abort cut it.
+⛔ **The key is UNBOUNDED — nothing truncates an extreme item**. Z/σ_z sits inside its block (`|Z/σ_z| ≤ (n−1)/√n`). The product of the factors does not: a small Δn, a large |Ser| or |Disp| or a large negative Mau can pass that ceiling, and a quiet block can then produce a large key. ⚠ The last round of a session is short because Abort cut it.
 The formula at the top of the page leaves out a factor whose weight is 0 (at κ = 0 the base reads `sign(Z)`); the Save params file keeps all of them. A reload of a finished session shows that session's weights until an input changes.
 
 Wire: `Z:<z>[,wsig=<σ>][,mau=<z>][,ser=<z>]`, all three TAGGED.
@@ -313,7 +313,7 @@ What the page shows is in `main/elotto.c`; this keeps what bites.
   ⚠ The block number shown is 1-based like `/loops`; `results[].block` is 0-based.
 - **The start form remembers its last values** (NVS, survives reboot and OTA). ⚠ **Only a start
   carrying `confirm=1` writes them** — i.e. only the web UI. A curl start that omits `kdn` /
-  `kmau` runs at 0 and does not overwrite the stored form weights. ⚠ It changes
+  `kmau` / `kser` / `kdisp` runs at 0 and does not overwrite the stored form weights. ⚠ It changes
   **no** API default: an omitted parameter still resolves to the compiled-in value. Mode is not
   remembered — it is which button was pressed. The pool criterion is remembered by its own rule
   (written on the Σ click).
