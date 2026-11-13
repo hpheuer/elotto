@@ -548,7 +548,7 @@ static void score_acc_begin(int ix, int max_val, int pool_size)
 /* Column name for logs and faults, ASCII like the rest of the Log card. */
 static const char *score_sum_label(int ch)
 {
-    static const char *const L[SCORE_SUM_N] = { "Z*", "Z", "Conc", "dn", "Ser", "Mau" };
+    static const char *const L[SCORE_SUM_N] = { "Z*", "Z", "Disp", "dn", "Ser", "Mau" };
     return (ch >= 0 && ch < SCORE_SUM_N) ? L[ch] : "?";
 }
 
@@ -1422,7 +1422,7 @@ double rank_key(const RunResult *r)
 
 /* ── Ranking of the held rows by the pool criterion ──────────────────────
  * The extreme set — compaction survivors, /extremes, Save — is chosen on the
- * SAME column and direction that picked the pool: score_sum (Z*, Z, Conc, Δn,
+ * SAME column and direction that picked the pool: score_sum (Z*, Z, Disp, Δn,
  * Ser, Mau) and score_dir (high = largest values, low = smallest). Both can only
  * change while a scoring runs, so a round's compaction uses exactly the
  * criterion its pool was picked with. ⚠ One tail. On Z* (SUM_KEY) the
