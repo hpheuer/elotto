@@ -1711,14 +1711,15 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "When its weight at the top is above 0, a smaller \\u0394n stretches Z* along the sign of Z. "
 "Its running sum can also pick the pool. Click to sort.\" style=\"cursor:pointer\" onclick=\"sortBy(\\'nsd\\')\">"
 "'+sumLab(opt,'nsd','\\u0394n')+exArrow('nsd')+sumMark(opt,'nsd')+'</th>'"
-/* Ser: the serial order of the bits, the loudest camera's. Never in Z*. */
-"+'<th title=\"Were the bits of one camera in an order chance would not give?\\n"
-"Each camera tests its own window five ways: does a bit repeat the bit 1, 2, 3 or 4 places "
-"before it, and are some byte patterns too frequent. Ser is the largest of those five, "
-"taken from the camera where it was largest \\u2014 not an average, so one camera is enough.\\n"
-"around 2.5 = what pure chance gives with ten cameras (it is a maximum of fifty values)\\n"
-"above 4 = one camera\\u2019s bits were ordered in this window; its /camlog says which test\\n"
-"\\u2014 = no camera reported it\\n"
+/* Ser: the serial order of the bits, the cameras together. Never in Z*. */
+"+'<th title=\"Did the cameras\\u2019 bits repeat more on this item than on the others, together?\\n"
+"Each camera counts how often a bit equals the bit 1, 2, 3 or 4 places before it. That figure "
+"is taken against the camera\\u2019s own average over the block, combined over the cameras, "
+"in units of this block\\u2019s spread.\\n"
+"around 0 (within \\u00b12) = ordinary\\n"
+"large + = the cameras\\u2019 bits repeated more than usual on this item\\n"
+"large \\u2212 = they alternated more than usual\\n"
+"\\u2014 = block (scoring: pass) still open, or no camera reported it\\n"
 "It never enters Z*. Its running sum can pick the pool. Click to sort.\" "
 "style=\"cursor:pointer\" onclick=\"sortBy(\\'ser\\')\">'+sumLab(opt,'ser','Ser')+exArrow('ser')+sumMark(opt,'ser')+'</th>'"
 /* Mau: Maurer's universal test over this item's window. A negative Mau
@@ -1763,7 +1764,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "var nsdTxt=(nsd===null)?'\\u2014':(nsd.toFixed(2)+' ('+(r.k===undefined?'?':r.k)+')');"
 "var nsdCol=(nsd===null)?'#9aa':(nsd<0.6?'#90ee90':(nsd>1.0?'#c09090':''));"
 "var serTxt=(r.ser===undefined||r.ser===null)?'\\u2014':r.ser.toFixed(2);"
-"var serCol=(r.ser===undefined||r.ser===null)?'#9aa':(r.ser>4?'#ffd479':'');"
+"var serCol=(r.ser===undefined||r.ser===null)?'#9aa':(Math.abs(r.ser)>3?'#ffd479':'');"
 "var mauTxt=(r.mau===undefined||r.mau===null)?'\\u2014':r.mau.toFixed(2);"
 "var mauCol=(r.mau===undefined||r.mau===null)?'#9aa':(Math.abs(r.mau)>3?'#ffd479':'');"
 "var det='Z '+zTxt+' \\u00b7 Conc '+concTxt"
@@ -1936,7 +1937,7 @@ static int emit_row(char *buf, int cap, const RunResult *r, double key,
         snprintf(nsd, sizeof(nsd), "%.3f", (double)r->node_sd);
     else
         snprintf(nsd, sizeof(nsd), "null");
-    /* `ser`: the loudest camera's serial |z|, null when none reported one. */
+    /* `ser`: the cameras' combined serial z in block-σ units, null until centred. */
     char ser[16];
     if (isfinite((double)r->ser))
         snprintf(ser, sizeof(ser), "%.2f", (double)r->ser);

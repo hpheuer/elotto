@@ -144,13 +144,11 @@ static void ser_finish(uint64_t ones, uint64_t words)
         }
     }
     camera_winlog_set_serial(acz, (float)bchi);
-    /* One number for the wire and the item table: the largest |z| of the five. */
-    double mx = NAN;
-    for (int i = 0; i < 5; i++) {
-        double a = fabs(i < 4 ? (double)acz[i] : bchi);
-        if (isfinite(a) && !(a <= mx)) mx = a;
-    }
-    s_last_ser = mx;
+    /* One signed number for the wire: the Stouffer z of the four lags, so the
+     * master can centre and combine it per camera exactly as it does Maurer. */
+    double sm = 0.0;
+    for (int i = 0; i < 4; i++) sm += (double)acz[i];     /* NAN if any is */
+    s_last_ser = sm / 2.0;
 }
 
 static void mau_begin(void)

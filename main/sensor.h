@@ -362,13 +362,14 @@ typedef struct {
      * at 1 (a real 0 must not divide). It also selects when it is the pool
      * criterion (the pool, and the extreme set kept by compaction). */
     float      node_sd;
-    /* SERIAL ORDER of the bits this item was measured from (Ser): each camera
-     * reports the largest |z| among its window's lag-1..4 bit agreement and
-     * its byte χ² (gcp.c, ,ser= on the wire); this is the largest of those
-     * over the cameras in the combine. Not combined, not centred, ≥ 0, final
-     * when measured. ⚠ It is a maximum of 5·k values: chance alone gives
-     * about 2,5 at ten cameras, so it is read against that, not against 0.
-     * Never in Z*. NaN = no camera reported one. */
+    /* SERIAL ORDER of the bits this item was measured from (Ser), built like
+     * Mau: per node the Stouffer z of its window's lag-1..4 bit agreement
+     * (,ser= on the wire, the master's own gcp_last_serial()), centred on that
+     * node's mean over the block, Stouffer over the combined nodes, then
+     * divided by the block's own σ of that combine — unit variance within the
+     * block, read against 0. + = the cameras' bits repeated more on this item
+     * than on the rest of the block, together. Never in Z*.
+     * NaN until the block (scoring: the pass) is centred, or no node reported. */
     float      ser;
 } RunResult;
 _Static_assert(sizeof(RunResult) == 48, "results[] row is the internal-RAM budget");
@@ -467,8 +468,8 @@ typedef struct {
     /* The same window's Maurer universal-test z, ,mau= on the 'Z' reply.
      * NAN = not reported. */
     float    cam_mau_now;
-    /* The same window's serial statistic, ,ser= on the 'Z' reply: the largest
-     * |z| among its lag-1..4 bit agreement and byte χ². NAN = not reported. */
+    /* The same window's serial z, ,ser= on the 'Z' reply: the Stouffer z of
+     * its lag-1..4 bit agreement, signed. NAN = not reported. */
     float    cam_ser_now;
     /* Mean raw pixel level from that same 'D' query (,px=). The one covariate
      * that separates a light leak from a sensor change.

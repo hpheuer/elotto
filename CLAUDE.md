@@ -234,7 +234,7 @@ Z\* = sign(Z)·|Z/σ_z|^κ · [1 + γ·max(Conc·sign(Z)/σ_c, 0)] · [1 + α·(
 - **Δn** — node agreement: σ across the contributing nodes of their block-centred z, each node divided by ITS OWN σ over that block. Independent cameras ≈ 1, so read it against 1, not against 0. Smaller than 1 stretches Z along its own sign; larger than 1 pulls Z toward 0. Δn = 0,82 and α = 1 → 1 + (1/0,82 − 1) = 1,220. Δn ≤ 0 or missing → factor 1. The cell prints the node count: `0,79 (3)`, highlighted below 0,6 and dimmed above 1,0. ⚠ **—** until the item's block has been centred, and whenever fewer than two nodes have a block σ; never 0 for "unknown" — 0 would read as perfect agreement. ⚠ Small Δn is agreement, not evidence — centring has already removed the block-wide common mode that would otherwise produce it.
 - **Mau** — Maurer's universal test (NIST SP 800-22 §2.9) over the item's own window: per node, over exactly the bits z counts (`gcp_last_maurer()` in `elotto_gcp`, `,mau=`, `/camlog` `mau`), L = 8 (byte blocks, MSB first), Q = 2560 init blocks, K = the rest; z = (f_n − 7,1836656) / (c·√(3,238/K)), c = 0,7 − 0,1 + 8·K^(−3/8)/15. Then centred on that node's block mean (scoring: pass mean; a node with < 2 values stays out), Stouffer over the combined nodes, divided by the block's own σ of that combine — unit variance, read against 0, − = more compressible, coloured at |Mau| > 3. Only a negative Mau stretches: Mau = −1,5 and β = 1 → 2,5. Zero, positive or missing → factor 1; a positive Mau does not flip the sign of Z. **—** until centred. ⚠ Below NIST's minimum at short `?run=` (L = 8 wants ≥ 2,07 Mbit per window); the c(L,K) correction keeps σ right, the centring removes the per-camera offset.
 - **Conc** — same sign as Z, scaled by |Conc|/σ_c. Opposite sign, Conc 0, missing σ_c, or Z = 0 → factor 1. |Conc|/σ_c = 1,55 and γ = 1 → 2,55. Conc is not a second entropy subtraction: when the window bias is stable it tracks Z, so a large same-sign Conc means the deviation held across both halves.
-- **Ser** — the serial order of the bits, never in Z\*: each camera reports the largest |z| among its window's five serial tests (lag-1..4 bit agreement and byte χ², the `acz` / `bchi` of its `/camlog`; `gcp_last_serial()`, `,ser=` on the wire), and Ser is the largest of those over the cameras in the item's combine. Not combined and not centred — one camera is enough, and a mean over ten would bury it — so it is final when measured. ⚠ It is a maximum of 5·k values and ≥ 0: chance gives about 2,5 at ten cameras, so read it against that, not against 0; coloured above 4. Which camera and which test: that node's `/camlog`. **—** = no camera reported one.
+- **Ser** — the serial order of the bits, built like Mau and never in Z\*: per node the Stouffer z of its window's lag-1..4 bit agreement (`gcp_last_serial()`, `,ser=`; the four lags are the `acz` of its `/camlog`), centred on that node's block mean (scoring: pass mean; a node with < 2 values stays out), Stouffer over the combined nodes, divided by the block's own σ of that combine — unit variance, read against 0, coloured at |Ser| > 3. + = the cameras' bits repeated more on this item than on the rest of the block, together. ⚠ The node reduces the four lags to one number; the master only centres and combines. ⚠ One camera's excursion is diluted by √k here — it stays in that node's `/camlog` (`acz`, `bchi`, `ser`). **—** until centred.
 
 Worked stack, all weights 1: Z/σ_z = −2, |Conc|/σ_c = 1,55, Δn = 0,82, Mau = −1,5 → −2 · 2,55 · 1,220 · 2,5 ≈ −15,56.
 
@@ -270,7 +270,7 @@ that formula for the session's own σ. Measured 69,9 % and 75,2 % on two builds,
 above the σ-corrected expectation; that residual is real (~4 σ) and **unexplained**. Not signal,
 not fault.
 
-Wire: `Z:<z>[,<h1>,<h2>][,wsig=<σ>][,mau=<z>][,ser=<|z|>]`. `,wsig=`, `,mau=`, `,ser=` TAGGED.
+Wire: `Z:<z>[,<h1>,<h2>][,wsig=<σ>][,mau=<z>][,ser=<z>]`. `,wsig=`, `,mau=`, `,ser=` TAGGED.
 `,mau=` (window Maurer z) feeds the `Mau` column, `,ser=` the `Ser` column; the master takes its own from `gcp_last_maurer()` / `gcp_last_serial()`. Every node measures the commanded `nseg`.
 
 ## Stored z is RAW; ranking is block-centred
@@ -503,7 +503,7 @@ place a disturbance can still be located in time.
 - ⚠ `t_ms` is each node's OWN uptime. Align by `tag` or by ordinal, **never** by subtracting
   timestamps across boards.
 - It records what never travels on the wire — `acz`, `bchi`, `rsig`, `px`, `ac1`, `zdiff`.
-  The wire carries `wsig`, `mau` and `ser` (the largest of the five serial |z|) and nothing else. That difference is what separates "light leaked in" from "this sensor
+  The wire carries `wsig`, `mau` and `ser` (the Stouffer z of the four lags) and nothing else. That difference is what separates "light leaked in" from "this sensor
   is dispersing".
 - ⚠ Only windows that produced a **Z** are pushed; a faulted or voided run has no window.
 

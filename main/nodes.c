@@ -749,7 +749,7 @@ bool node_take_z(int k, double *out_z,
         double v = atof(mus + 5);
         if (isfinite(v)) g_status.nodes[k + 1].cam_mau_now = (float)v;
     }
-    /*,ser= — the largest serial |z| of this window. Same handling. */
+    /*,ser= — the serial z of this window (lag-1..4 bit agreement). Same handling. */
     g_status.nodes[k + 1].cam_ser_now = NAN;
     const char *srs = strstr(resp, ",ser=");
     if (srs) {
