@@ -63,6 +63,86 @@ static double   s_last_mau = NAN;
 
 double gcp_last_maurer(void) { return s_last_mau; }
 
+/* ── Serial statistics of the window's bits ──────────────────────────────
+ * z, the halves and Maurer are four numbers; a pattern that moves none of
+ * them is gone once the window closes. These two look at the ORDER of the
+ * same bits, per window, and go to the node's /camlog — never into a z.
+ *
+ *  - acz[L-1], L = 1..4: agreement of each bit with the bit L before it, in
+ *    read order (MSB of a word first), ACROSS word boundaries. As z against
+ *    the agreement rate p² + q² of the window's own ones-fraction p, so the
+ *    node's LSB bias does not read as correlation. + = bits repeat. Lag 1 is
+ *    the NIST runs statistic with the sign turned round.
+ *  - bchi: χ² of the 256 byte values against p^w·q^(8−w) (w = ones in the
+ *    byte), as z = (χ² − 254)/√508. Sees byte patterns that are too frequent
+ *    without recurring at short distance, which Maurer does not.
+ * Both NAN for a window too short to carry them. */
+static uint64_t s_ac_dis[4];           /* DISagreeing pairs at lag 1..4 */
+static uint32_t s_ac_prev;             /* the word before, for the boundary */
+static bool     s_ac_have;
+static uint32_t s_bhist[256];          /* filled in mau_words() */
+
+static void ser_begin(void)
+{
+    memset(s_ac_dis, 0, sizeof(s_ac_dis));
+    memset(s_bhist, 0, sizeof(s_bhist));
+    s_ac_have = false;
+}
+
+static void ser_words(const uint32_t *w, uint32_t n)
+{
+    uint32_t prev = s_ac_prev;
+    uint32_t d1 = 0, d2 = 0, d3 = 0, d4 = 0;       /* <= 112 * 32 per call */
+    for (uint32_t k = 0; k < n; k++) {
+        uint32_t x = w[k];
+        if (s_ac_have) {
+            d1 += cam_popcount32(x ^ ((x >> 1) | (prev << 31)));
+            d2 += cam_popcount32(x ^ ((x >> 2) | (prev << 30)));
+            d3 += cam_popcount32(x ^ ((x >> 3) | (prev << 29)));
+            d4 += cam_popcount32(x ^ ((x >> 4) | (prev << 28)));
+        } else {                                    /* first word: no bit before it */
+            d1 += cam_popcount32((x ^ (x >> 1)) & 0x7FFFFFFFu);
+            d2 += cam_popcount32((x ^ (x >> 2)) & 0x3FFFFFFFu);
+            d3 += cam_popcount32((x ^ (x >> 3)) & 0x1FFFFFFFu);
+            d4 += cam_popcount32((x ^ (x >> 4)) & 0x0FFFFFFFu);
+            s_ac_have = true;
+        }
+        prev = x;
+    }
+    s_ac_prev = prev;
+    s_ac_dis[0] += d1; s_ac_dis[1] += d2; s_ac_dis[2] += d3; s_ac_dis[3] += d4;
+}
+
+static void ser_finish(uint64_t ones, uint64_t words)
+{
+    float  acz[4] = { NAN, NAN, NAN, NAN };
+    double bchi = NAN;
+    double n = (double)words * 32.0;
+    double p = n > 0.0 ? (double)ones / n : 0.0, q = 1.0 - p;
+    if (words >= 2 && p > 0.0 && q > 0.0) {
+        double P = p * p + q * q;                   /* agreement rate of iid bits */
+        for (int L = 1; L <= 4; L++) {
+            double nl = n - (double)L;
+            double v  = nl * P * (1.0 - P);
+            if (v > 0.0)
+                acz[L - 1] = (float)(((nl - (double)s_ac_dis[L - 1]) - nl * P) / sqrt(v));
+        }
+        double nby = (double)words * 4.0;
+        if (nby / 256.0 >= 5.0) {                   /* the usual χ² floor per cell */
+            double e[9];
+            for (int w = 0; w <= 8; w++) e[w] = nby * pow(p, w) * pow(q, 8 - w);
+            double chi = 0.0;
+            for (uint32_t b = 0; b < 256; b++) {
+                double ex = e[cam_popcount32(b)];
+                double d  = (double)s_bhist[b] - ex;
+                chi += d * d / ex;
+            }
+            bchi = (chi - 254.0) / sqrt(2.0 * 254.0);
+        }
+    }
+    camera_winlog_set_serial(acz, (float)bchi);
+}
+
 static void mau_begin(void)
 {
     if (s_mau_lut[2] == 0)
@@ -92,6 +172,7 @@ static void mau_words(const uint32_t *w, uint32_t n)
             i++;
             if (i > MAU_Q) sum += mau_log2q16(i - s_mau_last[b]);
             s_mau_last[b] = i;
+            s_bhist[b]++;
         }
     }
     s_mau_i = i;
@@ -137,6 +218,7 @@ gcp_result_t gcp_zscore_pre(int nseg, bool (*on_yield)(void), double *out,
     if (out_h2) *out_h2 = 0.0;
     s_last_mau = NAN;
     mau_begin();
+    ser_begin();
 
     for (int seg = 0; seg < nseg; ) {
         /* A block ends wherever the per-segment loop acted: after the midpoint
@@ -155,6 +237,7 @@ gcp_result_t gcp_zscore_pre(int nseg, bool (*on_yield)(void), double *out,
         for (uint32_t i = 0; i < nw; i++) bo += cam_popcount32(buf[i]);
         ones += bo;
         mau_words(buf, nw);
+        ser_words(buf, nw);
 
         int last = end - 1;
         if (last + 1 == n1) mid_ones = ones;
@@ -184,6 +267,7 @@ gcp_result_t gcp_zscore_pre(int nseg, bool (*on_yield)(void), double *out,
     uint64_t words = (uint64_t)nseg * words_per_seg;
     *out = z_from_counts(ones, words);
     s_last_mau = mau_z();
+    ser_finish(ones, words);
 
     /* The split: the pair boundary nearest nseg/2, strictly inside. */
     int      cut = n1;

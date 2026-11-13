@@ -1731,6 +1731,7 @@ int results_extremes(RunResult *out, int max, int ch, bool low, int *held,
             int c = 0;
             for (; c < m; c++) { sel[c].a = ord[c].a; sel[c].id = (int32_t)ord[c].j; }
             for (int i = 0; i < s_full_n; i++) {
+                if (FULL_ROW(i).skip_rank) continue;   /* quarantined: Save only */
                 double a = sort_val((ch == SUM_KEY) ? (double)FULL_KEY(i)
                                                     : item_crit(&FULL_ROW(i), ch), ch, low);
                 if (!isfinite(a)) continue;
@@ -1769,8 +1770,9 @@ int results_extremes(RunResult *out, int max, int ch, bool low, int *held,
  * results_full_span() is the index space: the full table's rows, then the
  * rows still in results[]. results_full_rows() copies the ranked, centred
  * items of slots [from, to) — at most `max` — with their Z* (rank_key(), the
- * cell every table prints) under ONE lock, skips a void or quarantined row
- * still in results[], and sets *next to the slot to go on from. Meant for a
+ * cell every table prints) under ONE lock, quarantined rows included (the
+ * caller flags them by skip_rank), skips a void row still in results[], and
+ * sets *next to the slot to go on from. Meant for a
  * finished session — the caller refuses while one runs. */
 int results_full_span(void)
 {
@@ -1796,7 +1798,7 @@ int results_full_rows(int from, int to, RunResult *out, double *key, int max, in
             r = &FULL_ROW(i);
         } else {
             r = &g_status.results[i - nf];
-            if (!result_ranked(r) || !result_centred(r)) continue;
+            if (r->k == 0 || !result_centred(r)) continue;
         }
         out[n] = *r;
         key[n] = rank_key(r);
@@ -1856,7 +1858,8 @@ int results_quietest(RunResult *out, int max)
 
 /* ── The full table (FULL_MAX, sensor.h) ─────────────────────────────────
  * Every ranked row pass_compact() merges, in the order it left results[],
- * with its ranked_key() frozen beside it for the scan (the block is closed,
+ * and every QUARANTINED one (skip_rank — never selected, written by Save
+ * with its flag), with its ranked_key() frozen beside it for the scan (the block is closed,
  * its σ and the session's weights are fixed). The CELL is never read from it:
  * every table and Save print rank_key() of the row. A row is here or in
  * results[], never both. Written by the sensor task under the archive lock,
@@ -2098,8 +2101,12 @@ static void pass_compact(void)
         const RunResult *r = &g_status.results[j];
         if (!keep[j]) {
             if (r->k == 0)          s_drop_void++;
-            else if (r->skip_rank)  s_drop_excl++;
-            else {
+            else if (r->skip_rank) {
+                /* Out of every statistic, but its z is kept: this is the block
+                 * a camera was loud in. Save writes it, flagged. */
+                s_drop_excl++;
+                full_push(r);
+            } else {
                 double z = rank_z(r);
                 s_drop_sum   += z;
                 s_drop_sumsq += z * z;

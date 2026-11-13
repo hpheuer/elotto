@@ -392,6 +392,12 @@ esp_err_t camera_selftest_handle(void *httpd_req, bool busy);
  * Silently does nothing before camera_init(). */
 void camera_winlog_push(uint32_t tag, double mau);
 
+/* The serial statistics of the window just read (gcp.c, ser_finish()): the
+ * lag-1..4 bit agreement z and the byte χ² z, NAN = none. The next
+ * camera_winlog_push() files them with that window and clears them, so a
+ * push without a fresh set logs null. Same task as the push; no lock. */
+void camera_winlog_set_serial(const float acz[4], float bchi);
+
 /* Open a new session in the log. Bumps the `ses` stamped on every subsequent
  * entry; the ring is NOT cleared, so the previous session's windows stay
  * readable until they age out.
@@ -412,7 +418,13 @@ void camera_winlog_new_session(void);
  *
  * `{"n":<entries>,"dropped":<overwritten>,"cap":512,"ses":<current>,
  * "win":[{...},...]}` with per entry: ses, t_ms (node uptime at the push),
- * tag, wsig, wn, wlo, mau, rsig, rbias, sig, bias, px, ac1, zdiff.
+ * tag, wsig, wn, wlo, mau, acz, bchi, rsig, rbias, sig, bias, px, ac1, zdiff.
+ * `acz` [4] is THIS window's lag-1..4 bit agreement as z (+ = bits repeat),
+ * `bchi` its byte χ² as z — both per window, unit normal for random bits,
+ * null = none. `ser` in the header is their session record, which the ring
+ * cannot lose: windows counted (`n`), how many had |z| > 3 (`hit`, expect
+ * 0,27 % of n) and the largest |z| with its tag (`max`, `tag`), in the order
+ * lag 1, 2, 3, 4, bchi. Reset by camera_winlog_new_session().
  * `mau` is the Maurer universal-test z over the window's bits (null = none);
  * `ac1` is the lag-1 autocorrelation, cumulative since the sweep. `wlo` flags wsig > 3 SE below 1.
  *

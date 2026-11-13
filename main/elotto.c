@@ -970,9 +970,9 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "return {name:'elotto_top'+R.length+(cr?'_'+cr:'')+'_'+stamp+'.csv',body:textOf(L)};}"
 "function allFile(all){"
 "all.sort(function(a,b){return (a.round-b.round)||(a.run-b.run);});"
-"var La=['Round;Comb;Numbers;Euro;Z*;Z;Z_raw;Conc;\\u0394n;AC;Mau;k'];"
+"var La=['Round;Comb;Numbers;Euro;Z*;Z;Z_raw;Conc;\\u0394n;AC;Mau;k;Quarantined'];"
 "all.forEach(function(r){La.push([r.round,r.run,(r.nums||[]).join(' '),(r.euro||[]).join(' '),"
-"f(r.key),f(r.z_ctr),f(r.z),f(r.zc),f(r.nsd),f(r.ac),f(r.mau),r.k].join(';'));});"
+"f(r.key),f(r.z_ctr),f(r.z),f(r.zc),f(r.nsd),f(r.ac),f(r.mau),r.k,r.excl?1:0].join(';'));});"
 "return {name:'elotto_all'+all.length+'_'+stamp+'.csv',body:textOf(La)};}"
 "function filesOf(pair){"
 "var st=pair[0]||{},x=pair[1],s=pair[2],j=pair[3];"
@@ -2674,7 +2674,9 @@ static esp_err_t extremes_full(httpd_req_t *req, int from)
                 pos = 0;
             }
             if (!first) pg[pos++] = ',';
-            int rl = emit_row(pg + pos, FULL_ROW_MAX, &rb[j], kb[j], "");
+            /* `excl`: a quarantined row — in no ranking and no statistic. */
+            int rl = emit_row(pg + pos, FULL_ROW_MAX, &rb[j], kb[j],
+                              rb[j].skip_rank ? ",\"excl\":1" : "");
             if (rl >= FULL_ROW_MAX) rl = FULL_ROW_MAX - 1;   /* snprintf's would-be length */
             pos += rl;
             first = false;

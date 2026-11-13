@@ -2433,7 +2433,7 @@ esp_err_t camera_selftest_handle(void *httpd_req, bool busy)
 /* ── The per-window log  ──────────────────────────────────────────
  *
  * See camera.h for why this is here rather than on the master. The ring itself
- * is internal RAM, not PSRAM: 512 * 56 B = 28 KB, and it is written from the
+ * is internal RAM, not PSRAM: 512 * 76 B = 39 KB, and it is written from the
  * consumer once per window and read from the HTTP task — both of which would
  * rather not take a PSRAM stall on a path that already owns s_mutex. It is
  * allocated lazily on the first push so a node that never measures never pays
@@ -2450,7 +2450,27 @@ typedef struct {
     float    ac1;         /* lag-1 autocorrelation, cumulative since the sweep */
     float    zdiff;       /* zero-diff fraction */
     float    mau;         /* Maurer universal-test z of THIS window, NaN = none */
+    float    acz[4];      /* lag-1..4 bit agreement z of THIS window, NaN = none */
+    float    bchi;        /* byte χ² z of THIS window, NaN = none */
 } cam_winlog_t;
+
+/* The serial statistics handed over for the window about to be pushed, and
+ * their session record: the ring forgets a window after CAM_WINLOG_N pushes,
+ * this does not. Index 0..3 = lag 1..4, 4 = bchi. */
+#define CAM_SER_N 5
+static float s_ser_now[CAM_SER_N] = { NAN, NAN, NAN, NAN, NAN };
+static struct {
+    uint32_t n;                  /* windows that carried a value */
+    uint32_t hit[CAM_SER_N];     /* of those, |z| > 3 */
+    float    max[CAM_SER_N];     /* the largest |z|, signed */
+    uint32_t tag[CAM_SER_N];     /* and the window it came from */
+} s_serstat;
+
+void camera_winlog_set_serial(const float acz[4], float bchi)
+{
+    for (int i = 0; i < 4; i++) s_ser_now[i] = acz[i];
+    s_ser_now[4] = bchi;
+}
 
 static cam_winlog_t *s_winlog;
 static uint32_t      s_winlog_head;    /* next slot to write */
@@ -2468,6 +2488,7 @@ void camera_winlog_new_session(void)
      * race can do is stamp one window with the previous ordinal, which is
      * exactly as informative at a boundary. */
     s_winlog_ses++;
+    memset(&s_serstat, 0, sizeof(s_serstat));
 }
 
 void camera_winlog_push(uint32_t tag, double mau)
@@ -2502,6 +2523,17 @@ void camera_winlog_push(uint32_t tag, double mau)
     e->ac1   = (float)cs.autocorr_lag[0];
     e->zdiff = (float)cs.zero_diff_frac;
     e->mau   = (float)mau;
+    bool any = false;
+    for (int i = 0; i < CAM_SER_N; i++) {
+        float v = s_ser_now[i];
+        s_ser_now[i] = NAN;                 /* one window, one use */
+        if (i < 4) e->acz[i] = v; else e->bchi = v;
+        if (!isfinite((double)v)) continue;
+        any = true;
+        if (fabsf(v) > 3.0f) s_serstat.hit[i]++;
+        if (fabsf(v) > fabsf(s_serstat.max[i])) { s_serstat.max[i] = v; s_serstat.tag[i] = tag; }
+    }
+    if (any) s_serstat.n++;
     s_winlog_head = (s_winlog_head + 1) % CAM_WINLOG_N;
     if (s_winlog_n < CAM_WINLOG_N) s_winlog_n++;
     else                           s_winlog_dropped++;
@@ -2511,7 +2543,7 @@ void camera_winlog_push(uint32_t tag, double mau)
 esp_err_t camera_winlog_send_json(void *httpd_req)
 {
     httpd_req_t *req = (httpd_req_t *)httpd_req;
-    char buf[320];
+    char buf[512];
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
@@ -2531,12 +2563,21 @@ esp_err_t camera_winlog_send_json(void *httpd_req)
      * up as a `dropped` that moved -- honest, and better than a stalled sensor. */
     xSemaphoreTake(s_mutex, portMAX_DELAY);
     uint32_t n = s_winlog_n, head = s_winlog_head, drop = s_winlog_dropped;
+    typeof(s_serstat) ss = s_serstat;
     xSemaphoreGive(s_mutex);
 
     int len = snprintf(buf, sizeof(buf),
-        "{\"n\":%lu,\"dropped\":%lu,\"cap\":%d,\"ses\":%lu,\"win\":[",
+        "{\"n\":%lu,\"dropped\":%lu,\"cap\":%d,\"ses\":%lu,"
+        "\"ser\":{\"n\":%lu,\"hit\":[%lu,%lu,%lu,%lu,%lu],"
+        "\"max\":[%.2f,%.2f,%.2f,%.2f,%.2f],\"tag\":[%lu,%lu,%lu,%lu,%lu]},\"win\":[",
         (unsigned long)n, (unsigned long)drop, CAM_WINLOG_N,
-        (unsigned long)s_winlog_ses);
+        (unsigned long)s_winlog_ses, (unsigned long)ss.n,
+        (unsigned long)ss.hit[0], (unsigned long)ss.hit[1], (unsigned long)ss.hit[2],
+        (unsigned long)ss.hit[3], (unsigned long)ss.hit[4],
+        (double)ss.max[0], (double)ss.max[1], (double)ss.max[2],
+        (double)ss.max[3], (double)ss.max[4],
+        (unsigned long)ss.tag[0], (unsigned long)ss.tag[1], (unsigned long)ss.tag[2],
+        (unsigned long)ss.tag[3], (unsigned long)ss.tag[4]);
     httpd_resp_send_chunk(req, buf, len);
 
     /* Oldest first: head is the next slot to write, so the oldest of n entries
@@ -2556,15 +2597,26 @@ esp_err_t camera_winlog_send_json(void *httpd_req)
         char mau[16];
         if (isfinite((double)e.mau)) snprintf(mau, sizeof(mau), "%.3f", (double)e.mau);
         else                         snprintf(mau, sizeof(mau), "null");
+        /* acz[4] and bchi, each null when the window carried none. */
+        char ser[80];
+        int  sp = 0;
+        for (int k = 0; k < CAM_SER_N; k++) {
+            float v = k < 4 ? e.acz[k] : e.bchi;
+            if (v > 9999.0f) v = 9999.0f;          /* keeps `ser` inside its buffer */
+            if (v < -9999.0f) v = -9999.0f;
+            const char *pre = k == 0 ? "\"acz\":[" : k == 4 ? "],\"bchi\":" : ",";
+            if (isfinite((double)v)) sp += snprintf(ser + sp, sizeof(ser) - sp, "%s%.2f", pre, (double)v);
+            else                     sp += snprintf(ser + sp, sizeof(ser) - sp, "%snull", pre);
+        }
         len = snprintf(buf, sizeof(buf),
             "%s{\"ses\":%lu,\"t_ms\":%lu,\"tag\":%lu,\"wsig\":%.4f,\"wn\":%ld,"
-            "\"wlo\":%d,\"mau\":%s,"
+            "\"wlo\":%d,\"mau\":%s,%s,"
             "\"rsig\":%.4f,\"rbias\":%.6f,\"sig\":%.4f,\"bias\":%.6f,"
             "\"px\":%.2f,\"ac1\":%.4f,\"zdiff\":%.4f}",
             i ? "," : "", (unsigned long)e.ses,
             (unsigned long)e.t_ms, (unsigned long)e.tag,
             (double)e.wsig, (long)e.wn, wlo,
-            mau,
+            mau, ser,
             (double)e.rsig, (double)e.rbias,
             (double)e.sig, (double)e.bias, (double)e.px, (double)e.ac1,
             (double)e.zdiff);

@@ -186,11 +186,11 @@ stop survives as backstop for a compaction that cannot allocate.
   Phase 0); every other column stays signed, so under `high` on Z the most negative values leave.
   ⚠ A row without a value in that column (AC on a block's first item, Δn
   with k < 2, Z* of a block without σ) is never kept. ⚠ A criterion switched in a later scoring cannot bring back rows an
-  earlier compaction merged. Quarantined rows are not kept — nothing reads them after
-  their block closes. The rest merges into moments — pass mean/σ/χ²
+  earlier compaction merged. Quarantined rows are not kept as rows — they go to the full table,
+  flagged. The rest merges into moments — pass mean/σ/χ²
   stay exact. `n ≤ 1000` is a no-op, so a short session keeps every row. The Top-10
   (`GET /extremes`) chooses from this archive plus the open round while the session runs.
-- **The full table**: every ranked row a compaction merges is first copied to PSRAM with its
+- **The full table**: every ranked or quarantined row a compaction merges is first copied to PSRAM with its
   Z\* (`FULL_MAX` 250000 rows, ~13 MB; no per-camera values — Δn carries the agreement). Once
   the session is over, `/extremes` (Top-10, any column and direction, and Save's `?n=1000`)
   chooses from the full table plus the rows still in `results[]` — every ranked pass item of the
@@ -305,7 +305,7 @@ What the page shows is in `main/elotto.c`; this keeps what bites.
   the pass items, `elotto_sums_…` (`/extremes?sums=1`, every number's six signed sums for every
   scoring still in RAM), `elotto_params_….txt` (the parameters that ran, both windows, the formula
   with its weights) and `elotto_jumps_….csv` (`/extremes?jumps=1`, the whole jump board). The pass
-  items once the session is over: `elotto_all<n>_…`, every ranked pass item, from
+  items once the session is over: `elotto_all<n>_…`, every ranked pass item plus the quarantined ones, from
   `/extremes?full=1&from=<i>` in pages of 2000 index slots (`span`, `next`), written last; if it
   cannot be had the held extremes are written instead. While the session runs `full=1` answers
   **409** and the file is `elotto_top…` from `/extremes?n=1000` (`crit`/`dir` in the reply and the
@@ -378,7 +378,9 @@ round's pass) are what recalibrate it — soft-down itself does not call the lad
 - `NODE_SOFT_MIN_COMBINE` is **1** — a solo combine is possible; `k` is kept per item.
 - **Quarantine**: a block a tripping node could have contaminated is excluded from ranking
   (`skip_rank=1`) but stays in `results[]`. Fires on every trip, but only when that node was in the
-  block's combine.
+  block's combine. Its rows stay out of every table and statistic; compaction copies them to the
+  full table, and Save's `elotto_all<n>_…` writes them with `Quarantined` = 1 (`excl` in
+  `/extremes?full=1`).
 - A soft-down arm still records its per-node z (`s_node_z`).
 
 **A node whose camera stalls is REPORTED, DROPPED and REBOOTED** — nothing to fall back to by
@@ -487,8 +489,16 @@ ladder), no stuck frames, `mean_px` ≥ 5,0,
 ## The per-window log — `GET /camlog` 
 **Every node keeps its own**, 512 windows deep, one entry per measurement window. It is the only
 place a disturbance can still be located in time.
-- Entry: `t_ms` `tag` `wsig` `wn` `wlo` `mau` `rsig` `rbias` `sig` `bias` `px` `ac1` `zdiff`.
+- Entry: `t_ms` `tag` `wsig` `wn` `wlo` `mau` `acz` `bchi` `rsig` `rbias` `sig` `bias` `px` `ac1` `zdiff`.
   `mau` = Maurer z over THIS window (null = none); ⚠ `ac1` is cumulative since the sweep.
+  **`acz`** [4] = THIS window's lag-1..4 bit agreement as z, in read order and across word
+  boundaries, against the agreement rate p² + q² of the window's own ones-fraction p (so the LSB
+  bias does not read as correlation); + = bits repeat; lag 1 is the runs statistic. **`bchi`** =
+  THIS window's χ² of the 256 byte values against p^w·q^(8−w), as z = (χ² − 254)/√508. Both unit
+  normal for random bits, computed in `gcp.c` beside Maurer, logged only — never in a z or Z\*.
+- **`ser`** in the reply header is their session record, which the ring cannot lose: windows
+  counted (`n`), how many had |z| > 3 (`hit`; chance gives 0,27 % of `n`) and the largest |z| with
+  its tag (`max`, `tag`), in the order lag 1, 2, 3, 4, bchi. Cleared at every session start.
   `wlo` = 1 when `wsig` sits more than 3 SE (1/√(2(wn−1))) below 1.
   `tag` = combination id on the master, answered `M` sequence on a slave, **0 = a scoring run**.
 - ⚠ **It is a RING** — ~25 min at 2,9 s per window. `dropped` counts what fell out, so a gap
@@ -496,7 +506,7 @@ place a disturbance can still be located in time.
   master-side collector.
 - ⚠ `t_ms` is each node's OWN uptime. Align by `tag` or by ordinal, **never** by subtracting
   timestamps across boards.
-- It records what never travels on the wire — `rsig`, `px`, `ac1`, `zdiff`.
+- It records what never travels on the wire — `acz`, `bchi`, `rsig`, `px`, `ac1`, `zdiff`.
   The wire carries `wsig` and `mau` and nothing else. That difference is what separates "light leaked in" from "this sensor
   is dispersing".
 - ⚠ Only windows that produced a **Z** are pushed; a faulted or voided run has no window.

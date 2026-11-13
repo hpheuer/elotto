@@ -1063,7 +1063,8 @@ int results_quietest(RunResult *out, int max);
 /* Every ranked pass item of a finished session, row by row (Save's full
  * table): the index space is the full table's rows, then those still in
  * results[]. results_full_rows() copies the ranked, centred items of slots
- * [from, to), at most `max`, with their Z* (rank_key()) under one lock;
+ * [from, to) and the quarantined ones (skip_rank set), at most `max`, with
+ * their Z* (rank_key()) under one lock;
  * *next is the slot to go on from. Returns the rows copied. */
 int results_full_span(void);
 int results_full_rows(int from, int to, RunResult *out, double *key, int max, int *next);
