@@ -297,8 +297,7 @@ typedef struct {
      * block, Stouffer over the combined nodes, then divided by the block's own
      * σ of that combine — unit variance within the block, read against 0.
      * − = the bits repeated sooner (more compressible) than in the rest of the
-     * block. Enters Z* through ?kmau=: only a negative Mau stretches Z along
-     * its own sign. Its scoring SUM may still pick the pool on its own.
+     * block. Enters Z* through ?kmau=, by its magnitude. Its scoring SUM may still pick the pool on its own.
      * NaN until the block (scoring: the pass) is centred, or no node reported.
      * Sits here to fill the padding before z_score. */
     float      mau;
@@ -843,7 +842,7 @@ typedef struct {
      * is Z* = z_ctr/σ. They rank; they do not test. pass_mean/pass_sigma/
      * pass_chi2 stay on z alone. */
     double           k_dn;                // ?kdn=  Δn stretch
-    double           k_mau;               // ?kmau= Mau stretch (negative Mau)
+    double           k_mau;               // ?kmau= Mau stretch (|Mau|)
     double           k_ser;               // ?kser= Ser stretch (|Ser|)
     double           k_disp;              // ?kdisp= Disp stretch (|Disp|)
     double           k_z;                 // ?kz=   exponent on |Z/σ_z|

@@ -1365,16 +1365,16 @@ static double zstar_w01(double w)
 }
 
 /* Z* = sign(Z)·|Z/σ_z|^kz · [1 + ζ·|Disp|] · [1 + α·(1/Δn − 1)]
- *              · [1 + ε·|Ser|] · [1 + β·max(−Mau, 0)]
+ *              · [1 + ε·|Ser|] · [1 + β·|Mau|]
  * (written in the Top-10 column order; the product is commutative)
  *
  * α β ε ζ are g_status.k_dn / k_mau / k_ser / k_disp, each 0..1.
- * Ser and Disp stretch by their MAGNITUDE: either sign is the cameras
+ * Mau, Ser and Disp stretch by their MAGNITUDE: either sign is the cameras
  * departing together from the rest of the block.
  * A missing column (NaN, Δn ≤ 0) leaves
  * its factor at 1. No σ_z → 0, never a fallback of 1.
  * ⛔ UNBOUNDED. Z/σ_z sits inside its block, the product of the factors
- * does not: a small Δn or a large negative Mau can exceed (n−1)/√n.
+ * does not: a small Δn or a large |Mau|, |Ser| or |Disp| can exceed (n−1)/√n.
  * Nothing here truncates an extreme. */
 static double zstar_of(double z, double sz, double nsd, double mau,
                        double ser, double disp)
@@ -1391,8 +1391,8 @@ static double zstar_of(double z, double sz, double nsd, double mau,
     if (isfinite(nsd) && nsd > 0.0 && a > 0.0)
         f *= 1.0 + a * (1.0 / nsd - 1.0);
     double b = zstar_w01(g_status.k_mau);
-    if (isfinite(mau) && mau < 0.0 && b > 0.0)
-        f *= 1.0 + b * (-mau);
+    if (isfinite(mau) && b > 0.0)
+        f *= 1.0 + b * fabs(mau);
     double e = zstar_w01(g_status.k_ser);
     if (isfinite(ser) && e > 0.0)
         f *= 1.0 + e * fabs(ser);
