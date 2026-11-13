@@ -21,36 +21,18 @@ Two markers, and only two:
 
 ## Purpose
 Rank lottery **numbers** (scoring → pool) and **combinations** (the pass) from camera readout noise.
-One key, the same function for both:
-
-Z\* = sign(Z)·|Z/σ_z|^κ · [1 + γ·max(Conc·sign(Z)/σ_c, 0)] · [1 + α·(1/Δn − 1)] · [1 − δ·max(AC, 0)/(1+max(AC, 0))] · [1 + β·max(−Mau, 0)]
-
-α `?kdn=`, β `?kmau=`, γ `?kconc=`, δ `?kac=` are each 0..1 and independent (API and form default 0 = that factor stays 1). κ `?kz=` 0..1 is the exponent on |Z/σ_z| (default 1 = Z/σ_z; 0 = sign of Z only, the factors carry the magnitude; form field Z in percent, default 100). All four at 0 and κ = 1 is Z/σ_z. A missing column leaves its factor at 1. Δn ≤ 0 does not divide. Scoring **selects** the pool on that key; the pass **ranks** items on the same key. The page shows the formula with the weights in force at the top, its factors and the weight fields in the column order Conc, Δn, AC, Mau, and the columns Z\*, Z, Conc, Δn, AC, Mau.
-
-- **z** — binomial of the camera LSBs in that window. Z is the block-centred Stouffer combine, σ_z that block's own σ (scoring: the pass span).
-- **conc** — half-window concordance of the same bits (same sign both **centred** halves, loudest node dropped). It stretches Z\* only when it has the same sign as Z.
+One key, the same function for both — Z\*, defined under **The ranking channels**. Scoring
+**selects** the pool on that key; the pass **ranks** items on the same key.
 
 **How the cameras stay usable.** One OV5647 **or** IMX219 per node — `esp_video` probes both (OV at I2C 0x36, IMX at 0x10) and binds whichever chip answers. Frame-pair LSB — z is the camera bits. IMX219 streams packed RAW10 (4 pixels in 5 bytes); the extractor takes the 10-bit LSB. An OV5647 streams RAW10 1920×1080 unbinned on the slaves, RAW8 800×800 on the master (`sdkconfig.defaults` per repo). **OV5647 on-chip processing:** the driver's format table sets `0x5000 = 0xff`; `ov_boot_apply()` clears bits 7/2/1/0 (lens shading, black/white defect-pixel cancel, colour interpolation) → `0x78`. ⚠ Bit 0 acts on RAW — set, the LSB carries lag-2/lag-4 autocorrelation and a lower bias. Bits 6/5/4/3 stay on; bit 5 (RAW gamma) shows no effect on the LSB (bit naming from the OV5640/OV5645 tables in the same driver). The black level target `0x4009` is **128** DN (reset default 16 — the driver never writes `0x4009`). ⚠ At 16 the dark noise sits at code 0 and is clipped — LSB bias 0,35–0,46, σ 1,6–2,6, Bayer-periodic autocorrelation; the lens-shading gain hid exactly that. Both are firmware defaults applied at boot (`ov_boot_apply()`); per-node NVS overrides — `POST /expose?isp=0|1`, `?reg=<r>&val=<v>` (up to 8, written last), `?clr=1`, then `/reboot`; `?rd=<r>` reads a register. ⚠ **Never write these registers while the sensor streams** — it stalls the OV5647's MIPI output without tripping `stalls`. `/expose` and `/calibrate` report `isp`. ⚠ The layout
-comes from the FOURCC (`BG10`), not from `sizeimage` — esp_video leaves that 0, and the old fallback
-read packed bytes as RAW8. `GET /camtest?dump=1` shows what the buffer really holds.
+comes from the FOURCC (`BG10`), not from `sizeimage` — esp_video leaves that 0. `GET /camtest?dump=1` shows what the buffer really holds.
 ⚠ IMX `px` is **above black** (pedestal 16 subtracted), so its LEAK gate measures light that reaches
 the sensor. `/status` `cam_sensor` names the bound chip. The **sweep**
 picks the exposure with the lowest **`raw_sigma`** among rungs that still look like noise (autocorr,
 dark / zero_diff)  — dispersion is what `rank_key()` divides by and what soft-down trips on;
 the bias is subtracted by the centring and costs nothing. If a node's block σ is too loud against its peers, **soft-down**
-takes it out of the combine. Sweeps are **dynamic**: they run at candidate points — the
-end of every scoring pass, before the pass, the round boundary — once the interval since the last
-sweep has run out: 15 min after the session-start sweep, doubled by every ok sweep (all nodes
-certified, no exposure moved) up to 2 h, back to 15 min after any other sweep or a soft-down trip.
-The next sweep recalibrates every node including the tripped one. It returns after four
-clean blocks. ⚠ `?cal=0` turns every sweep off; a trip then waits until the next session.
-⚠ **A rung change is not free**: after one, this rig's cameras need ~1 min to settle (px still
-climbing, bit bias moving by ~0,002), and the items measured in that minute sit far enough from the
-block mean to trip soft-down on their own. So **any sweep that moves any node's exposure is
-followed by a 60 s settle pause of the whole array** (`CAL_SETTLE_AFTER_MS`), nothing measured; a
-sweep where every node kept its rung pauses nothing. It fixes only the trips that follow a
-change. The page's **Log** card shows every sweep, change,
-pause and soft-down with wall time (`GET /loops?ev=1`).
+takes it out of the combine; the next sweep recalibrates every node including the tripped one, and
+it returns after four clean blocks. When sweeps run: **Camera calibration**.
 
 ## Concept
 Ten-node ESP32-P4 array (`MAX_NODES` 10; per-node masks are `node_mask_t` = `uint16_t`, so 16 is the type ceiling). The master scores lottery numbers via GCP methodology; up to nine slaves
@@ -87,7 +69,7 @@ across rounds a combination can recur — identity is **(round, index)**.
 - **No loops, no Runs cap, no ranking modes.** `/start` is a **whitelist**: an unknown
   key answers **400**. Deleted keys (`loops`, `runs`, `rank`, `focus`, `went`, `wruns`,
   `baseline`, `calint`, `unlimited=0`, `wpre`) keep a specific 400. Allowed: `mode`, `run`, `srun`, `gap`,
-  `score`, `kdn`, `kmau`, `kconc`, `kac`, `kz`, `fix`, `maxruns`, `passes`, `confirm`, `cal`, `unlimited`. An empty key (`?=x`), a value over
+  `score`, `kdn`, `kmau`, `kconc`, `kac`, `kz`, `fix`, `maxruns`, `passes`, `confirm`, `cal`, `unlimited`, `fakepool` (TEST: `1` skips the scoring and draws a random pool). An empty key (`?=x`), a value over
   `START_VAL_MAX` 31 characters and a query string over 255 characters each answer **400** as well
   — a truncated value or query must never read as "key absent" and resolve to the default.
   ⚠ **A refused /start changes nothing**: parameters are parsed into locals and committed to
@@ -118,38 +100,29 @@ across rounds a combination can recur — identity is **(round, index)**.
   continuous-scoring flag and is legal ONLY with `?maxruns=0`** (else **400**): one never-ending
   scoring, one pass per round, sums **accumulate without reset** (one snap per pool, refreshed),
   whereas `?passes≥1` with `?maxruns=0` re-scores from scratch each round. Segment count follows from
-  `RUN_SEGS_REF`/`RUN_MS_REF` in `sensor.h`, re-measured so nominal `?run=` now matches the real
+  `RUN_SEGS_REF`/`RUN_MS_REF` in `sensor.h`, so nominal `?run=` matches the real
   `focus_win_ms` (short windows run a touch long by the fixed per-window onset overhead). ⚠ The
   per-node rate still varies, so `focus_win_ms` is set by the **slowest** node.
 - **`results[]` is in MEASUREMENT order** (`.index` = combination id, `.block` stamped), so the
   prefix is always complete: aborts need no compaction. ⚠ RAM only — a master reboot or the
-  next session start ends it. Save writes four files while it is still in RAM: the pass items
-  (every one once the session is over, the held extremes while it runs), the scoring-sum CSV, `elotto_params_….txt` (the parameters that ran), and
-  `elotto_jumps_….csv` (the whole camera-jump board, `/extremes?jumps=1`).
+  next session start ends it; Save (see UI) writes it out while it is still in RAM.
 - **Blocks are the statistics unit, and ONE BLOCK IS ONE ROUND**. The round boundary is the
   only block boundary: the pass parks there → `/loops` row, drift point, pairwise close, block
-  centring, then a sweep candidate before the next round scores. The sweep timing is the dynamic
-  interval  (operator decision, supersedes the ⛔ "no wall-clock trigger" of);
-  `?calint=` still answers **400**; `?cal=0` is the no-sweep control.
-  ⚠ **A sweep is not a block boundary.** Sweeps happen only at candidate points — the end of each
-  scoring pass, before the pass, the round boundary — never inside the pass block, so the 2 h can
-  be overrun by at most one pass. Still exactly one block per round. Every candidate sits on a centring
+  centring, then a sweep candidate before the next round scores (when a sweep runs: **Camera
+  calibration**). `?calint=` answers **400**.
+  ⚠ **A sweep is not a block boundary.** Sweeps happen only at candidate points, never inside the
+  pass block, so the 2 h can be overrun by at most one pass. Every candidate sits on a centring
   boundary: every scoring PASS is its own centring span (`score_build_keys()` runs per pass), and
   the pass block is its own. No operating point ever moves underneath a mean being subtracted.
   ⚠ **The block length is `?maxruns=`**, so every round holds the same item count and Z/σ_z
   compares. That part is at most `(n−1)/√n` in the block's n; the four factors are not.
-  (⚠ With `?maxruns=0` there is no pass and therefore no block at all.) The form
-  predicts the round length and **no longer warns**: with 20 scoring passes the scoring is
-  1240 of a Eurojackpot round's ~1340 cycles, so no legal `?maxruns=` could clear a 30-minute bar.
-  It prints the scoring/pass split instead, which names `?srun=` — the parameter that sets the
-  length. A long round stays the operator's call.
+  (⚠ With `?maxruns=0` there is no pass and therefore no block at all.)
 - Pause stops the clock; Abort publishes the measured prefix.
 
 ### Phases
 **Phase 0 — scoring.** It starts 2 s after the sweep before it (`SCORE_START_PAUSE_MS`, a visible
-break for the operator). Each number 1..N is measured **`?passes=` times** (1..`SCORE_PASSES_MAX` 100, default 20; form
-"Scoring passes"; **0 = continuous, `?maxruns=0` only** — one pass per round, sums never reset),
-each pass one
+break for the operator). Each number 1..N is measured **`?passes=` times** (1..`SCORE_PASSES_MAX` 100, default 20;
+0 = continuous, the `?maxruns=0` rule under v3), each pass one
 `?srun=` window per number in a fresh Fisher–Yates order (never the same number back-to-back).
 After each pass every column — Z\*, Z, Conc, Δn, AC, Mau — is added to that number's own running sum;
 the pool is the top by ONE of those sums, the one selected on the page (Σ marker in a column
@@ -163,16 +136,12 @@ picks the pool. Remembered like the column: the Σ arrow writes it to NVS at onc
 (`POST /scoresum?dir=`), and during the scoring it also applies to the running session.
 On Σ Z\* the rank key is the absolute sum: `high` is the largest |Σ Z\*|, `low` the smallest;
 the cell and the stored sum keep the sign. Sums −12, +8, −3, +1 rank −12, +8, −3, +1.
-Every other column stays signed (`high` = largest, `low` = smallest). The scoring Top-10
-uses the same rule for Σ Z\* and for the Z\* column (that number's latest pass key): a larger
-magnitude ranks higher, the printed number keeps its sign. The scoring table's
-title names the pool criterion; the column arrows show the table sort. Until a pass has closed
-a number's Σ is a dash and the title reads "numbers measured, not ranked", rows in number order.
-The table runs at least 10 rows and down to the last pool member, so its length follows the pool. The UI shows pass k/n and the current top of the pool with the running sum, and
-**everything the pass shows**: a Top-10 of the numbers (Σ, Z\*, Z, Conc, Δn, AC — `GET
-/extremes?score=1`, `RunResult` rows in their own buffer, never in `results[]`; display
-only, the pool is picked from the sum in `score_and_build_pool()`; pool members: `#` in green),
-a scoring health line (last closed pass's own σ), stat cards, node table and boards. **The scoring key is the pass key** — `zstar_of()`, after that pass's AC and Mau exist.
+Every other column stays signed (`high` = largest, `low` = smallest). The same rule orders the
+scoring table and the item table on Σ Z\* and on the Z\* column. The scoring table
+(`GET /extremes?score=1`, `RunResult` rows in their own buffer, never in `results[]`) is display
+only — the pool is picked from the sum in `elotto_task()`. Until a pass has closed a
+number's Σ is a dash and the rows stand in number order; the table runs at least 10 rows and down
+to the last pool member. **The scoring key is the pass key** — `zstar_of()`, after that pass's AC and Mau exist.
 ⚠ Scoring has no `/loops` block; the scoring span **is** the block. Per-node centre over the
 numbers each camera actually answered, then concordance (loudest **centred** node dropped), then
 the same product as the pass. σ is that span's own. Uncentred LSB ranks nodes.
@@ -189,16 +158,13 @@ after closed passes stores those passes. Abort does not clear it. Save writes it
 camera health; `drift_add()` regresses the per-block mean on the block index → `drift_slope`,
 `drift_t`; |t| > 3 flags real drift.
 
-⛔ No observer gate. ⛔ No single-pass, no pool-confirmation overlay.
-`?unlimited=0` and `POST /pool` answer **400**. The HTML card shows the current number (scoring)
-or combination (pass). `confirm=1` writes NVS form prefs only.
+⛔ No observer gate. ⛔ No single-pass, no pool-confirmation gate — the machinery is deleted, not
+disabled. `?unlimited=0` and `POST /pool` answer **400**.
+`confirm=1` writes NVS form prefs only.
 
 ### Rounds
-**Runs per round** (default 100); `POST /start?maxruns=<n>` (`unlimited` on by default). A **round** =
-score every number → keep as many of the best as fit `maxruns` runs → measure that space once in a
-fresh Fisher–Yates order → score again. Ends on **Abort** or a session limit (72 h, full table); the `results[]`-full stop survives
-as backstop for a compaction that cannot allocate. ⚠ **`maxruns=0` drops the measure step** — the
-round is just a scoring (see the `?maxruns=0` rule under v3).
+**Runs per round** `?maxruns=<n>` (default 100) sizes the pool of each round. The `results[]`-full
+stop survives as backstop for a compaction that cannot allocate.
 
 - **Pool sizing maximises COMBINATIONS MEASURED, nothing else**; the bonus preference is only the
   tie-break.
@@ -216,10 +182,9 @@ round is just a scoring (see the `?maxruns=0` rule under v3).
   criterion** stay as rows — the Σ column (`score_sum`: Z\*, Z, Conc, Δn, AC, Mau) in the pool
   direction (`score_dir`: high = largest values, low = smallest; `rank_order()` in `sensor.c`).
   Both can only change during a scoring, so a round's compaction uses exactly the criterion its
-  pool was picked with. ⚠ **One tail only.** On Z\* the comparison is |Z\*|: `high` keeps the
-  largest magnitudes, `low` the smallest; the stored key stays signed. Items −3,0, +2,5, −0,4
-  under `high` keep −3,0 then +2,5. Every other column stays signed, so under `high` on Z the
-  most negative values leave. ⚠ A row without a value in that column (AC on a block's first item, Δn
+  pool was picked with. ⚠ **One tail only.** On Z\* the comparison is |Z\*| (the rule under
+  Phase 0); every other column stays signed, so under `high` on Z the most negative values leave.
+  ⚠ A row without a value in that column (AC on a block's first item, Δn
   with k < 2, Z* of a block without σ) is never kept. ⚠ A criterion switched in a later scoring cannot bring back rows an
   earlier compaction merged. Quarantined rows are not kept — nothing reads them after
   their block closes. The rest merges into moments — pass mean/σ/χ²
@@ -240,17 +205,9 @@ round is just a scoring (see the `?maxruns=0` rule under v3).
   it would have no Z\*.
   ⚠ The counter and round-base semantics after a compaction (`completed`/`runs_completed`,
   `round_base`/`round_item_base`) are subtle and documented at their definitions in `sensor.h` —
-  read them before touching anything that counts or indexes items; getting them wrong is what broke
-  the first compaction on hardware.
+  read them before touching anything that counts or indexes items.
   ⚠ `compacted` non-zero in `/status`: `results[]` holds extremes plus survivors, not a sample —
   never compute a distribution from its rows.
-- **Every round closes its own block, and only the round boundary does**, so centring never
-  mixes items from either side of a re-scoring and every block has the same item count. Whether a
-  sweep runs at a candidate point is the dynamic interval's call.
-- **No pool-confirmation gate** — the machinery is deleted, not disabled: no
-  `PHASE_POOL_CONFIRM`, no `pool_confirm` in `/status`. `pool_auto` stays at 1 as the record.
-- ⚠ Inside a round "measured exactly once" holds; **across rounds a combination can recur**. Each
-  recurrence is its own row; the identity is **(round, index)**.
 - A truncated round draws a **random subset**; only the last round truncates.
 - `/status`: `unlimited` (always true), `runs_cap`, `round`, `round_base`, `round_done`, `round_total`,
   `round_start_ms`. `completed` is session-wide, `total` the CURRENT round — ⚠ a progress bar must
@@ -272,36 +229,37 @@ One ranking key, `zstar_of()` in `sensor.c`, used by the scoring pass and by `ra
 
 Z\* = sign(Z)·|Z/σ_z|^κ · [1 + γ·max(Conc·sign(Z)/σ_c, 0)] · [1 + α·(1/Δn − 1)] · [1 − δ·max(AC, 0)/(1+max(AC, 0))] · [1 + β·max(−Mau, 0)]
 
-α β γ δ are `?kdn=` `?kmau=` `?kconc=` `?kac=`, each 0..1, default 0. 0 leaves that factor at 1. ⚠ The start form types each as a whole percent 0–100 and sends the fraction: 80 in the field is `?kdn=0.80`. `?kdn=80` is refused.
-- **Δn** — spread of the cameras on this item (each centred z / that camera's own σ). Independent cameras ≈ 1. Smaller than 1 stretches Z along its own sign; larger than 1 pulls Z toward 0. Δn = 1 → factor 1. Δn = 0,82 and α = 1 → 1 + (1/0,82 − 1) = 1,220. Δn ≤ 0 or missing → factor 1.
-- **Mau** — Maurer z of the window, already in block-σ units. Only a negative Mau stretches. Mau = 0 or positive → factor 1. Mau = −1,5 and β = 1 → 2,5. Missing → 1. A positive Mau does not flip the sign of Z.
+α β γ δ are `?kdn=` `?kmau=` `?kconc=` `?kac=`, each 0..1 and independent, default 0 = that factor stays 1. κ `?kz=` 0..1 is the exponent on |Z/σ_z| (default 1; 0 = sign of Z only, the factors carry the magnitude). All four at 0 and κ = 1 is Z/σ_z. A missing column leaves its factor at 1. ⚠ The start form types each weight as a whole percent 0–100 and sends the fraction: 80 in the field is `?kdn=0.80`. `?kdn=80` is refused. A column enters Z\* only through its weight; as the pool criterion it still picks the pool and the extreme set on its own sum.
+- **Z** — binomial of the camera LSBs in that window, block-centred Stouffer combine; σ_z is that block's own σ (scoring: the pass span).
+- **Δn** — node agreement: σ across the contributing nodes of their block-centred z, each node divided by ITS OWN σ over that block. Independent cameras ≈ 1, so read it against 1, not against 0. Smaller than 1 stretches Z along its own sign; larger than 1 pulls Z toward 0. Δn = 0,82 and α = 1 → 1 + (1/0,82 − 1) = 1,220. Δn ≤ 0 or missing → factor 1. The cell prints the node count: `0,79 (3)`, highlighted below 0,6 and dimmed above 1,0. ⚠ **—** until the item's block has been centred, and whenever fewer than two nodes have a block σ; never 0 for "unknown" — 0 would read as perfect agreement. ⚠ Small Δn is agreement, not evidence — centring has already removed the block-wide common mode that would otherwise produce it.
+- **Mau** — Maurer's universal test (NIST SP 800-22 §2.9) over the item's own window: per node, over exactly the bits z counts (`gcp_last_maurer()` in `elotto_gcp`, `,mau=`, `/camlog` `mau`), L = 8 (byte blocks, MSB first), Q = 2560 init blocks, K = the rest; z = (f_n − 7,1836656) / (c·√(3,238/K)), c = 0,7 − 0,1 + 8·K^(−3/8)/15. Then centred on that node's block mean (scoring: pass mean; a node with < 2 values stays out), Stouffer over the combined nodes, divided by the block's own σ of that combine — unit variance, read against 0, − = more compressible, coloured at |Mau| > 3. Only a negative Mau stretches: Mau = −1,5 and β = 1 → 2,5. Zero, positive or missing → factor 1; a positive Mau does not flip the sign of Z. **—** until centred. ⚠ Below NIST's minimum at short `?run=` (L = 8 wants ≥ 2,07 Mbit per window); the c(L,K) correction keeps σ right, the centring removes the per-camera offset.
 - **Conc** — same sign as Z, scaled by |Conc|/σ_c. Opposite sign, Conc 0, missing σ_c, or Z = 0 → factor 1. |Conc|/σ_c = 1,55 and γ = 1 → 2,55. Conc is not a second entropy subtraction: when the window bias is stable it tracks Z, so a large same-sign Conc means the deviation held across both halves.
-- **AC** — this item against the 1..4 items measured just before it. A positive AC (a run) damps. AC = 4,12 and δ = 1 → 1 − 4,12/5,12 = 0,195. A negative AC leaves the factor at 1. The factor never goes negative. The first item of a round or pass has no predecessor → factor 1.
+- **AC** — the ITEM autocorrelation: u = centred combined z / block σ in MEASUREMENT order, AC_j = Σ_{L=1..4} u_j·u_{j−L} / √m (m = lags available) — unit variance for independent items, read against 0, coloured at |AC| > 3. A positive AC (it moved with its predecessors) damps: AC = 4,12 and δ = 1 → 1 − 4,12/5,12 = 0,195. A negative AC leaves the factor at 1; the factor never goes negative. **—** until the block (scoring: the pass) closes and for its first item → factor 1. The series' own z_L = r_L·√(n−L) for lags 1..4 (Bancel's lag-1 test on the GCP series) is in the health line under the table (`/status` `item_ac_z`, `score_ac_z`), marked at |z_L| > 3.
 
 Worked stack, all weights 1: Z/σ_z = −2, |Conc|/σ_c = 1,55, Δn = 0,82, AC = 4,12, Mau = −1,5 → −2 · 2,55 · 1,220 · 0,195 · 2,5 ≈ −3,03.
 
 ⚠ Z and Conc are each divided by their own σ of **that item's block**, frozen at close. There is **no** session-wide channel σ — `s_bsig[block].sig_p`/`sig_c` is the only scale, and `/loops` no longer publishes it. A key with no block σ is 0, never a fallback. The product is not re-standardised.
 ⚠ Uncentred z ranks NODES, not items — a live table is meaningless before the first block closes.
 ⛔ **The key is UNBOUNDED — nothing truncates an extreme item**. Z/σ_z sits inside its block (`|Z/σ_z| ≤ (n−1)/√n`). The product of the factors does not: a small Δn or a large negative Mau can pass that ceiling, and a quiet block can then produce a large key. ⚠ The last round of a session is short because Abort cut it.
-UI: **Z\*** is the product, **Z**, **Conc**, **Δn**, **AC**, **Mau**. The formula with the session's four numbers stays at the top of the page; a factor whose weight is 0 is left out of it (at κ = 0 the base reads `sign(Z)`), the Save params file keeps all four. While a session runs it is read from `/status`; while the start form is what is being edited it follows the inputs. A reload of a finished session shows that session's weights until an input changes.
+The formula at the top of the page leaves out a factor whose weight is 0 (at κ = 0 the base reads `sign(Z)`); the Save params file keeps all four. A reload of a finished session shows that session's weights until an input changes.
 
 **Concordance.** Per node, split the window at the **frame-pair boundary nearest the
 middle**  (nseg/2 if the window holds none) and **centre each half on that node's own
 per-half block mean** (scoring: span mean). A window is only ~3 pairs at `?run=0,5`, and within a
-pair the bits run in sensor-row order, so the old nseg/2 split compared chip regions as much as
-moments; at a pair boundary the halves are two moments. The halves may be unequal (e.g. 2,5:
+pair the bits run in sensor-row order, so a split inside a pair compares chip regions; at a pair
+boundary the halves are two moments. The halves may be unequal (e.g. 2,5:
 3,3 Mbit). Boundaries: `camera_window_pair_starts()`, taken at the end of the 16-segment read block
 they fall in. ⚠ The window's first pair is a FRAGMENT (~0,52 Mbit): nobody reads while it is
 extracted, the 64 KB ring fills and drops the rest of it.
 D84 (interleaved vs front/back, 75,2 % against 69,9 % agreement, 1,7 σ) found the agreement rate
-insensitive to the split; the pair-boundary split is an operator decision, not a
-re-opening of that measurement. Same sign → `√2 · min(|h1|,|h2|)` with that
+insensitive to the split. Same sign → `√2 · min(|h1|,|h2|)` with that
 sign (equals z_ctr when the bias is stable). Opposite sign or a zero half → 0. Then drop the loudest
 node and Stouffer-combine the rest. k < 2 after the drop → 0.
 ⚠ **The sign test is on CENTRED halves, and only there does it test anything**: a raw half
 carries the node's LSB offset at 11..76 σ, so raw halves always agree and the value degenerates to
 z − |h1−h2|/√2 — z plus noise. The
-provisional `zc` in `measure_window()` is still raw and is replaced at centring.
+provisional `zc` in `measure_window()` is still raw and is replaced at centring. ⚠ A node with fewer
+than two half-values in the span has no half mean and enters raw.
 ⚠ **The 50 % null applies only to UNIT-VARIANCE nodes, and this array has never had them**.
 With h = c + e (c = the item-level part the centring leaves in, e = per-half binomial noise), the
 agreement rate is `½ + arcsin(ρ)/π` with `ρ = var(c)/(var(c)+var(e))`, and the full-window z has
@@ -320,145 +278,84 @@ Wire: `Z:<z>[,<h1>,<h2>][,wsig=<σ>][,mau=<z>]`. `,wsig=`, `,mau=` TAGGED.
   `results[]` for the session.
 - **`z_ctr` is what every statistic and ranking runs on.** At block close `center_block()` subtracts
   each node's block mean and recombines over the same nodes (`have_mask`, k unchanged). Single
-  accessor `rank_z()`. Until a block closes, `z_ctr` holds the provisional raw value. 
+  accessor `rank_z()`. An open block is
+  centred provisionally from `PASS_OPEN_MIN_N` 4 items on; below that `z_ctr` is the raw value.
 
 ⚠ **Centring removes any real effect CONSTANT across a whole block.** Pre-registration decision:
 what remains visible is an effect varying **between items inside a block**.
 
 ### UI
-- A **parameter line** for every session, built from `/status`, not the form — a curl-started run
-  and a reloaded page both label themselves. "per run" is measured pace once ≥ 5 runs exist, else
-  the rate model, and says which. ⚠ The measured value reads high early — `elapsed_ms` also
+What the page shows is in `main/elotto.c`; this keeps what bites.
+- The **parameter line** is built from `/status`, not the form — a curl-started run and a reloaded
+  page both label themselves. ⚠ Its measured "per run" reads high early — `elapsed_ms` also
   contains the opening sweep.
-- **Two rows of three stat cards; the split is load-bearing**: top row round-relative in every
-  figure (Items, Progress, Time/ETA), bottom row session-relative (Round, Total Measured,
-  Total Time). ⚠ The bottom row is shown only while a session runs — every session is rounds
-. The scoring has its own round-relative row (Numbers, Progress, Time/ETA).
-- **A view button over the table** switches items ↔ number scoring whenever both have data;
-  default follows the phase. Σ Z\* and the Z\* column rank by absolute value in the number
-  table and in the item table: the cell keeps its sign, a larger magnitude ranks higher.
-  The line under that Top-10 says so — ranked by |Z\*|, the cell keeps the sign, so 3 and −3
-  both sit at the top. The column header reads `|Z*|`. Every other column stays signed.
-- **One sortable table of ten**: Top-10, item counter + block badge. Columns: `Z*` (the
-  product above), `Z`, `Conc`, `Δn`, `AC`, `Mau`. Every header has a plain-language tooltip.
-  ⚠ **The table is the ten held rows best on the clicked column and direction, chosen on the
-  master** — `GET /extremes?sort=key|z|conc|nsd|ac|mau&dir=high|low` (streamed JSON, `emit_run` row
-  shape, `held` = rows with a value in that column). On `key`, `high` is the largest |Z\*|,
-  `low` the smallest; the published `key` stays signed. Polled every **5 s**; a header click fetches
-  at once but at most once per second, and a reply for a superseded sort is dropped. `dir=`
-  without `sort=`, an unknown value and a truncated value or query (> 95 characters) answer **400**. It ranks every held row on the master's HTTP task, which shares the consumer core, so a
-  1 s poll stole the master's extraction CPU. ⚠ **Held rows** are the compaction archive (chosen on
-  the pool criterion) plus the open round, so while the session runs another column's extremes are those of that archive,
-  not of the session; after the session the set is every ranked pass item (the full table). Without `?sort=` the set is chosen on the pool criterion. `?n=1..1000`
-  widens it (default 10, else **400**); the **Save** button beside Abort (also shown after Done/Abort) writes
-  four files in one step, CSVs for a German Excel (`;`, decimal comma, BOM). First, the pass
-  items. Once the session is over: `elotto_all<n>_…`, every ranked pass item by round and
-  combination, from `/extremes?full=1&from=<i>` in pages of 2000 index slots (`span`, `next`),
-  with a progress bar in the message line; it is written after the other three, when it has
-  loaded, and if it cannot be had the held extremes are written instead. While it runs (`full=1` answers **409**):
-  `elotto_top…` from `/extremes?n=1000`, the held extremes ranked best-first on the pool
-  criterion (`crit`/`dir` in the reply and the file name). Second, `elotto_sums_…` from `/extremes?sums=1`: every number's six signed column sums
-  for every scoring still in RAM (high and low are that column sorted either way; an empty count
-  is a missing value). Third, `elotto_params_….txt`: mode, measuring time, gap, runs per round,
-  scoring passes, sweep budget, pool criterion and direction, the four weights, and the formula
-  with those weights. Fourth, `elotto_jumps_….csv`: the whole camera-jump board from `/extremes?jumps=1`
-  (was, now, jump, ×σ, the node named from its address and its camera, and the measurement's
-  Z\*, Z, Z_raw, Conc, Δn, AC, Mau, k). A failed jumps fetch falls back to the ten `/status` rows
-  without the measurement columns. The params file names both windows (scoring time and gap,
-  measuring time and gap). Chrome/Edge ask for one folder and write all four there. ⚠ That dialog
-  exists only on a secure page; on the master's http address the four files go to the browser's
-  download folder. Cancelling the dialog writes nothing. A failed sums fetch skips that file and
-  warns; the other three are still written.
-  ⚠ In **scoring-only mode** (`maxruns=0`) there is no pass, so the first file is
-  built client-side from the sums instead — the scoring numbers ranked by the selected criterion
-  (`elotto_scored_<crit>_<dir>_…`). Save fetches `/status` so the criterion, direction, mode and
-  the weights are the ones in force at the click. ⚠ A continuous scoring's true pass count is the snap's
-  `round`, not `passes` (the per-number pass counter saturates at 255).
-  Click any stat header to sort; a second click on the
-  same header flips direction (arrow ▾/▴, ⇅ on the inactive ones), so the low end is one click away —
-  which is why the old Bottom-5 table is gone. The sort never changes the compaction archive or the
-  pool. An item without a value in the sorted column (`Δn` on a solo item) is not listed. `Δn` prints the node count it is taken over in parentheses — `0,79 (3)` is
-  three cameras. Until the first `/extremes` reply lands the table falls back to `/status` `top`,
-  the largest |Z\*| (the row keeps its sign).
-  **`AC` is the ITEM autocorrelation**: u = centred combined z / block σ in MEASUREMENT order,
-  AC_j = Σ_{L=1..4} u_j·u_{j−L} / √m (m = lags available) — **unit variance for independent
-  items**, read against 0. + = it moved with its predecessors, − = it alternated. Coloured at
-  |AC| > 3. **—** until the block (scoring: the pass) closes, and for its first item. The
-  series' own z_L = r_L·√(n−L) for lags 1..4 (Bancel's lag-1 test on the GCP series) is in the
-  Nodes card (`/status` `item_ac_z`, `score_ac_z`). It enters Z\* only through `?kac=` (0 = it
-  does not). As the pool criterion it still picks the pool and the extreme set on its own sum.
-  **`Mau` is Maurer's universal test (NIST SP 800-22 §2.9) over the item's own window**: per
-  node, over exactly the bits z counts (`gcp_last_maurer()` in `elotto_gcp`, `,mau=`, `/camlog`
-  `mau`), L = 8 (byte blocks, MSB first), Q = 2560 init blocks, K = the rest; z = (f_n − 7,1836656)
-  / (c·√(3,238/K)), c = 0,7 − 0,1 + 8·K^(−3/8)/15. Unit normal for random bits, − = more
-  compressible. Then centred on that node's block mean (scoring: pass mean; a node with < 2
-  values stays out), Stouffer over the combined nodes, divided by the block's own σ of that
-  combine — unit variance, read against 0, coloured at |Mau| > 3. It enters Z\* only through
-  `?kmau=` (0 = it does not; only a negative Mau stretches). As the pool criterion it still
-  picks the pool and the extreme set on its own sum. **—** until centred.
-  ⚠ Below NIST's minimum at short `?run=` (L = 8 wants ≥ 2,07 Mbit per window); the c(L,K)
-  correction keeps σ right, the centring removes the per-camera offset.
-  **`Δn` is node agreement**: σ across the contributing nodes of their block-centred z,
-  each node divided by ITS OWN σ over that block. Small = the cameras moved together on this
-  item; **≈ 1 is what independent nodes give**, so read it against 1, not against 0.
-  It enters Z\* only through `?kdn=` (0 = it does not). As the pool criterion it still picks
-  the pool and the extreme set on its own sum.
-  ⚠ **—** until the item's block has been centred (same wait as `Z`), and whenever fewer than
-  two nodes have a block σ. Never 0 for "unknown": 0 would read as perfect agreement.
-  ⚠ Small Δn is agreement, not evidence — centring has already removed the block-wide common
-  mode that would otherwise produce it.
-- **A third table, the camera-sigma jump board**: the ten largest changes in a node's
-  own camera noise from its previous measurement to this one, session-wide, named by
-  (item/round), wall time (`dd.mm. HH:MM`) and the drawn numbers. Only a node that was in that
-  item's combine enters it; every node's jump still feeds `wsig_sd`. Columns: node (`m`, `s0`…`s8`), was, jump, ×σ, Z\* (empty until known).
-  The board keeps `WSIG_KEEP_N` 100 rows (PSRAM); `/status` `wsig` and the card show the first
-  ten, Save writes all of them. Each row carries its measurement's values: a pass item from its
-  `results[]` row (provisional until its block is centred, frozen when compaction moves the rows),
-  a scoring run from its number's row when that pass closes — empty until then.
-  Camera = the chip the node named in its `P` reply (`/status` `nodes[].cam_sensor`; empty = a
-  slave image too old to send it).
-  ⛔ **It is a SUSPICION list, not a ranking** — the top row
-  is the measurement whose z deserves the LEAST trust. It excludes nothing.
+- **Stat cards: the split is load-bearing** — top row round-relative in every figure, bottom row
+  session-relative; the scoring has its own round-relative row.
+- **Top-10** — `GET /extremes?sort=key|z|conc|nsd|ac|mau&dir=high|low`, `?n=1..1000` (default 10):
+  the held rows best on that column and direction, chosen on the master. ⚠ It ranks every held row
+  on the master's HTTP task, which shares the consumer core: polled every **5 s**, a header click at
+  most once per second — a 1 s poll stole the master's extraction CPU. ⚠ **Held rows** are the
+  compaction archive (chosen on the pool criterion) plus the open round, so while the session runs
+  another column's extremes are those of that archive, not of the session; after the session the
+  set is every ranked pass item (the full table). Without `?sort=` the set is chosen on the pool
+  criterion. `dir=` without `sort=`, an unknown value and a truncated value or query (> 95
+  characters) answer **400**. A row without a value in the sorted column is not listed. The sort
+  never changes the compaction archive or the pool.
+- **Save** writes four files in one step (CSV for a German Excel: `;`, decimal comma, BOM):
+  the pass items, `elotto_sums_…` (`/extremes?sums=1`, every number's six signed sums for every
+  scoring still in RAM), `elotto_params_….txt` (the parameters that ran, both windows, the formula
+  with its weights) and `elotto_jumps_….csv` (`/extremes?jumps=1`, the whole jump board). The pass
+  items once the session is over: `elotto_all<n>_…`, every ranked pass item, from
+  `/extremes?full=1&from=<i>` in pages of 2000 index slots (`span`, `next`), written last; if it
+  cannot be had the held extremes are written instead. While the session runs `full=1` answers
+  **409** and the file is `elotto_top…` from `/extremes?n=1000` (`crit`/`dir` in the reply and the
+  file name). A failed sums fetch skips that file; a failed jumps fetch falls back to the ten
+  `/status` rows.
+  ⚠ The folder dialog exists only on a secure page; on the master's http address the files go to
+  the browser's download folder.
+  ⚠ In **scoring-only mode** (`maxruns=0`) the first file is built client-side from the sums — the
+  numbers ranked by the selected criterion (`elotto_scored_<crit>_<dir>_…`).
+  ⚠ A continuous scoring's true pass count is the snap's `round`, not `passes` (the per-number pass
+  counter saturates at 255).
+- **Camera-sigma jump board**: the largest changes in a node's own camera noise from its previous
+  measurement to this one, session-wide (`WSIG_KEEP_N` 100 rows, PSRAM; `/status` `wsig` carries
+  the first ten). Only a node that was in that item's combine enters it; every node's jump still
+  feeds `wsig_sd`. A row's measurement values are provisional until its block is centred; a scoring
+  run's are empty until that pass closes.
+  ⛔ **It is a SUSPICION list, not a ranking** — the top row is the measurement whose z deserves
+  the LEAST trust. It excludes nothing.
   ⚠ One row per NODE: two nodes on the same item is a shared cause, one node alone is that camera.
   ⚠ Read the **×σ** column, not the raw jump: it scales against `wsig_sd`, the session's own
-  measured jump noise (~0,016 on this rig). There is deliberately **no minimum jump** — on a
-  quiet session the board holds ten rows at 2..3 σ and says so, and the card is shown even
-  when empty.
-  ⚠ Scoring windows enter it too, named `scoring <pass>/<round>` with the number in the
-  Numbers column — not an item identity.
-- **A fourth table, Closest to chance**: the session's ten ranked, centred items with the
-  smallest `|Z*|`, ascending, same columns as the Top-10, fixed order (no sort clicks).
-  `/extremes` carries it as `quiet`. ⚠ Compaction keeps only the extremes, so `pass_compact()`
-  hands every merged row to a session board (`QUIET_N` 10, cleared at session start) and
-  `results_quietest()` merges it with the rows still in `results[]`. A block without σ gives key
-  0 by default and never enters.
-- **A fifth table, Soft-down origins**: when a block trips a node, the three
-  measurements of that block whose z sat furthest from the block mean, captured at block close
-  because compaction takes the rows one round later. Hidden when nothing tripped.
-  Title line: **Block · node · wall time · σ · mean**. Time is `now − (uptime_ms − t_ms)` — no RTC.
+  measured jump noise (~0,016 on this rig). There is deliberately **no minimum jump** — a quiet session shows ten rows
+  at 2..3 σ.
+  ⚠ Scoring windows enter it too, named `scoring <pass>/<round>` — not an item identity.
+- **Closest to chance** (`quiet` in `/extremes`): the session's ten ranked, centred items with the
+  smallest `|Z*|`. ⚠ Compaction keeps only the extremes, so `pass_compact()` hands every merged row
+  to a session board (`QUIET_N` 10, cleared at session start) and `results_quietest()` merges it
+  with the rows still in `results[]`. A block without σ gives key 0 and never enters.
+- **Soft-down origins**: when a block trips a node, the three measurements of that block whose z
+  sat furthest from the block mean, captured at block close because compaction takes the rows one
+  round later. Time is `now − (uptime_ms − t_ms)` — no RTC.
   ⚠ A trip belongs to a BLOCK, not to a measurement — σ is the spread over that round's
-  `?maxruns=` items (default 100). This names what carried the spread, not what "caused" it.
+  `?maxruns=` items. This names what carried the spread, not what "caused" it.
   ⚠ The ×σ column is measured against that block's own spread, not the null: near 3 is
   ordinary. Read the SHAPE — one item far out is an excursion, three close together mean the
   block was simply wide.
   ⚠ The block number shown is 1-based like `/loops`; `results[].block` is 0-based.
-- **The start form remembers its last values** (NVS, survives reboot and OTA): measuring time,
-  scoring time, runs per round, scoring passes, direction, and the four Z\* weights as whole percents 0–100
-  (the request sends the fraction). `/` serves them as a script chunk
-  appended to the page. ⚠ **Only a start carrying `confirm=1` writes them** — i.e. only the
-  web UI. A curl start that omits `kdn` / `kmau` / `kconc` / `kac` runs at 0 and does not
-  overwrite the stored form weights. ⚠ It changes **no** API default: an omitted parameter still resolves to the
-  compiled-in value. Mode is not remembered — it is which button was pressed, not a field.
-  The pool criterion is remembered too, but by its own rule  (written on the Σ click).
+- **The start form remembers its last values** (NVS, survives reboot and OTA). ⚠ **Only a start
+  carrying `confirm=1` writes them** — i.e. only the web UI. A curl start that omits `kdn` /
+  `kmau` / `kconc` / `kac` runs at 0 and does not overwrite the stored form weights. ⚠ It changes
+  **no** API default: an omitted parameter still resolves to the compiled-in value. Mode is not
+  remembered — it is which button was pressed. The pool criterion is remembered by its own rule
+  (written on the Σ click).
 
 ---
 
-## ⛔ A session is a closed unit 
+## ⛔ A session is a closed unit
 Everything is judged **inside one session**: its blocks, its pairwise matrix, its tables. Sessions
-are never compared, pooled or merged. Save writes four files of the session still in RAM (the
-pass items, every number's six scoring sums, the parameters that ran, and the camera-jumps board). A reboot or the next start drops them. Parameters,
-firmware and instrument may change freely between sessions; what must hold is that they do not change
-**within** one.
+are never compared, pooled or merged. Save writes the files of the session still in RAM; a reboot
+or the next start drops them. Parameters, firmware and instrument may change freely between
+sessions; what must hold is that they do not change **within** one.
 
 ---
 
@@ -469,7 +366,9 @@ LSB σ is **not** 1  — judge the measured number, do not expect the unit-sigma
 are display hints on `/diag` and gate nothing.
 
 **Soft-down** (`nodes[].soft_down`) takes a node out of the combine after a block with
-σ > `NODE_SOFT_TRIP_K` (1,35) × that block's peer-median σ. Sticky; clears after `NODE_SOFT_CLEAR_BLOCKS` (4) blocks under the
+σ > `NODE_SOFT_TRIP_K` (1,35) × the median of all nodes' σ in that block (its own included).
+⚠ A node is judged only with `NODE_SOFT_MIN_N` 20 items in the block and at least two nodes — a
+round of `?maxruns=` 10..19 can never trip, so a loud camera stays in the combine there. Sticky; clears after `NODE_SOFT_CLEAR_BLOCKS` (4) blocks under the
 peer-referenced bar (`clear_sig`, published per block in `/loops`). It never reboots
 anything. The sweeps that follow the block close (the round boundary, then the one before that
 round's pass) are what recalibrate it — soft-down itself does not call the ladder.
@@ -520,7 +419,7 @@ healthy node.
 ⚠ **The incumbent rung is KEPT** unless a challenger beats it by `CAL_KEEP_MARGIN_K` 3 SE of its
 own measurement (`kept` in `/calibrate`); for σ that SE is σ/√(2(m−1)) over m mini-runs.
 ⚠ **The σ key is coarse**: at the 10 s default budget 3 SE is ~5 %, so a smaller gain will not move
-a rung — two of four nodes correctly declined on the first sweep after. SE goes as
+a rung. SE goes as
 1/√budget, so `?cal=40000` halves the bar to ~2,4 %. The incumbent is what runs when the sweep STARTS, so a
 manual `/expose` gets one sweep of protection — deliberate.
 
@@ -540,12 +439,20 @@ ladder), no stuck frames, `mean_px` ≥ 5,0,
   rung and the LEAK gate are IMX219 only.
 - `raw_runs_z` is published per sweep rung and gates nothing. ⚠ 0,0 in a measurement window means
   NOT ARMED, not "perfectly random" (`raw_trans` says which).
-- The budget is a **cap, not a target** (default 10 s, `?cal=<ms>`, 0 = off). **When** is the
-  dynamic interval  (`CAL_DYN_MIN_MS` 15 min … `CAL_DYN_MAX_MS` 2 h, `calibrate_all()`,
-  `calibrate_shorten()` on a soft-down), checked at the candidate points only. `/status`
-  `cal_interval_ms` / `cal_due_ms`; the Log names every sweep and the next interval. The
-  session-start sweep always runs. `cal_did_sweep` / the `/loops` `cal_ms` mean "a sweep ran in this
-  round". Plus 60 s settle for each sweep that moved an exposure.
+- The budget is a **cap, not a target** (default 10 s, `?cal=<ms>`). ⚠ `?cal=0` turns every sweep
+  off; a soft-down trip then waits until the next session. **When** is the dynamic interval
+  (`calibrate_all()`): the session-start sweep always runs; after it a sweep runs at the next
+  candidate point — the end of every scoring pass, before the pass, the round boundary — once the
+  interval has run out: `CAL_DYN_MIN_MS` 15 min, doubled by every ok sweep (all nodes certified, no
+  exposure moved) up to `CAL_DYN_MAX_MS` 2 h, back to 15 min after any other sweep or a soft-down
+  trip (`calibrate_shorten()`). `/status` `cal_interval_ms` / `cal_due_ms`; `cal_did_sweep` / the
+  `/loops` `cal_ms` mean "a sweep ran in this round". The page's **Log** card shows every sweep,
+  change, pause and soft-down with wall time (`GET /loops?ev=1`).
+- ⚠ **A rung change is not free**: after one, this rig's cameras need ~1 min to settle (px still
+  climbing, bit bias moving by ~0,002), and the items measured in that minute sit far enough from
+  the block mean to trip soft-down on their own. So **any sweep that moves any node's exposure is
+  followed by a 60 s settle pause of the whole array** (`CAL_SETTLE_AFTER_MS`), nothing measured; a
+  sweep where every node kept its rung pauses nothing. It fixes only the trips that follow a change.
 - **Nodes land on different exposures on purpose**; what they must share is the segment count.
 - Between rungs the sweep discards `CAL_STEP_SETTLE_PAIRS` 8 frame pairs (~0,44 s) before scoring
   the rung — driver queue plus margin. The ~1 min drift is not waited out per rung: it moves
@@ -555,10 +462,8 @@ ladder), no stuck frames, `mean_px` ≥ 5,0,
   recorded per block in `/loops`.
 - **`/loops` also carries `cam_sig` / `cam_rsig` (stream σ) and `cam_px`**.
   ⚠ **They are cumulative since the last SWEEP, not per block**  — `camera_stats_reset()`
-  runs only in the sweep and on `/expose`. Since  the sweep before the pass resets them, so a
-  block's row now spans **that block's own pass** rather than the scoring that used to dominate the
-  accumulation — a shorter span and therefore a noisier σ, but one that describes the measured
-  items. ⚠ A `?cal=0` session has no reset at all. For anything that has to
+  runs only in the sweep and on `/expose`. The sweep before the pass resets them, so a
+  block's row spans **that block's own pass** — a short span and therefore a noisy σ. ⚠ A `?cal=0` session has no reset at all. For anything that has to
   be located in time use **`GET /camlog` on the node**  — never these. `/camlog` is the
   record that does not depend on the master keeping the row.
   ⚠ `cam_px` 0 = the node did not report it, **not** a dark frame.
@@ -570,9 +475,8 @@ ladder), no stuck frames, `mean_px` ≥ 5,0,
 - ⚠ Never price monitor cost with `/camtest` — the delivered bit rate is the number.
 - ⚠ **Never judge `raw_sigma` from single `/expose` readings.** It is non-stationary per node
   on a timescale of minutes: two readings at IDENTICAL settings gave 1,211 and 1,025. Only the
-  SWEEP compares — the whole ladder back to back. A gain change was adopted and reverted within
-  the hour on exactly this mistake.
-- ⚠ **The sweep ladders the EXPOSURE only.** `cal_run()` passes the gain in force at entry
+  SWEEP compares — the whole ladder back to back.
+- ⚠ **The sweep ladders the EXPOSURE only.** `camera_calibrate()` passes the gain in force at entry
   (`g0`) to every rung, so `CONFIG_ELOTTO_CAM_REG_GAIN` is the operating point for the life of
   the board, not a boot value — and a `POST /expose?gain=` override is carried forward by the
   next sweep instead of being replaced.
@@ -606,7 +510,7 @@ releases it — ⚠ `SESSION_IDLE_MS` must stay above the 60 s settle pause, whi
   unchanged and `/update` is not blocked for a whole session.
 - ⚠ **The idle release is a deliberate hole**: a long parked phase leaves the latch to expire
   under it. It is kept because without it a master crash would leave every slave locked until
-  someone rebooted it. (The pool-confirmation park that motivated it is gone.)
+  someone rebooted it.
 
 ## Darkness — standing rules
 Every enclosure is **totally dark, LEDs off**; the entropy is readout noise. A light leak shows as
@@ -622,14 +526,13 @@ with the exposure.
   ⚠ The URI-handler cap fails silently (404, return value unchecked) — the count lives at
   `start_webserver()`; prefer `?all=1` on an existing endpoint over a new handler.
   ⚠ **`max_open_sockets` 13 (lwIP 16 minus the 3 httpd reserves) exists so the UI cannot lock an
-  external client out**. At the old 7 one open page filled the table, and `lru_purge_enable`
-  then evicted each newly accepted, still-silent client before its request was read — `curl` saw a
-  successful TCP connect followed by an immediate close, every time, while the page kept updating.
+  external client out**. With a smaller table one open page fills it, and `lru_purge_enable`
+  then evicts each newly accepted, still-silent client before its request is read — `curl` sees a
+  successful TCP connect followed by an immediate close, every time, while the page keeps updating.
   ⚠ That failure looks exactly like a dead HTTP task. **Open a second browser window**: if it
   loads, the board is fine and the caller is being evicted.
   ⛔ It fixes the lock-out, **not the load**: the HTTP task shares the consumer core, so polling the
-  master during a measuring pass costs measurement — a soft-down of the master alone followed exactly
-  such probing, with its camera unchanged. Watch a running session on the SLAVES.
+  master during a measuring pass costs measurement. Watch a running session on the SLAVES.
   **`GET /diagjson?all=1` is the COLLECTOR**: the whole array's front-end health in one request,
   discovery order, IP per row. 409 while measuring. ⚠ `cal_*` is what the last SWEEP chose;
   `exposure`/`gain` are LIVE — they differ after a manual `/expose` or an uncertified sweep.
@@ -648,8 +551,8 @@ with the exposure.
 - **ota_firmware/** – the network updater, its own IDF project. Ethernet + HTTP + esp_ota only.
 - **components/elotto_camera/** – OV5647 / IMX219 entropy extraction. One stream; the runs half
   is armed only inside a sweep. Also serves `/camlog`, `/linearity`, `/expose`,
-  `/calibrate` and `/camtest` for **every** node from one implementation — the four boards must
-  not describe their own cameras in four different shapes.
+  `/calibrate` and `/camtest` for **every** node from one implementation — the boards must
+  not describe their own cameras in different shapes.
 - **components/elotto_link/** – the UDP wire format (`EL1 <seq> <payload>`, ports 5000/5001), plus
   `EL_SEG_MIN`/`EL_SEG_MAX` as ONE definition for both firmwares.
 - **components/elotto_gcp/** – the z primitive (`gcp_zscore_raw()`, `gcp_z_per_bias()`), shared so
@@ -665,21 +568,8 @@ All three components are **shared**: the slave repo pulls them via
 image). ⚠ The repos must stay siblings on disk; build, flash and commit them together.
 
 ### Wire protocol
-`P` discovery · `M<seg>` measure · `K<budget_ms>,<segs>` calibrate · `D` diagnostics · `A` abort ·
-`R` reboot. Replies `OK` (to `P`: `OK,cam=IMX219|OV5647`), `Z:<z>[,<h1>,<h2>][,wsig=][,mau=]`, `D:`, `E:<reason>`, `V:<reason>` (void, not a
-fault). `h1`/`h2` are z of the two halves of the same window; a node that sends none
-is ranked on the full window (leave-one-out still applies). Extra fields ignored.
-A slave whose `camera_init()` failed at boot (no camera attached) answers `P` with `E:no camera`:
-discovery leaves it out of the session — no slot, no drop, no reboot — and the Log names it.
-⚠ It still hears the broadcast `M`/`K` and answers them; the master discards replies from
-addresses outside the session. Attaching a camera needs a node reboot to take effect.
-UDP loss is handled explicitly: every frame carries the sequence it answers, mismatches are dropped
-and counted (`net_stale`), a timed-out command is resent under the same sequence so a node replies
-from a one-entry cache instead of measuring twice.
-⚠ All receive timeouts go through `link_arm_timeout()` — its comment in `nodes.c` says why the
-floor is load-bearing.
-⚠ A receiver does not clamp an out-of-range segment count, it substitutes its own;
-`LINK_MEAS_MS_FOR(nseg)` scales with the run and is deliberately generous.
+Commands, replies and UDP loss handling: **[components/elotto_link/CLAUDE.md](components/elotto_link/CLAUDE.md)**
+(loaded when working there; read it before touching the link code in `nodes.c`).
 
 ### Resources
 - **PSRAM is mandatory**: capture buffers, the LSB-ones side ring (`s_ring_raw`), `loop_hist`,
@@ -691,8 +581,7 @@ floor is load-bearing.
   `NUM_RUNS` 1400.
 - ⚠ **The measurement path reads the ring in BLOCKS** — `camera_read_words()`, 112 words per call
   from `gcp_zscore_pre()`. `camera_read_word()` takes `s_mutex` and fences four times per
-  32 bits; read that way, the reader — not PSRAM, not the camera — was the session rate (6,2 Mbit/s
-  consumed against 8,66 produced). Single words are for seeding only.
+  32 bits; read that way, the reader — not PSRAM, not the camera — sets the session rate. Single words are for seeding only.
 - ⚠ **Task priority is load-bearing**: any task calling `camera_read_word[s]()` must run **above** the
   extraction task, or the consumer starves ~10× (see `camera.h`; signature: ring `drops` huge with
   `waits == 0`).
@@ -700,8 +589,7 @@ floor is load-bearing.
   is created with `xTaskCreatePinnedToCore()`: extraction on `ELOTTO_CAM_TASK_CORE`, consumer and
   web server on `ELOTTO_CAM_CONSUMER_CORE` (both in `camera.h`). Plain `xTaskCreate()` is
   `tskNO_AFFINITY`, and the master creates `elotto_task` fresh on **every** `/start` — unpinned it
-  shared a core with `cam_task` in about one session in three and **everything halved**:
-  `focus_win_ms` 10,2 s instead of 5,13, consumption 2,88 instead of 5,77.
+  shares a core with `cam_task` in about one session in three and **everything halves**.
   ⚠ The signature is consumption halving EXACTLY while all other nodes stay normal.
   ⚠ **One fast session proves nothing here** — it was intermittent. Re-test any new task in this
   path over ~20 session starts.
@@ -709,33 +597,15 @@ floor is load-bearing.
 ---
 
 ## Nodes
-| node | IP | MAC | COM | flash contents |
-|------|----|-----|-----|----------------|
-| master | 192.168.178.100 | 80:f1:b2:d2:e3:1d | COM4 | factory = updater, ota_0/ota_1 = elotto app · IMX219 |
-| slave0 | 192.168.178.103 (static lease) | 80:f1:b2:d2:e3:e5 | — | factory = updater, ota_0 = slave app · IMX219 |
-| slave1 | 192.168.178.145 (static lease) | e8:f6:0a:e0:ce:a8 | — | factory = updater, ota_0/ota_1 = slave app · IMX219 |
-| slave2 | 192.168.178.155 | e8:f6:0a:e0:c7:a1 | — | factory = updater, ota_0 = slave app · IMX219 |
-| slave3 | 192.168.178.83 (static lease) | e8:f6:0a:e0:d9:53 | COM10 | factory = updater, ota_0 = slave app · IMX219 |
-| slave4 | 192.168.178.172 (static lease) | 80:f1:b2:d6:58:80 | COM11 | factory = updater, ota_0 = slave app · IMX219 · **chip rev v3.2** |
-| slave5 | 192.168.178.166 (static lease) | 80:f1:b2:d6:58:81 | COM3 | factory = updater, ota_0 = slave app · IMX219 · **chip rev v3.2** |
-| slave6 | 192.168.178.173 (static lease) | 80:f1:b2:d6:5a:1a | COM4 | factory = updater, ota_0 = slave app · IMX219 · **chip rev v3.2** |
-| slave7 | 192.168.178.32 (static lease) | e8:f6:0a:e7:fe:13 | COM6 | factory = updater, ota_0 = slave app · IMX219 · **chip rev v3.2** |
-| slave8 | 192.168.178.181 (static lease) | e8:f6:0a:e8:15:94 | COM9 | factory = updater, ota_0 = slave app · IMX219 · **chip rev v3.2** |
-
+Ten boards, all IMX219: master 192.168.178.100 and slave0…slave8. IP/MAC/COM table: skill `flash`.
 **Say master/slave0…slave8, never the IP ending.**
 ⚠ **Two silicon revisions**: slave4 … slave8 are ESP32-P4 rev v3.2, every other node rev v1.3. Support for <3.0 and
-≥3.0 is mutually exclusive, so the rev v3.2 boards run their own updater and slave images (`build_rev3`, below).
+≥3.0 is mutually exclusive, so the rev v3.2 boards run their own updater and slave images (`build_rev3`).
 ⚠ Discovery stops at `MAX_SLAVES` (`MAX_NODES` − 1 = 9); a further answering slave is silently ignored.
 ⚠ The master's UDP receive mailbox (`CONFIG_LWIP_UDP_RECVMBOX_SIZE`, `sdkconfig.defaults`) must hold
 2 × `MAX_SLAVES` replies (a build-time assert in `nodes.c`); raise both together.
-⚠ The updater starts its web server only if it gets an IP within 30 s of boot — plug LAN before power, else power-cycle.
-An image of the wrong revision is refused by the bootloader. Read the revision before flashing a
-new board (`esptool chip-id`).
 ⚠ **Node order is DISCOVERY order**, not the slave number, and changes between sessions — the IP
 per row (`/status` `nodes[]`, `/diagjson?all=1`) is what names a board; never map by position.
-⚠ **COM ports are not stable** — list the ports before an `erase-flash`; a wrong port wipes a
-working node.
-Addresses are informational: the master finds slaves by UDP broadcast.
 
 ### Extraction — where the rate stands
 Extractor rates, the cache autoload, frame quantisation and the extractor rules live in
@@ -743,12 +613,11 @@ Extractor rates, the cache autoload, frame quantisation and the extractor rules 
 there). ⛔ Never change the live extractor without `/camtest` `r10_equal` (RAW10) / `equal` (RAW8)
 true on the target.
 - ⚠ **`mbit_s` is PRODUCTION, `consume_mbit_s` is what a measurement READ**. The first
-  counts words the ring then discarded — it read 5,71 on the master against 3,34 on the slaves
-  purely because the master's consumer was slower and its ring overflowed. `/diag` shows the
+  counts words the ring then discarded, so a slow consumer reads HIGH on it. `/diag` shows the
   second; use the first only for the sensor ceiling  and `/camtest`. The node table's
   Mbit/s is a THIRD figure, the **used** rate: bits that entered the node's z per second of session
   time (`z_n` × segments × 224 / `elapsed_ms`, segments = `srun_segs` and `run_segs` weighted by
-the session's `win_score` / `win_pass` window counts) — ~5,4 against 18,7 produced at `?run=0,5`; the
+the session's `win_score` / `win_pass` window counts); the
   other two are in its hover text.
 - ⚠ **If `focus_win_ms` ever doubles** (~5,13 s → ~10,2 s at identical parameters), suspect an
   unpinned task in the measuring path, not the camera  — signature: consumption halves
@@ -766,23 +635,7 @@ gets pinned to the wrong interpreter and fails with "run 'idf.py fullclean'".
 .\build.ps1 build                        # master
 .\build.ps1 -C ota_firmware build        # updater  (-C selects another project)
 .\build.ps1 -C ../elotto_slave build     # slave
-# rev v3.x boards (slave4): overlay sdkconfig.defaults.rev3, own build dir and sdkconfig
-$s='D:\E-Lotto\elotto_slave'; .\build.ps1 -C $s -B "$s\build_rev3" -D "SDKCONFIG=$s\sdkconfig.rev3" -D "SDKCONFIG_DEFAULTS=$s\sdkconfig.defaults;$s\sdkconfig.defaults.rev3" build
-# same pattern with -C ota_firmware for the rev3 updater
 ```
-
-**Flash over Ethernet, not USB:**
-
-```powershell
-curl http://192.168.178.100/update --data-binary @build/elotto.bin                        # master
-curl http://192.168.178.103/update --data-binary @../elotto_slave/build/elotto_slave.bin  # slave
-curl http://192.168.178.172/update --data-binary @../elotto_slave/build_rev3/elotto_slave.bin  # slave4 (rev v3)
-```
-
-~750 KB in ~3 s. The node writes the *inactive* slot, reboots, and marks itself valid only once its
-webserver answers, so a failed transfer cannot strand it. `POST /update?slot=0|1` targets a slot;
-`POST /boot?slot=N` selects the next boot slot and clears the fail counter — that is how a node is
-put back on a known-good image without USB.
 
 - `/update` and `POST /start` return **409** while a session runs. Abort first.
 - ⚠ **Never OTA-flash while a session is running without asking the operator first.**
@@ -791,15 +644,7 @@ put back on a known-good image without USB.
 - ⚠ **After every OTA, poll `fw_sha` in `/status` until it CHANGES**.
   ⚠ "All nodes run the same code" is a policy, not a fact — `fw_sha` per node is in
   `/diagjson?all=1`.
-- ⚠ **A node that pings but refuses port 80 is not dead** — check `/otainfo` before USB.
-  ⚠ An *immediate* close on every endpoint (connect succeeds, no response) is socket-table
-  eviction, not a crash. To prove the array is still measuring, watch a slave's `/camlog`
-  `tag` advance — the ring is under **`win`**, and `measuring` on `/diag` is the ~2 s window flag,
-  not a session flag.
-- **USB is only for** a fresh board or a node whose recovery updater is gone:
-  `.\build.ps1 -C ota_firmware -p COMx erase-flash`, then `... -p COMx flash` (a rev v3 board:
-  `esptool write-flash "@flash_args"` from `ota_firmware/build_rev3`). The updater logs `link up`,
-  the PHY id and BMSR on the console; no `link up` = cable/port, not firmware.
+- Flash commands, boot slots, a node that refuses port 80, USB recovery: skill `flash`.
 
 ## Rules
 - ⚠ **Never edit sdkconfig manually.** Edit `sdkconfig.defaults`, delete `sdkconfig`, let the build

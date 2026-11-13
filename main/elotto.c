@@ -1743,10 +1743,10 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
    column is worthless if its meaning has to be looked up. English like the rest
    of the page. \\n inside a title
    attribute wraps the tooltip -- same trick the per-row `det` title uses. */
-"+'<th title=\"Did the four cameras agree?\\n"
-"Each camera measures this item on its own. \\u0394n is how far apart those four "
+"+'<th title=\"Did the cameras agree?\\n"
+"Each camera measures this item on its own. \\u0394n is how far apart those "
 "values were, measured in each camera\\u2019s own noise.\\n"
-"small (below 0.6) = all four saw roughly the same thing\\n"
+"small (below 0.6) = all of them saw roughly the same thing\\n"
 "around 1.0 = ordinary spread, this is what pure chance looks like\\n"
 "large (1.5 and up) = one or two cameras carried the result alone, the others "
 "saw none of it\\n"
@@ -3255,9 +3255,9 @@ static const StartKey start_keys[] = {
       "baseline= no longer exists -- the baseline phase was deleted; "
       "block centring is the drift reference", NULL },
     { "calint",
-      "calint= no longer exists -- one block is one round, so the "
-      "round boundary is the only sweep trigger. Set the block "
-      "length with maxruns=<n>; cal=0 turns the sweep off", NULL },
+      "calint= no longer exists -- sweeps run on the dynamic interval "
+      "(15 min to 2 h) at the end of a scoring pass, before the pass "
+      "and at the round boundary; cal=0 turns the sweep off", NULL },
     { "mode",      NULL, start_parse_mode },
     { "run",       NULL, start_parse_run },
     { "srun",      NULL, start_parse_srun },
