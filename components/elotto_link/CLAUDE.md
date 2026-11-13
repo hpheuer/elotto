@@ -1,7 +1,7 @@
 # elotto_link - wire protocol
 
 `P` discovery · `M<seg>` measure · `K<budget_ms>,<segs>` calibrate · `D` diagnostics · `A` abort ·
-`R` reboot. Replies `OK` (to `P`: `OK,cam=IMX219|OV5647`), `Z:<z>[,<h1>,<h2>][,wsig=][,mau=]`, `D:`, `E:<reason>`, `V:<reason>` (void, not a
+`R` reboot. Replies `OK` (to `P`: `OK,cam=IMX219|OV5647`), `Z:<z>[,<h1>,<h2>][,wsig=][,mau=][,ser=]`, `D:`, `E:<reason>`, `V:<reason>` (void, not a
 fault). `h1`/`h2` are z of the two halves of the same window; a node that sends none
 is ranked on the full window (leave-one-out still applies). Extra fields ignored.
 A slave whose `camera_init()` failed at boot (no camera attached) answers `P` with `E:no camera`:

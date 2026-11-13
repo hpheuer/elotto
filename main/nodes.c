@@ -749,9 +749,16 @@ bool node_take_z(int k, double *out_z,
         double v = atof(mus + 5);
         if (isfinite(v)) g_status.nodes[k + 1].cam_mau_now = (float)v;
     }
+    /*,ser= — the largest serial |z| of this window. Same handling. */
+    g_status.nodes[k + 1].cam_ser_now = NAN;
+    const char *srs = strstr(resp, ",ser=");
+    if (srs) {
+        double v = atof(srs + 5);
+        if (isfinite(v)) g_status.nodes[k + 1].cam_ser_now = (float)v;
+    }
 
     /* The halves are the first two fields only if the first comma is followed
-     * by a number: a node without halves sends ,wsig= or ,mau= there. */
+     * by a number: a node without halves sends ,wsig=, ,mau= or ,ser= there. */
     const char *comma = strchr(resp + 2, ',');
     if (comma && !isalpha((unsigned char)comma[1])) {
         const char *c2 = strchr(comma + 1, ',');

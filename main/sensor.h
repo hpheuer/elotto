@@ -24,10 +24,6 @@ typedef uint16_t node_mask_t;   // bit i = node i; MAX_NODES below must fit
  * first copied to the full table (FULL_MAX). Every session is rounds, so every round
  * boundary calls pass_compact() (no-op while n ≤ 1000). */
 #define PASS_KEEP_EXTREME 1000
-/* The quiet board: the session's QUIET_N items with the smallest |rank_key|.
- * Compaction keeps only the extremes, so pass_compact() hands every row it
- * merges to the board — see results_quietest(). */
-#define QUIET_N          10
 /* The full table: every ranked row compaction merges is first copied here
  * (PSRAM, 48 B a row plus its Z*), so after the session the Top-10 and Save
  * choose from EVERY pass item measured, not from the 1000 survivors.
@@ -105,7 +101,7 @@ typedef uint16_t node_mask_t;   // bit i = node i; MAX_NODES below must fit
  * point underneath a centring and leaves n untouched.
  *
  * Why: Z' = z_ctr/σ is at most (n-1)/√n with n the block's item count, so a
- * round of one block keeps that part comparable across rounds. The four Z*
+ * round of one block keeps that part comparable across rounds. The Z*
  * factors are not bounded by it. ⚠ The last round is cut short by Abort. */
 /* Per-run window (one continuous window per item) and the
  * intentional blank after it. Both are session parameters on /start (?run= &
@@ -257,10 +253,10 @@ _Static_assert(UNLIM_RUNS_MAX + PASS_KEEP_EXTREME <= NUM_RUNS,
 /* Z* factor weights, each independently 0..1. 0 turns that factor off
  * (the factor stays 1). ?kdn= Δn, ?kmau= Mau, ?kconc= Conc, ?kac= AC.
  * Omitted → 0, so Z* = z_ctr / block σ. The form stores them only on
- * confirm=1; /status names the four that ran. */
+ * confirm=1; /status names the ones that ran. */
 #define ZSTAR_W_DEFAULT      0.0
 /* ?kz= is the exponent on |Z/σ_z|, 0..1: base = sign(Z)·|Z/σ_z|^kz.
- * 1 (default) is Z/σ_z, 0 keeps only the sign of Z and the four factors
+ * 1 (default) is Z/σ_z, 0 keeps only the sign of Z and the factors
  * carry the magnitude. */
 #define ZSTAR_KZ_DEFAULT     1.0
 
@@ -366,11 +362,14 @@ typedef struct {
      * at 1 (a real 0 must not divide). It also selects when it is the pool
      * criterion (the pool, and the extreme set kept by compaction). */
     float      node_sd;
-    /* ITEM AUTOCORRELATION (AC): this item's centred z times the 1..4 items
-     * measured before it, / √m — see series_ac(). Enters Z* through ?kac=:
-     * a positive AC damps the key, a negative AC leaves it. NaN (open block,
-     * or the first item) leaves that factor at 1. */
-    float      acz;
+    /* SERIAL ORDER of the bits this item was measured from (Ser): each camera
+     * reports the largest |z| among its window's lag-1..4 bit agreement and
+     * its byte χ² (gcp.c, ,ser= on the wire); this is the largest of those
+     * over the cameras in the combine. Not combined, not centred, ≥ 0, final
+     * when measured. ⚠ It is a maximum of 5·k values: chance alone gives
+     * about 2,5 at ten cameras, so it is read against that, not against 0.
+     * Never in Z*. NaN = no camera reported one. */
+    float      ser;
 } RunResult;
 _Static_assert(sizeof(RunResult) == 48, "results[] row is the internal-RAM budget");
 
@@ -468,6 +467,9 @@ typedef struct {
     /* The same window's Maurer universal-test z, ,mau= on the 'Z' reply.
      * NAN = not reported. */
     float    cam_mau_now;
+    /* The same window's serial statistic, ,ser= on the 'Z' reply: the largest
+     * |z| among its lag-1..4 bit agreement and byte χ². NAN = not reported. */
+    float    cam_ser_now;
     /* Mean raw pixel level from that same 'D' query (,px=). The one covariate
      * that separates a light leak from a sensor change.
      * ⚠ 0 = this node did not report it (firmware older than 2026-08-28), not
@@ -649,7 +651,7 @@ typedef struct {
     float    z_ctr;      // Z
     float    zc;         // Conc (0 = none, the results[] convention)
     float    nsd;        // Δn
-    float    ac;         // AC
+    float    ser;        // Ser
     float    mau;        // Mau
     float    key;        // Z*
 } WsigEvent;
@@ -659,9 +661,9 @@ typedef struct {
  * exactly as a results[] row would be — index = the number, the number in
  * nums[0] (euro[0] for a bonus number), round, k, have_mask, z_score (raw),
  * z_ctr / zc_ctr (provisional raw until the pass closes, then centred on the
- * pass span, like an item on its block), node_sd (Δn), acz (AC), mau (Mau). What a
+ * pass span, like an item on its block), node_sd (Δn), ser (Ser), mau (Mau). What a
  * results[] row gets from its block instead is carried beside it: `key` (Z*,
- * zstar_of() on this pass's own σ, after AC and Mau exist — a scoring row has
+ * zstar_of() on this pass's own σ, after Mau exists — a scoring row has
  * no s_bsig block) and `sum`, the running Σ the pool is picked on.
  * Holds the LATEST measurement of that number. `r.block` is unused.
  * ⚠ key is NaN while the pass holding the latest measurement is still open.
@@ -673,7 +675,7 @@ typedef struct {
 /* What the pool is picked on: the running sum of ONE column over the
  * closed scoring passes, chosen by the operator on the page (POST /scoresum)
  * and read when the whole scoring ends. SUM_KEY (Z*) is the default. */
-typedef enum { SUM_KEY = 0, SUM_Z, SUM_CONC, SUM_NSD, SUM_AC, SUM_MAU, SCORE_SUM_N } ScoreSum;
+typedef enum { SUM_KEY = 0, SUM_Z, SUM_CONC, SUM_NSD, SUM_SER, SUM_MAU, SCORE_SUM_N } ScoreSum;
 
 typedef struct {
     RunResult r;
@@ -787,14 +789,6 @@ typedef struct {
     double           score_sig_z, score_sig_c;
     int              score_span_n;
     int              score_conc_n;        // numbers of that pass carrying a concordance
-    /* Item autocorrelation: z_L = r_L·√(n−L) of the centred, block-σ
-     * scaled z series in MEASUREMENT order, lags 1..4 — the last closed pass
-     * block (item_ac_*) and the last closed scoring pass (score_ac_*). Unit
-     * normal for independent items; Bancel's lag-1 test on the GCP series. */
-    float            item_ac_z[4];
-    int              item_ac_n, item_ac_block;   // items, 1-based block; 0 = none yet
-    float            score_ac_z[4];
-    int              score_ac_n;
     int              comparisons;         // == VALID items so far (voids excluded)
     /* ── Pass-level health (GCP primary endpoints) ─────────────────────
      * Under H₀ with a working instrument: mean ≈ 0, σ ≈ 1, Σz² ≈ n.
@@ -843,13 +837,12 @@ typedef struct {
     double           v_eff;               // Var(Σz_i/√k) under measured σ and r
                                           // (1.0 = independent unit nodes)
     /* ── Z* factor weights ─────────────────────────────────────────
-     * Each 0..1, independent. 0 leaves that factor at 1, so all four at 0
+     * Each 0..1, independent. 0 leaves that factor at 1, so all three at 0
      * is Z* = z_ctr/σ. They rank; they do not test. pass_mean/pass_sigma/
      * pass_chi2 stay on z alone. */
     double           k_dn;                // ?kdn=  Δn stretch
     double           k_mau;               // ?kmau= Mau stretch (negative Mau)
     double           k_conc;              // ?kconc= Conc, same sign as Z
-    double           k_ac;                // ?kac=  positive AC damps
     double           k_z;                 // ?kz=   exponent on |Z/σ_z|
     int              pool_fix;            // ?fix=  numbers in every combination, 0 = off
     int              pre_n;               // ranked items carrying a CONCORDANCE
@@ -1040,8 +1033,8 @@ const camera_cal_t *elotto_last_calibration(void);
  * poll. Idempotent. */
 void results_archive_init(void);
 
-/* Z* of one row: (z_ctr / block σ) times the Δn, Mau, Conc and AC factors
- * at g_status.k_dn / k_mau / k_conc / k_ac. 0 when that block has no σ.
+/* Z* of one row: (z_ctr / block σ) times the Δn, Mau and Conc factors
+ * at g_status.k_dn / k_mau / k_conc. 0 when that block has no σ.
  * The ONE accessor every table and every survivor choice goes through. */
 double rank_key(const RunResult *r);
 
@@ -1052,13 +1045,6 @@ double rank_key(const RunResult *r);
  * *used_ch / *used_low the column and direction actually used. */
 int results_extremes(RunResult *out, int max, int ch, bool low, int *held,
                      int *used_ch, bool *used_low);
-
-/* The up-to `max` (≤ QUIET_N) ranked & centred rows with the SMALLEST
- * |rank_key| of the whole session, ascending, under the archive lock: the rows
- * compaction already merged (kept on the quiet board) plus those still in
- * results[]. A row without a block σ has key 0 by default, not by measurement,
- * and never enters. */
-int results_quietest(RunResult *out, int max);
 
 /* Every ranked pass item of a finished session, row by row (Save's full
  * table): the index space is the full table's rows, then those still in

@@ -63,6 +63,9 @@ static double   s_last_mau = NAN;
 
 double gcp_last_maurer(void) { return s_last_mau; }
 
+static double   s_last_ser = NAN;
+double gcp_last_serial(void) { return s_last_ser; }
+
 /* ── Serial statistics of the window's bits ──────────────────────────────
  * z, the halves and Maurer are four numbers; a pattern that moves none of
  * them is gone once the window closes. These two look at the ORDER of the
@@ -141,6 +144,13 @@ static void ser_finish(uint64_t ones, uint64_t words)
         }
     }
     camera_winlog_set_serial(acz, (float)bchi);
+    /* One number for the wire and the item table: the largest |z| of the five. */
+    double mx = NAN;
+    for (int i = 0; i < 5; i++) {
+        double a = fabs(i < 4 ? (double)acz[i] : bchi);
+        if (isfinite(a) && !(a <= mx)) mx = a;
+    }
+    s_last_ser = mx;
 }
 
 static void mau_begin(void)
@@ -217,6 +227,7 @@ gcp_result_t gcp_zscore_pre(int nseg, bool (*on_yield)(void), double *out,
     if (out_h1) *out_h1 = 0.0;
     if (out_h2) *out_h2 = 0.0;
     s_last_mau = NAN;
+    s_last_ser = NAN;
     mau_begin();
     ser_begin();
 

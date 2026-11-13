@@ -82,6 +82,12 @@ gcp_result_t gcp_zscore_pre(int nseg, bool (*on_yield)(void), double *out,
  * not finish. One caller per node (the measuring task), read right after it. */
 double gcp_last_maurer(void);
 
+/* The serial order of the same window's bits as ONE number: the largest |z|
+ * among the lag-1..4 bit agreement and the byte χ² (see ser_finish() in
+ * gcp.c; the five themselves go to /camlog). ≥ 0, NAN when the window was too
+ * short or did not finish. ⚠ A maximum of five: chance gives ~1,7, not 0. */
+double gcp_last_serial(void);
+
 #ifdef __cplusplus
 }
 #endif
