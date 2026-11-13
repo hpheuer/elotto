@@ -166,7 +166,9 @@ the cell and the stored sum keep the sign. Sums −12, +8, −3, +1 rank −12, 
 Every other column stays signed (`high` = largest, `low` = smallest). The scoring Top-10
 uses the same rule for Σ Z\* and for the Z\* column (that number's latest pass key): a larger
 magnitude ranks higher, the printed number keeps its sign. The scoring table's
-title names the pool criterion; the column arrows show the table sort. The UI shows pass k/n and the current top of the pool with the running sum, and
+title names the pool criterion; the column arrows show the table sort. Until a pass has closed
+a number's Σ is a dash and the title reads "numbers measured, not ranked", rows in number order.
+The table runs at least 10 rows and down to the last pool member, so its length follows the pool. The UI shows pass k/n and the current top of the pool with the running sum, and
 **everything the pass shows**: a Top-10 of the numbers (Σ, Z\*, Z, Conc, Δn, AC — `GET
 /extremes?score=1`, `RunResult` rows in their own buffer, never in `results[]`; display
 only, the pool is picked from the sum in `score_and_build_pool()`; pool members: `#` in green),
