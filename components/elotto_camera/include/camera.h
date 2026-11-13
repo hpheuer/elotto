@@ -407,6 +407,14 @@ void camera_winlog_set_serial(const float acz[4], float bchi);
  * on the boundary, not on the value. */
 void camera_winlog_new_session(void);
 
+/* Clear the session record of the serial tests (`rec` in /camlog). Its own
+ * call, not part of camera_winlog_new_session(): a slave opens a new log
+ * session whenever its latch re-arms, which a pause of the master does too,
+ * and the record must survive that. The master calls it at session start, a
+ * slave when it answers discovery ('P'), which the master sends once per
+ * session. */
+void camera_winlog_reset_record(void);
+
 /* GET /camlog — the whole ring as JSON, OLDEST FIRST, chunked.
  *
  * `{"n":<entries>,"dropped":<overwritten>,"cap":512,"ses":<current>,
@@ -414,10 +422,10 @@ void camera_winlog_new_session(void);
  * tag, wsig, wn, wlo, mau, acz, bchi, rsig, rbias, sig, bias, px, ac1, zdiff.
  * `acz` [4] is THIS window's lag-1..4 bit agreement as z (+ = bits repeat),
  * `bchi` its byte χ² as z — both per window, unit normal for random bits,
- * null = none. `ser` in the header is their session record, which the ring
+ * null = none. `rec` in the header is their session record, which the ring
  * cannot lose: windows counted (`n`), how many had |z| > 3 (`hit`, expect
  * 0,27 % of n) and the largest |z| with its tag (`max`, `tag`), in the order
- * lag 1, 2, 3, 4, bchi. Reset by camera_winlog_new_session().
+ * lag 1, 2, 3, 4, bchi. Reset by camera_winlog_reset_record().
  * `mau` is the Maurer universal-test z over the window's bits (null = none);
  * `ac1` is the lag-1 autocorrelation, cumulative since the sweep. `wlo` flags wsig > 3 SE below 1.
  *

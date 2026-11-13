@@ -3965,7 +3965,9 @@ static void sum_pref_save(int c)
 {
     nvs_handle_t h;
     if (nvs_open(PREF_NS, NVS_READWRITE, &h) != ESP_OK) return;
-    nvs_set_u8(h, "scoresum", (uint8_t)c);
+    /* By NAME, not by index: the column set changes between firmware
+     * versions, and a stored index would then select another column. */
+    if (c >= 0 && c < SCORE_SUM_N) nvs_set_str(h, "sumcol", SCORE_SUM_NAME[c]);
     nvs_commit(h);
     nvs_close(h);
 }
@@ -3982,12 +3984,16 @@ static void dir_pref_save(int d)
 static void sum_pref_load(void)
 {
     nvs_handle_t h;
-    uint8_t c = SUM_KEY;
+    int c = SUM_KEY;   /* nothing stored, or a column this firmware has not */
     if (nvs_open(PREF_NS, NVS_READONLY, &h) == ESP_OK) {
-        nvs_get_u8(h, "scoresum", &c);
+        char   name[8];
+        size_t len = sizeof(name);
+        if (nvs_get_str(h, "sumcol", name, &len) == ESP_OK)
+            for (int i = 0; i < SCORE_SUM_N; i++)
+                if (strcmp(name, SCORE_SUM_NAME[i]) == 0) c = i;
         nvs_close(h);
     }
-    g_status.score_sum = c < SCORE_SUM_N ? c : SUM_KEY;
+    g_status.score_sum = c;
 }
 
 static void prefs_send(httpd_req_t *req)

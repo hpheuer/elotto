@@ -697,7 +697,7 @@ void slave_abort(void)
 /* Parse one node's reply into s_link[k].z. Returns false if the node did not
  * contribute a usable value this run.
  *
- *   "Z:<float>[,<H_norm>]"  the run completed on camera bits
+ *   "Z:<float>[,wsig=][,mau=][,ser=]"  the run completed on camera bits
  *   "E:<reason>" the camera stopped delivering — the node is faulted and
  *                rebooted, not silently omitted
  *

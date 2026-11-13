@@ -2450,6 +2450,10 @@ void camera_winlog_new_session(void)
      * race can do is stamp one window with the previous ordinal, which is
      * exactly as informative at a boundary. */
     s_winlog_ses++;
+}
+
+void camera_winlog_reset_record(void)
+{
     memset(&s_serstat, 0, sizeof(s_serstat));
 }
 
@@ -2530,7 +2534,7 @@ esp_err_t camera_winlog_send_json(void *httpd_req)
 
     int len = snprintf(buf, sizeof(buf),
         "{\"n\":%lu,\"dropped\":%lu,\"cap\":%d,\"ses\":%lu,"
-        "\"ser\":{\"n\":%lu,\"hit\":[%lu,%lu,%lu,%lu,%lu],"
+        "\"rec\":{\"n\":%lu,\"hit\":[%lu,%lu,%lu,%lu,%lu],"
         "\"max\":[%.2f,%.2f,%.2f,%.2f,%.2f],\"tag\":[%lu,%lu,%lu,%lu,%lu]},\"win\":[",
         (unsigned long)n, (unsigned long)drop, CAM_WINLOG_N,
         (unsigned long)s_winlog_ses, (unsigned long)ss.n,

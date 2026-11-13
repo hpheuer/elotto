@@ -288,6 +288,8 @@ static ScoreItem *score_row(bool euro_pool, int k);
 static float *s_node_z;   // [NUM_RUNS * MAX_NODES], NaN = did not contribute
 /* Per-node window σ (,wsig=), NaN = none (Disp). */
 static float *s_node_disp;
+/* The master's own window σ of the window just measured, NaN = none. */
+static float  s_master_wsig = NAN;
 /* Per-node window Maurer z, NaN = none (Mau). */
 static float *s_node_mau;
 /* Per-node serial z of the window, NaN = none (Ser). */
@@ -1072,6 +1074,15 @@ static int measure_window(WindowMeas *w, bool scoring)
     /* The master's own window Maurer z, from the run just finished. */
     double maum = zok ? gcp_last_maurer() : NAN;
     double serm = zok ? gcp_last_serial() : NAN;
+    /* The master's own window σ NOW, before waiting for the slaves: its camera
+     * keeps adding mini-runs to the window statistics until the next flush, so
+     * read later it would span more bits than the z above, by an amount that
+     * follows the network. A slave reads its own when it replies. */
+    {
+        camera_stats_t cs;
+        camera_get_stats(&cs);
+        s_master_wsig = (zok && cs.win_sigma_samples > 0) ? (float)cs.win_sigma : NAN;
+    }
     focus_off();
     if (fresh && !zok) node_camera_failed(0, "stalled mid-run");
     if (nodes_have_slaves()) nodes_collect(LINK_MEAS_MS_FOR(nseg), true);
@@ -1892,9 +1903,7 @@ static void pass_compact(void)
 static void wsig_collect(float out[MAX_NODES])
 {
     for (int i = 0; i < MAX_NODES; i++) out[i] = NAN;
-    camera_stats_t cs;
-    camera_get_stats(&cs);
-    if (cs.win_sigma_samples > 0) out[0] = (float)cs.win_sigma;
+    out[0] = s_master_wsig;        /* taken in measure_window(), see there */
     for (int i = 1; i < g_status.node_count && i < MAX_NODES; i++)
         out[i] = g_status.nodes[i].cam_wsig_now;
 }
@@ -2970,6 +2979,7 @@ void elotto_task(void *pvParam)
      * to trigger — so all four boundaries land within one command of each
      * other without a wire field to carry them. */
     camera_winlog_new_session();
+    camera_winlog_reset_record();
     // Re-discover every session: a node that was powered off last time joins
     // this one, and one that vanished does not sit in the table as a phantom.
     nodes_discover();
