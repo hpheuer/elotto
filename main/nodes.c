@@ -701,12 +701,9 @@ void slave_abort(void)
  *   "E:<reason>" the camera stopped delivering — the node is faulted and
  *                rebooted, not silently omitted
  *
- * ⚠ Trailing fields optional. Z:<z>[,h1,h2][,wsig=]. First comma
- * pair is the half-window split of the SAME bits. Absent ≠ 0. */
-bool node_take_z(int k, double *out_z,
-                 bool *out_have_h, double *out_h1, double *out_h2)
+ * ⚠ Trailing fields optional and TAGGED: Z:<z>[,wsig=][,mau=][,ser=]. */
+bool node_take_z(int k, double *out_z)
 {
-    if (out_have_h) *out_have_h = false;
     if (!s_link[k].replied) return false;
     const char *resp = s_link[k].reply;
 
@@ -757,18 +754,6 @@ bool node_take_z(int k, double *out_z,
         if (isfinite(v)) g_status.nodes[k + 1].cam_ser_now = (float)v;
     }
 
-    /* The halves are the first two fields only if the first comma is followed
-     * by a number: a node without halves sends ,wsig=, ,mau= or ,ser= there. */
-    const char *comma = strchr(resp + 2, ',');
-    if (comma && !isalpha((unsigned char)comma[1])) {
-        const char *c2 = strchr(comma + 1, ',');
-        if (c2 && out_have_h && out_h1 && out_h2) {
-            double a = atof(comma + 1), b = atof(c2 + 1);
-            if (isfinite(a) && isfinite(b)) {
-                *out_h1 = a; *out_h2 = b; *out_have_h = true;
-            }
-        }
-    }
     return true;
 }
 

@@ -30,7 +30,7 @@
 // Extraction: non-overlapping frame pairs, diff = f[2k+1] - f[2k] per pixel
 // (cancels fixed-pattern noise exactly), LSB of each diff packed into a
 // ring buffer AS MEASURED -- a word is 32 pixels. camera_read_words() feeds
-// gcp_zscore_pre() in the shared elotto_gcp component, which is where a z is
+// gcp_zscore_raw() in the shared elotto_gcp component, which is where a z is
 // defined.
 // SHARED between the master and slave repos -- a change here affects both nodes.
 
@@ -289,24 +289,6 @@ static int64_t  s_last_pair_us = 0;
 static volatile int    s_flush_pairs = 0;   // fresh pairs still owed
 static volatile int    s_flush_discard = 0; // pairs to throw away first 
 
-/* Where each frame pair starts in the current window's word stream.
- * Word index = words ENQUEUED since the window's flush, which is exactly the
- * order the consumer reads them in (a dropped word never enters the ring, so
- * it has no index). Entry 0 is the window's first pair, at 0.
- * ⚠ That first pair is only a FRAGMENT: nobody reads while it is extracted,
- * so the ring (RING_WORDS) fills and the rest of that pair is dropped; the
- * pairs after it arrive whole because the consumer outruns the producer.
- * Written by the capture task (start before count, with a fence), read by the
- * consumer through camera_window_pair_starts(). */
-/* ⚠ Must cover the pairs in the LONGEST window: a window holds ~one pair per
- * ~70-100 ms, so a multi-second window has hundreds. Too small and only the
- * early pairs are recorded, which drags the concordance half-split toward the
- * front of the window instead of its middle. Kept in step with NB in gcp.c. */
-#define WIN_PAIRS_MAX 512
-static volatile uint32_t s_win_pair_start[WIN_PAIRS_MAX];
-static volatile uint32_t s_win_npair = 0;
-static volatile uint32_t s_win_enq = 0;
-static volatile bool     s_win_on = false;
 static volatile bool   s_flush_dropped = false;
 static volatile bool   s_flush_done = true;
 
@@ -457,7 +439,6 @@ static void process_words(void)
     __sync_synchronize();
     s_ring_head = head;
     s_ring_drops += drops;
-    s_win_enq += n - drops;      /* the window's word index */
 
     // Statistics cover every extracted word, including dropped ones: /diag must
     // characterise the source itself, not whichever subset got consumed.
@@ -848,17 +829,7 @@ static void camera_task(void *arg)
              * for a flush and then waits, and everything produced before this
              * line belongs to the previous window. */
             win_stats_zero();
-            s_win_npair = 0;
-            s_win_enq   = 0;
-            s_win_on    = true;
             s_flush_dropped = true;
-        }
-
-        /* Record where this pair starts in the window's stream. */
-        if (s_win_on && s_win_npair < WIN_PAIRS_MAX) {
-            s_win_pair_start[s_win_npair] = s_win_enq;
-            __sync_synchronize();
-            s_win_npair = s_win_npair + 1;
         }
 
         if (s_dump_req && s_dump_a && s_dump_b &&
@@ -1446,15 +1417,6 @@ void camera_ring_flush(int pairs)
 }
 
 bool camera_ring_flushed(void) { return s_flush_done; }
-
-uint32_t camera_window_pair_starts(uint32_t *out, uint32_t max)
-{
-    uint32_t n = s_win_npair;
-    __sync_synchronize();
-    if (n > max) n = max;
-    for (uint32_t i = 0; i < n; i++) out[i] = s_win_pair_start[i];
-    return n;
-}
 
 double camera_fps_probe(int frames, int timeout_ms)
 {

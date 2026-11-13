@@ -19,7 +19,7 @@ noise** using
 A home-built GCP/PEAR-style instrument: each node draws bits from its **own** camera (OV5647 or IMX219, never shared).
 Frame-pair diff → LSB → segments of 224 bits → Stouffer z. LSB bits as measured.
 Up to four nodes combine as `Σz/√k` for the nodes that answered that run. Ranking is
-Z\* = (Z/σ) times the three factors Δn, Mau and Conc (`?kdn=` `?kmau=` `?kconc=`,
+Z\* = (Z/σ) times the two factors Δn and Mau (`?kdn=` `?kmau=`,
 each 0..1, default 0). Scoring uses the same product.
 The HTML page shows the number or combination being measured. Sessions are unattended;
 do not pool with old `focus=on` archives.
@@ -34,7 +34,7 @@ do not pool with old `focus=on` archives.
 - **Window:** `?run=` 0,5–5 s (default 5); actual wall time is `focus_win_ms` (slowest node).
 - **Blocks:** one round = one block (`?maxruns=`, default 100). Sweep, centre, drift, pairwise,
   soft-down at the round boundary.
-- **UI:** parameter line from `/status`, one sortable Top-10 (Z*, Z, Conc, Δn), jump board,
+- **UI:** parameter line from `/status`, one sortable Top-10 (Z*, Z, Disp, Δn, Ser, Mau), jump board,
   GCP health line (`pass_σ`, `v_eff`, `|r|√n`). A session is a closed unit: no export, no
   comparison across sessions.
 - **Illumination:** `tools/tune.html` — live per-node linearity/sweep board (idle only).
@@ -90,4 +90,4 @@ Slave repo must sit **next to** this one (`EXTRA_COMPONENT_DIRS=../elotto/compon
 
 | | |
 |---|---|
-| **v3 / D67** | Rounds until Abort; block = round; LSB z + centred-half concordance; sortable Top-10. Contract: `CLAUDE.md`. Never pool with prior-instrument sessions or v2.x. |
+| **v3 / D67** | Rounds until Abort; block = round; LSB z; sortable Top-10. Contract: `CLAUDE.md`. Never pool with prior-instrument sessions or v2.x. |

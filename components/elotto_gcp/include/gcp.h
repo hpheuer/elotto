@@ -67,17 +67,12 @@ typedef enum {
  * the max over nodes, so a mismatch would slow every measurement to the
  * slowest device.
  *
- * `*out` is the binomial z of the whole window (the stream is LSB).
- * Half-window: *out_h1 / *out_h2 are the same bits split at the frame-
- * pair boundary nearest nseg/2, nseg/2 when the window holds none
- * (NULL disables). nseg < 2 leaves both at 0. Written only on GCP_OK. */
+ * `*out` is the binomial z of the whole window (the stream is LSB). Written
+ * only on GCP_OK. */
 gcp_result_t gcp_zscore_raw(int nseg, bool (*on_yield)(void), double *out);
 
-gcp_result_t gcp_zscore_pre(int nseg, bool (*on_yield)(void), double *out,
-                            double *out_h1, double *out_h2);
-
 /* Maurer's universal test (NIST SP 800-22 §2.9, L = 8, Q = 2560) over the
- * bits of the last gcp_zscore_pre() window, as z: unit normal for random bits,
+ * bits of the last gcp_zscore_raw() window, as z: unit normal for random bits,
  * negative = more compressible. NAN when the window held no test block or did
  * not finish. One caller per node (the measuring task), read right after it. */
 double gcp_last_maurer(void);

@@ -287,15 +287,6 @@ static const char HTML[] =
 "<span class='pu'>%</span></span>"
 "</div>"
 "<div class='frow'>"
-"<label for='numKconc' title='Percent of the full Conc correction, 0 to 100. "
-"Conc stretches Z* only when it has the same sign as Z, by |Conc| / sigma of Conc. "
-"The other sign leaves the factor at 1. 0 leaves this factor at 1.'>Conc</label>"
-"<span class='wpct'>"
-"<input id='numKconc' class='fin' type='number' min='0' max='100' step='1' value='0' "
-"oninput='onW(this)' onblur='onW(this,1)'>"
-"<span class='pu'>%</span></span>"
-"</div>"
-"<div class='frow'>"
 "<label for='numKdn' title='Percent of the full delta-n correction, 0 to 100. "
 "A smaller delta-n stretches Z* along the sign of Z. "
 "At delta-n = 1 the factor is 1. 0 leaves this factor at 1.'>&#916;n</label>"
@@ -630,7 +621,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
    DIR is the stored direction (NVS, set by prefs_send()); the Σ column's
    sort arrow in the scoring table flips it. */
 "var sumPrefC='key',DIR='high';"
-"function colName(c){return {key:'Z*',z:'Z',conc:'Conc',nsd:'\\u0394n',ser:'Ser',mau:'Mau'}[c]||'Z*';}"
+"function colName(c){return {key:'Z*',z:'Z',disp:'Disp',nsd:'\\u0394n',ser:'Ser',mau:'Mau'}[c]||'Z*';}"
 /* high on Z* = largest |Σ|, low = smallest. The printed sum keeps its sign. */
 "function critPhrase(dir,col){col=col||'key';"
 "if(col==='key')return dir==='low'?'smallest |\\u03a3 Z*|':'largest |\\u03a3 Z*|';"
@@ -662,20 +653,19 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "function fmtW(x){return (Math.round(x*100)/100).toFixed(2);}"
 "function paintFormula(d){"
 "var live=d&&(d.state==='running'||((d.state==='done'||d.state==='aborted')&&!formulaDirty));"
-"var a,b,g,kz;"
-"if(live){a=+d.k_dn||0;b=+d.k_mau||0;g=+d.k_conc||0;kz=kzOf(d);}"
-"else{a=wShow('numKdn');b=wShow('numKmau');g=wShow('numKconc');kz=wShow('numKz');}"
+"var a,b,kz;"
+"if(live){a=+d.k_dn||0;b=+d.k_mau||0;kz=kzOf(d);}"
+"else{a=wShow('numKdn');b=wShow('numKmau');kz=wShow('numKz');}"
 "var el=document.getElementById('formulaBar');if(!el)return;"
 /* A factor whose weight prints as 0.00 is exactly 1 and is left out; at
    exponent 0 the base is sign(Z) alone. Save's params file keeps all of them. */
 "function on(w){return fmtW(w)!=='0.00';}"
 "var s='Z* = sign(Z)'+(on(kz)?'\\u00b7|Z/\\u03c3|^'+fmtW(kz):'');"
-"if(on(g))s+=' \\u00b7 [1 + '+fmtW(g)+'\\u00b7max(Conc\\u00b7sign(Z)/\\u03c3c, 0)]';"
 "if(on(a))s+=' \\u00b7 [1 + '+fmtW(a)+'\\u00b7(1/\\u0394n \\u2212 1)]';"
 "if(on(b))s+=' \\u00b7 [1 + '+fmtW(b)+'\\u00b7max(\\u2212Mau, 0)]';"
 "el.innerHTML=s+\"<div style='font-size:.78em;color:#8fae8f;margin-top:2px'>factors with weight 0 are 1 and not shown</div>\";"
 "}"
-"function zW(d){return {a:+d.k_dn||0,b:+d.k_mau||0,g:+d.k_conc||0,z:kzOf(d)};}"
+"function zW(d){return {a:+d.k_dn||0,b:+d.k_mau||0,z:kzOf(d)};}"
 /* k_z missing (older firmware) is the old base Z/σ, exponent 1. */
 "function kzOf(d){return (d&&d.k_z!=null)?+d.k_z:1;}"
 "window.onload=function(){"
@@ -783,7 +773,6 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "q.push(pItem('Fixed',d.pool_fix>0?d.pool_fix:'off'));"
 "q.push(pItem('Pool',critPhrase(d.score_dir,d.score_sum||'key')));"
 "q.push(pItem('Z','^'+fmtW(kzOf(d))));"
-"q.push(pItem('Conc',fmtW(+d.k_conc||0)));"
 "q.push(pItem('\\u0394n',fmtW(+d.k_dn||0)));"
 "q.push(pItem('Mau',fmtW(+d.k_mau||0)));"
 "b.innerHTML=p.join(sep)+'<br>'+q.join(sep);"
@@ -838,7 +827,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "function clampW(id){var e=document.getElementById(id);var v=parseFloat(e.value);"
 "if(!(v>=0)||!isFinite(v))v=0;if(v>100)v=100;v=Math.round(v);e.value=String(v);"
 "return (v/100).toFixed(2);}"
-"var kdn=clampW('numKdn'),kmau=clampW('numKmau'),kconc=clampW('numKconc'),kz=clampW('numKz');"
+"var kdn=clampW('numKdn'),kmau=clampW('numKmau'),kz=clampW('numKz');"
 "var fix=formFix();document.getElementById('numFix').value=fix;"
 "if(fix>0&&mxr===0){document.getElementById('runsErr').textContent='\\u26a0 Fixed numbers need Runs per round above 0';return;}"
 "if(!fixOk(mode===0,fix)){document.getElementById('runsErr').textContent="
@@ -852,7 +841,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "fetch('/start?mode='+mode"
 "+'&run='+runS+'&srun='+srunS"
 "+'&score='+score"
-"+'&kdn='+kdn+'&kmau='+kmau+'&kconc='+kconc+'&kz='+kz+'&fix='+fix"
+"+'&kdn='+kdn+'&kmau='+kmau+'&kz='+kz+'&fix='+fix"
 "+'&maxruns='+mxr+'&passes='+passes+'&confirm=1',{method:'POST'})"
 ".then(function(r){if(!r.ok){"
 "document.getElementById('runsErr').textContent="
@@ -896,7 +885,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
    signed column sums (elotto_sums). Third: elotto_params_….txt, the parameters
    that ran, from /status at the click. Fourth: elotto_jumps_….csv, the
    whole camera-jump board from /extremes?jumps=1 (up to WSIG_KEEP_N rows,
-   each with the node's camera and its measurement's Z*, Z, Z_raw, Conc, Δn,
+   each with the node's camera and its measurement's Z*, Z, Z_raw, Disp, Δn,
    Ser, Mau, k), same labels as the card (a scoring window is "scoring <pass>/<round>", the node is
    named from its address). ×σ is empty when wsig_sd is not positive.
    Chrome/Edge ask for one folder (showDirectoryPicker) and write all of them
@@ -915,7 +904,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "setTimeout(function(){URL.revokeObjectURL(a.href);},1500);}"
 "function w3(x){return (Math.round((+x||0)*1000)/1000).toFixed(3);}"
 "function paramsOf(st){"
-"var a=+st.k_dn||0,b=+st.k_mau||0,g=+st.k_conc||0,kz=kzOf(st);"
+"var a=+st.k_dn||0,b=+st.k_mau||0,kz=kzOf(st);"
 "var runs=st.runs_cap,passes=st.scoring_passes;"
 "var L=[];"
 "L.push('Mode: '+(st.mode==='euro'?'Eurojackpot 5+2':(st.mode?'6 of 49':'')));"
@@ -929,10 +918,9 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "L.push('Sweep: '+(st.cal_budget_ms>0?(st.cal_budget_ms/1000)+' s':'off'));"
 "L.push('Pool criterion: '+critPhrase(st.score_dir,st.score_sum||'key'));"
 "L.push('Z exponent: '+w3(kz));"
-"L.push('Conc: '+w3(g));"
 "L.push('\\u0394n: '+w3(a));"
 "L.push('Mau: '+w3(b));"
-"L.push('Z* = sign(Z)\\u00b7|Z/\\u03c3|^'+w3(kz)+' \\u00b7 [1 + '+w3(g)+'\\u00b7max(Conc\\u00b7sign(Z)/\\u03c3c, 0)]'"
+"L.push('Z* = sign(Z)\\u00b7|Z/\\u03c3|^'+w3(kz)"
 "+' \\u00b7 [1 + '+w3(a)+'\\u00b7(1/\\u0394n \\u2212 1)]'"
 "+' \\u00b7 [1 + '+w3(b)+'\\u00b7max(\\u2212Mau, 0)]');"
 "L.push('0 leaves that factor at 1');"
@@ -944,15 +932,15 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "function topFile(x){"
 "var R=x.extremes||[];"
 "var cr=x.crit?x.crit+'_'+x.dir:'';"
-"var L=['Rank;Round;Comb;Numbers;Euro;Z*;Z;Z_raw;Conc;\\u0394n;Ser;Mau;k'];"
+"var L=['Rank;Round;Comb;Numbers;Euro;Z*;Z;Z_raw;Disp;\\u0394n;Ser;Mau;k'];"
 "R.forEach(function(r,i){L.push([i+1,r.round,r.run,(r.nums||[]).join(' '),(r.euro||[]).join(' '),"
-"f(r.key),f(r.z_ctr),f(r.z),f(r.zc),f(r.nsd),f(r.ser),f(r.mau),r.k].join(';'));});"
+"f(r.key),f(r.z_ctr),f(r.z),f(r.disp),f(r.nsd),f(r.ser),f(r.mau),r.k].join(';'));});"
 "return {name:'elotto_top'+R.length+(cr?'_'+cr:'')+'_'+stamp+'.csv',body:textOf(L)};}"
 "function allFile(all){"
 "all.sort(function(a,b){return (a.round-b.round)||(a.run-b.run);});"
-"var La=['Round;Comb;Numbers;Euro;Z*;Z;Z_raw;Conc;\\u0394n;Ser;Mau;k;Quarantined'];"
+"var La=['Round;Comb;Numbers;Euro;Z*;Z;Z_raw;Disp;\\u0394n;Ser;Mau;k;Quarantined'];"
 "all.forEach(function(r){La.push([r.round,r.run,(r.nums||[]).join(' '),(r.euro||[]).join(' '),"
-"f(r.key),f(r.z_ctr),f(r.z),f(r.zc),f(r.nsd),f(r.ser),f(r.mau),r.k,r.excl?1:0].join(';'));});"
+"f(r.key),f(r.z_ctr),f(r.z),f(r.disp),f(r.nsd),f(r.ser),f(r.mau),r.k,r.excl?1:0].join(';'));});"
 "return {name:'elotto_all'+all.length+'_'+stamp+'.csv',body:textOf(La)};}"
 "function filesOf(pair){"
 "var st=pair[0]||{},x=pair[1],s=pair[2],j=pair[3];"
@@ -961,9 +949,9 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "var cont=(st.scoring_passes===0);"
 "var files=[];"
 "if(scoreOnly){"
-"var ci={key:0,z:1,conc:2,nsd:3,ser:4,mau:5}[st.score_sum||'key'];if(ci==null)ci=0;"
+"var ci={key:0,z:1,disp:2,nsd:3,ser:4,mau:5}[st.score_sum||'key'];if(ci==null)ci=0;"
 "var lowdir=(st.score_dir==='low');"
-"var L=['Rank;Kind;Number;Passes;Z*;Z;Conc;\\u0394n;Ser;Mau'];"
+"var L=['Rank;Kind;Number;Passes;Z*;Z;Disp;\\u0394n;Ser;Mau'];"
 "snaps.forEach(function(sn){var pc=cont?sn.round:sn.passes;"
 "var rows=(sn.rows||[]).slice();"
 "rows.sort(function(a,b){var av=(a.sum||[])[ci],bv=(b.sum||[])[ci];"
@@ -979,7 +967,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "files.push(topFile(x));"
 "}"
 "if(s&&snaps.length){"
-"var L2=['Round;Kind;Number;Passes;Z*;nZ*;Z;nZ;Conc;nConc;\\u0394n;n\\u0394n;Ser;nSer;Mau;nMau'];"
+"var L2=['Round;Kind;Number;Passes;Z*;nZ*;Z;nZ;Disp;nDisp;\\u0394n;n\\u0394n;Ser;nSer;Mau;nMau'];"
 "snaps.forEach(function(sn){(sn.rows||[]).forEach(function(row){"
 "var c=[sn.round,sn.euro?'euro':'main',row.n,(cont?sn.round:sn.passes)];"
 "var sum=row.sum||[],kk=row.k||[];"
@@ -991,7 +979,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
    /status rows without the measurement columns. */
 "var J=(j&&Array.isArray(j.jumps))?j.jumps:(Array.isArray(st.wsig)?st.wsig:[]);"
 "var Lj=['Rank;Item;Node;Camera;Time;Was;Now;Jump;\\u00d7\\u03c3;Numbers'+(st.mode==='euro'?';Euro':'')"
-"+';Z*;Z;Z_raw;Conc;\\u0394n;Ser;Mau;k'];"
+"+';Z*;Z;Z_raw;Disp;\\u0394n;Ser;Mau;k'];"
 "function n3(v){return (typeof v==='number')?f(v.toFixed(3)):'';}"
 "J.forEach(function(e,i){"
 "var itm=wsigItem(st,e),when=wsigWhen(st,e);"
@@ -1000,7 +988,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "var row=[i+1,itm,wsigNode(st,e.node),wsigCam(st,e.node),when,n3(e.prev),n3(e.now),"
 "jtxt,xs,(e.nums||[]).join(' ')];"
 "if(st.mode==='euro')row.push((e.euro||[]).join(' '));"
-"row.push(f(e.key),f(e.z_ctr),f(e.z),f(e.zc),f(e.nsd),f(e.ser),f(e.mau),e.k?String(e.k):'');"
+"row.push(f(e.key),f(e.z_ctr),f(e.z),f(e.disp),f(e.nsd),f(e.ser),f(e.mau),e.k?String(e.k):'');"
 "Lj.push(row.join(';'));});"
 "files.push({name:'elotto_jumps_'+stamp+'.csv',body:textOf(Lj)});"
 "return {files:files,sumsOk:!!s};}"
@@ -1303,9 +1291,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "ph=(d.score_span_n>0)"
 "?((live?'scoring pass '+(d.scoring_pass>1?d.scoring_pass-1:d.scoring_pass)+' closed':'scoring done \\u00b7 last pass')"
 "+' \\u00b7 \\u03c3 z '+(d.score_sig_z||0).toFixed(3)"
-"+(d.k_conc>0?' \\u00b7 \\u03c3 conc '+(d.score_sig_c||0).toFixed(3):'')"
-"+' \\u00b7 numbers '+d.score_span_n"
-"+(d.k_conc>0?' \\u00b7 \\u2211 conc '+(d.score_conc_n||0)+'/'+d.score_span_n:''))"
+"+' \\u00b7 numbers '+d.score_span_n)"
 ":(live?'scoring pass '+d.scoring_pass+' open \\u2014 its centre and \\u03c3 exist once it closes':'');"
 "}else if((d.pass_n_valid||0)>0){"
 "ph='pass mean '+(d.pass_mean||0).toFixed(3)"
@@ -1319,12 +1305,6 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "}"
 "sl.innerHTML=ph||'';"
 "var s2='';"
-/* Concordance coverage when weight is on: pre_n = items with zc_ctr != 0. */
-"if(!SCM&&(d.k_conc||0)>0){"
-"var e='\u2211 conc';"
-"if(d.pass_n_valid>0)e+=' '+(d.pre_n||0)+'/'+d.pass_n_valid"
-"+((d.pre_n<d.pass_n_valid)?' \u26a0':'');"
-"s2+='<br>'+e;}"
 // Carried into the results line because the Focus card — where these normally
 // live — is hidden once the session ends. `missed` is a gate, not a curiosity:
 // a skipped window credits an effect to the wrong combination, so it has to
@@ -1494,7 +1474,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "showWsig(d);"
 "showTrip(d);"
 "}"
-// One column of numbers: Z*, the ranking key in block-σ units. Z / Conc and
+// One column of numbers: Z*, the ranking key in block-σ units. Z and
 // uncorrected p live in the hover text built below.
 /* ⚠ The cell has TWO sources and they refresh at different rates: the
    /status poll re-renders the whole table every second, while the per-node
@@ -1543,7 +1523,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 /* No closed pass, no sum: the row sorts last and prints a dash. */
 "else if(k==='sum')v=r.passes>0?r.sum:null;"
 "else if(k==='z_ctr')v=(r.z_ctr===undefined||r.z_ctr===null)?r.z:r.z_ctr;"
-"else if(k==='zc')v=r.zc;"
+"else if(k==='disp')v=r.disp;"
 "else if(k==='ser')v=r.ser;"
 "else if(k==='mau')v=r.mau;"
 "else v=r.nsd;"
@@ -1630,7 +1610,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
    that no longer matches the selection is dropped, so a slow poll cannot
    overwrite the reply to a later click. */
 "var lastEx=0,EXH=0,EXK='',EXF=false;"
-"var EXS={key:'key',z_ctr:'z',zc:'conc',nsd:'nsd',ser:'ser',mau:'mau'};"
+"var EXS={key:'key',z_ctr:'z',disp:'disp',nsd:'nsd',ser:'ser',mau:'mau'};"
 "function exKey(){return (EXS[SORTK]||'key')+'&dir='+(SORTD<0?'high':'low');}"
 "function fetchExtremes(){"
 "var now=Date.now(),k=exKey();"
@@ -1642,14 +1622,14 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "renderExtremeTables();}).catch(function(){});}"
 "function renderExtremeTables(){"
 "if(!LD)return;var d=LD,isEuro=d.mode==='euro',st=zW(d);"
-"var lab={key:'Z*',z_ctr:'Z',zc:'Conc',nsd:'\\u0394n',ser:'Ser',mau:'Mau'};"
+"var lab={key:'Z*',z_ctr:'Z',disp:'Disp',nsd:'\\u0394n',ser:'Ser',mau:'Mau'};"
 "var top,title;"
 /* One table: the master's ten on the active sort. The other end is one
    header click away (direction flips). Until the reply for a new sort lands
    the old ten stay up under their OWN label; before the first reply ever,
    /status top (largest |Z*|, the cell keeps the sign) stands in. A column no held row has a value in
    yet says so instead of falling back. */
-"var lk=EXK.split('&dir='),inv={key:'key',z:'z_ctr',conc:'zc',nsd:'nsd',ser:'ser',mau:'mau'};"
+"var lk=EXK.split('&dir='),inv={key:'key',z:'z_ctr',disp:'disp',nsd:'nsd',ser:'ser',mau:'mau'};"
 "var rankAbs=true,col=null,lo=false;"
 "if(EXF){top=EX.slice(0,10);col=inv[lk[0]];lo=lk[1]==='low';rankAbs=(col==='key');"
 "title=' ('+(rankAbs?(lo?'smallest |Z*|, absolute value':'largest |Z*|, absolute value')"
@@ -1672,7 +1652,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 /* Items and scoring numbers: the same rows, one renderer. `opt` is set
    for the scoring — the Item column becomes the running sum \u03a3 (the number
    stands in Numbers / Bonus), a green # marks a pool member, and a row whose
-   pass is still open shows Z* as a dash with Z / Conc dimmed. */
+   pass is still open shows Z* as a dash with Z dimmed. */
 /* Copy button cell (last column of every table). The page is served over plain
    http, where navigator.clipboard is undefined, so the textarea + execCommand
    path is the one that actually runs; the async API is used when present. */
@@ -1689,13 +1669,23 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 ":'Running sum of this number\\u2019s pass values \\u2014 the pool is picked on it. While the scoring runs the arrow is the pool direction: \\u25be highest, \\u25b4 lowest; a second click flips it. A green # marks a pool member.';}"
 "function zTip(){return (SCM?'Latest Z* of this number':'This item\\u2019s Z*')"
 "+', sorted by |Z*|. The cell keeps the sign: \\u25be larger magnitude, \\u25b4 smaller. '"
-"+'Z* = sign(Z)\\u00b7|Z/\\u03c3|^exponent times the three factors, as the formula at the top of the page shows with the weights in force. No block \\u03c3 yet gives 0. Click to sort.';}"
+"+'Z* = sign(Z)\\u00b7|Z/\\u03c3|^exponent times the two factors, as the formula at the top of the page shows with the weights in force. No block \\u03c3 yet gives 0. Click to sort.';}"
 "function renderRunTable(headId,bodyId,res,isEuro,d,st,opt){"
 "document.getElementById(headId).innerHTML="
 "'<tr><th>#</th>'+(opt?'<th style=\"cursor:pointer\" title=\"'+sumTip()+'\" onclick=\"sortBy(\\'sum\\')\">\\u03a3 '+colName(curSum())+exArrow('sum')+'</th>':'<th>Item/Round</th>')"
 "+(st?'<th style=\"cursor:pointer\" title=\"'+zTip()+'\" onclick=\"sortBy(\\'key\\')\">'+sumLab(opt,'key','|Z*|')+exArrow('key')+sumMark(opt,'key')+'</th>'"
 "+'<th style=\"cursor:pointer\" title=\"block-centred combined z. Click to sort the 50\" onclick=\"sortBy(\\'z_ctr\\')\">'+sumLab(opt,'z','Z')+exArrow('z_ctr')+sumMark(opt,'z')+'</th>'"
-"+'<th style=\"cursor:pointer\" title=\"leave-one-out half-window concordance. Click to sort the 50\" onclick=\"sortBy(\\'zc\\')\">'+sumLab(opt,'conc','Conc')+exArrow('zc')+sumMark(opt,'conc')+'</th>'"
+/* Disp: the dispersion of the bits inside the window, the cameras together. Never in Z*. */
+"+'<th title=\"Did the cameras\\u2019 ones come in bursts more on this item than on the others, together?\\n"
+"Each camera cuts its window into pieces of 3200 bits and takes the spread of the ones-count "
+"over those pieces. That spread is taken against the camera\\u2019s own average over the block, "
+"combined over the cameras, in units of this block\\u2019s spread.\\n"
+"around 0 (within \\u00b12) = ordinary\\n"
+"large + = the ones-rate wandered inside the window more than usual\\n"
+"large \\u2212 = the bits were more even than usual\\n"
+"\\u2014 = block (scoring: pass) still open, or no camera reported it\\n"
+"It never enters Z*. Its running sum can pick the pool. Click to sort.\" "
+"style=\"cursor:pointer\" onclick=\"sortBy(\\'disp\\')\">'+sumLab(opt,'disp','Disp')+exArrow('disp')+sumMark(opt,'disp')+'</th>'"
 /* Plain-language tooltip: the operator is the only reader of this cell, and the
    column is worthless if its meaning has to be looked up. English like the rest
    of the page. \\n inside a title
@@ -1754,7 +1744,8 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "if(opt)itm=r.passes>0?'<b title=\"over '+(r.sum_n===undefined?r.passes:r.sum_n)+' of '+r.passes+' closed passes\">'+r.sum.toFixed(3)+'</b>'"
 ":'<span style=\"color:#9aa\" title=\"no pass closed yet\">\\u2014</span>';"
 "var zTxt=(r.z_ctr===undefined||r.z_ctr===null)?z.toFixed(2):r.z_ctr.toFixed(2);"
-"var concTxt=(r.zc===undefined||r.zc===null)?'\\u2014':r.zc.toFixed(2);"
+"var dispTxt=(r.disp===undefined||r.disp===null)?'\\u2014':r.disp.toFixed(2);"
+"var dispCol=(r.disp===undefined||r.disp===null)?'#9aa':(Math.abs(r.disp)>3?'#ffd479':'');"
 /* Node agreement (nsd). null until the item's block has been centred -- the
    same wait z_ctr has -- so a dash is the honest cell, never 0. It is dimmed
    above 1 and highlighted below 0.6. Below 1 stretches Z* when ?kdn= is above 0. */
@@ -1767,14 +1758,13 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "var serCol=(r.ser===undefined||r.ser===null)?'#9aa':(Math.abs(r.ser)>3?'#ffd479':'');"
 "var mauTxt=(r.mau===undefined||r.mau===null)?'\\u2014':r.mau.toFixed(2);"
 "var mauCol=(r.mau===undefined||r.mau===null)?'#9aa':(Math.abs(r.mau)>3?'#ffd479':'');"
-"var det='Z '+zTxt+' \\u00b7 Conc '+concTxt"
+"var det='Z '+zTxt"
 "+' \\u00b7 \\u0394n '+nsdTxt+' (k '+(r.k===undefined?'?':r.k)+')';"
 "if(st)det+='\\nZ ^'+(st.z==null?1:st.z).toFixed(2)+' \\u00b7 \\u0394n \\u00d7'+(st.a||0).toFixed(2)"
-"+' \\u00b7 Mau \\u00d7'+(st.b||0).toFixed(2)"
-"+' \\u00b7 Conc \\u00d7'+(st.g||0).toFixed(2);"
+"+' \\u00b7 Mau \\u00d7'+(st.b||0).toFixed(2);"
 "tb.innerHTML+='<tr><td'+(inP?' style=\"color:#90ee90;font-weight:700\" title=\"in the pool\"':'')+'>'+(i+1)+'</td><td>'+itm+'</td>"
 "'+(st?'<td title=\"'+det+'\">'+zs+'</td>'"
-"+'<td'+dim+'>'+zTxt+'</td><td'+dim+'>'+concTxt+'</td>'"
+"+'<td'+dim+'>'+zTxt+'</td><td'+(dispCol?' style=\"color:'+dispCol+'\"':'')+'>'+dispTxt+'</td>'"
 "+'<td'+(nsdCol?' style=\"color:'+nsdCol+'\"':'')+'>'+nsdTxt+'</td>'"
 "+'<td'+(serCol?' style=\"color:'+serCol+'\"':'')+'>'+serTxt+'</td>'"
 "+'<td'+(mauCol?' style=\"color:'+mauCol+'\"':'')+'>'+mauTxt+'</td>':'')+'"
@@ -1923,13 +1913,12 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
  * fields (the scoring's `sum`/`passes`), "" for none. nums/euro carry their
  * non-zero entries: 6 or 5+2 for an item, the one number for a scoring row. */
 /* ScoreSum names on the wire (/status score_sum, POST /scoresum?c=). */
-static const char *const SCORE_SUM_NAME[SCORE_SUM_N] = { "key", "z", "conc", "nsd", "ser", "mau" };
+static const char *const SCORE_SUM_NAME[SCORE_SUM_N] = { "key", "z", "disp", "nsd", "ser", "mau" };
 
 static int emit_row(char *buf, int cap, const RunResult *r, double key,
                     const char *tail)
 {
-    /* `zc` and `key` travel per row so the table can show the channel that put
-     * an item where it is, and so the UI never has to recompute the key.
+    /* `key` travels per row so the UI never has to recompute it.
      * `nsd` is the node-agreement figure and travels as JSON null while the
      * block is uncentred — "nan" is not JSON, and 0 would be a lie. */
     char nsd[16];
@@ -1949,6 +1938,12 @@ static int emit_row(char *buf, int cap, const RunResult *r, double key,
         snprintf(mau, sizeof(mau), "%.2f", (double)r->mau);
     else
         snprintf(mau, sizeof(mau), "null");
+    /* `disp`: the cameras' combined window dispersion, null until centred. */
+    char disp[16];
+    if (isfinite((double)r->disp))
+        snprintf(disp, sizeof(disp), "%.2f", (double)r->disp);
+    else
+        snprintf(disp, sizeof(disp), "null");
     char ks[16];
     if (isfinite(key)) snprintf(ks, sizeof(ks), "%.4f", key);
     else               snprintf(ks, sizeof(ks), "null");
@@ -1964,10 +1959,10 @@ static int emit_row(char *buf, int cap, const RunResult *r, double key,
 
     return snprintf(buf, cap,
         "{\"run\":%d,\"round\":%d,\"z\":%.4f,\"z_ctr\":%.4f,"
-        "\"zc\":%.3f,\"key\":%s,\"k\":%d,\"nsd\":%s,\"ser\":%s,\"mau\":%s,"
+        "\"disp\":%s,\"key\":%s,\"k\":%d,\"nsd\":%s,\"ser\":%s,\"mau\":%s,"
         "\"nums\":[%s],\"euro\":[%s]%s}",
         r->index, (int)r->round, r->z_score, (double)r->z_ctr,
-        (double)r->zc_ctr, ks, (int)r->k, nsd, ser, mau, nums, eu, tail ? tail : "");
+        disp, ks, (int)r->k, nsd, ser, mau, nums, eu, tail ? tail : "");
 }
 
 static int emit_run(char *buf, int cap, const RunResult *r, bool euro)
@@ -2061,10 +2056,9 @@ static esp_err_t status_handler(httpd_req_t *req)
         "\"pass_n_excl\":%d,\"pass_n_open\":%d,"
         "\"v_eff\":%.4f,\"flush_timeouts\":%lu,"
         /* Z* factor weights of this session. rank_key() divides Z by the
-         * item's BLOCK σ and multiplies the three factors. */
-        "\"k_dn\":%.3f,\"k_mau\":%.3f,\"k_conc\":%.3f,"
+         * item's BLOCK σ and multiplies the two factors. */
+        "\"k_dn\":%.3f,\"k_mau\":%.3f,"
         "\"k_z\":%.3f,\"pool_fix\":%d,"
-        "\"pre_n\":%d,"
         "\"score_dir\":\"%s\",\"score_sum\":\"%s\","
         "\"loop_sigma\":%.4f,"
         "\"pair_r\":%.4f,\"pair_n\":%d,"
@@ -2093,8 +2087,8 @@ static esp_err_t status_handler(httpd_req_t *req)
         "\"sigma_lo\":%.4f,\"sigma_hi\":%.4f,"
         "\"scoring_done\":%d,\"scoring_total\":%d,"
         "\"scoring_pass\":%d,\"scoring_passes\":%d,\"scoring_euro\":%d,\"scoring_start_ms\":%lu,"
-        "\"score_sig_z\":%.4f,\"score_sig_c\":%.4f,"
-        "\"score_span_n\":%d,\"score_conc_n\":%d,"
+        "\"score_sig_z\":%.4f,"
+        "\"score_span_n\":%d,"
         "\"completed\":%d,\"total\":%d,\"elapsed_ms\":%lld,\"compacted\":%d,"
         /* `completed` is session-wide (the results[] prefix); `total` is the
          * CURRENT round's combination space. In an ordinary session there is
@@ -2113,9 +2107,8 @@ static esp_err_t status_handler(httpd_req_t *req)
         g_status.pass_stouffer, g_status.pass_n_valid, g_status.pass_n_void,
         g_status.pass_n_excl, g_status.pass_n_open,
         g_status.v_eff, (unsigned long)g_status.flush_timeouts,
-        g_status.k_dn, g_status.k_mau, g_status.k_conc,
+        g_status.k_dn, g_status.k_mau,
         g_status.k_z, g_status.pool_fix,
-        g_status.pre_n,
         score_str,
         SCORE_SUM_NAME[(g_status.score_sum >= 0 && g_status.score_sum < SCORE_SUM_N)
                        ? g_status.score_sum : 0],
@@ -2163,8 +2156,8 @@ static esp_err_t status_handler(httpd_req_t *req)
         g_status.scoring_done, g_status.scoring_total,
         g_status.scoring_pass, g_status.scoring_passes, g_status.scoring_euro,
         (unsigned long)g_status.scoring_start_ms,
-        g_status.score_sig_z, g_status.score_sig_c,
-        g_status.score_span_n, g_status.score_conc_n,
+        g_status.score_sig_z,
+        g_status.score_span_n,
         /* PROGRESS is items_done, never runs_completed: after a compaction the
          * latter is the rows still held and would step backwards. */
         g_status.items_done, g_status.runs_total,
@@ -2469,7 +2462,7 @@ static esp_err_t loops_handler(httpd_req_t *req)
  * Same row shape as top/low (emit_run), so the page reuses renderRunTable.
  * Streamed and on its OWN fetch, not folded into /status: this is pulled only
  * while the results table is on screen. Live: results_extremes() ranks every
- * row held on each call. ?sort=key|z|conc|nsd|ser|mau&dir=high|low picks the
+ * row held on each call. ?sort=key|z|disp|nsd|ser|mau&dir=high|low picks the
  * column (the Top-10 sends the header the operator clicked); without ?sort= it
  * is the pool criterion, the compaction rule (Save). `held` = rows that carry
  * a value in that column. The scratch lives in PSRAM; on a shortfall it
@@ -2487,7 +2480,7 @@ static esp_err_t extremes_sums(httpd_req_t *req)
     char sb[512];
     int sl = snprintf(sb, sizeof(sb),
         "{\"n\":%d,\"dropped\":%d,"
-        "\"cols\":[\"Z*\",\"Z\",\"Conc\",\"dn\",\"Ser\",\"Mau\"],\"snaps\":[",
+        "\"cols\":[\"Z*\",\"Z\",\"Disp\",\"dn\",\"Ser\",\"Mau\"],\"snaps\":[",
         nsnap, drop);
     send_chunk(req, sb, sl, sizeof(sb));
     for (int i = 0; i < nsnap; i++) {
@@ -2551,10 +2544,10 @@ static esp_err_t extremes_jumps(httpd_req_t *req)
     send_chunk(req, sb, sl, sizeof(sb));
     for (int i = 0; i < n; i++) {
         const WsigEvent *e = &jb[i];
-        char z[16], zr[16], zc[16], nsd[16], ser[16], mau[16], key[16];
+        char z[16], zr[16], dsp[16], nsd[16], ser[16], mau[16], key[16];
         jnum(z,   sizeof(z),   "%.4f", e->z_ctr);
         jnum(zr,  sizeof(zr),  "%.4f", e->z_raw);
-        jnum(zc,  sizeof(zc),  "%.3f", e->zc);
+        jnum(dsp, sizeof(dsp), "%.2f", e->disp);
         jnum(nsd, sizeof(nsd), "%.3f", e->nsd);
         jnum(ser, sizeof(ser), "%.2f", e->ser);
         jnum(mau, sizeof(mau), "%.2f", e->mau);
@@ -2571,11 +2564,11 @@ static esp_err_t extremes_jumps(httpd_req_t *req)
             "%s{\"round\":%d,\"index\":%d,\"spass\":%d,\"node\":%d,"
             "\"prev\":%.4f,\"now\":%.4f,\"jump\":%.4f,\"t_ms\":%lld,"
             "\"nums\":[%s],\"euro\":[%s],\"k\":%d,"
-            "\"key\":%s,\"z_ctr\":%s,\"z\":%s,\"zc\":%s,\"nsd\":%s,"
+            "\"key\":%s,\"z_ctr\":%s,\"z\":%s,\"disp\":%s,\"nsd\":%s,"
             "\"ser\":%s,\"mau\":%s}",
             i ? "," : "", (int)e->round, (int)e->index, (int)e->spass, (int)e->node,
             (double)e->prev, (double)e->now, (double)e->jump, (long long)e->t_ms,
-            nums, euro, (int)e->k, key, z, zr, zc, nsd, ser, mau);
+            nums, euro, (int)e->k, key, z, zr, dsp, nsd, ser, mau);
         send_chunk(req, sb, sl, sizeof(sb));
     }
     httpd_resp_send_chunk(req, "]}", 2);
@@ -2771,7 +2764,7 @@ bad:
     httpd_resp_set_status(req, "400 Bad Request");
     httpd_resp_set_type(req, "text/plain");
     httpd_resp_sendstr(req, "n=1.." EL_STR(PASS_KEEP_EXTREME)
-                       ", sort=key|z|conc|nsd|ser|mau, dir=high|low (with sort=), sums=1, jumps=1, score=1, full=1[&from=]");
+                       ", sort=key|z|disp|nsd|ser|mau, dir=high|low (with sort=), sums=1, jumps=1, score=1, full=1[&from=]");
     return ESP_OK;
 }
 
@@ -2843,7 +2836,7 @@ static esp_err_t focus_handler(httpd_req_t *req)
  *
  * Device-side, like the loop itself: closing the browser does not resume it. */
 /* ── /scoresum POST — the column the pool is summed on  ─────────────
- * ?c=key|z|conc|nsd|ser|mau. Every column is summed all the way through, so a
+ * ?c=key|z|disp|nsd|ser|mau. Every column is summed all the way through, so a
  * switch only changes which sum the pick reads; the pick itself happens when
  * the whole scoring ends, on whatever is selected then. 409 outside the
  * scoring: after it the pool is already picked. */
@@ -2886,7 +2879,7 @@ static esp_err_t scoresum_handler(httpd_req_t *req)
             return ESP_OK;
         }
     httpd_resp_set_status(req, "400 Bad Request");
-    httpd_resp_sendstr(req, "c= must be key, z, conc, nsd, ser or mau");
+    httpd_resp_sendstr(req, "c= must be key, z, disp, nsd, ser or mau");
     return ESP_OK;
 }
 
@@ -2963,7 +2956,7 @@ typedef struct {
     int        cal_ms;
     ScoreDir   score_dir;
     bool       fake_pool;
-    double     k_dn, k_mau, k_conc, k_z;
+    double     k_dn, k_mau, k_z;
     int        fix;
     bool       from_form;
 } StartReq;
@@ -3036,8 +3029,6 @@ static bool start_parse_kdn(const char *val, StartReq *r, httpd_req_t *req)
 { return start_parse_w01(val, &r->k_dn, req, "kdn"); }
 static bool start_parse_kmau(const char *val, StartReq *r, httpd_req_t *req)
 { return start_parse_w01(val, &r->k_mau, req, "kmau"); }
-static bool start_parse_kconc(const char *val, StartReq *r, httpd_req_t *req)
-{ return start_parse_w01(val, &r->k_conc, req, "kconc"); }
 static bool start_parse_kz(const char *val, StartReq *r, httpd_req_t *req)
 {
     double p;
@@ -3182,13 +3173,13 @@ static const StartKey start_keys[] = {
     { "focus",     START_GONE_V3, NULL },
     { "went",
       "went= no longer exists -- ranking is the Z* product "
-      "(kdn=, kmau=, kconc=)", NULL },
+      "(kdn=, kmau=)", NULL },
     { "wruns",
       "wruns= no longer exists -- ranking is the Z* product "
-      "(kdn=, kmau=, kconc=)", NULL },
+      "(kdn=, kmau=)", NULL },
     { "wpre",
-      "wpre= no longer exists -- Z* is z/sigma times kdn=, kmau= "
-      "and kconc= (each 0..1, 0 = that factor off)", NULL },
+      "wpre= no longer exists -- Z* is z/sigma times kdn= and kmau= "
+      "(each 0..1, 0 = that factor off)", NULL },
     { "baseline",
       "baseline= no longer exists -- the baseline phase was deleted; "
       "block centring is the drift reference", NULL },
@@ -3203,7 +3194,6 @@ static const StartKey start_keys[] = {
     { "score",     NULL, start_parse_score },
     { "kdn",       NULL, start_parse_kdn },
     { "kmau",      NULL, start_parse_kmau },
-    { "kconc",     NULL, start_parse_kconc },
     { "kz",        NULL, start_parse_kz },
     { "fix",       NULL, start_parse_fix },
     { "maxruns",   NULL, start_parse_maxruns },
@@ -3300,9 +3290,8 @@ typedef struct {
     int          score_target_ms, score_gap_ms, score_segments;
     int          cal_budget_ms;
     ScoreDir     score_dir;
-    double       k_dn, k_mau, k_conc, k_z;
+    double       k_dn, k_mau, k_z;
     int          pool_fix;
-    int          pre_n;
     ElottoState  state;
 } StartSnap;
 
@@ -3323,10 +3312,8 @@ static void start_snap_save(StartSnap *s)
     s->score_dir     = g_status.score_dir;
     s->k_dn          = g_status.k_dn;
     s->k_mau         = g_status.k_mau;
-    s->k_conc        = g_status.k_conc;
     s->k_z           = g_status.k_z;
     s->pool_fix      = g_status.pool_fix;
-    s->pre_n         = g_status.pre_n;
     s->state         = g_status.state;
 }
 
@@ -3347,10 +3334,8 @@ static void start_snap_restore(const StartSnap *s)
     g_status.score_dir     = s->score_dir;
     g_status.k_dn          = s->k_dn;
     g_status.k_mau         = s->k_mau;
-    g_status.k_conc        = s->k_conc;
     g_status.k_z           = s->k_z;
     g_status.pool_fix      = s->pool_fix;
-    g_status.pre_n         = s->pre_n;
     g_status.state         = s->state;
 }
 
@@ -3398,7 +3383,6 @@ static esp_err_t start_handler(httpd_req_t *req)
             .score_dir = SCORE_DIR_HIGH,
             .k_dn      = ZSTAR_W_DEFAULT,
             .k_mau     = ZSTAR_W_DEFAULT,
-            .k_conc    = ZSTAR_W_DEFAULT,
             .k_z       = ZSTAR_KZ_DEFAULT,
             .fix       = 0,
             .from_form = false,
@@ -3468,10 +3452,8 @@ static esp_err_t start_handler(httpd_req_t *req)
         g_status.fake_pool      = parsed.fake_pool;
         g_status.k_dn           = parsed.k_dn;
         g_status.k_mau          = parsed.k_mau;
-        g_status.k_conc         = parsed.k_conc;
         g_status.k_z            = parsed.k_z;
         g_status.pool_fix       = parsed.fix;
-        g_status.pre_n          = 0;
         g_status.state          = ELOTTO_RUNNING;
         /* PINNED to the core the extraction task is NOT on. See
          * ELOTTO_CAM_CONSUMER_CORE in camera.h. */
@@ -3930,7 +3912,6 @@ static void prefs_save(void)
     /* The old "wpre" blob is left unread. These replace it. */
     nvs_set_u8(h,  "kdn",   pref_w100(g_status.k_dn));
     nvs_set_u8(h,  "kmau",  pref_w100(g_status.k_mau));
-    nvs_set_u8(h,  "kconc", pref_w100(g_status.k_conc));
     nvs_set_u8(h,  "kz",    pref_w100(g_status.k_z));
     nvs_set_u8(h,  "fix",   (uint8_t)g_status.pool_fix);
     nvs_commit(h);
@@ -3976,11 +3957,11 @@ static void prefs_send(httpd_req_t *req)
     if (nvs_open(PREF_NS, NVS_READONLY, &h) != ESP_OK) return;
     uint16_t run10 = 0, srun10 = 0, maxruns = 0;
     uint8_t score = 0xff, passes = 0;
-    uint8_t kdn = 0xff, kmau = 0xff, kconc = 0xff, kz = 0xff, fix = 0xff;
+    uint8_t kdn = 0xff, kmau = 0xff, kz = 0xff, fix = 0xff;
     bool any = false;
     /* maxruns and passes now have 0 as a real value (scoring-only / continuous),
      * so remember them on presence, not on being non-zero. The old "wpre"
-     * blob is not read: 0 is the new default, not the old concordance weight. */
+     * blob is not read. */
     bool have_mx = false, have_passes = false;
     if (nvs_get_u16(h, "run10", &run10) == ESP_OK) any = true;
     if (nvs_get_u16(h, "srun10", &srun10) == ESP_OK) any = true;
@@ -3989,7 +3970,6 @@ static void prefs_send(httpd_req_t *req)
     if (nvs_get_u8(h,  "score", &score) == ESP_OK) any = true;
     if (nvs_get_u8(h,  "kdn",   &kdn) == ESP_OK) any = true;
     if (nvs_get_u8(h,  "kmau",  &kmau) == ESP_OK) any = true;
-    if (nvs_get_u8(h,  "kconc", &kconc) == ESP_OK) any = true;
     if (nvs_get_u8(h,  "kz",    &kz) == ESP_OK) any = true;
     if (nvs_get_u8(h,  "fix",   &fix) == ESP_OK) any = true;
     nvs_close(h);
@@ -4030,10 +4010,6 @@ static void prefs_send(httpd_req_t *req)
         p += snprintf(js + p, sizeof(js) - p,
             "e=document.getElementById('numKmau');if(e)e.value='%u';",
             (unsigned)(kmau > 100 ? 100 : kmau));
-    if (kconc != 0xff)
-        p += snprintf(js + p, sizeof(js) - p,
-            "e=document.getElementById('numKconc');if(e)e.value='%u';",
-            (unsigned)(kconc > 100 ? 100 : kconc));
     if (kz != 0xff)
         p += snprintf(js + p, sizeof(js) - p,
             "e=document.getElementById('numKz');if(e)e.value='%u';",

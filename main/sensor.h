@@ -251,7 +251,7 @@ _Static_assert(UNLIM_RUNS_MAX + PASS_KEEP_EXTREME <= NUM_RUNS,
  * than a small k does. */
 #define NODE_SOFT_MIN_COMBINE  1     // never soft-exclude below this many live nodes
 /* Z* factor weights, each independently 0..1. 0 turns that factor off
- * (the factor stays 1). ?kdn= Δn, ?kmau= Mau, ?kconc= Conc, ?kac= AC.
+ * (the factor stays 1). ?kdn= Δn, ?kmau= Mau.
  * Omitted → 0, so Z* = z_ctr / block σ. The form stores them only on
  * confirm=1; /status names the ones that ran. */
 #define ZSTAR_W_DEFAULT      0.0
@@ -329,15 +329,15 @@ typedef struct {
      * ⚠ `raw_sigma` in /diag is a DIFFERENT number: the per-mini-run sigma of
      * one node's stream. rank_key() divides by the item's BLOCK σ,
      * s_bsig[block].sig_p, never by raw_sigma. */
-    /* Concordance z: leave-one-out Stouffer of per-node half-window z.
-     * Each HALF is centred on its own per-node block mean BEFORE the sign
-     * test  — on raw halves the node offset makes
-     * both halves always agree and the channel was z plus noise. 0 = halves
-     * disagreed on every surviving node, or fewer than two nodes to
-     * corroborate. That 0 means no concordance: the Conc factor of Z* stays 1.
-     * It enters Z* only through ?kconc=, and only the part with the same sign
-     * as Z, scaled by this block's own σ of concordance. */
-    float      zc_ctr;
+    /* DISPERSION of the bits this item was measured from (Disp), built like
+     * Mau: per node the camera's per-mini-run σ over its window (,wsig= on the
+     * wire, the master's own win_sigma), centred on that node's mean over the
+     * block, Stouffer over the combined nodes, then divided by the block's own
+     * σ of that combine — unit variance within the block, read against 0.
+     * + = the cameras' ones came in bursts more on this item than on the rest
+     * of the block, together; − = more evenly. Never in Z*.
+     * NaN until the block (scoring: the pass) is centred, or no node reported. */
+    float      disp;
     /* NODE AGREEMENT on this item: sample σ across the contributing nodes of
      * their own block-centred z, each standardised by that NODE's own σ over
      * the same block. Small = the cameras moved together on this item, large =
@@ -650,7 +650,7 @@ typedef struct {
     uint8_t  k;          // nodes in the combine, 0 = not known yet
     float    z_raw;      // z_score
     float    z_ctr;      // Z
-    float    zc;         // Conc (0 = none, the results[] convention)
+    float    disp;       // Disp
     float    nsd;        // Δn
     float    ser;        // Ser
     float    mau;        // Mau
@@ -661,7 +661,7 @@ typedef struct {
 /* One number of the scoring, in the pass's own row type: `r` is filled
  * exactly as a results[] row would be — index = the number, the number in
  * nums[0] (euro[0] for a bonus number), round, k, have_mask, z_score (raw),
- * z_ctr / zc_ctr (provisional raw until the pass closes, then centred on the
+ * z_ctr (provisional raw until the pass closes, then centred on the
  * pass span, like an item on its block), node_sd (Δn), ser (Ser), mau (Mau). What a
  * results[] row gets from its block instead is carried beside it: `key` (Z*,
  * zstar_of() on this pass's own σ, after Mau exists — a scoring row has
@@ -676,7 +676,7 @@ typedef struct {
 /* What the pool is picked on: the running sum of ONE column over the
  * closed scoring passes, chosen by the operator on the page (POST /scoresum)
  * and read when the whole scoring ends. SUM_KEY (Z*) is the default. */
-typedef enum { SUM_KEY = 0, SUM_Z, SUM_CONC, SUM_NSD, SUM_SER, SUM_MAU, SCORE_SUM_N } ScoreSum;
+typedef enum { SUM_KEY = 0, SUM_Z, SUM_DISP, SUM_NSD, SUM_SER, SUM_MAU, SCORE_SUM_N } ScoreSum;
 
 typedef struct {
     RunResult r;
@@ -773,8 +773,8 @@ typedef struct {
     uint32_t         scoring_start_ms;    // elapsed_ms when this round's scoring began,
                                           // for the scoring's own Time / ETA card
     /* The scoring table (see ScoreItem): one row per number of this round's
-     * scoring, cleared at every round start. score_sig_z / score_sig_c are the
-     * last closed scoring pass's own channel σ (the span σ its keys divide by),
+     * scoring, cleared at every round start. score_sig_z is the
+     * last closed scoring pass's own σ (the span σ its keys divide by),
      * score_span_n the numbers in that pass — the scoring's health line. */
     /* How the pool now being measured was picked: its size (main +
      * bonus), the column its sum was on and the round. Set at the pick, kept
@@ -787,9 +787,8 @@ typedef struct {
     ScoreItem       *score_rows;          // SCORE_ROWS_MAX, PSRAM (internal RAM is the
                                           // ring's); NULL = allocation failed
     int              score_rows_n;
-    double           score_sig_z, score_sig_c;
+    double           score_sig_z;
     int              score_span_n;
-    int              score_conc_n;        // numbers of that pass carrying a concordance
     int              comparisons;         // == VALID items so far (voids excluded)
     /* ── Pass-level health (GCP primary endpoints) ─────────────────────
      * Under H₀ with a working instrument: mean ≈ 0, σ ≈ 1, Σz² ≈ n.
@@ -838,18 +837,13 @@ typedef struct {
     double           v_eff;               // Var(Σz_i/√k) under measured σ and r
                                           // (1.0 = independent unit nodes)
     /* ── Z* factor weights ─────────────────────────────────────────
-     * Each 0..1, independent. 0 leaves that factor at 1, so all three at 0
+     * Each 0..1, independent. 0 leaves that factor at 1, so both at 0
      * is Z* = z_ctr/σ. They rank; they do not test. pass_mean/pass_sigma/
      * pass_chi2 stay on z alone. */
     double           k_dn;                // ?kdn=  Δn stretch
     double           k_mau;               // ?kmau= Mau stretch (negative Mau)
-    double           k_conc;              // ?kconc= Conc, same sign as Z
     double           k_z;                 // ?kz=   exponent on |Z/σ_z|
     int              pool_fix;            // ?fix=  numbers in every combination, 0 = off
-    int              pre_n;               // ranked items carrying a CONCORDANCE
-                                          // value (zc_ctr != 0). 0 on an item
-                                          // means the leave-one-out drop left
-                                          // k < 2, so the Conc factor stays 1
     double           loop_sigma;          // per-run σ of the LAST CLOSED BLOCK (1.0 = ideal)
     int              loops_done;          // BLOCKS closed and merged into the drift stats
     int              loop_hist_n;         // entries valid in loop_hist[] (<= LOOP_HIST)
@@ -1034,8 +1028,8 @@ const camera_cal_t *elotto_last_calibration(void);
  * poll. Idempotent. */
 void results_archive_init(void);
 
-/* Z* of one row: (z_ctr / block σ) times the Δn, Mau and Conc factors
- * at g_status.k_dn / k_mau / k_conc. 0 when that block has no σ.
+/* Z* of one row: (z_ctr / block σ) times the Δn and Mau factors
+ * at g_status.k_dn / k_mau. 0 when that block has no σ.
  * The ONE accessor every table and every survivor choice goes through. */
 double rank_key(const RunResult *r);
 

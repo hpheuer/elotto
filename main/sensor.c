@@ -153,15 +153,9 @@ static int gap_for(bool scoring)
  * there is nothing to poll mid-run. A false return means the run produced no
  * usable z and the caller must not score it — a short run is not a small run,
  * its z would be normalised by a √segments it never reached. */
-static bool gcp_zscore_ok(int nseg, double *out,
-                          bool *out_have_h, double *out_h1, double *out_h2)
+static bool gcp_zscore_ok(int nseg, double *out)
 {
-    double h1 = 0.0, h2 = 0.0;
-    bool ok = gcp_zscore_pre(nseg, NULL, out, &h1, &h2) == GCP_OK;
-    if (out_have_h) *out_have_h = ok && nseg >= 2;
-    if (out_h1) *out_h1 = h1;
-    if (out_h2) *out_h2 = h2;
-    return ok;
+    return gcp_zscore_raw(nseg, NULL, out) == GCP_OK;
 }
 
 static int comb(int n, int r)
@@ -255,18 +249,14 @@ static void nth_combination(const uint8_t *pool, int n, int r, int k, uint8_t *o
 // A session whose pool choice must be trusted on its own wants several full
 // random passes; it must NOT go back to repeats in place (onset is the payload).
 static void score_one_run(bool *ok, float znode[MAX_NODES],
-                          float h1[MAX_NODES], float h2[MAX_NODES],
                           float maun[MAX_NODES], float sern[MAX_NODES],
                           node_mask_t *mask, ScoreItem *row,
                           float wsig[MAX_NODES]);
 static void score_build_keys(const float zn[][MAX_NODES],
-                             const float h1[][MAX_NODES],
-                             const float h2[][MAX_NODES],
                              const node_mask_t *mask,
                              const bool *scored, int max_val,
-                             double *zc_out, double *conc_out, double *nsd_out);
-static double zstar_of(double z, double sz, double nsd, double mau,
-                       double conc, double sc);
+                             double *zc_out, double *nsd_out);
+static double zstar_of(double z, double sz, double nsd, double mau);
 static void   center_block(int block_idx);  // forward: publish_valid centres the OPEN block
 static void   wsig_collect(float out[MAX_NODES]);
 static void   wsig_note(const RunResult *r, const float *wsig, node_mask_t mask,
@@ -295,11 +285,8 @@ static ScoreItem *score_row(bool euro_pool, int k);
 /* Per-item node-z archive (PSRAM). results[j] stays lean; centring needs the
  * per-node series to recombine, drop a soft-failed node, or recompute r. */
 static float *s_node_z;   // [NUM_RUNS * MAX_NODES], NaN = did not contribute
-/* Per-node RAW half-window z, both halves, NaN = none. Two arrays and
- * not the combined √2·min: the sign test has to run on CENTRED halves, and
- * the centre is not known until the block closes. */
-static float *s_node_h1;
-static float *s_node_h2;
+/* Per-node window σ (,wsig=), NaN = none (Disp). */
+static float *s_node_disp;
 /* Per-node window Maurer z, NaN = none (Mau). */
 static float *s_node_mau;
 /* Per-node serial z of the window, NaN = none (Ser). */
@@ -362,19 +349,6 @@ static void node_z_store(int j, const double *znode, const bool *have)
         row[i] = (have && have[i]) ? (float)znode[i] : NAN;
 }
 
-static void node_h_store(int j, const double *h1, const double *h2,
-                         const bool *have_h)
-{
-    if (!s_node_h1 || !s_node_h2 || j < 0 || j >= NUM_RUNS) return;
-    float *r1 = s_node_h1 + (size_t)j * MAX_NODES;
-    float *r2 = s_node_h2 + (size_t)j * MAX_NODES;
-    for (int i = 0; i < MAX_NODES; i++) {
-        bool h = have_h && have_h[i];
-        r1[i] = h ? (float)h1[i] : NAN;
-        r2[i] = h ? (float)h2[i] : NAN;
-    }
-}
-
 /* Move one archive row, for pass_compact(). The source is left as it was: the
  * caller only ever moves DOWN (w < j) and overwrites what it passes on the way,
  * so a stale tail can never be read -- runs_completed is lowered to the new
@@ -389,15 +363,11 @@ static void node_z_move(int from, int to)
                MAX_NODES * sizeof(float));
     /* ⚠ Every per-node archive moves WITH the z archive, in the same call.
      * Separate move loops would be separate chances to compact one and forget
-     * another, and the result — an item's z paired with a neighbour's halves —
+     * another, and the result — an item's z paired with a neighbour's values —
      * looks entirely plausible. */
-    if (s_node_h1)
-        memcpy(s_node_h1 + (size_t)to   * MAX_NODES,
-               s_node_h1 + (size_t)from * MAX_NODES,
-               MAX_NODES * sizeof(float));
-    if (s_node_h2)
-        memcpy(s_node_h2 + (size_t)to   * MAX_NODES,
-               s_node_h2 + (size_t)from * MAX_NODES,
+    if (s_node_disp)
+        memcpy(s_node_disp + (size_t)to   * MAX_NODES,
+               s_node_disp + (size_t)from * MAX_NODES,
                MAX_NODES * sizeof(float));
     if (s_node_mau)
         memcpy(s_node_mau + (size_t)to   * MAX_NODES,
@@ -504,7 +474,6 @@ static bool s_open_centred;
  * a /loops row, and still needs a σ. */
 typedef struct {
     float    sig_p;    // sample σ of z_ctr over the block; 0 = unknown
-    float    sig_c;    // sample σ of zc_ctr (nonzero items); 0 = unknown
     uint8_t  frozen;   // 1 = closed (or aborted-and-centred); do not recompute
 } BlockRankSig;
 #define BSIG_MAX 8192
@@ -744,8 +713,8 @@ static void score_rows_begin(int main_max, bool euro)
         s->r.mau     = NAN;
         s->key       = NAN;
     }
-    g_status.score_sig_z = g_status.score_sig_c = 0.0;
-    g_status.score_span_n = g_status.score_conc_n = 0;
+    g_status.score_sig_z = 0.0;
+    g_status.score_span_n = 0;
     g_status.score_rows_n = n;
 }
 
@@ -864,15 +833,14 @@ static int score_run(int max_val, int pool_size, bool euro_pool,
     ScoreAcc *A = &s_sacc[ix];
     /* Per-node archive for ONE scoring pass. Function-static: ~1,6 KB. */
     static float zn[51][MAX_NODES];
-    static float h1[51][MAX_NODES];
-    static float h2[51][MAX_NODES];
+    static float sg[51][MAX_NODES];   /* window σ per node (Disp) */
     static float mn[51][MAX_NODES];   /* window Maurer z per node (Mau) */
     static float sn[51][MAX_NODES];   /* window serial z per node (Ser) */
     node_mask_t smask[51];
     /* The health line describes THIS scoring run's closed passes only — the
      * euro-number run must not show the main run's last span as its own. */
-    g_status.score_sig_z = g_status.score_sig_c = 0.0;
-    g_status.score_span_n = g_status.score_conc_n = 0;
+    g_status.score_sig_z = 0.0;
+    g_status.score_span_n = 0;
 
     uint8_t order[51];
     int     n_order = 0;
@@ -889,7 +857,7 @@ static int score_run(int max_val, int pool_size, bool euro_pool,
         for (int i = 0; i < 51; i++) {
             smask[i] = 0;
             for (int n = 0; n < MAX_NODES; n++)
-                zn[i][n] = h1[i][n] = h2[i][n] = mn[i][n] = sn[i][n] = NAN;
+                zn[i][n] = sg[i][n] = mn[i][n] = sn[i][n] = NAN;
         }
         for (int i = n_order - 1; i > 0; i--) {
             int j = (int)(fast_rng() % (uint32_t)(i + 1));
@@ -907,8 +875,9 @@ static int score_run(int max_val, int pool_size, bool euro_pool,
             focus_show_number(k, euro_pool);
             bool ok = false;
             float wsig[MAX_NODES];
-            score_one_run(&ok, zn[k], h1[k], h2[k], mn[k], sn[k], &smask[k],
+            score_one_run(&ok, zn[k], mn[k], sn[k], &smask[k],
                           score_row(euro_pool, k), wsig);
+            for (int n = 0; n < MAX_NODES; n++) sg[k][n] = wsig[n];
             /* The jump board sees every window, scoring included: a camera
              * that moves during the hour of scoring is the same camera that
              * then measures the pass. Named by number and pass, not item. */
@@ -933,36 +902,33 @@ static int score_run(int max_val, int pool_size, bool euro_pool,
             run_gap_ms(gap_for(true));
         }
         last = n_order ? order[n_order - 1] : 0;
-        double zc_ctr[51], conc[51], nsd[51];
-        score_build_keys(zn, h1, h2, smask, scored, max_val,
-                         zc_ctr, conc, nsd);
-        /* Mau and Ser over this pass: the pass is its own centring span. */
-        double maup[51], serp[51];
+        double zc_ctr[51], nsd[51];
+        score_build_keys(zn, smask, scored, max_val, zc_ctr, nsd);
+        /* Mau, Ser and Disp over this pass: the pass is its own centring span. */
+        double maup[51], serp[51], dispp[51];
         {
             int     idx[51], nb = 0;
             node_mask_t bm[51];
             double  bo[51];
-            for (int k = 0; k < 51; k++) maup[k] = serp[k] = NAN;
+            for (int k = 0; k < 51; k++) maup[k] = serp[k] = dispp[k] = NAN;
             for (int k = 1; k <= max_val; k++)
                 if (scored[k]) { idx[nb] = k; bm[nb] = smask[k]; nb++; }
             node_span_col(&mn[0][0], idx, bm, nb, bo);
             for (int t = 0; t < nb; t++) maup[idx[t]] = bo[t];
             node_span_col(&sn[0][0], idx, bm, nb, bo);
             for (int t = 0; t < nb; t++) serp[idx[t]] = bo[t];
+            node_span_col(&sg[0][0], idx, bm, nb, bo);
+            for (int t = 0; t < nb; t++) dispp[idx[t]] = bo[t];
         }
         for (int k = 1; k <= max_val; k++) {
             if (!scored[k]) continue;
             ScoreItem *row = score_row(euro_pool, k);
-            /* This pass's value per column. Z* sees Conc while it is still
-             * NaN (no concordance → that factor stays 1). The stored column
-             * uses 0, the results[] convention. Missing Δn / Ser / z adds
-             * nothing. */
+            /* This pass's value per column. A missing one adds nothing. */
             double v[SCORE_SUM_N];
-            double key = zstar_of(zc_ctr[k], g_status.score_sig_z, nsd[k],
-                                 maup[k], conc[k], g_status.score_sig_c);
+            double key = zstar_of(zc_ctr[k], g_status.score_sig_z, nsd[k], maup[k]);
             v[SUM_KEY]  = key;
             v[SUM_Z]    = zc_ctr[k];
-            v[SUM_CONC] = isnan(conc[k]) ? 0.0 : conc[k];
+            v[SUM_DISP] = dispp[k];
             v[SUM_NSD]  = nsd[k];
             v[SUM_SER]  = serp[k];
             v[SUM_MAU]  = maup[k];
@@ -974,9 +940,9 @@ static int score_run(int max_val, int pool_size, bool euro_pool,
             }
             if (!row) continue;
             /* The pass closed: centred values, as center_block() writes an
-             * item's. No concordance is 0, the results[] convention. */
+             * item's. */
             row->r.z_ctr   = isnan(zc_ctr[k]) ? 0.0f : (float)zc_ctr[k];
-            row->r.zc_ctr  = isnan(conc[k])   ? 0.0f : (float)conc[k];
+            row->r.disp    = (float)dispp[k];
             row->r.node_sd = (float)nsd[k];
             row->r.mau     = (float)maup[k];
             row->r.ser     = (float)serp[k];
@@ -1020,66 +986,6 @@ snap:
     return closed;
 }
 
-/* Per-node half-window LSB z.
- * Same sign on both halves → √2 · min(|h1|,|h2|) with that sign, which equals
- * the full-window z when the bias is stable across the window. Opposite sign
- * (or a zero half) → 0: a one-sided glitch does not rank.
- *
- * ⚠ CENTRED halves only. A raw half carries the node's own LSB offset —
- * 11..76 σ per half at ?run=5 — so on raw values both halves always share a
- * sign and this reduces to z − |h1−h2|/√2: z plus noise, not concordance. The
- * callers subtract each node's per-half block mean first; the one raw use is
- * the provisional value in measure_window(), replaced at centring. */
-static double node_halfwin(double h1, double h2)
-{
-    if (!((h1 > 0.0 && h2 > 0.0) || (h1 < 0.0 && h2 < 0.0))) return 0.0;
-    double m = fabs(h1) < fabs(h2) ? fabs(h1) : fabs(h2);
-    return copysign(m, h1) * sqrt(2.0);
-}
-
-/* Leave-one-out Stouffer of the per-node half-window z. Drops the loudest
- * node so a single bright-rung offset cannot own the ranking. k < 2 → 0. */
-static double conc_stouffer(const double *zhw, const bool *have, int n)
-{
-    double v[MAX_NODES];
-    int k = 0;
-    for (int i = 0; i < n && i < MAX_NODES; i++) {
-        if (!have[i]) continue;
-        v[k++] = zhw[i];
-    }
-    if (k < 2) return 0.0;
-    int imax = 0;
-    for (int i = 1; i < k; i++)
-        if (fabs(v[i]) > fabs(v[imax])) imax = i;
-    double sum = 0.0;
-    for (int i = 0; i < k; i++)
-        if (i != imax) sum += v[i];
-    return sum / sqrt((double)(k - 1));
-}
-
-/* Concordance from per-node halves: centre each half on that node's mean
- * (m1/m2 NULL = no centring, i.e. the provisional value), sign test and
- * √2·min per node, then the leave-one-out Stouffer over `have`. The ONE
- * place the three steps are ordered, so scoring and the pass cannot drift
- * apart on it. */
-static double conc_halves(const double *h1, const double *h2,
-                          const double *m1, const double *m2,
-                          const bool *have, int n)
-{
-    double v[MAX_NODES];
-    bool   hv[MAX_NODES];
-    for (int i = 0; i < MAX_NODES; i++) {
-        v[i]  = 0.0;
-        hv[i] = false;
-        if (i >= n || !have[i]) continue;
-        double a = h1[i] - (m1 ? m1[i] : 0.0);
-        double b = h2[i] - (m2 ? m2[i] : 0.0);
-        v[i]  = node_halfwin(a, b);
-        hv[i] = true;
-    }
-    return conc_stouffer(v, hv, n);
-}
-
 /* Gather per-node z for this run and Stouffer-combine. Soft-downweighted
  * nodes stay in `have[]` (pairwise diagnostics still see them) but are
  * skipped in the combine when that still leaves k ≥ NODE_SOFT_MIN_COMBINE
@@ -1088,30 +994,21 @@ static double conc_halves(const double *h1, const double *h2,
  * *out_mask receives the bit mask of nodes that actually entered the combine. */
 static int gather_and_combine(double z_master, bool master_ok,
                               double znode[MAX_NODES], bool have[MAX_NODES],
-                              double h1[MAX_NODES], double h2[MAX_NODES],
-                              bool have_h[MAX_NODES],
-                              double h1_master, double h2_master, bool master_h,
                               double *out_z, node_mask_t *out_mask)
 {
     for (int i = 0; i < MAX_NODES; i++) {
         znode[i]  = 0.0;
         have[i]   = false;
-        h1[i] = h2[i] = 0.0;
-        have_h[i] = false;
     }
     if (master_ok && g_status.nodes[0].ok) {
         znode[0] = z_master;
         have[0]  = true;
-        if (master_h) { h1[0] = h1_master; h2[0] = h2_master; have_h[0] = true; }
     }
     for (int s = 0; s < nodes_slave_count(); s++) {
-        double zs = 0.0, a = 0.0, b = 0.0;
-        bool   hh = false;
-        if (!g_status.nodes[s + 1].ok ||
-            !node_take_z(s, &zs, &hh, &a, &b)) continue;
+        double zs = 0.0;
+        if (!g_status.nodes[s + 1].ok || !node_take_z(s, &zs)) continue;
         znode[s + 1] = zs;
         have[s + 1]  = true;
-        if (hh) { h1[s + 1] = a; h2[s + 1] = b; have_h[s + 1] = true; }
     }
 
     /* Soft-exclude only when at least NODE_SOFT_MIN_COMBINE non-soft nodes
@@ -1153,11 +1050,11 @@ static int gather_and_combine(double z_master, bool master_ok,
  * Returns k, and k == 0 means VOID: no usable combine, the caller must not
  * publish it as a result. */
 typedef struct {
-    double  z, zc;                      // zc 0 when fewer than two arms to corroborate
-    double  znode[MAX_NODES], h1[MAX_NODES], h2[MAX_NODES];   /* RAW halves */
+    double  z;
+    double  znode[MAX_NODES];
     double  mau[MAX_NODES];             /* window Maurer z, raw (Mau) */
     double  ser[MAX_NODES];             /* window serial z, raw (Ser) */
-    bool    have[MAX_NODES], haveh[MAX_NODES], havemau[MAX_NODES], haveser[MAX_NODES];
+    bool    have[MAX_NODES], havemau[MAX_NODES], haveser[MAX_NODES];
     node_mask_t mask;
     int     k;
 } WindowMeas;
@@ -1168,9 +1065,8 @@ static int measure_window(WindowMeas *w, bool scoring)
     if (scoring) g_status.win_n_score++; else g_status.win_n_pass++;
     slave_trigger(nseg);
     bool   fresh = onset_settle();
-    double zm = 0.0, h1m = 0.0, h2m = 0.0;
-    bool   hok = false;
-    bool   zok = fresh && gcp_zscore_ok(nseg, &zm, &hok, &h1m, &h2m);
+    double zm = 0.0;
+    bool   zok = fresh && gcp_zscore_ok(nseg, &zm);
     /* The master's own window Maurer z, from the run just finished. */
     double maum = zok ? gcp_last_maurer() : NAN;
     double serm = zok ? gcp_last_serial() : NAN;
@@ -1178,11 +1074,8 @@ static int measure_window(WindowMeas *w, bool scoring)
     if (fresh && !zok) node_camera_failed(0, "stalled mid-run");
     if (nodes_have_slaves()) nodes_collect(LINK_MEAS_MS_FOR(nseg), true);
 
-    w->z = 0.0; w->zc = 0.0; w->mask = 0;
-    w->k = gather_and_combine(zm, zok, w->znode, w->have,
-                              w->h1, w->h2, w->haveh,
-                              h1m, h2m, hok,
-                              &w->z, &w->mask);
+    w->z = 0.0; w->mask = 0;
+    w->k = gather_and_combine(zm, zok, w->znode, w->have, &w->z, &w->mask);
     for (int i = 0; i < MAX_NODES; i++) {
         double a = (i == 0) ? maum
                  : (i < g_status.node_count ? (double)g_status.nodes[i].cam_mau_now : NAN);
@@ -1195,24 +1088,6 @@ static int measure_window(WindowMeas *w, bool scoring)
         w->haveser[i] = w->have[i] && isfinite(a);
         w->ser[i]     = w->haveser[i] ? a : 0.0;
     }
-    for (int i = 0; i < MAX_NODES; i++) {
-        if (!w->have[i]) { w->h1[i] = w->h2[i] = 0.0; continue; }
-        if (!w->haveh[i]) {
-            /* Old node, no halves: the full window split evenly. After
-             * centring both halves are (z−m)/√2, the sign test passes and
-             * √2·min gives back z_ctr — "ranked on the full window". */
-            w->h1[i] = w->h2[i] = w->znode[i] / sqrt(2.0);
-            w->haveh[i] = true;
-        }
-    }
-    bool hw_have[MAX_NODES];
-    for (int i = 0; i < MAX_NODES; i++)
-        hw_have[i] = w->haveh[i] && (w->mask & (1u << i));
-    /* PROVISIONAL, on raw halves — not the concordance: the per-node
-     * offset makes both halves agree in sign whatever the window did.
-     * center_block() replaces it from PASS_OPEN_MIN_N items on; scoring
-     * never reads it. */
-    w->zc = conc_halves(w->h1, w->h2, NULL, NULL, hw_have, g_status.node_count);
     return w->k;
 }
 
@@ -1226,7 +1101,6 @@ static int measure_window(WindowMeas *w, bool scoring)
  * run would steer which numbers enter the pool. The caller excludes void
  * candidates from selection instead. */
 static void score_one_run(bool *ok, float znode[MAX_NODES],
-                          float h1[MAX_NODES], float h2[MAX_NODES],
                           float maun[MAX_NODES], float sern[MAX_NODES],
                           node_mask_t *mask, ScoreItem *row,
                           float wsig[MAX_NODES])
@@ -1237,7 +1111,7 @@ static void score_one_run(bool *ok, float znode[MAX_NODES],
     wsig_collect(wsig);
     if (row) {
         /* The number's latest measurement, filled as the pass fills an item
-         *: raw z, provisional z_ctr = z and raw-half concordance until
+         *: raw z and provisional z_ctr = z until
          * its pass closes, no key and no Δn yet. A VOID is k = 0 and zeros. */
         RunResult *r = &row->r;
         r->k         = (uint8_t)k;
@@ -1245,7 +1119,7 @@ static void score_one_run(bool *ok, float znode[MAX_NODES],
         r->round     = (uint16_t)g_status.round;
         r->z_score   = (k > 0) ? m.z : 0.0;
         r->z_ctr     = (k > 0) ? (float)m.z  : 0.0f;
-        r->zc_ctr    = (k > 0) ? (float)m.zc : 0.0f;
+        r->disp      = NAN;   /* set when the pass closes */
         r->ser       = NAN;   /* set when the pass closes */
         r->mau       = NAN;   /* set when the pass closes */
         r->node_sd   = NAN;
@@ -1270,8 +1144,6 @@ static void score_one_run(bool *ok, float znode[MAX_NODES],
     if (mask) *mask = (k > 0) ? m.mask : 0;
     for (int i = 0; i < MAX_NODES; i++) {
         znode[i] = m.have[i]  ? (float)m.znode[i] : NAN;
-        h1[i]    = m.haveh[i] ? (float)m.h1[i]    : NAN;
-        h2[i]    = m.haveh[i] ? (float)m.h2[i]    : NAN;
         maun[i]  = m.havemau[i] ? (float)m.mau[i] : NAN;
         sern[i]  = m.haveser[i] ? (float)m.ser[i] : NAN;
     }
@@ -1286,33 +1158,22 @@ static void score_one_run(bool *ok, float znode[MAX_NODES],
  * RAW node before that centre dropped the camera on the bright rung, not
  * the one with the real number-to-number jump. */
 static void score_build_keys(const float zn[][MAX_NODES],
-                             const float h1[][MAX_NODES],
-                             const float h2[][MAX_NODES],
                              const node_mask_t *mask,
                              const bool *scored, int max_val,
-                             double *zc_out, double *conc_out, double *nsd_out)
+                             double *zc_out, double *nsd_out)
 {
-    /* Per-node means over the span: full z, and EACH HALF on its own.
-     * The halves are centred before the sign test, or the node's offset
-     * decides the test instead of the window. */
-    double mz[MAX_NODES] = {0}, mh1[MAX_NODES] = {0}, mh2[MAX_NODES] = {0};
-    int    nz[MAX_NODES] = {0}, nh[MAX_NODES] = {0};
+    /* Per-node means over the span. */
+    double mz[MAX_NODES] = {0};
+    int    nz[MAX_NODES] = {0};
     bool   okz[MAX_NODES] = {false};
     for (int k = 1; k <= max_val; k++) {
         if (!scored[k]) continue;
         for (int i = 0; i < MAX_NODES && i < g_status.node_count; i++) {
             if (!isnan((double)zn[k][i])) { mz[i] += (double)zn[k][i]; nz[i]++; }
-            if (!isnan((double)h1[k][i]) && !isnan((double)h2[k][i])) {
-                mh1[i] += (double)h1[k][i];
-                mh2[i] += (double)h2[k][i];
-                nh[i]++;
-            }
         }
     }
     for (int i = 0; i < MAX_NODES; i++) {
         if (nz[i] >= 2) { mz[i] /= (double)nz[i]; okz[i] = true; }
-        if (nh[i] >= 2) { mh1[i] /= (double)nh[i]; mh2[i] /= (double)nh[i]; }
-        else            { mh1[i] = mh2[i] = 0.0; }   /* no centre: raw, like z */
     }
     /* Per-node σ over the span, for Δn only. n >= 3 for the same reason as in
      * center_block(): at 2 the σ is built from the two values it scales. */
@@ -1336,31 +1197,20 @@ static void score_build_keys(const float zn[][MAX_NODES],
         for (int k = 0; k <= max_val && k < 51; k++) nsd_out[k] = NAN;
     }
 
-    double zc[51], zcc[51];
-    for (int k = 0; k <= max_val && k < 51; k++) { zc[k] = NAN; zcc[k] = NAN; }
+    double zc[51];
+    for (int k = 0; k <= max_val && k < 51; k++) zc[k] = NAN;
     for (int k = 1; k <= max_val; k++) {
         if (!scored[k]) continue;
         double sum = 0.0;
         int    kk  = 0;
-        double hv1[MAX_NODES], hv2[MAX_NODES];
-        bool   hwh[MAX_NODES];
         for (int i = 0; i < MAX_NODES; i++) {
-            hv1[i] = hv2[i] = 0.0;
-            hwh[i] = false;
             if (!(mask[k] & (1u << i))) continue;
             if (!isnan((double)zn[k][i])) {
                 sum += (double)zn[k][i] - (okz[i] ? mz[i] : 0.0);
                 kk++;
             }
-            if (!isnan((double)h1[k][i]) && !isnan((double)h2[k][i])) {
-                hv1[i] = (double)h1[k][i];
-                hv2[i] = (double)h2[k][i];
-                hwh[i] = true;
-            }
         }
         zc[k]  = (kk > 0) ? sum / sqrt((double)kk) : NAN;
-        zcc[k] = conc_halves(hv1, hv2, mh1, mh2, hwh, MAX_NODES);
-        if (zcc[k] == 0.0) zcc[k] = NAN;   /* k<2 or all halves disagreed: no conc */
         if (nsd_out) {
             /* Δn, as center_block() forms it for an item: each node's centred z
              * in that node's own σ over this span, sample σ across the nodes. */
@@ -1385,30 +1235,22 @@ static void score_build_keys(const float zn[][MAX_NODES],
         }
     }
     if (zc_out)   for (int k = 0; k <= max_val && k < 51; k++) zc_out[k]   = zc[k];
-    if (conc_out) for (int k = 0; k <= max_val && k < 51; k++) conc_out[k] = zcc[k];
 
     /* σ of this scoring span. Fewer than two finite values, or a span whose
      * variance is ~0, publishes 0 and Z* is 0. No fallback of 1. */
-    double s[2] = {0.0, 0.0};
-    int    sn[2] = {0, 0};
-    const double *srcs[2] = { zc, zcc };
-    for (int ch = 0; ch < 2; ch++) {
-        double sum = 0.0, sq = 0.0;
-        int    n   = 0;
-        for (int k = 1; k <= max_val; k++) {
-            if (!scored[k] || isnan(srcs[ch][k])) continue;
-            sum += srcs[ch][k]; sq += srcs[ch][k] * srcs[ch][k]; n++;
-        }
-        sn[ch] = n;
-        if (n < 2) continue;
+    double sum = 0.0, sq = 0.0, sd = 0.0;
+    int    n   = 0;
+    for (int k = 1; k <= max_val; k++) {
+        if (!scored[k] || isnan(zc[k])) continue;
+        sum += zc[k]; sq += zc[k] * zc[k]; n++;
+    }
+    if (n >= 2) {
         double mean = sum / n;
         double v = (sq - n * mean * mean) / (n - 1);
-        if (v > 1e-9) s[ch] = sqrt(v);
+        if (v > 1e-9) sd = sqrt(v);
     }
-    g_status.score_sig_z  = sn[0] >= 2 ? s[0] : 0.0;
-    g_status.score_sig_c  = sn[1] >= 2 ? s[1] : 0.0;
-    g_status.score_span_n = sn[0];
-    g_status.score_conc_n = sn[1];
+    g_status.score_sig_z  = sd;
+    g_status.score_span_n = n;
 }
 
 /* Effective variance of the Stouffer combine under the measured per-node σ
@@ -1472,7 +1314,7 @@ static bool result_centred(const RunResult *r)
     return b < s_blocks_centred || (s_open_centred && b == s_blocks_centred);
 }
 
-/* σ of z_ctr / zc_ctr over one block's centred items. Frozen at close so
+/* σ of z_ctr over one block's centred items. Frozen at close so
  * compaction can drop the rows. skip_rank items still enter: the σ describes
  * the instrument of that span, not the ranking set. */
 static void block_sig_compute(int block_idx, bool freeze)
@@ -1481,8 +1323,8 @@ static void block_sig_compute(int block_idx, bool freeze)
     BlockRankSig *B = &s_bsig[block_idx];
     if (B->frozen && !freeze) return;
 
-    double psum = 0.0, psq = 0.0, csum = 0.0, csq = 0.0;
-    int    pn = 0, cn = 0;
+    double psum = 0.0, psq = 0.0;
+    int    pn = 0;
     int ntot = g_status.runs_completed;
     if (ntot > NUM_RUNS) ntot = NUM_RUNS;
     for (int j = 0; j < ntot; j++) {
@@ -1491,15 +1333,9 @@ static void block_sig_compute(int block_idx, bool freeze)
         if (!result_centred(r)) continue;
         double z = rank_z(r);
         psum += z; psq += z * z; pn++;
-        if (r->zc_ctr != 0.0f) {
-            double c = (double)r->zc_ctr;
-            csum += c; csq += c * c; cn++;
-        }
     }
     double pss = psq - (pn > 0 ? psum * psum / (double)pn : 0.0);
     B->sig_p = (pn > 1 && pss > 0.0) ? (float)sqrt(pss / (double)(pn - 1)) : 0.0f;
-    double css = csq - (cn > 0 ? csum * csum / (double)cn : 0.0);
-    B->sig_c = (cn > 1 && css > 0.0) ? (float)sqrt(css / (double)(cn - 1)) : 0.0f;
     if (freeze) B->frozen = 1;
 }
 
@@ -1512,16 +1348,10 @@ static void block_sig_refresh_open(void)
     block_sig_compute(b, false);
 }
 
-static void block_sig_of(const RunResult *r, double *out_p, double *out_c)
+static double block_sig_of(const RunResult *r)
 {
-    double sz = 0.0, sc = 0.0;
     int b = r ? (int)r->block : -1;
-    if (s_bsig && b >= 0 && b < BSIG_MAX) {
-        sz = (double)s_bsig[b].sig_p;
-        sc = (double)s_bsig[b].sig_c;
-    }
-    if (out_p) *out_p = sz;
-    if (out_c) *out_c = sc;
+    return (s_bsig && b >= 0 && b < BSIG_MAX) ? (double)s_bsig[b].sig_p : 0.0;
 }
 
 /* Weight as used by Z*: NaN and anything outside (0, 1] becomes 0 (off)
@@ -1532,18 +1362,17 @@ static double zstar_w01(double w)
     return w > 1.0 ? 1.0 : w;
 }
 
-/* Z* = sign(Z)·|Z/σ_z|^kz · [1 + γ·max(Conc·sign(Z)/σ_c, 0)] · [1 + α·(1/Δn − 1)]
+/* Z* = sign(Z)·|Z/σ_z|^kz · [1 + α·(1/Δn − 1)]
  *              · [1 + β·max(−Mau, 0)]
  * (written in the Top-10 column order; the product is commutative)
  *
- * α β γ are g_status.k_dn / k_mau / k_conc, each 0..1.
- * A missing column (NaN, Δn ≤ 0, Conc 0, no σ_c, Z = 0) leaves
+ * α β are g_status.k_dn / k_mau, each 0..1.
+ * A missing column (NaN, Δn ≤ 0) leaves
  * its factor at 1. No σ_z → 0, never a fallback of 1.
  * ⛔ UNBOUNDED. Z/σ_z sits inside its block, the product of the factors
  * does not: a small Δn or a large negative Mau can exceed (n−1)/√n.
  * Nothing here truncates an extreme. */
-static double zstar_of(double z, double sz, double nsd, double mau,
-                       double conc, double sc)
+static double zstar_of(double z, double sz, double nsd, double mau)
 {
     if (!(sz > 0.0) || !isfinite(z)) return 0.0;
     /* Base sign(Z)·|Z/σ_z|^kz. kz = 1 is Z/σ_z exactly (no pow call), kz = 0
@@ -1559,25 +1388,14 @@ static double zstar_of(double z, double sz, double nsd, double mau,
     double b = zstar_w01(g_status.k_mau);
     if (isfinite(mau) && mau < 0.0 && b > 0.0)
         f *= 1.0 + b * (-mau);
-    double g = zstar_w01(g_status.k_conc);
-    if (g > 0.0 && isfinite(conc) && conc != 0.0 && sc > 0.0 && z != 0.0) {
-        double s = (z > 0.0) ? 1.0 : -1.0;
-        double t = conc * s / sc;
-        if (t > 0.0) f *= 1.0 + g * t;
-    }
     return zp * f;
 }
 
 double rank_key(const RunResult *r)
 {
     if (!r) return 0.0;
-    double sz = 0.0, sc = 0.0;
-    block_sig_of(r, &sz, &sc);
-    /* zc_ctr 0 is "no concordance" (halves disagreed, or k<2 after the
-     * drop), the same sentinel pre_n counts. The factor stays 1. */
-    double conc = (r->zc_ctr == 0.0f) ? NAN : (double)r->zc_ctr;
-    return zstar_of((double)r->z_ctr, sz, (double)r->node_sd, (double)r->mau,
-                    conc, sc);
+    return zstar_of((double)r->z_ctr, block_sig_of(r), (double)r->node_sd,
+                    (double)r->mau);
 }
 
 /* ── Ranking of the held rows by the pool criterion ──────────────────────
@@ -1610,7 +1428,7 @@ static double item_crit(const RunResult *r, int ch)
 {
     switch (ch) {
     case SUM_Z:    return (double)r->z_ctr;
-    case SUM_CONC: return (double)r->zc_ctr;
+    case SUM_DISP: return (double)r->disp;
     case SUM_NSD:  return (double)r->node_sd;
     case SUM_SER:  return (double)r->ser;
     case SUM_MAU:  return (double)r->mau;
@@ -1624,9 +1442,7 @@ static double item_crit(const RunResult *r, int ch)
  * frozen key and its scan all go through it. */
 static double ranked_key(const RunResult *r)
 {
-    double sz = 0.0;
-    block_sig_of(r, &sz, NULL);
-    return sz > 0.0 ? rank_key(r) : NAN;
+    return block_sig_of(r) > 0.0 ? rank_key(r) : NAN;
 }
 
 /* A column value as the sort key of rank_order() and of the full-table scan,
@@ -1850,11 +1666,6 @@ static void session_limit_check(void)
  * describe the TABLES (top/low, zmax) must not. */
 static double s_drop_sum, s_drop_sumsq;
 static int    s_drop_n, s_drop_void, s_drop_excl;
-/* Items carrying a concordance value that compaction dropped, so pre_n keeps
- * describing the whole session like pass_n_valid does. No channel σ rides
- * along any more: rank_key() divides by the item's BLOCK σ and nothing
- * else needed a session-wide one. */
-static int    s_drop_pn;
 
 /* Recompute pass mean/σ/χ² and Top-N / Bottom-N from the ranked prefix.
  * O(n·TOP_N) after each valid item. Z* is rank_key() itself, so nothing
@@ -1879,8 +1690,7 @@ static void recompute_pass_ranks(void)
      * per-node means come from a handful of measurements (SE ~ sigma/2 at the
      * bar) and is measurably unsettled early in every block, tightening as the
      * block fills and shifting once at the close. Read pass_sigma at a block
-     * boundary, not at its start. pass_mean/σ/χ² run on z_ctr; concordance
-     * ranks beside it and does not enter the null.
+     * boundary, not at its start. pass_mean/σ/χ² run on z_ctr.
      * The compaction seeds are safe: pass_compact() runs at a round boundary,
      * i.e. after close_block(), so everything it merged was centred.
      * ⚠ VOID and EXCLUDED are counted over EVERYTHING. They are archive facts,
@@ -1907,7 +1717,6 @@ static void recompute_pass_ranks(void)
         g_status.pass_mean = g_status.pass_sigma = g_status.pass_stouffer = 0.0;
         g_status.result_count = 0;
         g_status.comparisons = 0;
-        g_status.pre_n = 0;
         return;
     }
     double mean = sum / (double)nv;
@@ -1927,21 +1736,6 @@ static void recompute_pass_ranks(void)
      * the key are kept: Z* is already standardised, and over a compacted
      * results[] such a mean/σ would describe the surviving EXTREMES, not
      * the session. */
-    /* ⚠ pre_n is SEEDED with what compaction dropped, because the UI prints it
-     * against pass_n_valid — and that one is seeded (nv = s_drop_n above). Two
-     * counters over two different sets read as an instrument fault: after the
-     * first compaction the ratio collapses and the UI's "∑ conc n/valid ⚠"
-     * fires on its own bookkeeping, not on the array. */
-    int    pre_n = s_drop_pn;
-    for (int j = 0; j < ntot; j++) {
-        const RunResult *r = &g_status.results[j];
-        if (!result_ranked(r)) continue;
-        /* pre_n counts items the CONCORDANCE term could rank. 0 means the
-         * leave-one-out drop left k < 2, so only the z term carried it. */
-        if (r->zc_ctr != 0.0f) pre_n++;
-    }
-    g_status.pre_n        = pre_n;
-
     /* Built into LOCAL lists and published at the end: /status reads
      * top[] from the HTTP task, and zeroing the counts
      * before refilling them let a poll land on an empty or half-built table.
@@ -2050,7 +1844,6 @@ static void pass_compact(void)
                 s_drop_n++;
                 /* 0 means "no value for this item", the same convention
                  * rank_key() uses — it must not be counted as one. */
-                if (r->zc_ctr != 0.0f) s_drop_pn++;
                 full_push(r);
             }
             dropped++;
@@ -2173,7 +1966,7 @@ static void wsig_note(const RunResult *r, const float *wsig, node_mask_t mask,
         e->slot = (spass == 0 && r >= g_status.results && r < g_status.results + NUM_RUNS)
                   ? (uint16_t)(r - g_status.results) : (uint16_t)WSIG_NO_SLOT;
         e->k = 0;
-        e->z_raw = e->z_ctr = e->zc = e->nsd = e->ser = e->mau = e->key = NAN;
+        e->z_raw = e->z_ctr = e->disp = e->nsd = e->ser = e->mau = e->key = NAN;
         archive_unlock();
     }
 }
@@ -2185,7 +1978,7 @@ static void wsig_values(WsigEvent *e, const RunResult *r, float key)
     e->k     = r->k;
     e->z_raw = r->k ? (float)r->z_score : NAN;
     e->z_ctr = r->k ? r->z_ctr : NAN;
-    e->zc    = r->k ? r->zc_ctr : NAN;
+    e->disp  = r->disp;
     e->nsd   = r->node_sd;
     e->ser   = r->ser;
     e->mau   = r->mau;
@@ -2396,29 +2189,10 @@ typedef struct {
 
 static PairAcc s_pair[MAX_NODES][MAX_NODES];   // upper triangle, i < j
 static NodeAcc s_nacc[MAX_NODES];
-/* Concordance's own block accumulators: per-node RAW half-window z over the
- * OPEN block, one per half, because center_block() subtracts each half's own
- * mean before the sign test. Their own denominator for the same reason as
- * before — a node that sends no halves gets a synthetic split, so the counts
- * can diverge from s_nacc. Cleared with the others by pairs_commit_block(). */
-static NodeAcc s_h1acc[MAX_NODES];
-static NodeAcc s_h2acc[MAX_NODES];
-
 static void pairs_reset(void)
 {
     memset(s_pair, 0, sizeof(s_pair));
     memset(s_nacc, 0, sizeof(s_nacc));
-    memset(s_h1acc, 0, sizeof(s_h1acc));
-    memset(s_h2acc, 0, sizeof(s_h2acc));
-}
-
-static void hacc_add_run(const double *h1, const double *h2, const bool *have_h)
-{
-    for (int i = 0; i < g_status.node_count && i < MAX_NODES; i++) {
-        if (!have_h[i]) continue;
-        s_h1acc[i].s += h1[i]; s_h1acc[i].ss += h1[i] * h1[i]; s_h1acc[i].n++;
-        s_h2acc[i].s += h2[i]; s_h2acc[i].ss += h2[i] * h2[i]; s_h2acc[i].n++;
-    }
 }
 
 /* Merge one run's per-node values in. `z[]` holds each node's own z and `have[]`
@@ -2460,11 +2234,6 @@ static void pairs_commit_block(void)
             a->cloops++;
         }
         a->s = a->ss = 0.0; a->n = 0;
-        /* ⚠ s_h1acc/s_h2acc are cleared HERE and nowhere else, in the same
-         * loop as s_nacc, because center_block() reads all three and this call
-         * is what ends their block. */
-        s_h1acc[i].s = s_h1acc[i].ss = 0.0; s_h1acc[i].n = 0;
-        s_h2acc[i].s = s_h2acc[i].ss = 0.0; s_h2acc[i].n = 0;
 
         for (int j = i + 1; j < MAX_NODES; j++) {
             PairAcc *p = &s_pair[i][j];
@@ -2912,16 +2681,6 @@ static void center_block(int block_idx)
      * ⚠ And it costs the most: an effect CONSTANT across a block is removed
      * with that offset. What survives is variation between items inside one
      * block — which is the pre-registered bargain. */
-    /* Each HALF on its own mean. A raw half carries the node's LSB
-     * offset at 11..76 σ, so an uncentred sign test always passes and the
-     * channel collapses to z − |h1−h2|/√2. No centre (n < 2) → raw, like z. */
-    double mh1[MAX_NODES] = {0}, mh2[MAX_NODES] = {0};
-    for (int i = 0; i < g_status.node_count && i < MAX_NODES; i++) {
-        if (s_h1acc[i].n >= 2 && s_h2acc[i].n >= 2) {
-            mh1[i] = s_h1acc[i].s / (double)s_h1acc[i].n;
-            mh2[i] = s_h2acc[i].s / (double)s_h2acc[i].n;
-        }
-    }
     int ntot = g_status.runs_completed;
     if (ntot > NUM_RUNS) ntot = NUM_RUNS;
     int n = 0;
@@ -2961,24 +2720,9 @@ static void center_block(int block_idx)
             r->node_sd = NAN;
         }
 
-        const float *r1 = s_node_h1 ? s_node_h1 + (size_t)j * MAX_NODES : NULL;
-        const float *r2 = s_node_h2 ? s_node_h2 + (size_t)j * MAX_NODES : NULL;
-        double hv1[MAX_NODES], hv2[MAX_NODES];
-        bool   hwh[MAX_NODES];
-        for (int i = 0; i < MAX_NODES; i++) {
-            hv1[i] = hv2[i] = 0.0;
-            hwh[i] = false;
-            if (!r1 || !r2) continue;
-            if (!(r->have_mask & (1u << i))) continue;
-            if (isnan(r1[i]) || isnan(r2[i])) continue;
-            hv1[i] = (double)r1[i];
-            hv2[i] = (double)r2[i];
-            hwh[i] = true;
-        }
-        r->zc_ctr = (float)conc_halves(hv1, hv2, mh1, mh2, hwh, MAX_NODES);
     }
-    /* Mau and Ser over the same items, centred and scaled on this block alone. */
-    if (s_node_mau || s_node_ser) {
+    /* Mau, Ser and Disp over the same items, centred and scaled on this block alone. */
+    if (s_node_mau || s_node_ser || s_node_disp) {
         static int     bidx[NUM_RUNS];
         static node_mask_t bmask[NUM_RUNS];
         static double  bout[NUM_RUNS];
@@ -2996,6 +2740,10 @@ static void center_block(int block_idx)
             node_span_col(s_node_ser, bidx, bmask, nb, bout);
             for (int t = 0; t < nb; t++) g_status.results[bidx[t]].ser = (float)bout[t];
         }
+        if (s_node_disp) {
+            node_span_col(s_node_disp, bidx, bmask, nb, bout);
+            for (int t = 0; t < nb; t++) g_status.results[bidx[t]].disp = (float)bout[t];
+        }
     }
     if (n > 0)
         printf("block %d: centred %d items (node means %+.3f %+.3f %+.3f %+.3f)\n",
@@ -3004,7 +2752,7 @@ static void center_block(int block_idx)
 
 /* ── Block close (v3) ──────────────────────────────────────────────────
  * A block is one round. Closing one centres results[] for that block
- * (z_ctr / zc_ctr / node_sd), freezes the per-block σ, appends the /loops
+ * (z_ctr / node_sd / mau / ser / disp), freezes the per-block σ, appends the /loops
  * row, feeds the drift regression and merges the pairwise moments. Trigger
  * is the round boundary, not a wall clock. */
 static void close_block(int block_idx)
@@ -3067,7 +2815,6 @@ void elotto_task(void *pvParam)
     g_status.compacted       = 0;
     s_drop_sum = s_drop_sumsq = 0.0;
     s_drop_n = s_drop_void = s_drop_excl = 0;
-    s_drop_pn = 0;
     archive_lock();
     s_full_n  = 0;
     s_sel_valid = false;
@@ -3138,17 +2885,13 @@ void elotto_task(void *pvParam)
         for (size_t i = 0; i < (size_t)NUM_RUNS * MAX_NODES; i++)
             s_node_z[i] = NAN;
     }
-    /* Raw halves, both of them: ~115 KB each in PSRAM. Missing one
-     * costs the concordance channel for the session, never a measurement. */
-    if (!s_node_h1)
-        s_node_h1 = heap_caps_malloc((size_t)NUM_RUNS * MAX_NODES * sizeof(float),
-                                     MALLOC_CAP_SPIRAM);
-    if (!s_node_h2)
-        s_node_h2 = heap_caps_malloc((size_t)NUM_RUNS * MAX_NODES * sizeof(float),
-                                     MALLOC_CAP_SPIRAM);
-    if (s_node_h1 && s_node_h2) {
+    /* Window σ per node (Disp), ~56 KB. Missing costs that column only. */
+    if (!s_node_disp)
+        s_node_disp = heap_caps_malloc((size_t)NUM_RUNS * MAX_NODES * sizeof(float),
+                                       MALLOC_CAP_SPIRAM);
+    if (s_node_disp) {
         for (size_t i = 0; i < (size_t)NUM_RUNS * MAX_NODES; i++)
-            s_node_h1[i] = s_node_h2[i] = NAN;
+            s_node_disp[i] = NAN;
     }
     /* Window Maurer z per node (Mau), ~10 KB. Missing costs that column only. */
     if (!s_node_mau)
@@ -3189,8 +2932,8 @@ void elotto_task(void *pvParam)
     /* score_sum is NOT reset: it holds the stored pool criterion (NVS,
      * loaded at boot, rewritten by POST /scoresum) for the whole session. */
     g_status.pool_used_n = g_status.pool_used_sum = g_status.pool_used_round = 0;
-    g_status.score_sig_z = g_status.score_sig_c = 0.0;
-    g_status.score_span_n = g_status.score_conc_n = 0;
+    g_status.score_sig_z = 0.0;
+    g_status.score_span_n = 0;
     focus_reset();
     // Block history in PSRAM, for the life of the app (allocated once), so a
     // finished session's table stays readable.
@@ -3604,7 +3347,6 @@ void elotto_task(void *pvParam)
             /* Archive every node that produced a z (including soft-down ones),
              * so post-hoc recombine is possible. */
             node_z_store(slot, w.znode, w.have);
-            node_h_store(slot, w.h1, w.h2, w.haveh);
             node_col_store(s_node_mau, slot, w.mau, w.havemau);
             node_col_store(s_node_ser, slot, w.ser, w.haveser);
             /* The instrument's own noise while THIS item was measured.
@@ -3612,12 +3354,14 @@ void elotto_task(void *pvParam)
              * holds one window and the next 'M' overwrites it. */
             float wsig[MAX_NODES];
             wsig_collect(wsig);
+            if (s_node_disp && slot >= 0 && slot < NUM_RUNS)
+                for (int n = 0; n < MAX_NODES; n++)
+                    s_node_disp[(size_t)slot * MAX_NODES + n] = wsig[n];
             /* The same window into this node's own ring, tagged with the
              * combination id so /camlog lines up against results[] — which
              * compaction will have eaten by the next round boundary. */
             camera_winlog_push((uint32_t)(i + 1), gcp_last_maurer());
             pairs_add_run(w.znode, w.have);
-            hacc_add_run(w.h1, w.h2, w.haveh);
 
             r->index     = i + 1;
             r->block     = (uint16_t)block;
@@ -3630,6 +3374,7 @@ void elotto_task(void *pvParam)
              * without results[], which compaction will have taken. */
             wsig_note(r, wsig, mask, 0);
             r->ser = NAN;   /* Ser, filled by center_block() */
+            r->disp = NAN;  /* Disp, likewise */
             r->mau = NAN;   /* Mau, filled by center_block() */
             if (k > 0) {
                 r->z_score = z;
@@ -3637,7 +3382,6 @@ void elotto_task(void *pvParam)
                  * closes, so the live ranking uses the uncentred value and
                  * center_block() replaces it a few minutes later. */
                 r->z_ctr   = (float)z;
-                r->zc_ctr  = (float)w.zc;
                 /* No block σ per node yet — center_block() fills it. NaN, not
                  * 0: 0 would read as "the nodes agreed perfectly". */
                 r->node_sd = NAN;
@@ -3647,7 +3391,6 @@ void elotto_task(void *pvParam)
                  * ranking, pass mean/σ, or block σ. */
                 r->z_score = 0.0;
                 r->z_ctr   = 0.0f;
-                r->zc_ctr  = 0.0f;
                 r->node_sd = NAN;
             }
 
