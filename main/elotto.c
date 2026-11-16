@@ -175,7 +175,8 @@ static const char HTML[] =
 ".frow>label,.frow>span:first-child{color:#f0c040;font-size:.9em;text-align:right}"
 ".fin{width:80px;padding:5px 8px;border-radius:6px;border:1px solid #a08030;"
 "background:#0a2e0a;color:#fff;font-size:1em;text-align:center}"
-".wgrid{grid-column:1 / -1;display:grid;grid-template-columns:repeat(5,1fr);gap:6px 12px}"
+/* The six weights stand in ONE line, packed; a narrow page wraps them. */
+".wgrid{grid-column:1 / -1;display:flex;flex-wrap:wrap;justify-content:center;gap:6px 16px}"
 ".wgrid .frow{grid-column:auto;grid-template-columns:1fr;justify-items:start;gap:2px}"
 ".wgrid .frow>label{text-align:left;font-size:.82em}"
 ".wgrid .fin{width:100%;max-width:96px;box-sizing:border-box}"
@@ -196,7 +197,6 @@ static const char HTML[] =
 "#btnPause,#btnAbort,#btnSave{min-width:126px}"
 ".frow{grid-template-columns:128px 1fr;gap:6px}"
 ".frow>label,.frow>span:first-child{font-size:.8em}"
-".wgrid{grid-template-columns:1fr 1fr}"
 ".sv{font-size:.85em}"
 ".sl{font-size:.62em}"
 ".stats{gap:6px}"

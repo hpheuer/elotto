@@ -346,7 +346,7 @@ LSB σ is **not** 1  — judge the measured number, do not expect the unit-sigma
 are display hints on `/diag` and gate nothing.
 
 **Soft-down** (`nodes[].soft_down`) takes a node out of the combine after a block with
-σ > `NODE_SOFT_TRIP_K` (1,35) × the median of all nodes' σ in that block (its own included).
+σ > `NODE_SOFT_TRIP_K` (1,5) × the median of all nodes' σ in that block (its own included).
 ⚠ A node is judged only with `NODE_SOFT_MIN_N` 20 items in the block and at least two nodes — a
 round of `?maxruns=` 10..19 can never trip, so a loud camera stays in the combine there. Sticky; clears after `NODE_SOFT_CLEAR_BLOCKS` (4) blocks under the
 peer-referenced bar (`clear_sig`, published per block in `/loops`). It never reboots

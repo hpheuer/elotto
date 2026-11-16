@@ -212,7 +212,7 @@ _Static_assert(UNLIM_RUNS_MAX + PASS_KEEP_EXTREME <= NUM_RUNS,
  * 13 %. That is real but it is the SAME bargain every closed block already
  * makes, only noisier, and it shrinks as the block fills. */
 #define PASS_OPEN_MIN_N        4    // items in the open block before it is ranked
-#define NODE_SOFT_TRIP_K       1.35  // trip if block σ > K × peer-median σ 
+#define NODE_SOFT_TRIP_K       1.5   // trip if block σ > K × peer-median σ
 #define NODE_SIGMA_SOFT        NODE_SOFT_TRIP_K  /* alias: old absolute 1.25 is gone */
 /* ── |block mean| REPORTS, it no longer excludes ──────────────────────────
  *
