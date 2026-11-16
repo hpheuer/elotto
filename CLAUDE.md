@@ -257,9 +257,11 @@ Wire: `Z:<z>[,wsig=<σ>][,mau=<z>][,ser=<z>][,byt=<z>][,sl=<v>/…]`, all TAGGED
 - **`z_score` is the raw combined Stouffer z and is never rewritten.** It stays beside `z_ctr` in
   `results[]` for the session.
 - **`z_ctr` is what every statistic and ranking runs on.** At block close `center_block()` subtracts
-  each node's block mean and recombines over the same nodes (`have_mask`, k unchanged). ⚠ A node
-  with fewer than two values in that block (scoring: that pass) has no mean and stays out of the
-  recombine — raw, its offset would be the item's z. Single
+  each node's block mean, divides each node by ITS OWN σ over that block and recombines
+  (`have_mask`, k unchanged) — every node carries the same weight and the combine has unit variance
+  whichever nodes answered; (z − mean)/σ of 1,0 1,0 1,0 −2,0 over four nodes is +0,50. ⚠ A node
+  with fewer than three values in that block (scoring: that pass) has no σ and stays out of the
+  recombine; with no σ at all the combine is centred only, with no mean either it is the raw one. Single
   accessor `rank_z()`. An open block is
   centred provisionally from `PASS_OPEN_MIN_N` 4 items on; below that `z_ctr` is the raw value.
 

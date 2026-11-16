@@ -1262,11 +1262,12 @@ static void score_build_keys(const float zn[][MAX_NODES],
     for (int i = 0; i < MAX_NODES; i++) {
         if (nz[i] >= 2) { mz[i] /= (double)nz[i]; okz[i] = true; }
     }
-    /* Per-node σ over the span, for Δn only. n >= 3 for the same reason as in
-     * center_block(): at 2 the σ is built from the two values it scales. */
+    /* Per-node σ over the span: it scales each node in the combine and in Δn.
+     * n >= 3 for the same reason as in center_block(): at 2 the σ is built
+     * from the two values it scales. */
     double sdz[MAX_NODES] = {0};
     bool   sdok[MAX_NODES] = {false};
-    if (nsd_out) {
+    {
         double vs[MAX_NODES] = {0};
         for (int k = 1; k <= max_val; k++) {
             if (!scored[k]) continue;
@@ -1281,15 +1282,16 @@ static void score_build_keys(const float zn[][MAX_NODES],
             double v = vs[i] / (double)(nz[i] - 1);
             if (v > 0.0) { sdz[i] = sqrt(v); sdok[i] = true; }
         }
-        for (int k = 0; k <= max_val && k < 51; k++) nsd_out[k] = NAN;
     }
+    if (nsd_out)
+        for (int k = 0; k <= max_val && k < 51; k++) nsd_out[k] = NAN;
 
     double zc[51];
     for (int k = 0; k <= max_val && k < 51; k++) zc[k] = NAN;
     for (int k = 1; k <= max_val; k++) {
         if (!scored[k]) continue;
-        double sum = 0.0, rsum = 0.0;
-        int    kk  = 0, rk = 0;
+        double sum = 0.0, rsum = 0.0, usum = 0.0;
+        int    kk  = 0, rk = 0, uk = 0;
         for (int i = 0; i < MAX_NODES; i++) {
             if (!(mask[k] & (1u << i))) continue;
             if (isnan((double)zn[k][i])) continue;
@@ -1301,10 +1303,14 @@ static void score_build_keys(const float zn[][MAX_NODES],
             if (!okz[i]) continue;
             sum += (double)zn[k][i] - mz[i];
             kk++;
+            if (sdok[i]) { usum += ((double)zn[k][i] - mz[i]) / sdz[i]; uk++; }
         }
-        /* No centrable node at all (a pass of one scored number): the raw
-         * combine stands; that span has no σ, so its Z* is 0. */
-        zc[k]  = (kk > 0) ? sum / sqrt((double)kk)
+        /* Each node in its own σ over this pass, as in center_block(). Without
+         * any σ: centred, unscaled. No centrable node at all (a pass of one
+         * scored number): the raw combine stands; that span has no σ, so its
+         * Z* is 0. */
+        zc[k]  = (uk > 0) ? usum / sqrt((double)uk)
+               : (kk > 0) ? sum / sqrt((double)kk)
                : (rk > 0) ? rsum / sqrt((double)rk) : NAN;
         if (nsd_out) {
             /* Δn, as center_block() forms it for an item: each node's centred z
@@ -2815,7 +2821,17 @@ static void center_block(int block_idx)
             kk++;
             if (sdok[i]) u[ku++] = c / sd[i];
         }
-        if (kk > 0) {
+        if (ku > 0) {
+            /* Each node in ITS OWN σ over this block, then Stouffer: every
+             * node carries the same weight and the combine has unit variance
+             * whichever nodes answered. Unscaled, a loud node sets the sum.
+             * A node without a σ (fewer than three values) stays out. */
+            double us = 0.0;
+            for (int t = 0; t < ku; t++) us += u[t];
+            r->z_ctr = (float)(us / sqrt((double)ku));
+            n++;
+        } else if (kk > 0) {
+            /* No node has a σ yet (a block of two items): centred, unscaled. */
             r->z_ctr = (float)(sum / sqrt((double)kk));
             n++;
         } else if (rk > 0) {
