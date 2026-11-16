@@ -127,7 +127,10 @@ break for the operator). Each number 1..N is measured **`?passes=` times** (1..`
 After each pass every column — Z\*, Z, Disp, Δn, Ser, Mau — is added to that number's own running sum;
 the pool is the top by ONE of those sums, the one selected on the page (Σ marker in a column
 header, `POST /scoresum?c=key|z|disp|nsd|ser|mau`) **when the whole scoring
-ends** — in Eurojackpot both pools at once. The pool criterion is **freely
+ends** — in Eurojackpot both pools at once. ⚠ The pick compares the sum **per pass that added to
+it** — Σ/√n, for Δn Σ/n (`score_rank_val()`) — so a number that lacks a pass is neither favoured nor
+penalised; with the same n everywhere that is the order of the sums. The cell, the scoring table's
+sort and Save keep the bare sum. The pool criterion is **freely
 selectable and remembered**: a Σ click writes it to NVS at once (any start, not only
 `confirm=1`), boot loads it (Z\* if none stored), a session start keeps it — it holds for the whole
 session and the following ones until the next click. The start form shows it read-only
@@ -250,7 +253,9 @@ Wire: `Z:<z>[,wsig=<σ>][,mau=<z>][,ser=<z>]`, all three TAGGED.
 - **`z_score` is the raw combined Stouffer z and is never rewritten.** It stays beside `z_ctr` in
   `results[]` for the session.
 - **`z_ctr` is what every statistic and ranking runs on.** At block close `center_block()` subtracts
-  each node's block mean and recombines over the same nodes (`have_mask`, k unchanged). Single
+  each node's block mean and recombines over the same nodes (`have_mask`, k unchanged). ⚠ A node
+  with fewer than two values in that block (scoring: that pass) has no mean and stays out of the
+  recombine — raw, its offset would be the item's z. Single
   accessor `rank_z()`. An open block is
   centred provisionally from `PASS_OPEN_MIN_N` 4 items on; below that `z_ctr` is the raw value.
 

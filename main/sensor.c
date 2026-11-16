@@ -530,7 +530,8 @@ static bool onset_settle(void)
 typedef struct {
     double acc[SCORE_SUM_N][51];
     bool   ok[SCORE_SUM_N][51];
-    uint8_t n[SCORE_SUM_N][51];   /* passes that added to acc; 0 = column missing */
+    uint32_t n[SCORE_SUM_N][51];  /* passes that added to acc; 0 = column missing.
+                                   * Never saturates: score_rank_val() divides by it. */
     int    max_val, pool_size;
     bool   active;
 } ScoreAcc;
@@ -558,6 +559,18 @@ static int score_sum_sel(void)
     return (c >= 0 && c < SCORE_SUM_N) ? c : SUM_KEY;
 }
 
+/* What a number is ranked on: its sum over the n passes that added to it, per
+ * pass — Σ/√n for the columns read against 0, Σ/n for Δn (read against 1).
+ * ⚠ Not the bare sum: a number that lacks a pass has a shorter sum, which
+ * under Δn alone is a full σ of that sum. With the same n for every number
+ * this is the order of the sums. NaN = nothing added. */
+static double score_rank_val(const ScoreAcc *A, int ch, int j)
+{
+    double n = (double)A->n[ch][j];
+    if (!(n > 0.0)) return NAN;
+    return A->acc[ch][j] / (ch == SUM_NSD ? n : sqrt(n));
+}
+
 static int score_pick_best(const ScoreAcc *A, int ch, const bool *used)
 {
     int b = 0;
@@ -569,7 +582,8 @@ static int score_pick_best(const ScoreAcc *A, int ch, const bool *used)
     bool mag = (ch == SUM_KEY);
     for (int j = 1; j <= A->max_val; j++) {
         if (used[j] || !A->ok[ch][j]) continue;
-        double s = A->acc[ch][j];
+        double s = score_rank_val(A, ch, j);
+        if (!isfinite(s)) continue;
         if (mag) s = fabs(s);
         double key = g_status.score_dir == SCORE_DIR_LOW ? -s : s;
         if (first || key > bs) { b = j; bs = key; first = false; }
@@ -771,7 +785,7 @@ static void score_snap_store(const ScoreAcc *A, bool euro, int passes)
     S->passes = (uint8_t)passes;
     for (int k = 1; k <= mv; k++) {
         for (int c = 0; c < SCORE_SUM_N; c++) {
-            S->cnt[k][c] = A->n[c][k];
+            S->cnt[k][c] = (uint8_t)(A->n[c][k] > 255 ? 255 : A->n[c][k]);
             S->sum[k][c] = A->n[c][k] ? (float)A->acc[c][k] : 0.0f;
         }
     }
@@ -800,7 +814,7 @@ static void score_snap_put(const ScoreAcc *A, bool euro, int passes, bool accumu
     S->passes = (uint8_t)passes;
     for (int k = 1; k <= mv; k++) {
         for (int c = 0; c < SCORE_SUM_N; c++) {
-            S->cnt[k][c] = A->n[c][k];
+            S->cnt[k][c] = (uint8_t)(A->n[c][k] > 255 ? 255 : A->n[c][k]);
             S->sum[k][c] = A->n[c][k] ? (float)A->acc[c][k] : 0.0f;
         }
     }
@@ -940,7 +954,7 @@ static int score_run(int max_val, int pool_size, bool euro_pool,
                 if (!isfinite(v[c])) continue;
                 A->acc[c][k] += v[c];
                 A->ok[c][k]   = true;
-                if (A->n[c][k] < 255) A->n[c][k]++;
+                A->n[c][k]++;
             }
             if (!row) continue;
             /* The pass closed: centred values, as center_block() writes an
@@ -1214,16 +1228,24 @@ static void score_build_keys(const float zn[][MAX_NODES],
     for (int k = 0; k <= max_val && k < 51; k++) zc[k] = NAN;
     for (int k = 1; k <= max_val; k++) {
         if (!scored[k]) continue;
-        double sum = 0.0;
-        int    kk  = 0;
+        double sum = 0.0, rsum = 0.0;
+        int    kk  = 0, rk = 0;
         for (int i = 0; i < MAX_NODES; i++) {
             if (!(mask[k] & (1u << i))) continue;
-            if (!isnan((double)zn[k][i])) {
-                sum += (double)zn[k][i] - (okz[i] ? mz[i] : 0.0);
-                kk++;
-            }
+            if (isnan((double)zn[k][i])) continue;
+            rsum += (double)zn[k][i];
+            rk++;
+            /* ⚠ A node with fewer than two values in this pass stays out of
+             * the combine, as in center_block(): raw, its offset would be
+             * this number's z and would widen the span σ. */
+            if (!okz[i]) continue;
+            sum += (double)zn[k][i] - mz[i];
+            kk++;
         }
-        zc[k]  = (kk > 0) ? sum / sqrt((double)kk) : NAN;
+        /* No centrable node at all (a pass of one scored number): the raw
+         * combine stands; that span has no σ, so its Z* is 0. */
+        zc[k]  = (kk > 0) ? sum / sqrt((double)kk)
+               : (rk > 0) ? rsum / sqrt((double)rk) : NAN;
         if (nsd_out) {
             /* Δn, as center_block() forms it for an item: each node's centred z
              * in that node's own σ over this span, sample σ across the nodes. */
@@ -2708,20 +2730,32 @@ static void center_block(int block_idx)
         RunResult *r = &g_status.results[j];
         if ((int)r->block != block_idx || r->k == 0) continue;
         const float *row = s_node_z + (size_t)j * MAX_NODES;
-        double sum = 0.0;
-        int    kk  = 0;
+        double sum = 0.0, rsum = 0.0;
+        int    kk  = 0, rk = 0;
         double u[MAX_NODES];        // per-node deviation in that node's own σ
         int    ku = 0;
         for (int i = 0; i < MAX_NODES; i++) {
             if (!(r->have_mask & (1u << i))) continue;
             if (isnan(row[i])) continue;
-            double c = (double)row[i] - (ok[i] ? m[i] : 0.0);
+            rsum += (double)row[i];
+            rk++;
+            /* ⚠ A node with fewer than two values in this block has no mean to
+             * subtract and stays OUT of the combine: entered raw, its offset
+             * (20..95 σ) would be this item's z and would widen the block σ
+             * for every other item. Same rule as node_span_col(). */
+            if (!ok[i]) continue;
+            double c = (double)row[i] - m[i];
             sum += c;
             kk++;
             if (sdok[i]) u[ku++] = c / sd[i];
         }
         if (kk > 0) {
             r->z_ctr = (float)(sum / sqrt((double)kk));
+            n++;
+        } else if (rk > 0) {
+            /* No node of this item can be centred (a block of one item): the
+             * raw combine stands. Such a block has no σ, so its Z* is 0. */
+            r->z_ctr = (float)(rsum / sqrt((double)rk));
             n++;
         }
         /* How far the nodes sat from each other — equivalently from the
