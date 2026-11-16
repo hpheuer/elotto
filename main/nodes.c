@@ -702,6 +702,12 @@ void slave_abort(void)
  *                rebooted, not silently omitted
  *
  * ⚠ Trailing fields optional and TAGGED: Z:<z>[,wsig=][,mau=][,ser=]. */
+bool node_slots(int k, float *out)
+{
+    bool z = k >= 0 && k < s_nslaves && s_link[k].replied && s_link[k].reply[0] == 'Z';
+    return el_slots_parse(z ? s_link[k].reply : NULL, out);
+}
+
 bool node_take_z(int k, double *out_z)
 {
     if (!s_link[k].replied) return false;

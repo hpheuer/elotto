@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "camera.h"
+#include <math.h>
 #include "elotto_link.h"
 
 typedef uint16_t node_mask_t;   // bit i = node i; MAX_NODES below must fit
@@ -290,7 +291,8 @@ typedef enum { PHASE_SCORING, PHASE_MEASURING,
 /* Entropy is camera readout noise. A node whose camera stops is reported and rebooted. */
 
 typedef struct {
-    int        index;      // combination id (1-based slot in the enumeration)
+    int16_t    index;      // combination id (1-based slot in the enumeration, ≤ 7920)
+    int16_t    sync_c;     // Sync in hundredths, RUN_SYNC_NONE = none — see run_sync()
     /* MAURER of the bits this item was measured from (Mau): per node the
      * NIST SP 800-22 universal-test z of its window (,mau= on the wire, the
      * master's own gcp_last_maurer()), centred on that node's mean over the
@@ -372,7 +374,33 @@ typedef struct {
      * its magnitude.
      * NaN until the block (scoring: the pass) is centred, or no node reported. */
     float      ser;
+    /* SYNCHRONY of the cameras INSIDE this item's window (Sync): every node
+     * cuts its window into EL_SLOTS time slots counted from the same instant
+     * (`,sl=`, camera_win_slots()); per slot the products of every two
+     * combined nodes' slot z are summed, over all slots, divided by √(number
+     * of products). Then centred on the block's mean and divided by the
+     * block's own σ of it — unit variance, read against 0. + = the cameras'
+     * ones-rate moved together inside the window more on this item than on
+     * the rest of the block. A slot z is against its window's own bias, so
+     * neither Z nor a node offset is in it. Published only: it enters no Z*,
+     * no sum and no ranking. Pass items only; NaN on a scoring row, until the
+     * block is centred, and when fewer than two nodes sent slots.
+     * Stored as sync_c above (hundredths, ±327) so the row stays 48 bytes;
+     * read and written through run_sync() / run_sync_set(). */
 } RunResult;
+
+#define RUN_SYNC_NONE INT16_MIN
+static inline float run_sync(const RunResult *r)
+{
+    return r->sync_c == RUN_SYNC_NONE ? NAN : (float)r->sync_c / 100.0f;
+}
+static inline void run_sync_set(RunResult *r, double v)
+{
+    if (!isfinite(v)) { r->sync_c = RUN_SYNC_NONE; return; }
+    if (v > 327.0) v = 327.0;
+    if (v < -327.0) v = -327.0;
+    r->sync_c = (int16_t)(v * 100.0 + (v < 0 ? -0.5 : 0.5));
+}
 _Static_assert(sizeof(RunResult) == 48, "results[] row is the internal-RAM budget");
 
 // Current-item display: what is on screen right now, for exactly the window

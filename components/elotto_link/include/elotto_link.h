@@ -23,11 +23,36 @@
 #define EL_SEG_MIN      100
 #define EL_SEG_MAX  2000000
 
+/* TIME SLOTS of one window (`,sl=` on the Z reply): EL_SLOTS slots counted
+ * from the receipt of `M`, each el_slot_us(nseg) wide. The width follows from
+ * the segment count on the wire by this ONE function, so every node cuts the
+ * same slots: the nominal window (EL_SEG_PER_MS_NOM segments per ms) plus the
+ * ~0,2 s a window opens after `M`, over EL_SLOTS, never under EL_SLOT_MIN_MS
+ * (a frame pair is ~0,1 s — a short window fills only its first slots).
+ * Pairs past the last slot are not counted. */
+#define EL_SLOTS            10
+#define EL_SLOT_MIN_MS      250
+#define EL_SEG_PER_MS_NOM   89
+static inline uint32_t el_slot_us(int nseg)
+{
+    uint32_t ms = ((uint32_t)(nseg > 0 ? nseg : 0) / EL_SEG_PER_MS_NOM + 200u) / EL_SLOTS;
+    if (ms < EL_SLOT_MIN_MS) ms = EL_SLOT_MIN_MS;
+    return ms * 1000u;
+}
+
+/* ",sl=<v>/<v>/…": EL_SLOTS slot z in hundredths (clamped to ±9,99), an empty
+ * field for a slot without a value. Appends to buf (NUL-terminated, capacity
+ * cap); writes nothing if it does not fit or no slot has a value. */
+void el_slots_fmt(char *buf, int cap, const float *z);
+/* Reads ",sl=" out of a Z reply into z[EL_SLOTS] (NAN = no value). Returns
+ * false, all NAN, when the reply carries none. */
+bool el_slots_parse(const char *reply, float *z);
+
 /*
  * FRAME:  "EL1 <seq> <payload>"      (plain ASCII, one command per datagram)
  *
  * The payload is the command/reply text — "M<seg>", "K<ms>,<segs>", "D",
- * "A", "P", "R" and the "Z:<z>[,h1,h2][,wsig=][,mau=]" / "D:..." / "OK" / "E:" / "V:"
+ * "A", "P", "R" and the "Z:<z>[,wsig=][,mau=][,ser=][,sl=]" / "D:..." / "OK" / "E:" / "V:"
  * answers. Transport is UDP; the sequence number is the only addition over the
  * old UART framing.
  *

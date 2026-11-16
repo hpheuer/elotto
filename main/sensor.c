@@ -294,6 +294,9 @@ static float  s_master_wsig = NAN;
 static float *s_node_mau;
 /* Per-node serial z of the window, NaN = none (Ser). */
 static float *s_node_ser;
+/* Per-ITEM raw synchrony of the window (Sync), NaN = none: Σ of the node-pair
+ * slot products over √(their number). One float per results[] row. */
+static float *s_item_sync;
 
 /* The previous window sigma each node reported, for the jump. NaN
  * until a node has reported once. Reset with the session, not per round:
@@ -380,6 +383,7 @@ static void node_z_move(int from, int to)
         memcpy(s_node_ser + (size_t)to   * MAX_NODES,
                s_node_ser + (size_t)from * MAX_NODES,
                MAX_NODES * sizeof(float));
+    if (s_item_sync) s_item_sync[to] = s_item_sync[from];
 }
 
 static void node_col_store(float *arch, int j, const double *v, const bool *have)
@@ -727,6 +731,7 @@ static void score_rows_begin(int main_max, bool euro)
         else   s->r.nums[0] = (uint8_t)num;
         s->r.node_sd = NAN;
         s->r.ser     = NAN;
+        s->r.sync_c  = RUN_SYNC_NONE;   /* pass items only */
         s->r.mau     = NAN;
         s->key       = NAN;
     }
@@ -1075,7 +1080,31 @@ typedef struct {
     bool    have[MAX_NODES], havemau[MAX_NODES], haveser[MAX_NODES];
     node_mask_t mask;
     int     k;
+    double  sync;                       /* window synchrony, raw (Sync); NaN = none */
 } WindowMeas;
+
+/* The cameras' synchrony inside one window: per time slot the products of
+ * every two combined nodes' slot z, (Σz)² − Σz² over 2, summed over the slots
+ * and divided by √(number of products) — mean 0, about unit variance for
+ * independent cameras. Products only, never a node's own square: a camera's
+ * own dispersion is Disp and must not read as agreement. NaN without a pair. */
+static double window_sync(float sl[][EL_SLOTS], node_mask_t mask)
+{
+    double c = 0.0;
+    int    np = 0;
+    for (int t = 0; t < EL_SLOTS; t++) {
+        double s = 0.0, ss = 0.0;
+        int    k = 0;
+        for (int i = 0; i < MAX_NODES; i++) {
+            if (!(mask & (1u << i)) || !isfinite((double)sl[i][t])) continue;
+            s += (double)sl[i][t]; ss += (double)sl[i][t] * (double)sl[i][t]; k++;
+        }
+        if (k < 2) continue;
+        c  += 0.5 * (s * s - ss);
+        np += k * (k - 1) / 2;
+    }
+    return np > 0 ? c / sqrt((double)np) : NAN;
+}
 
 static int measure_window(WindowMeas *w, bool scoring)
 {
@@ -1097,12 +1126,20 @@ static int measure_window(WindowMeas *w, bool scoring)
         camera_get_stats(&cs);
         s_master_wsig = (zok && cs.win_sigma_samples > 0) ? (float)cs.win_sigma : NAN;
     }
+    /* The master's own time slots, at the same instant and for the same reason. */
+    static float sl[MAX_NODES][EL_SLOTS];
+    for (int i = 0; i < MAX_NODES; i++)
+        for (int t = 0; t < EL_SLOTS; t++) sl[i][t] = NAN;
+    if (zok) camera_win_slots(el_slot_us(nseg), sl[0], EL_SLOTS);
     focus_off();
     if (fresh && !zok) node_camera_failed(0, "stalled mid-run");
     if (nodes_have_slaves()) nodes_collect(LINK_MEAS_MS_FOR(nseg), true);
 
     w->z = 0.0; w->mask = 0;
     w->k = gather_and_combine(zm, zok, w->znode, w->have, &w->z, &w->mask);
+    for (int i = 1; i < MAX_NODES && i < g_status.node_count; i++)
+        if (w->have[i]) node_slots(i - 1, sl[i]);
+    w->sync = window_sync(sl, w->mask);
     for (int i = 0; i < MAX_NODES; i++) {
         double a = (i == 0) ? maum
                  : (i < g_status.node_count ? (double)g_status.nodes[i].cam_mau_now : NAN);
@@ -1148,6 +1185,7 @@ static void score_one_run(bool *ok, float znode[MAX_NODES],
         r->z_ctr     = (k > 0) ? (float)m.z  : 0.0f;
         r->disp      = NAN;   /* set when the pass closes */
         r->ser       = NAN;   /* set when the pass closes */
+        r->sync_c    = RUN_SYNC_NONE;   /* pass items only */
         r->mau       = NAN;   /* set when the pass closes */
         r->node_sd   = NAN;
         row->key     = NAN;
@@ -2799,6 +2837,28 @@ static void center_block(int block_idx)
             for (int t = 0; t < nb; t++) g_status.results[bidx[t]].disp = (float)bout[t];
         }
     }
+    /* Sync: one value per item, centred and scaled on this block alone. */
+    if (s_item_sync) {
+        double s = 0.0, ss = 0.0;
+        int    ns = 0;
+        for (int j = 0; j < ntot; j++) {
+            const RunResult *r = &g_status.results[j];
+            if ((int)r->block != block_idx || r->k == 0) continue;
+            double v = (double)s_item_sync[j];
+            if (isfinite(v)) { s += v; ss += v * v; ns++; }
+        }
+        double mu = ns ? s / ns : 0.0, sdv = 0.0;
+        if (ns >= 3) {
+            double v = (ss - ns * mu * mu) / (ns - 1);
+            if (v > 0.0) sdv = sqrt(v);
+        }
+        for (int j = 0; j < ntot; j++) {
+            RunResult *r = &g_status.results[j];
+            if ((int)r->block != block_idx || r->k == 0) continue;
+            double v = (double)s_item_sync[j];
+            run_sync_set(r, (sdv > 0.0 && isfinite(v)) ? (v - mu) / sdv : NAN);
+        }
+    }
     if (n > 0)
         printf("block %d: centred %d items (node means %+.3f %+.3f %+.3f %+.3f)\n",
                block_idx, n, m[0], m[1], m[2], m[3]);
@@ -2963,6 +3023,11 @@ void elotto_task(void *pvParam)
         for (size_t i = 0; i < (size_t)NUM_RUNS * MAX_NODES; i++)
             s_node_ser[i] = NAN;
     }
+    /* Window synchrony per item (Sync), ~6 KB. Missing costs that column only. */
+    if (!s_item_sync)
+        s_item_sync = heap_caps_malloc((size_t)NUM_RUNS * sizeof(float), MALLOC_CAP_SPIRAM);
+    if (s_item_sync)
+        for (int i = 0; i < NUM_RUNS; i++) s_item_sync[i] = NAN;
     /* The board and the per-node history behind it start empty every session:
      * a jump across a reboot or a parameter change is not an event. */
     memset(g_status.trip_hist, 0, sizeof(g_status.trip_hist));
@@ -3404,6 +3469,8 @@ void elotto_task(void *pvParam)
             node_z_store(slot, w.znode, w.have);
             node_col_store(s_node_mau, slot, w.mau, w.havemau);
             node_col_store(s_node_ser, slot, w.ser, w.haveser);
+            if (s_item_sync && slot >= 0 && slot < NUM_RUNS)
+                s_item_sync[slot] = (k > 0) ? (float)w.sync : NAN;
             /* The instrument's own noise while THIS item was measured.
              * Read before anything can trigger the next window: cam_wsig_now
              * holds one window and the next 'M' overwrites it. */
@@ -3429,6 +3496,7 @@ void elotto_task(void *pvParam)
              * without results[], which compaction will have taken. */
             wsig_note(r, wsig, mask, 0);
             r->ser = NAN;   /* Ser, filled by center_block() */
+            r->sync_c = RUN_SYNC_NONE;  /* Sync, likewise */
             r->disp = NAN;  /* Disp, likewise */
             r->mau = NAN;   /* Mau, filled by center_block() */
             if (k > 0) {

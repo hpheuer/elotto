@@ -393,6 +393,19 @@ static void cam_verify_regs(const char *when)
 static uint32_t s_win_z_n;
 static double   s_win_z_mean, s_win_z_m2;
 
+/* Every frame pair of ONE measurement window, with the time it was taken:
+ * what camera_win_slots() sorts into time slots. t_us counts from the flush
+ * REQUEST (camera_ring_flush()), which every node receives within a
+ * millisecond of the others — the array's common zero, no clock sync needed.
+ * dev = 2·ones − bits of the pair (variance = bits for fair bits).
+ * Written by the capture task (entry first, count second); emptied with the
+ * window sigma. 448 pairs cover the longest window at the fastest pair cycle. */
+#define WIN_PAIR_MAX 448
+typedef struct { uint32_t t_us; int32_t dev; uint32_t bits; } win_pair_t;
+static win_pair_t        s_wp[WIN_PAIR_MAX];
+static volatile uint32_t s_wp_n;
+static volatile int64_t  s_wp_t0;
+
 /* Below this many mini-runs the window sigma is not published: a partial
  * window would otherwise report a wild value that reads like a disturbance.
  * A 0,5 s window (the shortest ?run= allows) still yields ~800. */
@@ -488,6 +501,48 @@ static void process_words(void)
 static void win_stats_zero(void)
 {
     s_win_z_n = 0; s_win_z_mean = 0.0; s_win_z_m2 = 0.0;
+    s_wp_n = 0;
+}
+
+int camera_win_slots(uint32_t slot_us, float *z, int nslots)
+{
+    enum { MAXS = 16 };
+    if (nslots > MAXS) nslots = MAXS;
+    for (int s = 0; s < nslots; s++) z[s] = NAN;
+    uint32_t n = s_wp_n;
+    __sync_synchronize();
+    if (n > WIN_PAIR_MAX) n = WIN_PAIR_MAX;
+    if (n < 2 || slot_us == 0 || nslots < 1) return 0;
+
+    /* The window's own bias, so a slot says how it sat against the REST of
+     * this window: the node's offset and the window's z both drop out. */
+    double D = 0.0, B = 0.0;
+    for (uint32_t p = 0; p < n; p++) { D += (double)s_wp[p].dev; B += (double)s_wp[p].bits; }
+    if (!(B > 0.0)) return 0;
+    double dev[MAXS] = {0}, var[MAXS] = {0}, wb[MAXS] = {0}, ws[MAXS] = {0};
+    for (uint32_t p = 0; p < n; p++) {
+        /* A pair belongs to the two slots whose centres it lies between, in
+         * proportion to its distance from each. */
+        double x = (double)s_wp[p].t_us / (double)slot_us - 0.5;
+        double fl = floor(x), f = x - fl;
+        int    i = (int)fl;
+        for (int h = 0; h < 2; h++) {
+            int    s = i + h;
+            double w = h ? f : 1.0 - f;
+            if (s < 0 || s >= nslots || !(w > 0.0)) continue;
+            dev[s] += w * (double)s_wp[p].dev;
+            var[s] += w * w * (double)s_wp[p].bits;
+            wb[s]  += w * (double)s_wp[p].bits;
+            ws[s]  += w;
+        }
+    }
+    int got = 0;
+    for (int s = 0; s < nslots; s++) {
+        if (ws[s] < 1.0 || !(var[s] > 0.0)) continue;   /* less than one pair's worth */
+        z[s] = (float)((dev[s] - wb[s] * D / B) / sqrt(var[s]));
+        got++;
+    }
+    return got;
 }
 
 // diff = b - a per pixel (mod 256), LSB packed. Non-overlapping: caller never
@@ -725,6 +780,7 @@ static void camera_task(void *arg)
     bool have_first = false;
     int  yield_ctr = 0;
     int64_t pair_wait_us = 0;       // DQBUF time for BOTH frames of this pair
+    int64_t t_first_us = 0;         // when the pair's first frame was dequeued
     s_stream_start_us = esp_timer_get_time();
 
     while (1) {
@@ -781,6 +837,7 @@ static void camera_task(void *arg)
         if (!have_first) {
             first = buf;
             have_first = true;
+            t_first_us = esp_timer_get_time();
             continue;               // keep this buffer; do not requeue yet
         }
 
@@ -841,9 +898,27 @@ static void camera_task(void *arg)
         }
 
         int64_t t_ext0 = esp_timer_get_time();
+        uint64_t wp_b0 = s_bits_extracted, wp_o0 = s_ones_count;
         cam_autoload_arm(s_bufs[first.index], s_bufs[buf.index], s_frame_size);
         diff_and_extract(s_bufs[first.index], s_bufs[buf.index], s_frame_size);
         int64_t t_ext1 = esp_timer_get_time();
+
+        /* The pair into the window's time log, stamped midway between the
+         * dequeue of its two frames. Same code on every node, so the constant
+         * lag between exposure and dequeue cancels across the array. */
+        {
+            uint32_t wn = s_wp_n;
+            int64_t  dt = (t_first_us + t_ext0) / 2 - s_wp_t0;
+            if (wn < WIN_PAIR_MAX && dt >= 0 && dt < 0xFFFFFFFFLL) {
+                uint32_t nb = (uint32_t)(s_bits_extracted - wp_b0);
+                uint32_t no = (uint32_t)(s_ones_count - wp_o0);
+                s_wp[wn].t_us = (uint32_t)dt;
+                s_wp[wn].dev  = 2 * (int32_t)no - (int32_t)nb;
+                s_wp[wn].bits = nb;
+                __sync_synchronize();
+                s_wp_n = wn + 1;
+            }
+        }
 
         publish_stats();
 
@@ -1410,6 +1485,7 @@ void camera_get_geometry(uint32_t *w, uint32_t *h)
 void camera_ring_flush(int pairs)
 {
     if (pairs < 1) pairs = 1;
+    s_wp_t0         = esp_timer_get_time();   /* time zero of the window's slots */
     s_flush_done    = false;
     s_flush_dropped = false;
     s_flush_discard = 1;          /* the first pair after the request */

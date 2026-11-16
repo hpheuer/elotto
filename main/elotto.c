@@ -954,15 +954,15 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "function topFile(x){"
 "var R=x.extremes||[];"
 "var cr=x.crit?x.crit+'_'+x.dir:'';"
-"var L=['Rank;Round;Comb;Numbers;Euro;Z*;Z;Z_raw;Disp;\\u0394n;Ser;Mau;k'];"
+"var L=['Rank;Round;Comb;Numbers;Euro;Z*;Z;Z_raw;Disp;\\u0394n;Ser;Mau;k;Sync'];"
 "R.forEach(function(r,i){L.push([i+1,r.round,r.run,(r.nums||[]).join(' '),(r.euro||[]).join(' '),"
-"f(r.key),f(r.z_ctr),f(r.z),f(r.disp),f(r.nsd),f(r.ser),f(r.mau),r.k].join(';'));});"
+"f(r.key),f(r.z_ctr),f(r.z),f(r.disp),f(r.nsd),f(r.ser),f(r.mau),r.k,f(r.sync)].join(';'));});"
 "return {name:'elotto_top'+R.length+(cr?'_'+cr:'')+'_'+stamp+'.csv',body:textOf(L)};}"
 "function allFile(all){"
 "all.sort(function(a,b){return (a.round-b.round)||(a.run-b.run);});"
-"var La=['Round;Comb;Numbers;Euro;Z*;Z;Z_raw;Disp;\\u0394n;Ser;Mau;k;Quarantined'];"
+"var La=['Round;Comb;Numbers;Euro;Z*;Z;Z_raw;Disp;\\u0394n;Ser;Mau;k;Quarantined;Sync'];"
 "all.forEach(function(r){La.push([r.round,r.run,(r.nums||[]).join(' '),(r.euro||[]).join(' '),"
-"f(r.key),f(r.z_ctr),f(r.z),f(r.disp),f(r.nsd),f(r.ser),f(r.mau),r.k,r.excl?1:0].join(';'));});"
+"f(r.key),f(r.z_ctr),f(r.z),f(r.disp),f(r.nsd),f(r.ser),f(r.mau),r.k,r.excl?1:0,f(r.sync)].join(';'));});"
 "return {name:'elotto_all'+all.length+'_'+stamp+'.csv',body:textOf(La)};}"
 "function filesOf(pair){"
 "var st=pair[0]||{},x=pair[1],s=pair[2],j=pair[3];"
@@ -1781,7 +1781,8 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "var mauTxt=(r.mau===undefined||r.mau===null)?'\\u2014':r.mau.toFixed(2);"
 "var mauCol=(r.mau===undefined||r.mau===null)?'#9aa':(Math.abs(r.mau)>3?'#ffd479':'');"
 "var det='Z '+zTxt"
-"+' \\u00b7 \\u0394n '+nsdTxt+' (k '+(r.k===undefined?'?':r.k)+')';"
+"+' \\u00b7 \\u0394n '+nsdTxt+' (k '+(r.k===undefined?'?':r.k)+')'"
+"+((typeof r.sync==='number')?' \\u00b7 Sync '+r.sync.toFixed(2):'');"
 "if(st)det+='\\nZ ^'+(st.z==null?1:st.z).toFixed(2)+' \\u00b7 \\u0394n \\u00d7'+(st.a||0).toFixed(2)"
 "+' \\u00b7 Mau \\u00d7'+(st.b||0).toFixed(2)"
 "+' \\u00b7 Ser \\u00d7'+(st.e||0).toFixed(2)+' \\u00b7 Disp \\u00d7'+(st.g||0).toFixed(2);"
@@ -1967,6 +1968,12 @@ static int emit_row(char *buf, int cap, const RunResult *r, double key,
         snprintf(disp, sizeof(disp), "%.2f", (double)r->disp);
     else
         snprintf(disp, sizeof(disp), "null");
+    /* `sync`: the cameras' synchrony inside the window, null until centred. */
+    char syn[16];
+    if (isfinite((double)run_sync(r)))
+        snprintf(syn, sizeof(syn), "%.2f", (double)run_sync(r));
+    else
+        snprintf(syn, sizeof(syn), "null");
     char ks[16];
     if (isfinite(key)) snprintf(ks, sizeof(ks), "%.4f", key);
     else               snprintf(ks, sizeof(ks), "null");
@@ -1982,10 +1989,10 @@ static int emit_row(char *buf, int cap, const RunResult *r, double key,
 
     return snprintf(buf, cap,
         "{\"run\":%d,\"round\":%d,\"z\":%.4f,\"z_ctr\":%.4f,"
-        "\"disp\":%s,\"key\":%s,\"k\":%d,\"nsd\":%s,\"ser\":%s,\"mau\":%s,"
+        "\"disp\":%s,\"key\":%s,\"k\":%d,\"nsd\":%s,\"ser\":%s,\"mau\":%s,\"sync\":%s,"
         "\"nums\":[%s],\"euro\":[%s]%s}",
         r->index, (int)r->round, r->z_score, (double)r->z_ctr,
-        disp, ks, (int)r->k, nsd, ser, mau, nums, eu, tail ? tail : "");
+        disp, ks, (int)r->k, nsd, ser, mau, syn, nums, eu, tail ? tail : "");
 }
 
 static int emit_run(char *buf, int cap, const RunResult *r, bool euro)

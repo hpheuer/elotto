@@ -65,6 +65,10 @@ int  nodes_collect(int timeout_ms, bool critical);
  * left on the node (cam_wsig_now / cam_mau_now / cam_ser_now). */
 bool node_take_z(int k, double *out_z);
 
+/* This slave's time-slot z of the window just collected (`,sl=`), into
+ * out[EL_SLOTS], NAN = no value. False, all NAN, if it sent none. */
+bool node_slots(int k, float *out);
+
 /* ── Baseline, calibration, diagnostics ────────────────────────────── */
 
 

@@ -171,6 +171,17 @@ void camera_get_stats(camera_stats_t *out);
 void camera_ring_flush(int pairs);
 bool camera_ring_flushed(void);
 
+/* The current window's bits as z per TIME slot: slot s covers
+ * [s·slot_us, (s+1)·slot_us) counted from the camera_ring_flush() request —
+ * the instant all nodes share — so slot s is the same stretch of time on
+ * every node. Each frame pair is split between the two slots whose centres it
+ * lies between. A slot's z is against the window's own bias: unit normal for
+ * random bits, and neither the node's offset nor the window's z is in it.
+ * NAN for a slot holding less than one pair. Returns the slots filled.
+ * ⚠ Read it right after the window's z: the log keeps growing until the next
+ * flush. nslots ≤ 16. */
+int camera_win_slots(uint32_t slot_us, float *z, int nslots);
+
 
 // Discard `settle_pairs` frame pairs (>=1), empty the ring, then zero every
 // entropy statistic and restart the rate clock. Asynchronous: the capture task
