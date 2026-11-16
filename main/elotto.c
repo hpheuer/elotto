@@ -351,7 +351,7 @@ static const char HTML[] =
 "style='background:#a08030;color:#fff'>&#9208; Pause</button>"
 "<button class='btn btn-abort' id='btnAbort' onclick='doAbort()'>&#9632; Abort</button>"
 // Save: four files. /extremes?n=1000 is the 1000 items best on the pool
-// criterion; /extremes?sums=1 is every number's six column sums; the third
+// criterion; /extremes?sums=1 is every number's seven column sums; the third
 // file is the parameters that ran; the fourth is the whole camera-jump
 // board (/extremes?jumps=1). Chrome/Edge on a secure page ask
 // for one folder. ⚠ On the master's http address that dialog does not
@@ -908,7 +908,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
    not served then.
    ⚠ In scoring-only mode (Runs 0) there is no pass; the first file is
    instead the scoring numbers ranked by the selected criterion
-   (elotto_scored), built from the sums. Second: every number's six
+   (elotto_scored), built from the sums. Second: every number's seven
    signed column sums (elotto_sums). Third: elotto_params_….txt, the parameters
    that ran, from /status at the click. Fourth: elotto_jumps_….csv, the
    whole camera-jump board from /extremes?jumps=1 (up to WSIG_KEEP_N rows,
@@ -2569,12 +2569,16 @@ static esp_err_t extremes_sums(httpd_req_t *req)
                     snprintf(kn[c], sizeof(kn[c]), "%u", (unsigned)S->cnt[k][c]);
                 }
             }
-            sl = snprintf(sb, sizeof(sb),
-                "{\"n\":%d,\"sum\":[%s,%s,%s,%s,%s,%s],"
-                "\"k\":[%s,%s,%s,%s,%s,%s]}",
-                k,
-                cell[0], cell[1], cell[2], cell[3], cell[4], cell[5],
-                kn[0], kn[1], kn[2], kn[3], kn[4], kn[5]);
+            /* One entry per column, in `cols` order — looped, so a new
+             * column cannot be left out of the reply. */
+            sl = 0;
+            buf_append(sb, sizeof(sb), &sl, "{\"n\":%d,\"sum\":[", k);
+            for (int c = 0; c < SCORE_SUM_N; c++)
+                buf_append(sb, sizeof(sb), &sl, "%s%s", c ? "," : "", cell[c]);
+            buf_append(sb, sizeof(sb), &sl, "],\"k\":[");
+            for (int c = 0; c < SCORE_SUM_N; c++)
+                buf_append(sb, sizeof(sb), &sl, "%s%s", c ? "," : "", kn[c]);
+            buf_append(sb, sizeof(sb), &sl, "]}");
             send_chunk(req, sb, sl, sizeof(sb));
         }
         httpd_resp_send_chunk(req, "]}", 2);
