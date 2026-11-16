@@ -249,7 +249,7 @@ static void nth_combination(const uint8_t *pool, int n, int r, int k, uint8_t *o
 // A session whose pool choice must be trusted on its own wants several full
 // random passes; it must NOT go back to repeats in place (onset is the payload).
 static void score_one_run(bool *ok, float znode[MAX_NODES],
-                          float maun[MAX_NODES], float sern[MAX_NODES],
+                          float maun[MAX_NODES], float sern[MAX_NODES], float bytn[MAX_NODES],
                           node_mask_t *mask, ScoreItem *row,
                           float wsig[MAX_NODES]);
 static void score_build_keys(const float zn[][MAX_NODES],
@@ -257,7 +257,7 @@ static void score_build_keys(const float zn[][MAX_NODES],
                              const bool *scored, int max_val,
                              double *zc_out, double *nsd_out);
 static double zstar_of(double z, double sz, double nsd, double mau,
-                       double ser, double disp);
+                       double ser, double disp, double byt);
 static void   center_block(int block_idx);  // forward: publish_valid centres the OPEN block
 static void   wsig_collect(float out[MAX_NODES]);
 static void   wsig_note(const RunResult *r, const float *wsig, node_mask_t mask,
@@ -294,6 +294,8 @@ static float  s_master_wsig = NAN;
 static float *s_node_mau;
 /* Per-node serial z of the window, NaN = none (Ser). */
 static float *s_node_ser;
+/* Per-node byte-frequency z of the window, NaN = none (Byt). */
+static float *s_node_byt;
 /* Per-ITEM raw synchrony of the window (Sync), NaN = none: Σ of the node-pair
  * slot products over √(their number). One float per results[] row. */
 static float *s_item_sync;
@@ -382,6 +384,10 @@ static void node_z_move(int from, int to)
     if (s_node_ser)
         memcpy(s_node_ser + (size_t)to   * MAX_NODES,
                s_node_ser + (size_t)from * MAX_NODES,
+               MAX_NODES * sizeof(float));
+    if (s_node_byt)
+        memcpy(s_node_byt + (size_t)to   * MAX_NODES,
+               s_node_byt + (size_t)from * MAX_NODES,
                MAX_NODES * sizeof(float));
     if (s_item_sync) s_item_sync[to] = s_item_sync[from];
 }
@@ -553,7 +559,7 @@ static void score_acc_begin(int ix, int max_val, int pool_size)
 /* Column name for logs and faults, ASCII like the rest of the Log card. */
 static const char *score_sum_label(int ch)
 {
-    static const char *const L[SCORE_SUM_N] = { "Z*", "Z", "Disp", "dn", "Ser", "Mau" };
+    static const char *const L[SCORE_SUM_N] = { "Z*", "Z", "Disp", "dn", "Ser", "Mau", "Byt" };
     return (ch >= 0 && ch < SCORE_SUM_N) ? L[ch] : "?";
 }
 
@@ -730,7 +736,8 @@ static void score_rows_begin(int main_max, bool euro)
         if (e) s->r.euro[0] = (uint8_t)num;
         else   s->r.nums[0] = (uint8_t)num;
         s->r.node_sd = NAN;
-        s->r.ser     = NAN;
+        run_ser_set(&s->r, NAN);
+        run_byt_set(&s->r, NAN);
         s->r.sync_c  = RUN_SYNC_NONE;   /* pass items only */
         s->r.mau     = NAN;
         s->key       = NAN;
@@ -858,6 +865,7 @@ static int score_run(int max_val, int pool_size, bool euro_pool,
     static float sg[51][MAX_NODES];   /* window σ per node (Disp) */
     static float mn[51][MAX_NODES];   /* window Maurer z per node (Mau) */
     static float sn[51][MAX_NODES];   /* window serial z per node (Ser) */
+    static float bn[51][MAX_NODES];   /* window byte-frequency z per node (Byt) */
     node_mask_t smask[51];
     /* The health line describes THIS scoring run's closed passes only — the
      * euro-number run must not show the main run's last span as its own. */
@@ -879,7 +887,7 @@ static int score_run(int max_val, int pool_size, bool euro_pool,
         for (int i = 0; i < 51; i++) {
             smask[i] = 0;
             for (int n = 0; n < MAX_NODES; n++)
-                zn[i][n] = sg[i][n] = mn[i][n] = sn[i][n] = NAN;
+                zn[i][n] = sg[i][n] = mn[i][n] = sn[i][n] = bn[i][n] = NAN;
         }
         for (int i = n_order - 1; i > 0; i--) {
             int j = (int)(fast_rng() % (uint32_t)(i + 1));
@@ -897,7 +905,7 @@ static int score_run(int max_val, int pool_size, bool euro_pool,
             focus_show_number(k, euro_pool);
             bool ok = false;
             float wsig[MAX_NODES];
-            score_one_run(&ok, zn[k], mn[k], sn[k], &smask[k],
+            score_one_run(&ok, zn[k], mn[k], sn[k], bn[k], &smask[k],
                           score_row(euro_pool, k), wsig);
             for (int n = 0; n < MAX_NODES; n++) sg[k][n] = wsig[n];
             /* The jump board sees every window, scoring included: a camera
@@ -926,13 +934,13 @@ static int score_run(int max_val, int pool_size, bool euro_pool,
         last = n_order ? order[n_order - 1] : 0;
         double zc_ctr[51], nsd[51];
         score_build_keys(zn, smask, scored, max_val, zc_ctr, nsd);
-        /* Mau, Ser and Disp over this pass: the pass is its own centring span. */
-        double maup[51], serp[51], dispp[51];
+        /* Mau, Ser, Disp and Byt over this pass: the pass is its own centring span. */
+        double maup[51], serp[51], dispp[51], bytp[51];
         {
             int     idx[51], nb = 0;
             node_mask_t bm[51];
             double  bo[51];
-            for (int k = 0; k < 51; k++) maup[k] = serp[k] = dispp[k] = NAN;
+            for (int k = 0; k < 51; k++) maup[k] = serp[k] = dispp[k] = bytp[k] = NAN;
             for (int k = 1; k <= max_val; k++)
                 if (scored[k]) { idx[nb] = k; bm[nb] = smask[k]; nb++; }
             node_span_col(&mn[0][0], idx, bm, nb, bo);
@@ -941,6 +949,8 @@ static int score_run(int max_val, int pool_size, bool euro_pool,
             for (int t = 0; t < nb; t++) serp[idx[t]] = bo[t];
             node_span_col(&sg[0][0], idx, bm, nb, bo);
             for (int t = 0; t < nb; t++) dispp[idx[t]] = bo[t];
+            node_span_col(&bn[0][0], idx, bm, nb, bo);
+            for (int t = 0; t < nb; t++) bytp[idx[t]] = bo[t];
         }
         for (int k = 1; k <= max_val; k++) {
             if (!scored[k]) continue;
@@ -948,13 +958,14 @@ static int score_run(int max_val, int pool_size, bool euro_pool,
             /* This pass's value per column. A missing one adds nothing. */
             double v[SCORE_SUM_N];
             double key = zstar_of(zc_ctr[k], g_status.score_sig_z, nsd[k], maup[k],
-                                  serp[k], dispp[k]);
+                                  serp[k], dispp[k], bytp[k]);
             v[SUM_KEY]  = key;
             v[SUM_Z]    = zc_ctr[k];
             v[SUM_DISP] = dispp[k];
             v[SUM_NSD]  = nsd[k];
             v[SUM_SER]  = serp[k];
             v[SUM_MAU]  = maup[k];
+            v[SUM_BYT]  = bytp[k];
             for (int c = 0; c < SCORE_SUM_N; c++) {
                 if (!isfinite(v[c])) continue;
                 A->acc[c][k] += v[c];
@@ -968,7 +979,8 @@ static int score_run(int max_val, int pool_size, bool euro_pool,
             row->r.disp    = (float)dispp[k];
             row->r.node_sd = (float)nsd[k];
             row->r.mau     = (float)maup[k];
-            row->r.ser     = (float)serp[k];
+            run_ser_set(&row->r, serp[k]);
+            run_byt_set(&row->r, bytp[k]);
             row->key       = (float)key;
             for (int c = 0; c < SCORE_SUM_N; c++) {
                 row->sums[c] = (float)A->acc[c][k];
@@ -1077,7 +1089,8 @@ typedef struct {
     double  znode[MAX_NODES];
     double  mau[MAX_NODES];             /* window Maurer z, raw (Mau) */
     double  ser[MAX_NODES];             /* window serial z, raw (Ser) */
-    bool    have[MAX_NODES], havemau[MAX_NODES], haveser[MAX_NODES];
+    double  byt[MAX_NODES];             /* window byte-frequency z, raw (Byt) */
+    bool    have[MAX_NODES], havemau[MAX_NODES], haveser[MAX_NODES], havebyt[MAX_NODES];
     node_mask_t mask;
     int     k;
     double  sync;                       /* window synchrony, raw (Sync); NaN = none */
@@ -1117,6 +1130,7 @@ static int measure_window(WindowMeas *w, bool scoring)
     /* The master's own window Maurer z, from the run just finished. */
     double maum = zok ? gcp_last_maurer() : NAN;
     double serm = zok ? gcp_last_serial() : NAN;
+    double bytm = zok ? gcp_last_bytechi() : NAN;
     /* The master's own window σ NOW, before waiting for the slaves: its camera
      * keeps adding mini-runs to the window statistics until the next flush, so
      * read later it would span more bits than the z above, by an amount that
@@ -1152,6 +1166,12 @@ static int measure_window(WindowMeas *w, bool scoring)
         w->haveser[i] = w->have[i] && isfinite(a);
         w->ser[i]     = w->haveser[i] ? a : 0.0;
     }
+    for (int i = 0; i < MAX_NODES; i++) {
+        double a = (i == 0) ? bytm
+                 : (i < g_status.node_count ? (double)g_status.nodes[i].cam_byt_now : NAN);
+        w->havebyt[i] = w->have[i] && isfinite(a);
+        w->byt[i]     = w->havebyt[i] ? a : 0.0;
+    }
     return w->k;
 }
 
@@ -1165,7 +1185,7 @@ static int measure_window(WindowMeas *w, bool scoring)
  * run would steer which numbers enter the pool. The caller excludes void
  * candidates from selection instead. */
 static void score_one_run(bool *ok, float znode[MAX_NODES],
-                          float maun[MAX_NODES], float sern[MAX_NODES],
+                          float maun[MAX_NODES], float sern[MAX_NODES], float bytn[MAX_NODES],
                           node_mask_t *mask, ScoreItem *row,
                           float wsig[MAX_NODES])
 {
@@ -1184,7 +1204,8 @@ static void score_one_run(bool *ok, float znode[MAX_NODES],
         r->z_score   = (k > 0) ? m.z : 0.0;
         r->z_ctr     = (k > 0) ? (float)m.z  : 0.0f;
         r->disp      = NAN;   /* set when the pass closes */
-        r->ser       = NAN;   /* set when the pass closes */
+        run_ser_set(r, NAN);  /* set when the pass closes */
+        run_byt_set(r, NAN);  /* likewise */
         r->sync_c    = RUN_SYNC_NONE;   /* pass items only */
         r->mau       = NAN;   /* set when the pass closes */
         r->node_sd   = NAN;
@@ -1211,6 +1232,7 @@ static void score_one_run(bool *ok, float znode[MAX_NODES],
         znode[i] = m.have[i]  ? (float)m.znode[i] : NAN;
         maun[i]  = m.havemau[i] ? (float)m.mau[i] : NAN;
         sern[i]  = m.haveser[i] ? (float)m.ser[i] : NAN;
+        bytn[i]  = m.havebyt[i] ? (float)m.byt[i] : NAN;
     }
 }
 
@@ -1436,11 +1458,11 @@ static double zstar_w01(double w)
 }
 
 /* Z* = sign(Z)·|Z/σ_z|^kz · [1 + ζ·|Disp|] · [1 + α·(1/Δn − 1)]
- *              · [1 + ε·|Ser|] · [1 + β·|Mau|]
+ *              · [1 + ε·|Ser|] · [1 + β·|Mau|] · [1 + η·|Byt|]
  * (written in the Top-10 column order; the product is commutative)
  *
- * α β ε ζ are g_status.k_dn / k_mau / k_ser / k_disp, each 0..1.
- * Mau, Ser and Disp stretch by their MAGNITUDE: either sign is the cameras
+ * α β ε ζ η are g_status.k_dn / k_mau / k_ser / k_disp / k_byt, each 0..1.
+ * Mau, Ser, Disp and Byt stretch by their MAGNITUDE: either sign is the cameras
  * departing together from the rest of the block.
  * A missing column (NaN, Δn ≤ 0) leaves
  * its factor at 1. No σ_z → 0, never a fallback of 1.
@@ -1448,7 +1470,7 @@ static double zstar_w01(double w)
  * does not: a small Δn or a large |Mau|, |Ser| or |Disp| can exceed (n−1)/√n.
  * Nothing here truncates an extreme. */
 static double zstar_of(double z, double sz, double nsd, double mau,
-                       double ser, double disp)
+                       double ser, double disp, double byt)
 {
     if (!(sz > 0.0) || !isfinite(z)) return 0.0;
     /* Base sign(Z)·|Z/σ_z|^kz. kz = 1 is Z/σ_z exactly (no pow call), kz = 0
@@ -1470,6 +1492,9 @@ static double zstar_of(double z, double sz, double nsd, double mau,
     double d = zstar_w01(g_status.k_disp);
     if (isfinite(disp) && d > 0.0)
         f *= 1.0 + d * fabs(disp);
+    double h = zstar_w01(g_status.k_byt);
+    if (isfinite(byt) && h > 0.0)
+        f *= 1.0 + h * fabs(byt);
     return zp * f;
 }
 
@@ -1477,7 +1502,8 @@ double rank_key(const RunResult *r)
 {
     if (!r) return 0.0;
     return zstar_of((double)r->z_ctr, block_sig_of(r), (double)r->node_sd,
-                    (double)r->mau, (double)r->ser, (double)r->disp);
+                    (double)r->mau, (double)run_ser(r), (double)r->disp,
+                    (double)run_byt(r));
 }
 
 /* ── Ranking of the held rows by the pool criterion ──────────────────────
@@ -1512,7 +1538,8 @@ static double item_crit(const RunResult *r, int ch)
     case SUM_Z:    return (double)r->z_ctr;
     case SUM_DISP: return (double)r->disp;
     case SUM_NSD:  return (double)r->node_sd;
-    case SUM_SER:  return (double)r->ser;
+    case SUM_SER:  return (double)run_ser(r);
+    case SUM_BYT:  return (double)run_byt(r);
     case SUM_MAU:  return (double)r->mau;
     default:       return rank_key(r);
     }
@@ -2046,7 +2073,7 @@ static void wsig_note(const RunResult *r, const float *wsig, node_mask_t mask,
         e->slot = (spass == 0 && r >= g_status.results && r < g_status.results + NUM_RUNS)
                   ? (uint16_t)(r - g_status.results) : (uint16_t)WSIG_NO_SLOT;
         e->k = 0;
-        e->z_raw = e->z_ctr = e->disp = e->nsd = e->ser = e->mau = e->key = NAN;
+        e->z_raw = e->z_ctr = e->disp = e->nsd = e->ser = e->byt = e->mau = e->key = NAN;
         archive_unlock();
     }
 }
@@ -2060,7 +2087,8 @@ static void wsig_values(WsigEvent *e, const RunResult *r, float key)
     e->z_ctr = r->k ? r->z_ctr : NAN;
     e->disp  = r->disp;
     e->nsd   = r->node_sd;
-    e->ser   = r->ser;
+    e->ser   = run_ser(r);
+    e->byt   = run_byt(r);
     e->mau   = r->mau;
     e->key   = key;
 }
@@ -2814,7 +2842,7 @@ static void center_block(int block_idx)
 
     }
     /* Mau, Ser and Disp over the same items, centred and scaled on this block alone. */
-    if (s_node_mau || s_node_ser || s_node_disp) {
+    if (s_node_mau || s_node_ser || s_node_disp || s_node_byt) {
         static int     bidx[NUM_RUNS];
         static node_mask_t bmask[NUM_RUNS];
         static double  bout[NUM_RUNS];
@@ -2830,7 +2858,11 @@ static void center_block(int block_idx)
         }
         if (s_node_ser) {
             node_span_col(s_node_ser, bidx, bmask, nb, bout);
-            for (int t = 0; t < nb; t++) g_status.results[bidx[t]].ser = (float)bout[t];
+            for (int t = 0; t < nb; t++) run_ser_set(&g_status.results[bidx[t]], bout[t]);
+        }
+        if (s_node_byt) {
+            node_span_col(s_node_byt, bidx, bmask, nb, bout);
+            for (int t = 0; t < nb; t++) run_byt_set(&g_status.results[bidx[t]], bout[t]);
         }
         if (s_node_disp) {
             node_span_col(s_node_disp, bidx, bmask, nb, bout);
@@ -3022,6 +3054,14 @@ void elotto_task(void *pvParam)
     if (s_node_ser) {
         for (size_t i = 0; i < (size_t)NUM_RUNS * MAX_NODES; i++)
             s_node_ser[i] = NAN;
+    }
+    /* Window byte-frequency z per node (Byt), the same size. Missing costs that column only. */
+    if (!s_node_byt)
+        s_node_byt = heap_caps_malloc((size_t)NUM_RUNS * MAX_NODES * sizeof(float),
+                                      MALLOC_CAP_SPIRAM);
+    if (s_node_byt) {
+        for (size_t i = 0; i < (size_t)NUM_RUNS * MAX_NODES; i++)
+            s_node_byt[i] = NAN;
     }
     /* Window synchrony per item (Sync), ~6 KB. Missing costs that column only. */
     if (!s_item_sync)
@@ -3469,6 +3509,7 @@ void elotto_task(void *pvParam)
             node_z_store(slot, w.znode, w.have);
             node_col_store(s_node_mau, slot, w.mau, w.havemau);
             node_col_store(s_node_ser, slot, w.ser, w.haveser);
+            node_col_store(s_node_byt, slot, w.byt, w.havebyt);
             if (s_item_sync && slot >= 0 && slot < NUM_RUNS)
                 s_item_sync[slot] = (k > 0) ? (float)w.sync : NAN;
             /* The instrument's own noise while THIS item was measured.
@@ -3495,7 +3536,8 @@ void elotto_task(void *pvParam)
              * the board copies all of them: it has to name the measurement
              * without results[], which compaction will have taken. */
             wsig_note(r, wsig, mask, 0);
-            r->ser = NAN;   /* Ser, filled by center_block() */
+            run_ser_set(r, NAN);   /* Ser, filled by center_block() */
+            run_byt_set(r, NAN);   /* Byt, likewise */
             r->sync_c = RUN_SYNC_NONE;  /* Sync, likewise */
             r->disp = NAN;  /* Disp, likewise */
             r->mau = NAN;   /* Mau, filled by center_block() */

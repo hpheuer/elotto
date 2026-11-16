@@ -697,11 +697,11 @@ void slave_abort(void)
 /* Parse one node's reply into s_link[k].z. Returns false if the node did not
  * contribute a usable value this run.
  *
- *   "Z:<float>[,wsig=][,mau=][,ser=]"  the run completed on camera bits
+ *   "Z:<float>[,wsig=][,mau=][,ser=][,byt=]"  the run completed on camera bits
  *   "E:<reason>" the camera stopped delivering — the node is faulted and
  *                rebooted, not silently omitted
  *
- * ⚠ Trailing fields optional and TAGGED: Z:<z>[,wsig=][,mau=][,ser=]. */
+ * ⚠ Trailing fields optional and TAGGED: Z:<z>[,wsig=][,mau=][,ser=][,byt=]. */
 bool node_slots(int k, float *out)
 {
     bool z = k >= 0 && k < s_nslaves && s_link[k].replied && s_link[k].reply[0] == 'Z';
@@ -758,6 +758,13 @@ bool node_take_z(int k, double *out_z)
     if (srs) {
         double v = atof(srs + 5);
         if (isfinite(v)) g_status.nodes[k + 1].cam_ser_now = (float)v;
+    }
+    /*,byt= — the byte-frequency z of this window. Same handling. */
+    g_status.nodes[k + 1].cam_byt_now = NAN;
+    const char *bys = strstr(resp, ",byt=");
+    if (bys) {
+        double v = atof(bys + 5);
+        if (isfinite(v)) g_status.nodes[k + 1].cam_byt_now = (float)v;
     }
 
     return true;

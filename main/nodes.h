@@ -59,7 +59,7 @@ int  nodes_collect(int timeout_ms, bool critical);
  * answer or replied 'E:' (in which case the camera-fault policy has already
  * run and the node is dropped). The z travels through the out-parameter rather
  * than a struct the caller reaches into, so the per-slave table stays private. */
-/* Wire: Z:<z>[,wsig=<σ>][,mau=<z>][,ser=<z>]. z is the window binomial;
+/* Wire: Z:<z>[,wsig=<σ>][,mau=<z>][,ser=<z>][,byt=<z>]. z is the window binomial;
  * wsig the camera's per-mini-run σ over the same window, mau the Maurer
  * universal-test z and ser the serial z of the same bits. All three tagged,
  * left on the node (cam_wsig_now / cam_mau_now / cam_ser_now). */

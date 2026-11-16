@@ -252,7 +252,7 @@ _Static_assert(UNLIM_RUNS_MAX + PASS_KEEP_EXTREME <= NUM_RUNS,
  * than a small k does. */
 #define NODE_SOFT_MIN_COMBINE  1     // never soft-exclude below this many live nodes
 /* Z* factor weights, each independently 0..1. 0 turns that factor off
- * (the factor stays 1). ?kdn= Δn, ?kmau= Mau, ?kser= Ser, ?kdisp= Disp.
+ * (the factor stays 1). ?kdn= Δn, ?kmau= Mau, ?kser= Ser, ?kdisp= Disp, ?kbyt= Byt.
  * Omitted → 0, so Z* = z_ctr / block σ. The form stores them only on
  * confirm=1; /status names the ones that ran. */
 #define ZSTAR_W_DEFAULT      0.0
@@ -372,8 +372,20 @@ typedef struct {
      * block, read against 0. + = the cameras' bits repeated more on this item
      * than on the rest of the block, together. Enters Z* through ?kser=, by
      * its magnitude.
-     * NaN until the block (scoring: the pass) is centred, or no node reported. */
-    float      ser;
+     * NaN until the block (scoring: the pass) is centred, or no node reported.
+     * Stored as ser_m (thousandths, ±32) so the row stays 48 bytes; read and
+     * written through run_ser() / run_ser_set(). */
+    int16_t    ser_m;
+    /* BYTE FREQUENCIES of the bits this item was measured from (Byt), built
+     * like Mau: per node the window's χ² of the 256 byte values as z (,byt=
+     * on the wire, the master's own gcp_last_bytechi(); bchi in /camlog),
+     * centred on that node's mean over the block, Stouffer over the combined
+     * nodes, then divided by the block's own σ of that combine — unit
+     * variance, read against 0. + = the cameras' byte values were more
+     * uneven on this item than on the rest of the block, together. Enters Z*
+     * through ?kbyt=, by its magnitude. NaN as for Ser; stored as byt_m,
+     * run_byt() / run_byt_set(). */
+    int16_t    byt_m;
     /* SYNCHRONY of the cameras INSIDE this item's window (Sync): every node
      * cuts its window into EL_SLOTS time slots counted from the same instant
      * (`,sl=`, camera_win_slots()); per slot the products of every two
@@ -401,6 +413,24 @@ static inline void run_sync_set(RunResult *r, double v)
     if (v < -327.0) v = -327.0;
     r->sync_c = (int16_t)(v * 100.0 + (v < 0 ? -0.5 : 0.5));
 }
+/* Ser and Byt in thousandths. A value standardised inside its block is at
+ * most (n−1)/√n < 20 for the longest block, so ±32 never clips. */
+#define RUN_COL_NONE INT16_MIN
+static inline float run_col_get(int16_t m)
+{
+    return m == RUN_COL_NONE ? NAN : (float)m / 1000.0f;
+}
+static inline int16_t run_col_put(double v)
+{
+    if (!isfinite(v)) return RUN_COL_NONE;
+    if (v > 32.0) v = 32.0;
+    if (v < -32.0) v = -32.0;
+    return (int16_t)(v * 1000.0 + (v < 0 ? -0.5 : 0.5));
+}
+static inline float run_ser(const RunResult *r) { return run_col_get(r->ser_m); }
+static inline float run_byt(const RunResult *r) { return run_col_get(r->byt_m); }
+static inline void  run_ser_set(RunResult *r, double v) { r->ser_m = run_col_put(v); }
+static inline void  run_byt_set(RunResult *r, double v) { r->byt_m = run_col_put(v); }
 _Static_assert(sizeof(RunResult) == 48, "results[] row is the internal-RAM budget");
 
 // Current-item display: what is on screen right now, for exactly the window
@@ -500,6 +530,9 @@ typedef struct {
     /* The same window's serial z, ,ser= on the 'Z' reply: the Stouffer z of
      * its lag-1..4 bit agreement, signed. NAN = not reported. */
     float    cam_ser_now;
+    /* The same window's byte-frequency z, ,byt= on the 'Z' reply. NAN = not
+     * reported. */
+    float    cam_byt_now;
     /* Mean raw pixel level from that same 'D' query (,px=). The one covariate
      * that separates a light leak from a sensor change.
      * ⚠ 0 = this node did not report it (firmware older than 2026-08-28), not
@@ -682,6 +715,7 @@ typedef struct {
     float    disp;       // Disp
     float    nsd;        // Δn
     float    ser;        // Ser
+    float    byt;        // Byt
     float    mau;        // Mau
     float    key;        // Z*
 } WsigEvent;
@@ -705,7 +739,7 @@ typedef struct {
 /* What the pool is picked on: the running sum of ONE column over the
  * closed scoring passes, chosen by the operator on the page (POST /scoresum)
  * and read when the whole scoring ends. SUM_KEY (Z*) is the default. */
-typedef enum { SUM_KEY = 0, SUM_Z, SUM_DISP, SUM_NSD, SUM_SER, SUM_MAU, SCORE_SUM_N } ScoreSum;
+typedef enum { SUM_KEY = 0, SUM_Z, SUM_DISP, SUM_NSD, SUM_SER, SUM_MAU, SUM_BYT, SCORE_SUM_N } ScoreSum;
 
 typedef struct {
     RunResult r;
@@ -872,6 +906,7 @@ typedef struct {
     double           k_dn;                // ?kdn=  Δn stretch
     double           k_mau;               // ?kmau= Mau stretch (|Mau|)
     double           k_ser;               // ?kser= Ser stretch (|Ser|)
+    double           k_byt;               // ?kbyt= Byt stretch (|Byt|)
     double           k_disp;              // ?kdisp= Disp stretch (|Disp|)
     double           k_z;                 // ?kz=   exponent on |Z/σ_z|
     int              pool_fix;            // ?fix=  numbers in every combination, 0 = off
@@ -1059,8 +1094,8 @@ const camera_cal_t *elotto_last_calibration(void);
  * poll. Idempotent. */
 void results_archive_init(void);
 
-/* Z* of one row: (z_ctr / block σ) times the Δn, Mau, Ser and Disp factors
- * at g_status.k_dn / k_mau / k_ser / k_disp. 0 when that block has no σ.
+/* Z* of one row: (z_ctr / block σ) times the Δn, Mau, Ser, Disp and Byt
+ * factors at g_status.k_dn / k_mau / k_ser / k_disp / k_byt. 0 when that block has no σ.
  * The ONE accessor every table and every survivor choice goes through. */
 double rank_key(const RunResult *r);
 

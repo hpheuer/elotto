@@ -83,6 +83,12 @@ double gcp_last_maurer(void);
  * bits, + = bits repeat. NAN when the window was too short or did not finish. */
 double gcp_last_serial(void);
 
+/* The byte frequencies of the same window as ONE number: χ² of the 256 byte
+ * values against p^w·q^(8−w), as z = (χ² − 254)/√508 (bchi in /camlog). Unit
+ * normal for random bits, + = some byte values too frequent. NAN when the
+ * window was too short or did not finish. */
+double gcp_last_bytechi(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -58,6 +58,9 @@ double gcp_last_maurer(void) { return s_last_mau; }
 static double   s_last_ser = NAN;
 double gcp_last_serial(void) { return s_last_ser; }
 
+static double   s_last_byt = NAN;
+double gcp_last_bytechi(void) { return s_last_byt; }
+
 /* ── Serial statistics of the window's bits ──────────────────────────────
  * z, the halves and Maurer are four numbers; a pattern that moves none of
  * them is gone once the window closes. These two look at the ORDER of the
@@ -136,6 +139,7 @@ static void ser_finish(uint64_t ones, uint64_t words)
         }
     }
     camera_winlog_set_serial(acz, (float)bchi);
+    s_last_byt = bchi;
     /* One signed number for the wire: the Stouffer z of the four lags, so the
      * master can centre and combine it per camera exactly as it does Maurer. */
     double sm = 0.0;
@@ -204,6 +208,7 @@ gcp_result_t gcp_zscore_raw(int nseg, bool (*on_yield)(void), double *out)
 
     s_last_mau = NAN;
     s_last_ser = NAN;
+    s_last_byt = NAN;
     mau_begin();
     ser_begin();
 

@@ -69,7 +69,7 @@ across rounds a combination can recur — identity is **(round, index)**.
 - **No loops, no Runs cap, no ranking modes.** `/start` is a **whitelist**: an unknown
   key answers **400**. Deleted keys (`loops`, `runs`, `rank`, `focus`, `went`, `wruns`,
   `baseline`, `calint`, `unlimited=0`, `wpre`) keep a specific 400. Allowed: `mode`, `run`, `srun`, `gap`,
-  `score`, `kdn`, `kmau`, `kser`, `kdisp`, `kz`, `fix`, `maxruns`, `passes`, `confirm`, `cal`, `unlimited`, `fakepool` (TEST: `1` skips the scoring and draws a random pool). An empty key (`?=x`), a value over
+  `score`, `kdn`, `kmau`, `kser`, `kdisp`, `kbyt`, `kz`, `fix`, `maxruns`, `passes`, `confirm`, `cal`, `unlimited`, `fakepool` (TEST: `1` skips the scoring and draws a random pool). An empty key (`?=x`), a value over
   `START_VAL_MAX` 31 characters and a query string over 255 characters each answer **400** as well
   — a truncated value or query must never read as "key absent" and resolve to the default.
   ⚠ **A refused /start changes nothing**: parameters are parsed into locals and committed to
@@ -124,9 +124,9 @@ across rounds a combination can recur — identity is **(round, index)**.
 break for the operator). Each number 1..N is measured **`?passes=` times** (1..`SCORE_PASSES_MAX` 100, default 20;
 0 = continuous, the `?maxruns=0` rule under v3), each pass one
 `?srun=` window per number in a fresh Fisher–Yates order (never the same number back-to-back).
-After each pass every column — Z\*, Z, Disp, Δn, Ser, Mau — is added to that number's own running sum;
+After each pass every column — Z\*, Z, Disp, Δn, Ser, Mau, Byt — is added to that number's own running sum;
 the pool is the top by ONE of those sums, the one selected on the page (Σ marker in a column
-header, `POST /scoresum?c=key|z|disp|nsd|ser|mau`) **when the whole scoring
+header, `POST /scoresum?c=key|z|disp|nsd|ser|mau|byt`) **when the whole scoring
 ends** — in Eurojackpot both pools at once. ⚠ The pick compares the sum **per pass that added to
 it** — Σ/√n, for Δn Σ/n (`score_rank_val()`) — so a number that lacks a pass is neither favoured nor
 penalised; with the same n everywhere that is the order of the sums. The cell, the scoring table's
@@ -149,7 +149,7 @@ to the last pool member. **The scoring key is the pass key** — `zstar_of()`, a
 numbers each camera actually answered, then
 the same product as the pass. σ is that span's own. Uncentred LSB ranks nodes.
 ⚠ All four weights at 0 is z alone (Z/σ). `score_build_keys()` centres the span and publishes its σ; it does not build the key.
-The six sums of every number (main and euro each their own record) are kept for every scoring
+The seven sums of every number (main and euro each their own record) are kept for every scoring
 of the session until the next session start: `SCORE_SNAP_MAX` 128 earliest, PSRAM,
 `GET /extremes?sums=1`. A scoring aborted before any pass closed stores nothing; one aborted
 after closed passes stores those passes. Abort does not clear it. Save writes it.
@@ -182,7 +182,7 @@ stop survives as backstop for a compaction that cannot allocate.
 - **Results ACCUMULATE** — `results[]` is never cleared between rounds; every statistic runs on the
   union of all rounds.
 - **Every round compact at the boundary**: the 1000 items that rank best on the **pool
-  criterion** stay as rows — the Σ column (`score_sum`: Z\*, Z, Disp, Δn, Ser, Mau) in the pool
+  criterion** stay as rows — the Σ column (`score_sum`: Z\*, Z, Disp, Δn, Ser, Mau, Byt) in the pool
   direction (`score_dir`: high = largest values, low = smallest; `rank_order()` in `sensor.c`).
   Both can only change during a scoring, so a round's compaction uses exactly the criterion its
   pool was picked with. ⚠ **One tail only.** On Z\* the comparison is |Z\*| (the rule under
@@ -230,26 +230,28 @@ stop survives as backstop for a compaction that cannot allocate.
 ## The ranking channels
 One ranking key, `zstar_of()` in `sensor.c`, used by the scoring pass and by `rank_key()`:
 
-Z\* = sign(Z)·|Z/σ_z|^κ · [1 + ζ·|Disp|] · [1 + α·(1/Δn − 1)] · [1 + ε·|Ser|] · [1 + β·|Mau|]
+Z\* = sign(Z)·|Z/σ_z|^κ · [1 + ζ·|Disp|] · [1 + α·(1/Δn − 1)] · [1 + ε·|Ser|] · [1 + β·|Mau|] · [1 + η·|Byt|]
 
-α β ε ζ are `?kdn=` `?kmau=` `?kser=` `?kdisp=`, each 0..1 and independent, default 0 = that factor stays 1. κ `?kz=` 0..1 is the exponent on |Z/σ_z| (default 1; 0 = sign of Z only, the factors carry the magnitude). All four at 0 and κ = 1 is Z/σ_z. A missing column leaves its factor at 1. ⚠ The start form types each weight as a whole percent 0–100 and sends the fraction: 80 in the field is `?kdn=0.80`. `?kdn=80` is refused. A column enters Z\* only through its weight; as the pool criterion it still picks the pool and the extreme set on its own sum.
+α β ε ζ η are `?kdn=` `?kmau=` `?kser=` `?kdisp=` `?kbyt=`, each 0..1 and independent, default 0 = that factor stays 1. κ `?kz=` 0..1 is the exponent on |Z/σ_z| (default 1; 0 = sign of Z only, the factors carry the magnitude). All five at 0 and κ = 1 is Z/σ_z. A missing column leaves its factor at 1. ⚠ The start form types each weight as a whole percent 0–100 and sends the fraction: 80 in the field is `?kdn=0.80`. `?kdn=80` is refused. A column enters Z\* only through its weight; as the pool criterion it still picks the pool and the extreme set on its own sum.
 - **Z** — binomial of the camera LSBs in that window, block-centred Stouffer combine; σ_z is that block's own σ (scoring: the pass span).
 - **Δn** — node agreement: σ across the contributing nodes of their block-centred z, each node divided by ITS OWN σ over that block. Independent cameras ≈ 1, so read it against 1, not against 0. Smaller than 1 stretches Z along its own sign; larger than 1 pulls Z toward 0. Δn = 0,82 and α = 1 → 1 + (1/0,82 − 1) = 1,220. Δn ≤ 0 or missing → factor 1. The cell prints the node count: `0,79 (3)`, highlighted below 0,6 and dimmed above 1,0. ⚠ **—** until the item's block has been centred, and whenever fewer than two nodes have a block σ; never 0 for "unknown" — 0 would read as perfect agreement. ⚠ Small Δn is agreement, not evidence — centring has already removed the block-wide common mode that would otherwise produce it.
 - **Mau** — Maurer's universal test (NIST SP 800-22 §2.9) over the item's own window: per node, over exactly the bits z counts (`gcp_last_maurer()` in `elotto_gcp`, `,mau=`, `/camlog` `mau`), L = 8 (byte blocks, MSB first), Q = 2560 init blocks, K = the rest; z = (f_n − 7,1836656) / (c·√(3,238/K)), c = 0,7 − 0,1 + 8·K^(−3/8)/15. Then centred on that node's block mean (scoring: pass mean; a node with < 2 values stays out), Stouffer over the combined nodes, divided by the block's own σ of that combine — unit variance, read against 0, − = more compressible, coloured at |Mau| > 3. Either sign stretches, by the magnitude: Mau = −1,5 and β = 1 → 2,5; missing → factor 1. **—** until centred. ⚠ Below NIST's minimum at short `?run=` (L = 8 wants ≥ 2,07 Mbit per window); the c(L,K) correction keeps σ right, the centring removes the per-camera offset.
 - **Disp** — the dispersion of the bits inside the window, built like Mau: per node the camera's per-mini-run σ over its window (3200-bit pieces; `,wsig=`, `/camlog` `wsig`), centred on that node's block mean (scoring: pass mean; a node with < 2 values stays out), Stouffer over the combined nodes, divided by the block's own σ of that combine — unit variance, read against 0, coloured at |Disp| > 3. + = the cameras' ones-rate wandered inside the window more on this item than on the rest of the block, together; − = more evenly. Either sign stretches, by the magnitude: Disp = −1,2 and ζ = 1 → 2,2; missing → factor 1. ⚠ A node publishes no window σ below 200 pieces (640 000 bit) and is then missing from the combine. **—** until centred.
 - **Ser** — the serial order of the bits, built like Mau: per node the Stouffer z of its window's lag-1..4 bit agreement (`gcp_last_serial()`, `,ser=`; the four lags are the `acz` of its `/camlog`), centred on that node's block mean (scoring: pass mean; a node with < 2 values stays out), Stouffer over the combined nodes, divided by the block's own σ of that combine — unit variance, read against 0, coloured at |Ser| > 3. + = the cameras' bits repeated more on this item than on the rest of the block, together. Either sign stretches, by the magnitude: Ser = 0,8 and ε = 1 → 1,8; missing → factor 1. ⚠ The node reduces the four lags to one number; the master only centres and combines. ⚠ One camera's excursion is diluted by √k here — it stays in that node's `/camlog` (`acz`, `bchi`, `rec`). **—** until centred.
+- **Byt** — the byte frequencies of the bits, built like Mau: per node the window's χ² of the 256 byte values against p^w·q^(8−w), as z = (χ² − 254)/√508 (`gcp_last_bytechi()`, `,byt=`, `/camlog` `bchi`), centred on that node's block mean (scoring: pass mean; a node with < 2 values stays out), Stouffer over the combined nodes, divided by the block's own σ of that combine — unit variance, read against 0, coloured at |Byt| > 3. + = the cameras' byte values were more uneven on this item than on the rest of the block, together. Either sign stretches, by the magnitude: Byt = 0,5 and η = 1 → 1,5; missing → factor 1. ⚠ A node sends none below 5 bytes per value (10 240 bit). **—** until centred.
 
 - **Sync** — the cameras' synchrony INSIDE the window, published only (item hover text, Save's `Sync` column, `sync` in `/extremes`): it enters no Z\*, no sum, no ranking. Every node logs its frame pairs with their time since the flush request that follows `M` (the array's common zero, within ~1 ms) and cuts the window into `EL_SLOTS` 10 time slots of `el_slot_us(nseg)` (`elotto_link.h`; nominal window + 0,2 s over 10, at least 250 ms); a pair is split between the two slots whose centres it lies between. A slot z is against the window's own bias, so neither Z nor a node offset is in it (`camera_win_slots()`, `,sl=`). The master sums, per slot, the products of every two combined nodes' slot z, over all slots, divides by √(number of products), then centres on the block mean and divides by the block's own σ — read against 0, + = the cameras moved together. ⚠ Pass items only — a scoring row has none. ⚠ Products only, never a node's own square: one camera's dispersion is Disp. ⚠ The cameras free-run, so a pair near a slot edge sits in different slots on different nodes; the split damps that, it does not remove it.
 
-Worked stack, all weights 1: Z/σ_z = −2, Disp = −1,2, Δn = 0,82, Ser = 0,8, Mau = −1,5 → −2 · 2,2 · 1,220 · 1,8 · 2,5 ≈ −24,16.
+Worked stack, all weights 1: Z/σ_z = −2, Disp = −1,2, Δn = 0,82, Ser = 0,8, Mau = −1,5, Byt = 0,5 → −2 · 2,2 · 1,220 · 1,8 · 2,5 · 1,5 ≈ −36,23.
+⚠ Ser and Byt are stored per row in thousandths (±32; `run_ser()` / `run_byt()`), so the `results[]` row stays 48 bytes.
 
 ⚠ Z is divided by the σ of **that item's block**, frozen at close. There is **no** session-wide σ — `s_bsig[block].sig_p` is the only scale, and `/loops` no longer publishes it. A key with no block σ is 0, never a fallback. The product is not re-standardised.
 ⚠ Uncentred z ranks NODES, not items — a live table is meaningless before the first block closes.
-⛔ **The key is UNBOUNDED — nothing truncates an extreme item**. Z/σ_z sits inside its block (`|Z/σ_z| ≤ (n−1)/√n`). The product of the factors does not: a small Δn, a large |Ser|, |Disp| or |Mau| can pass that ceiling, and a quiet block can then produce a large key. ⚠ The last round of a session is short because Abort cut it.
+⛔ **The key is UNBOUNDED — nothing truncates an extreme item**. Z/σ_z sits inside its block (`|Z/σ_z| ≤ (n−1)/√n`). The product of the factors does not: a small Δn, a large |Ser|, |Disp|, |Mau| or |Byt| can pass that ceiling, and a quiet block can then produce a large key. ⚠ The last round of a session is short because Abort cut it.
 The formula at the top of the page leaves out a factor whose weight is 0 (at κ = 0 the base reads `sign(Z)`); the Save params file keeps all of them. A reload of a finished session shows that session's weights until an input changes.
 
-Wire: `Z:<z>[,wsig=<σ>][,mau=<z>][,ser=<z>][,sl=<v>/…]`, all TAGGED (`,sl=`: ten slot z in hundredths, empty = none).
-`,wsig=` (window σ) feeds the `Disp` column and the jump board, `,mau=` (window Maurer z) the `Mau` column, `,ser=` the `Ser` column; the master takes its own from `gcp_last_maurer()` / `gcp_last_serial()`. Every node measures the commanded `nseg`.
+Wire: `Z:<z>[,wsig=<σ>][,mau=<z>][,ser=<z>][,byt=<z>][,sl=<v>/…]`, all TAGGED (`,sl=`: ten slot z in hundredths, empty = none).
+`,wsig=` (window σ) feeds the `Disp` column and the jump board, `,mau=` (window Maurer z) the `Mau` column, `,ser=` the `Ser` column, `,byt=` the `Byt` column; the master takes its own from `gcp_last_maurer()` / `gcp_last_serial()` / `gcp_last_bytechi()`. Every node measures the commanded `nseg`.
 
 ## Stored z is RAW; ranking is block-centred
 - **`z_score` is the raw combined Stouffer z and is never rewritten.** It stays beside `z_ctr` in
@@ -271,7 +273,7 @@ What the page shows is in `main/elotto.c`; this keeps what bites.
   contains the opening sweep.
 - **Stat cards: the split is load-bearing** — top row round-relative in every figure, bottom row
   session-relative; the scoring has its own round-relative row.
-- **Top-10** — `GET /extremes?sort=key|z|disp|nsd|ser|mau&dir=high|low`, `?n=1..1000` (default 10):
+- **Top-10** — `GET /extremes?sort=key|z|disp|nsd|ser|mau|byt&dir=high|low`, `?n=1..1000` (default 10):
   the held rows best on that column and direction, chosen on the master. ⚠ It ranks every held row
   on the master's HTTP task, which shares the consumer core: polled every **5 s**, a header click at
   most once per second — a 1 s poll stole the master's extraction CPU. ⚠ **Held rows** are the
@@ -282,7 +284,7 @@ What the page shows is in `main/elotto.c`; this keeps what bites.
   characters) answer **400**. A row without a value in the sorted column is not listed. The sort
   never changes the compaction archive or the pool.
 - **Save** writes four files in one step (CSV for a German Excel: `;`, decimal comma, BOM):
-  the pass items, `elotto_sums_…` (`/extremes?sums=1`, every number's six signed sums for every
+  the pass items, `elotto_sums_…` (`/extremes?sums=1`, every number's seven signed sums for every
   scoring still in RAM), `elotto_params_….txt` (the parameters that ran, both windows, the formula
   with its weights) and `elotto_jumps_….csv` (`/extremes?jumps=1`, the whole jump board). The pass
   items once the session is over: `elotto_all<n>_…`, every ranked pass item plus the quarantined ones, from
@@ -320,7 +322,7 @@ What the page shows is in `main/elotto.c`; this keeps what bites.
   ⚠ The block number shown is 1-based like `/loops`; `results[].block` is 0-based.
 - **The start form remembers its last values** (NVS, survives reboot and OTA). ⚠ **Only a start
   carrying `confirm=1` writes them** — i.e. only the web UI. A curl start that omits `kdn` /
-  `kmau` / `kser` / `kdisp` runs at 0 and does not overwrite the stored form weights. ⚠ It changes
+  `kmau` / `kser` / `kdisp` / `kbyt` runs at 0 and does not overwrite the stored form weights. ⚠ It changes
   **no** API default: an omitted parameter still resolves to the compiled-in value. Mode is not
   remembered — it is which button was pressed. The pool criterion is remembered by its own rule
   (written on the Σ click).
@@ -471,7 +473,7 @@ place a disturbance can still be located in time.
   boundaries, against the agreement rate p² + q² of the window's own ones-fraction p (so the LSB
   bias does not read as correlation); + = bits repeat; lag 1 is the runs statistic. **`bchi`** =
   THIS window's χ² of the 256 byte values against p^w·q^(8−w), as z = (χ² − 254)/√508. Both unit
-  normal for random bits, computed in `gcp.c` beside Maurer, The four lags feed Ser; `bchi` is logged only.
+  normal for random bits, computed in `gcp.c` beside Maurer, The four lags feed Ser, `bchi` feeds Byt.
 - **`rec`** in the reply header is their session record, which the ring cannot lose: windows
   counted (`n`), how many had |z| > 3 (`hit`; chance gives 0,27 % of `n`) and the largest |z| with
   its tag (`max`, `tag`), in the order lag 1, 2, 3, 4, bchi. Cleared at every session start (on a slave: when it answers discovery), not by a pause.
@@ -482,8 +484,8 @@ place a disturbance can still be located in time.
   master-side collector.
 - ⚠ `t_ms` is each node's OWN uptime. Align by `tag` or by ordinal, **never** by subtracting
   timestamps across boards.
-- It records what never travels on the wire — `acz`, `bchi`, `rsig`, `px`, `ac1`, `zdiff`.
-  The wire carries `wsig`, `mau` and `ser` (the Stouffer z of the four lags) and nothing else. That difference is what separates "light leaked in" from "this sensor
+- It records what never travels on the wire — `acz`, `rsig`, `px`, `ac1`, `zdiff`.
+  The wire carries `wsig`, `mau`, `ser` (the Stouffer z of the four lags), `byt` (`bchi`) and the slots, nothing else. That difference is what separates "light leaked in" from "this sensor
   is dispersing".
 - ⚠ Only windows that produced a **Z** are pushed; a faulted or voided run has no window.
 
