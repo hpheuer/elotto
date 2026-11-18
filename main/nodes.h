@@ -13,20 +13,20 @@
 #pragma once
 
 #include <stdbool.h>
+#include "elotto_link.h"
 
 /* Reply window for one measurement round. Public rather than private because
  * sensor.c waits on the round itself, right after its own local run.
  *
  * DERIVED FROM THE RUN LENGTH, not a constant.
  *
- * 11 segments/ms is used so the estimate errs long; times three plus a fixed
- * second.
+ * The nominal window by the array's calibration (el_win_ms(), elotto_link.h)
+ * times three, plus a fixed second.
  *
  * Deliberately generous: a dead node is detected a few rounds later than it
  * could be — there is no deadline on a session, and the cost of a false drop is
  * a whole arm of data measured at √(k−1) without anyone noticing. */
-#define LINK_SEG_PER_MS  11
-#define LINK_MEAS_MS_FOR(nseg)  (((nseg) / LINK_SEG_PER_MS) * 3 + 1000)
+#define LINK_MEAS_MS_FOR(nseg)  ((int)el_win_ms(nseg) * 3 + 1000)
 
 /* ── Session lifecycle ─────────────────────────────────────────────── */
 

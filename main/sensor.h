@@ -110,10 +110,10 @@ typedef uint16_t node_mask_t;   // bit i = node i; MAX_NODES below must fit
  * window (5 s → 2 s, 7 s → 2.8 s ≈ 3 s) so duty stays ~70 % of the intentional
  * cycle; measured focus_gap_ms is larger because it also includes slave collect.
  * Segment count is derived from run_s via the segs↔ms cal — wall time can stretch
- * if the camera rate collapses at long windows. Measured to EL_SEG_MAX (real
- * ~14,7 s) the rate held flat, so the window length is not the limit — the wire's
- * EL_SEG_MAX is (real seconds = EL_SEG_MAX / the measured segs-per-s). */
-/* ⚠ 0,2..15 s: 0,2 s is ~26641 segs / ~6,0 Mbit, the
+ * if the camera rate collapses at long windows. The cal below is a 14,7 s
+ * window; 14,7..22 s is unmeasured. The upper bound is the wire's EL_SEG_MAX
+ * (real seconds = EL_SEG_MAX / the measured segs-per-s), not the camera. */
+/* ⚠ 0,2..22 s: 0,2 s is ~26641 segs / ~6,0 Mbit, the
  * window's first-pair fragment plus about one whole pair.
  * Auto-gap is 40 % of the window with no floor above GAP_S_MIN 0, and an
  * explicit ?gap= may be 0: the item boundary is the flush on M, not the gap
@@ -125,31 +125,21 @@ typedef uint16_t node_mask_t;   // bit i = node i; MAX_NODES below must fit
 #define ONSET_SETTLE_MS        700   // two pairs now: one discarded 
 
 #define RUN_S_MIN              0.2
-#define RUN_S_MAX               15
+#define RUN_S_MAX               22
 #define GAP_S_MIN                0
 #define GAP_S_MAX               10
-/* Live array cal — 1958642 segs measured in 14704 ms (≈133,2 segs/ms,
- * ≈29,8 Mbit/s) across the ten nodes, so nominal ?run= now matches the real focus_win_ms.
- * ⚠ THIS PAIR IS A MEASUREMENT, and it must be re-measured after anything that
- * changes the extraction rate — otherwise the window the operator asks for and
- * the window the observer actually gets drift apart silently, which is the one
- * thing the Focus protocol cannot tolerate.
- * ⚠ Do not pool sessions measured against different pairs: same nominal
- * ?run=, different bit count per item. */
-#define RUN_SEGS_REF       1958642
-#define RUN_MS_REF           14704
-/* The wire caps the segment count at EL_SEG_MAX, and a receiver does NOT clamp
- * an out-of-range value — it falls back to its own default, which would put the
- * nodes on different window lengths without anything looking wrong. The master
- * must therefore never ASK for more than the wire allows. With RUN_S_MAX at 15 s
- * that holds (1998071 of EL_SEG_MAX 2000000), and the assertion below
+/* The segs↔ms calibration RUN_SEGS_REF / RUN_MS_REF lives in elotto_link.h:
+ * the nodes cut their time slots by it too. */
+/* The wire caps the segment count at EL_SEG_MAX, and a receiver REFUSES an
+ * out-of-range value (seg_from_cmd() in the slave: the run is void on that node).
+ * The master must therefore never ASK for more than the wire allows. With
+ * RUN_S_MAX at 22 s that holds (2930503 of EL_SEG_MAX 3000000), and the assertion below
  * makes the compiler re-check it after any future recalibration instead of
  * leaving it to whoever edits RUN_MS_REF next. */
 _Static_assert(((long long)RUN_S_MAX * 1000 * RUN_SEGS_REF) / RUN_MS_REF <= EL_SEG_MAX,
                "RUN_S_MAX x the segs<->ms calibration exceeds the wire's EL_SEG_MAX: "
                "the longest window the UI offers cannot be delivered. Lower "
-               "RUN_S_MAX, or raise EL_SEG_MAX in BOTH firmwares and fix "
-               "seg_from_cmd() to reject rather than silently substitute.");
+               "RUN_S_MAX, or raise EL_SEG_MAX (shared by both firmwares).");
 
 /* ── Wall time of ONE measured item, for the pre-start estimate ────────
  * The UI has to answer "how long will a round take?" BEFORE anything runs, so

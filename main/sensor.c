@@ -85,7 +85,7 @@ static void prng_seed(void)
  * ⚠ The camera counts are CALIBRATED ON HARDWARE, not derived on paper: the
  * sustained rate is not constant — under load the consumer preempts the capture
  * task it reads from — so re-measure before quoting any figure. RUN_SEGS_REF /
- * RUN_MS_REF in sensor.h carry the current calibration. RUN_GAP_MS is not
+ * RUN_MS_REF in elotto_link.h carry the current calibration. RUN_GAP_MS is not
  * merely cosmetic either: the gap is when the producer gets the CPU back.
  *
  * z stays N(0,1) at any run length because it is normalised by √segments; the
@@ -94,10 +94,10 @@ static void prng_seed(void)
  *
  * There is no fixed segment constant here any more: the count is solved from
  * the session's ?run= by segs_from_run_ms() below, against RUN_SEGS_REF /
- * RUN_MS_REF in sensor.h. */
+ * RUN_MS_REF in elotto_link.h. */
 
 /* Segment count for a requested wall window, from RUN_SEGS_REF / RUN_MS_REF in
- * sensor.h — that header carries the calibration; do not restate the numbers
+ * elotto_link.h — that header carries the calibration; do not restate the numbers
  * here. Longer requests may stretch past the target: the camera rate falls
  * under sustained load, and that stretch IS the limit the operator is probing
  * with the ?run= field. */

@@ -19,23 +19,43 @@
  * ⚠ A value outside this range is REFUSED by the receiver (V: void), not
  * clamped or substituted; see seg_from_cmd() in the slave. Keep the master's
  * ?run= validation inside it.
+ * ⚠ The bounds are compiled into EVERY node: after a change, flash all of them
+ * before a session. A node on an older bound answers V: to every window above
+ * it, and the array then measures without that node and raises no fault.
  */
 #define EL_SEG_MIN      100
-#define EL_SEG_MAX  2000000
+#define EL_SEG_MAX  3000000
+
+/* WINDOW CALIBRATION — the one segs↔ms rate of the array: RUN_SEGS_REF
+ * segments took RUN_MS_REF ms of real window (slowest node, a 14,7 s window,
+ * ≈133,2 segs/ms ≈ 29,8 Mbit/s). The master turns ?run= into a segment count
+ * with it, the master's reply wait and every node's time slots derive from it.
+ * ⚠ THIS PAIR IS A MEASUREMENT: re-measure it after anything that changes the
+ * extraction rate, then flash every node (the slots are cut on each node).
+ * ⚠ Do not pool sessions measured against different pairs: same nominal
+ * ?run=, different bit count per item. */
+#define RUN_SEGS_REF       1958642
+#define RUN_MS_REF           14704
+
+/* Nominal window length of nseg segments, in ms, by the pair above. */
+static inline uint32_t el_win_ms(int nseg)
+{
+    uint64_t n = (uint64_t)(nseg > 0 ? nseg : 0);
+    return (uint32_t)((n * RUN_MS_REF + RUN_SEGS_REF / 2) / RUN_SEGS_REF);
+}
 
 /* TIME SLOTS of one window (`,sl=` on the Z reply): EL_SLOTS slots counted
  * from the receipt of `M`, each el_slot_us(nseg) wide. The width follows from
  * the segment count on the wire by this ONE function, so every node cuts the
- * same slots: the nominal window (EL_SEG_PER_MS_NOM segments per ms) plus the
- * ~0,2 s a window opens after `M`, over EL_SLOTS, never under EL_SLOT_MIN_MS
- * (a frame pair is ~0,1 s — a short window fills only its first slots).
+ * same slots: the nominal window (el_win_ms()) plus the ~0,2 s a window opens
+ * after `M`, over EL_SLOTS, never under EL_SLOT_MIN_MS (a frame pair is
+ * ~0,1 s — a short window fills only its first slots).
  * Pairs past the last slot are not counted. */
 #define EL_SLOTS            10
 #define EL_SLOT_MIN_MS      250
-#define EL_SEG_PER_MS_NOM  133
 static inline uint32_t el_slot_us(int nseg)
 {
-    uint32_t ms = ((uint32_t)(nseg > 0 ? nseg : 0) / EL_SEG_PER_MS_NOM + 200u) / EL_SLOTS;
+    uint32_t ms = (el_win_ms(nseg) + 200u) / EL_SLOTS;
     if (ms < EL_SLOT_MIN_MS) ms = EL_SLOT_MIN_MS;
     return ms * 1000u;
 }

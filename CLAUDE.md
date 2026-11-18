@@ -78,10 +78,10 @@ across rounds a combination can recur — identity is **(round, index)**.
   them, so `?maxruns=` is capped at `UNLIM_RUNS_MAX` 400 = `NUM_RUNS` − 1000 and a round is never
   truncated.
 - **Measuring time is a session parameter, one per phase.** `?run=<s>` is the pass (per item),
-  `?srun=<s>` the number scoring (per number; omitted = `?run=`); each **0,2–15 s**, `run` default
+  `?srun=<s>` the number scoring (per number; omitted = `?run=`); each **0,2–22 s**, `run` default
   5; out of range answers **400**, no fallback. Each phase triggers its own segment count
-  (`run_segs` / `srun_segs` in `/status`). The 15 s ceiling is `EL_SEG_MAX` 2000000 divided by the measured
-  rate (`EL_SEG_MAX / (RUN_SEGS_REF/RUN_MS_REF)`), not a camera limit — the rate held flat to there.
+  (`run_segs` / `srun_segs` in `/status`). The 22 s ceiling is `RUN_S_MAX`; the wire allows `EL_SEG_MAX` 3000000 divided by the measured
+  rate (`EL_SEG_MAX / (RUN_SEGS_REF/RUN_MS_REF)` ≈ 22,5 s), not a camera limit; the rate is measured to 14,7 s.
   `?gap=<s>` if present must be 0–10 s, else **400**, and applies to both phases; omitted →
   40 % of each phase's own window (`gap_s` / `sgap_s`), no floor; `?gap=0` is legal — the flush on `M`, not the gap, separates items.
   The sweep's mini-runs use the pass window; in a `?maxruns=0` session the scoring window.
@@ -95,7 +95,7 @@ across rounds a combination can recur — identity is **(round, index)**.
   continuous-scoring flag and is legal ONLY with `?maxruns=0`** (else **400**): one never-ending
   scoring, one pass per round, sums **accumulate without reset** (one snap per pool, refreshed),
   whereas `?passes≥1` with `?maxruns=0` re-scores from scratch each round. Segment count follows from
-  `RUN_SEGS_REF`/`RUN_MS_REF` in `sensor.h`, so nominal `?run=` matches the real
+  `RUN_SEGS_REF`/`RUN_MS_REF` in `elotto_link.h` (the nodes' time slots and the master's reply wait derive from the same pair; after a change flash every node), so nominal `?run=` matches the real
   `focus_win_ms` (short windows run a touch long by the fixed per-window onset overhead). ⚠ The
   per-node rate still varies, so `focus_win_ms` is set by the **slowest** node.
 - **`results[]` is in MEASUREMENT order** (`.index` = combination id, `.block` stamped), so the

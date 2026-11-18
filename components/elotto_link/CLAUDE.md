@@ -12,5 +12,6 @@ and counted (`net_stale`), a timed-out command is resent under the same sequence
 from a one-entry cache instead of measuring twice.
 ⚠ All receive timeouts go through `link_arm_timeout()` — its comment in `nodes.c` says why the
 floor is load-bearing.
-⚠ A receiver does not clamp an out-of-range segment count, it substitutes its own;
-`LINK_MEAS_MS_FOR(nseg)` scales with the run and is deliberately generous.
+⚠ A receiver refuses an out-of-range segment count (`V:`, the run is void on that node);
+`LINK_MEAS_MS_FOR(nseg)` is 3 × the nominal window (`el_win_ms()`) + 1 s.
+⚠ `EL_SEG_MIN`/`EL_SEG_MAX` and the window calibration are compiled into every node: flash all of them together.
