@@ -410,10 +410,15 @@ void cam_extract_raw10_ref(const uint8_t *a, const uint8_t *b, uint32_t n,
 #define R10_TAB(t, off)  (*(const uint32_t *)((const uint8_t *)(t) + (off)))
 #define R10_ZLANES(z)    ((~((((z) & R10_LOW7) + R10_LOW7) | (z) | R10_LOW7)) >> 7)
 
-void cam_extract_raw10_fast(const uint8_t *a, const uint8_t *b, uint32_t n,
-                            cam_pack_t *st, cam_emit_fn emit, void *ctx,
-                            uint32_t *out_zeros, uint32_t *out_any, uint32_t *out_psum,
-                            cam_raw_t *raw)
+/* `full` is a compile-time constant in both callers below: true adds the zero
+ * count and the pixel sum (mean_px, zero_diff), false is the stream, its
+ * monitor and the stuck verdict only. Without them the stuck verdict is the OR
+ * of every XOR word — exact, a pixel differs iff its 10-bit diff is non-zero. */
+static inline __attribute__((always_inline))
+void r10_fast_body(const uint8_t *a, const uint8_t *b, uint32_t n,
+                   cam_pack_t *st, cam_emit_fn emit, void *ctx,
+                   uint32_t *out_zeros, uint32_t *out_any, uint32_t *out_psum,
+                   cam_raw_t *raw, const bool full)
 {
     cam_raw_t scratch;
     if (!raw) { memset(&scratch, 0, sizeof(scratch)); raw = &scratch; }
@@ -421,6 +426,8 @@ void cam_extract_raw10_fast(const uint8_t *a, const uint8_t *b, uint32_t n,
 
     const uint32_t groups = n / 5;
     uint32_t zeros = 0, psum = 0;
+    uint32_t slow_px = 0;       /* pixels done group by group (zeros counted there) */
+    uint32_t anyw = 0;          /* !full: OR of the bulk XOR words */
     uint32_t acc  = st->bitacc;
     int      accn = st->bitacc_n;
 
@@ -466,7 +473,7 @@ void cam_extract_raw10_fast(const uint8_t *a, const uint8_t *b, uint32_t n,
     while (g < groups &&
            ((accn & 15) != 0 || (((uintptr_t)pa | (uintptr_t)pb) & 3u) != 0)) {
         R10_GROUP_SLOW(pa, pb);
-        pa += 5; pb += 5; g++;
+        pa += 5; pb += 5; g++; slow_px += 4;
     }
 
     for (; g + 4 <= groups; g += 4, pa += 20, pb += 20) {
@@ -489,24 +496,28 @@ void cam_extract_raw10_fast(const uint8_t *a, const uint8_t *b, uint32_t n,
         uint32_t v16 = s & 0xFFFFu;          /* 16 stream bits, first pixel on top */
         uint32_t pop = s >> 16;              /* their ones, 0..16 */
 
-        /* Zeros: realign each group's four high bytes, add its LSB fields. */
-        uint32_t z0 = E0                        | R10_TAB(s_r10_lt, o0);
-        uint32_t z1 = ((E1 >> 8)  | (E2 << 24)) | R10_TAB(s_r10_lt, o1);
-        uint32_t z2 = ((E2 >> 16) | (E3 << 16)) | R10_TAB(s_r10_lt, o2);
-        uint32_t z3 = ((E3 >> 24) | (E4 << 8))  | R10_TAB(s_r10_lt, o3);
-        uint32_t zl = R10_ZLANES(z0) + R10_ZLANES(z1) + R10_ZLANES(z2) + R10_ZLANES(z3);
-        zeros += (zl * 0x01010101u) >> 24;   /* lanes <= 4, total <= 16 */
+        if (full) {
+            /* Zeros: realign each group's four high bytes, add its LSB fields. */
+            uint32_t z0 = E0                        | R10_TAB(s_r10_lt, o0);
+            uint32_t z1 = ((E1 >> 8)  | (E2 << 24)) | R10_TAB(s_r10_lt, o1);
+            uint32_t z2 = ((E2 >> 16) | (E3 << 16)) | R10_TAB(s_r10_lt, o2);
+            uint32_t z3 = ((E3 >> 24) | (E4 << 8))  | R10_TAB(s_r10_lt, o3);
+            uint32_t zl = R10_ZLANES(z0) + R10_ZLANES(z1) + R10_ZLANES(z2) + R10_ZLANES(z3);
+            zeros += (zl * 0x01010101u) >> 24;   /* lanes <= 4, total <= 16 */
 
-        /* psum: high bytes of `a`, the LSB lane of words 1..4 masked out.
-         * 16-bit lanes hold at most 10 x 255. */
-        uint32_t m1 = A1 & 0xFFFFFF00u, m2 = A2 & 0xFFFF00FFu;
-        uint32_t m3 = A3 & 0xFF00FFFFu, m4 = A4 & 0x00FFFFFFu;
-        uint32_t ps = (A0 & 0x00FF00FFu) + ((A0 >> 8) & 0x00FF00FFu)
-                    + (m1 & 0x00FF00FFu) + ((m1 >> 8) & 0x00FF00FFu)
-                    + (m2 & 0x00FF00FFu) + ((m2 >> 8) & 0x00FF00FFu)
-                    + (m3 & 0x00FF00FFu) + ((m3 >> 8) & 0x00FF00FFu)
-                    + (m4 & 0x00FF00FFu) + ((m4 >> 8) & 0x00FF00FFu);
-        psum += (ps & 0xFFFFu) + (ps >> 16);
+            /* psum: high bytes of `a`, the LSB lane of words 1..4 masked out.
+             * 16-bit lanes hold at most 10 x 255. */
+            uint32_t m1 = A1 & 0xFFFFFF00u, m2 = A2 & 0xFFFF00FFu;
+            uint32_t m3 = A3 & 0xFF00FFFFu, m4 = A4 & 0x00FFFFFFu;
+            uint32_t ps = (A0 & 0x00FF00FFu) + ((A0 >> 8) & 0x00FF00FFu)
+                        + (m1 & 0x00FF00FFu) + ((m1 >> 8) & 0x00FF00FFu)
+                        + (m2 & 0x00FF00FFu) + ((m2 >> 8) & 0x00FF00FFu)
+                        + (m3 & 0x00FF00FFu) + ((m3 >> 8) & 0x00FF00FFu)
+                        + (m4 & 0x00FF00FFu) + ((m4 >> 8) & 0x00FF00FFu);
+            psum += (ps & 0xFFFFu) + (ps >> 16);
+        } else {
+            anyw |= E0 | E1 | E2 | E3 | E4;
+        }
 
         /* Monitor. The mini-run closes inside these 16 bits only when fewer
          * than 16 are left in it; then the bits split at the boundary. */
@@ -536,7 +547,7 @@ void cam_extract_raw10_fast(const uint8_t *a, const uint8_t *b, uint32_t n,
         }
     }
 
-    for (; g < groups; g++, pa += 5, pb += 5)
+    for (; g < groups; g++, pa += 5, pb += 5, slow_px += 4)
         R10_GROUP_SLOW(pa, pb);
 
     st->bitacc = acc; st->bitacc_n = accn;
@@ -555,9 +566,30 @@ void cam_extract_raw10_fast(const uint8_t *a, const uint8_t *b, uint32_t n,
         raw->have_prev = r_have;
     }
 
-    if (out_zeros) *out_zeros += zeros;
-    if (out_any)   *out_any   |= (zeros != npix) ? 1u : 0u;
-    if (out_psum)  *out_psum  += psum;
+    if (full) {
+        if (out_zeros) *out_zeros += zeros;
+        if (out_any)   *out_any   |= (zeros != npix) ? 1u : 0u;
+        if (out_psum)  *out_psum  += psum;
+    } else {
+        if (out_any)   *out_any   |= (anyw != 0 || zeros != slow_px) ? 1u : 0u;
+    }
+}
+
+void cam_extract_raw10_fast(const uint8_t *a, const uint8_t *b, uint32_t n,
+                            cam_pack_t *st, cam_emit_fn emit, void *ctx,
+                            uint32_t *out_zeros, uint32_t *out_any, uint32_t *out_psum,
+                            cam_raw_t *raw)
+{
+    r10_fast_body(a, b, n, st, emit, ctx, out_zeros, out_any, out_psum, raw, true);
+}
+
+void cam_extract_raw10_lsb(const uint8_t *a, const uint8_t *b, uint32_t n,
+                           cam_pack_t *st, cam_emit_fn emit, void *ctx,
+                           uint32_t *out_zeros, uint32_t *out_any, uint32_t *out_psum,
+                           cam_raw_t *raw)
+{
+    (void)out_zeros; (void)out_psum;
+    r10_fast_body(a, b, n, st, emit, ctx, NULL, out_any, NULL, raw, false);
 }
 #undef R10_GROUP_SLOW
 #undef R10_CLOSE_RUN
@@ -648,8 +680,11 @@ static uint32_t xs32(uint32_t *s)
 static bool case_equal_fn(extract_fn ref, extract_fn fast,
                           const uint8_t *a, const uint8_t *b, uint32_t n,
                           uint32_t *wa, uint32_t *wb, uint32_t cap, uint32_t *out_words,
-                          cam_selftest_t *rep, const cam_pack_t *pk0, const cam_raw_t *rw0)
+                          cam_selftest_t *rep, const cam_pack_t *pk0, const cam_raw_t *rw0,
+                          bool px)
 {
+    /* px false: `fast` computes no zero count and no pixel sum, so only the
+     * stream, the monitor, the stuck verdict and the packer are compared. */
     cam_pack_t s1 = {0}, s2 = {0};
     if (pk0) { s1 = *pk0; s2 = *pk0; }
     collect_t c1 = { wa, 0, cap, 0 }, c2 = { wb, 0, cap, 0 };
@@ -669,7 +704,7 @@ static bool case_equal_fn(extract_fn ref, extract_fn fast,
         rep->what = 1; rep->bad_at = c1.n; rep->ref_w = c1.n; rep->fast_w = c2.n;
         return false;
     }
-    if (z1 != z2)                    { rep->what = 2; return false; }
+    if (px && z1 != z2)              { rep->what = 2; return false; }
     /* The LSB monitor is held to the same standard as the emitted bits.
      * The bulk path derives its raw count with the byte-sum trick while the
      * reference adds one bit at a time, so this is a real comparison of two
@@ -713,7 +748,7 @@ static bool case_equal_fn(extract_fn ref, extract_fn fast,
     }
     /* The pixel sum feeds mean_px, so it is held to the same standard as the
      * bits: exactly equal. */
-    if (p1 != p2) { rep->what = 6; rep->ref_w = p1; rep->fast_w = p2; return false; }
+    if (px && p1 != p2) { rep->what = 6; rep->ref_w = p1; rep->fast_w = p2; return false; }
     if ((a1 != 0) != (a2 != 0))      { rep->what = 3; return false; }
     if (s1.bitacc != s2.bitacc || s1.bitacc_n != s2.bitacc_n) {
         rep->what = 4; rep->ref_w = s1.bitacc; rep->fast_w = s2.bitacc;
@@ -737,7 +772,7 @@ static bool case_equal(const uint8_t *a, const uint8_t *b, uint32_t n,
                        cam_selftest_t *rep)
 {
     return case_equal_fn(cam_extract_ref, cam_extract_fast, a, b, n,
-                         wa, wb, cap, out_words, rep, NULL, NULL);
+                         wa, wb, cap, out_words, rep, NULL, NULL, true);
 }
 
 /* The RAW10 cases. Each one exists for a path of cam_extract_raw10_fast():
@@ -752,10 +787,11 @@ static bool case_equal(const uint8_t *a, const uint8_t *b, uint32_t n,
  *   7 a half-packed word (4 bits) and a frame one byte past alignment — three
  *     prologue groups, then the step, then the tail.
  * Returns the 1-based failing case, 0 if all agree. */
-static int r10_cases(uint8_t *a, uint8_t *b, uint32_t bytes, uint32_t *wa, uint32_t *wb,
+static int r10_cases(extract_fn F, bool px,
+                     uint8_t *a, uint8_t *b, uint32_t bytes, uint32_t *wa, uint32_t *wb,
                      uint32_t cap, cam_selftest_t *rep, int *ncases)
 {
-    extract_fn R = cam_extract_raw10_ref, F = cam_extract_raw10_fast;
+    extract_fn R = cam_extract_raw10_ref;
     uint32_t w;
     int c = 0;
 
@@ -764,24 +800,24 @@ static int r10_cases(uint8_t *a, uint8_t *b, uint32_t bytes, uint32_t *wa, uint3
     if (!b_save) return -1;
     memcpy(b_save, b, bytes);
 
-    c++; if (!case_equal_fn(R, F, a, b, bytes, wa, wb, cap, &w, rep, NULL, NULL)) goto fail;
+    c++; if (!case_equal_fn(R, F, a, b, bytes, wa, wb, cap, &w, rep, NULL, NULL, px)) goto fail;
     memcpy(b, a, bytes);
-    c++; if (!case_equal_fn(R, F, a, b, bytes, wa, wb, cap, &w, rep, NULL, NULL)) goto fail;
+    c++; if (!case_equal_fn(R, F, a, b, bytes, wa, wb, cap, &w, rep, NULL, NULL, px)) goto fail;
     b[bytes / 3] ^= 1u;
-    c++; if (!case_equal_fn(R, F, a, b, bytes, wa, wb, cap, &w, rep, NULL, NULL)) goto fail;
+    c++; if (!case_equal_fn(R, F, a, b, bytes, wa, wb, cap, &w, rep, NULL, NULL, px)) goto fail;
     memcpy(b, b_save, bytes);
 
-    c++; if (!case_equal_fn(R, F, a, b, 1015, wa, wb, cap, &w, rep, NULL, NULL)) goto fail;
-    c++; if (!case_equal_fn(R, F, a + 1, b + 3, 4095, wa, wb, cap, &w, rep, NULL, NULL)) goto fail;
+    c++; if (!case_equal_fn(R, F, a, b, 1015, wa, wb, cap, &w, rep, NULL, NULL, px)) goto fail;
+    c++; if (!case_equal_fn(R, F, a + 1, b + 3, 4095, wa, wb, cap, &w, rep, NULL, NULL, px)) goto fail;
     {
         cam_raw_t rw0 = {0};
         rw0.run_bits = CAM_RAW_MINIRUN_BITS - 10; rw0.run_ones = 5;
         rw0.prev = 1; rw0.have_prev = true;
-        c++; if (!case_equal_fn(R, F, a, b, bytes, wa, wb, cap, &w, rep, NULL, &rw0)) goto fail;
+        c++; if (!case_equal_fn(R, F, a, b, bytes, wa, wb, cap, &w, rep, NULL, &rw0, px)) goto fail;
     }
     {
         cam_pack_t pk0 = { .bitacc = 0xAu, .bitacc_n = 4 };
-        c++; if (!case_equal_fn(R, F, a + 1, b + 1, 100003, wa, wb, cap, &w, rep, &pk0, NULL)) goto fail;
+        c++; if (!case_equal_fn(R, F, a + 1, b + 1, 100003, wa, wb, cap, &w, rep, &pk0, NULL, px)) goto fail;
     }
     heap_caps_free(b_save);
     *ncases = c;
@@ -883,7 +919,8 @@ bool cam_extract_selftest(cam_selftest_t *out, uint32_t bytes)
         cam_selftest_t rr;
         memset(&rr, 0, sizeof(rr));
         int n10 = 0;
-        int f10 = r10_cases(a, b, BENCH_BYTES, wa, wb, BENCH_WORDS, &rr, &n10);
+        int f10 = r10_cases(cam_extract_raw10_fast, true,
+                            a, b, BENCH_BYTES, wa, wb, BENCH_WORDS, &rr, &n10);
         out->r10_cases       = n10;
         out->r10_failed_case = f10;
         out->r10_equal       = (f10 == 0) && out->popcount_ok;
@@ -891,6 +928,16 @@ bool cam_extract_selftest(cam_selftest_t *out, uint32_t bytes)
         out->r10_bad_at      = rr.bad_at;
         out->r10_ref_w       = rr.ref_w;
         out->r10_fast_w      = rr.fast_w;
+
+        /* The LSB-only path (the live IMX219 extractor): same cases, without
+         * the zero count and the pixel sum it does not compute. */
+        memset(&rr, 0, sizeof(rr));
+        n10 = 0;
+        f10 = r10_cases(cam_extract_raw10_lsb, false,
+                        a, b, BENCH_BYTES, wa, wb, BENCH_WORDS, &rr, &n10);
+        out->r10l_failed_case = f10;
+        out->r10l_equal       = (f10 == 0) && out->popcount_ok;
+        out->r10l_what        = rr.what;
     }
 
     /* ── Benchmark. Same bytes, same order, three passes each; the median of a
@@ -951,6 +998,12 @@ bool cam_extract_selftest(cam_selftest_t *out, uint32_t bytes)
       cam_extract_raw10_fast(a, b, N, &st, count_emit, (void *)&sink, &z, &an, &ps, &rw);
       out->ns10_fast = (float)((esp_timer_get_time() - t0) * 1000.0 / N);
 
+      memset(&rw, 0, sizeof(rw));
+      st = (cam_pack_t){0}; z = 0; an = 0; sink = 0;
+      t0 = esp_timer_get_time();
+      cam_extract_raw10_lsb(a, b, N, &st, count_emit, (void *)&sink, &z, &an, &ps, &rw);
+      out->ns10_lsb = (float)((esp_timer_get_time() - t0) * 1000.0 / N);
+
       statsim_t ss; memset(&ss, 0, sizeof(ss));
       memset(&rw, 0, sizeof(rw));
       st = (cam_pack_t){0}; z = 0; an = 0;
@@ -999,6 +1052,12 @@ bool cam_extract_selftest(cam_selftest_t *out, uint32_t bytes)
             t0 = esp_timer_get_time();
             cam_extract_raw10_fast(a, b, N, &st, count_emit, (void *)&sink, &z, &an, &ps, &rw);
             out->ns10_fast_al[m] = (float)((esp_timer_get_time() - t0) * 1000.0 / N);
+
+            memset(&rw, 0, sizeof(rw));
+            st = (cam_pack_t){0}; z = 0; an = 0; sink = 0;
+            t0 = esp_timer_get_time();
+            cam_extract_raw10_lsb(a, b, N, &st, count_emit, (void *)&sink, &z, &an, &ps, &rw);
+            out->ns10_lsb_al[m] = (float)((esp_timer_get_time() - t0) * 1000.0 / N);
 
             for (int l = 0; l < 2; l++) {             /* restore, CTRL last */
                 REG_WRITE(base[l], saved[l][0] & ~1u);

@@ -111,12 +111,18 @@ void cam_extract_fast(const uint8_t *a, const uint8_t *b, uint32_t n,
  *
  * `cam_extract_raw10_ref()` is the plain loop — the definition of every IMX219
  * stream. `cam_extract_raw10_fast()` is the word-wise version; /camtest holds
- * the two against each other. */
+ * the two against each other. `cam_extract_raw10_lsb()` is the fast path
+ * without the zero count and the pixel sum: `*out_zeros` and `*out_psum` are
+ * left untouched, the stream, the monitor and `*out_any` are identical. */
 void cam_extract_raw10_ref (const uint8_t *a, const uint8_t *b, uint32_t n,
                             cam_pack_t *st, cam_emit_fn emit, void *ctx,
                             uint32_t *out_zeros, uint32_t *out_any, uint32_t *out_psum,
                             cam_raw_t *raw);
 void cam_extract_raw10_fast(const uint8_t *a, const uint8_t *b, uint32_t n,
+                            cam_pack_t *st, cam_emit_fn emit, void *ctx,
+                            uint32_t *out_zeros, uint32_t *out_any, uint32_t *out_psum,
+                            cam_raw_t *raw);
+void cam_extract_raw10_lsb (const uint8_t *a, const uint8_t *b, uint32_t n,
                             cam_pack_t *st, cam_emit_fn emit, void *ctx,
                             uint32_t *out_zeros, uint32_t *out_any, uint32_t *out_psum,
                             cam_raw_t *raw);
@@ -203,6 +209,10 @@ typedef struct {
     float    ns10_ref;       // plain loop, monitor on (as live)
     float    ns10_fast;      // word-wise, monitor on (as live)
     float    ns10_stats;     // word-wise + the process_word stand-in
+    float    ns10_lsb;       // LSB-only path (live on an IMX219), monitor on
+    bool     r10l_equal;     // LSB-only path vs reference, zeros/psum not compared
+    int      r10l_failed_case;
+    int      r10l_what;
     /* Cache autoload (hardware prefetch) experiment: the autoload
      * control registers as found, then ns_read and ns10_fast again with
      * autoload sections over the two bench buffers — [0] L2 cache only,
@@ -210,6 +220,7 @@ typedef struct {
     uint32_t al_l1_ctrl, al_l2_ctrl;
     float    ns_read_al[3];
     float    ns10_fast_al[3];
+    float    ns10_lsb_al[3];
 } cam_selftest_t;
 
 /* `bytes` is the FRAME SIZE to benchmark, and the caller passes the live one.

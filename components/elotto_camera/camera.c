@@ -63,12 +63,11 @@ static uint32_t s_frame_w = 0, s_frame_h = 0;
  *  - the sweep measures the entry setting and that one rung as a health check
  *    (autocorr, stuck, bits, dispersion), never a choice -- the rung never
  *    moves, so the settle pause never fires;
- *  - DARK and ZDIFF are not gated; in their place LEAK: px above black must
- *    stay <= CAL_DARK_MAX_PX, or the rung is uncertified.
+ *  - nothing gates on light: DARK, ZDIFF are not gated, and the extractor
+ *    computes neither mean_px nor zero_diff (diff_and_extract()).
  * CAM_IMX_DARK 0 puts the IMX219 on the exposure ladder. */
 #define CAM_IMX_DARK        1
 #define IMX_DARK_EXPOSURE   1600u
-#define CAL_DARK_MAX_PX     1.0     /* px above black; black drifts ±0,4 px */
 
 static uint16_t s_sensor_pid = 0;
 static bool cam_dark(void) { return CAM_IMX_DARK && s_sensor_pid == CAM_PID_IMX219; }
@@ -558,6 +557,8 @@ static cam_pack_t s_pack;
  * camera_stats_reset(); the capture task counts it down and zeroes the
  * statistics when it reaches 0, so the window starts clean. */
 static volatile int s_settle_pairs = 0;
+/* /linearity sets it for its run: the IMX219 extractor then adds the pixel sum. */
+static volatile bool s_px_want = false;
 
 static void emit_word_cb(uint32_t w, uint32_t ro, void *ctx)
 {
@@ -591,7 +592,20 @@ static void diff_and_extract(const uint8_t *a, const uint8_t *b, uint32_t n)
     /* An IMX219 frame is MIPI RAW10, 4 pixels in 5 bytes: the word-wise RAW10
      * path. cam_extract_raw10_ref() is the definition of every IMX stream.
      * mean_px is the high 8 bits, so it shares the OV5647's 0..255 scale. */
+    /* An IMX219 runs dark and ungated on light: its extractor computes neither
+     * the zero count nor the pixel sum, so mean_px and zero_diff stay 0 — except
+     * while /linearity runs (s_px_want), which needs mean_px. */
     uint32_t npix;
+    if (s_packed_raw10 && s_sensor_pid == CAM_PID_IMX219 && !s_px_want) {
+        cam_extract_raw10_lsb(a, b, n, &s_pack, emit_word_cb, NULL,
+                              NULL, &any, NULL, &s_raw);
+        process_words();
+        xSemaphoreTake(s_mutex, portMAX_DELAY);
+        s_stats.frame_pairs++;
+        if (!any) s_stats.stuck_frame_count++;
+        xSemaphoreGive(s_mutex);
+        return;
+    }
     if (s_packed_raw10) {
         cam_extract_raw10_fast(a, b, n, &s_pack, emit_word_cb, NULL,
                                &zeros, &any, &psum, &s_raw);
@@ -620,10 +634,9 @@ static void publish_stats(void)
     double sigma = (s_z_n > 1) ? sqrt(s_z_m2 / (s_z_n - 1)) : 0.0;
     double elapsed_s = (esp_timer_get_time() - s_stream_start_us) / 1e6;
     double mbps = (elapsed_s > 0) ? (s_bits_extracted / 1e6) / elapsed_s : 0.0;
-    /* ABOVE BLACK on the IMX219: it outputs a pedestal of 64 DN
-     * (10-bit), 16 on this 8-bit scale. Left in, a sensor in total darkness
-     * would read px 16 and the LEAK gate (px <= CAL_DARK_MAX_PX) could never
-     * pass. The OV5647 path is unchanged. */
+    /* ABOVE BLACK on the IMX219: it outputs a pedestal of 64 DN (10-bit), 16
+     * on this 8-bit scale. Measured only while /linearity runs (s_px_want);
+     * otherwise s_pixel_n is 0 and mean_px reads 0. */
     double mean_px = s_pixel_n ? (double)s_pixel_sum / (double)s_pixel_n : 0.0;
     if (s_sensor_pid == CAM_PID_IMX219 && s_pixel_n) mean_px -= IMX219_BLACK_PX;
 
@@ -1674,10 +1687,8 @@ static uint32_t cal_gate(const camera_cal_step_t *s)
      * a candidate that never got frames already fails BITS, and adding DARK to
      * it would report a pixel level that was never sampled. */
     if (s->bits >= CAL_MIN_BITS) {
-        if (cam_dark()) {
-            /* Dark operation: light is the fault, not its absence. */
-            if (s->mean_pixel_level > CAL_DARK_MAX_PX) f |= CAM_CAL_FAIL_LEAK;
-        } else {
+        /* Dark operation (IMX219) gates nothing on light. */
+        if (!cam_dark()) {
             if (s->mean_pixel_level < CAL_MIN_MEAN_PX) f |= CAM_CAL_FAIL_DARK;
             if (s->zero_diff_frac > CAL_MAX_ZERO_DIFF) f |= CAM_CAL_FAIL_ZDIFF;
         }
@@ -2392,7 +2403,7 @@ esp_err_t camera_selftest_handle(void *httpd_req, bool busy)
     double fps_raw = camera_fps_probe(60, 6000);
 
     cam_selftest_t t;
-    char buf[1200];
+    char buf[1600];
     /* THE LIVE FRAME SIZE, not a convenient one. See extract.h. */
     s_al_hold = true;                    /* the bench owns the autoload registers */
     vTaskDelay(pdMS_TO_TICKS(2));        /* let an arm already under way finish */
@@ -2429,7 +2440,11 @@ esp_err_t camera_selftest_handle(void *httpd_req, bool busy)
         /* Cache autoload experiment: [L2, L1, both]. */
         "\"al_l1_ctrl\":\"%08lx\",\"al_l2_ctrl\":\"%08lx\","
         "\"ns_read_al\":[%.3f,%.3f,%.3f],\"ns10_fast_al\":[%.3f,%.3f,%.3f],"
-        "\"ms_pair_r10_fast_al\":[%.1f,%.1f,%.1f]}",
+        "\"ms_pair_r10_fast_al\":[%.1f,%.1f,%.1f],"
+        /* The LSB-only path, live on an IMX219: no zero count, no pixel sum. */
+        "\"r10l_equal\":%s,\"r10l_failed_case\":%d,\"r10l_what\":%d,"
+        "\"ns10_lsb\":%.3f,\"ms_pair_r10_lsb\":%.1f,"
+        "\"ns10_lsb_al\":[%.3f,%.3f,%.3f],\"ms_pair_r10_lsb_al\":[%.1f,%.1f,%.1f]}",
         t.equal ? "true" : "false", t.cases, t.failed_case, (unsigned long)t.words,
         t.ns_read, t.ns_ref, t.ns_fast, t.ns_stats, t.ns_raw,
         t.ns_read * mhz / 1000.0, t.ns_ref * mhz / 1000.0,
@@ -2463,7 +2478,13 @@ esp_err_t camera_selftest_handle(void *httpd_req, bool busy)
         t.ns10_fast_al[0], t.ns10_fast_al[1], t.ns10_fast_al[2],
         t.ns10_fast_al[0] * (double)s_frame_size / 1e6,
         t.ns10_fast_al[1] * (double)s_frame_size / 1e6,
-        t.ns10_fast_al[2] * (double)s_frame_size / 1e6);
+        t.ns10_fast_al[2] * (double)s_frame_size / 1e6,
+        t.r10l_equal ? "true" : "false", t.r10l_failed_case, t.r10l_what,
+        t.ns10_lsb, t.ns10_lsb * (double)s_frame_size / 1e6,
+        t.ns10_lsb_al[0], t.ns10_lsb_al[1], t.ns10_lsb_al[2],
+        t.ns10_lsb_al[0] * (double)s_frame_size / 1e6,
+        t.ns10_lsb_al[1] * (double)s_frame_size / 1e6,
+        t.ns10_lsb_al[2] * (double)s_frame_size / 1e6);
     httpd_resp_sendstr(req, buf);
     return ESP_OK;
 }
@@ -2744,6 +2765,8 @@ esp_err_t camera_linearity_handle(void *httpd_req, bool busy)
     double ac[LIN_MAX_STEPS] = {0};
     bool   applied[LIN_MAX_STEPS] = {false};
 
+    s_px_want = true;          /* the pixel sum, for this run only */
+
     for (int i = 0; i < nexp; i++) {
         /* Gain is carried, never laddered -- same rule the sweep follows:
          * CONFIG_ELOTTO_CAM_REG_GAIN is the board's operating point, and a test
@@ -2765,6 +2788,7 @@ esp_err_t camera_linearity_handle(void *httpd_req, bool busy)
     /* Restore BEFORE replying, not after: the reply can block on the socket for
      * an unbounded time and the sensor must not sit on the last rung meanwhile. */
     camera_set_exposure(e0, g0);
+    s_px_want = false;
     camera_stats_reset(CAL_SETTLE_PAIRS);
 
     int len = snprintf(buf, sizeof(buf),

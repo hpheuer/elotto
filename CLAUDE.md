@@ -14,20 +14,15 @@ Two markers, and only two:
 **⚠** a trap that bites the next time you touch this ·
 **⛔** decided, do not re-open.
 
-## Environment
-- Windows, drive D:\E-Lotto\elotto
-- ESP-IDF at C:\esp\v6.0.1\esp-idf  (Tools: C:\Espressif)
-- VS Code with Espressif ESP-IDF Extension
-
 ## Purpose
 Rank lottery **numbers** (scoring → pool) and **combinations** (the pass) from camera readout noise.
 One key, the same function for both — Z\*, defined under **The ranking channels**. Scoring
 **selects** the pool on that key; the pass **ranks** items on the same key.
 
-**How the cameras stay usable.** One OV5647 **or** IMX219 per node — `esp_video` probes both (OV at I2C 0x36, IMX at 0x10) and binds whichever chip answers. Frame-pair LSB — z is the camera bits. IMX219 streams packed RAW10 (4 pixels in 5 bytes); the extractor takes the 10-bit LSB. An OV5647 streams RAW10 1920×1080 unbinned on the slaves, RAW8 800×800 on the master (`sdkconfig.defaults` per repo). **OV5647 on-chip processing:** the driver's format table sets `0x5000 = 0xff`; `ov_boot_apply()` clears bits 7/2/1/0 (lens shading, black/white defect-pixel cancel, colour interpolation) → `0x78`. ⚠ Bit 0 acts on RAW — set, the LSB carries lag-2/lag-4 autocorrelation and a lower bias. Bits 6/5/4/3 stay on; bit 5 (RAW gamma) shows no effect on the LSB (bit naming from the OV5640/OV5645 tables in the same driver). The black level target `0x4009` is **128** DN (reset default 16 — the driver never writes `0x4009`). ⚠ At 16 the dark noise sits at code 0 and is clipped — LSB bias 0,35–0,46, σ 1,6–2,6, Bayer-periodic autocorrelation; the lens-shading gain hid exactly that. Both are firmware defaults applied at boot (`ov_boot_apply()`); per-node NVS overrides — `POST /expose?isp=0|1`, `?reg=<r>&val=<v>` (up to 8, written last), `?clr=1`, then `/reboot`; `?rd=<r>` reads a register. ⚠ **Never write these registers while the sensor streams** — it stalls the OV5647's MIPI output without tripping `stalls`. `/expose` and `/calibrate` report `isp`. ⚠ The layout
-comes from the FOURCC (`BG10`), not from `sizeimage` — esp_video leaves that 0. `GET /camtest?dump=1` shows what the buffer really holds.
-⚠ IMX `px` is **above black** (pedestal 16 subtracted), so its LEAK gate measures light that reaches
-the sensor. `/status` `cam_sensor` names the bound chip. The **sweep**
+**How the cameras stay usable.** One OV5647 **or** IMX219 per node — `esp_video` probes both (OV at I2C 0x36, IMX at 0x10) and binds whichever chip answers. Frame-pair LSB — z is the camera bits. IMX219 streams packed RAW10 (4 pixels in 5 bytes); the extractor takes the 10-bit LSB. An OV5647 streams RAW10 1920×1080 unbinned on the slaves, RAW8 800×800 on the master (`sdkconfig.defaults` per repo). ⚠ **Never write an OV5647's registers while the sensor streams** — it stalls the MIPI output without tripping `stalls`. Its on-chip processing (ISP bits `0x5000`, black level `0x4009`, NVS overrides) and the buffer-layout trap: `components/elotto_camera/CLAUDE.md`.
+⚠ An IMX219 measures no `px` and no `zero_diff` (both read 0) and nothing gates on light —
+the enclosures are dark by decision; only `/linearity` measures `px` (above black, pedestal 16
+subtracted). `/status` `cam_sensor` names the bound chip. The **sweep**
 picks the exposure with the lowest **`raw_sigma`** among rungs that still look like noise (autocorr,
 dark / zero_diff)  — dispersion is what `rank_key()` divides by and what soft-down trips on;
 the bias is subtracted by the centring and costs nothing. If a node's block σ is too loud against its peers, **soft-down**
@@ -405,22 +400,11 @@ a rung. SE goes as
 1/√budget, so `?cal=40000` halves the bar to ~2,4 %. The incumbent is what runs when the sweep STARTS, so a
 manual `/expose` gets one sweep of protection — deliberate.
 
-**An IMX219 does not ladder: dark operation**  (`CAM_IMX_DARK` 1 in camera.c). Exposure fixed
-at `IMX_DARK_EXPOSURE` 1600 lines (the longest the 30 fps frame allows, so leaking light is as
-visible as possible), from boot. The sweep measures the entry setting and that rung — a health check,
-never a choice — so it never moves the rung and the settle pause never fires. Its gates: autocorr,
-stuck, bits, relative σ, and **LEAK** instead of DARK/ZDIFF: `px` above black ≤ `CAL_DARK_MAX_PX` 1,0.
-An uncertified node keeps measuring on 1600 and the Log names it ("NO certified setting").
+**An IMX219 does not ladder**: exposure fixed at 1600 lines from boot, the sweep is a health check that
+never moves the rung, with no light gate (no DARK/ZDIFF). Its details, the gate thresholds,
+`raw_runs_z` and the per-rung settle: `components/elotto_camera/CLAUDE.md` — read it before
+interpreting `/calibrate`.
 
-Gates a rung must clear: autocorr < `CAL_AUTOC_TOL` 0,03 (⚠ never subsample — it gates),
-σ ≤ `CAL_RAW_SIGMA_K` 1,35 × the ladder's own best (**relative, one-sided**, after the whole
-ladder), no stuck frames, `mean_px` ≥ 5,0,
-`zero_diff` ≤ `CAL_MAX_ZERO_DIFF` 0,125. ⛔ `CAL_MAX_MEAN_PX` 100 is publish-only.
-
-- A dark OV5647 still ladders the exposure and keeps the `mean_px` ≥ 5,0 floor; the fixed dark
-  rung and the LEAK gate are IMX219 only.
-- `raw_runs_z` is published per sweep rung and gates nothing. ⚠ 0,0 in a measurement window means
-  NOT ARMED, not "perfectly random" (`raw_trans` says which).
 - The budget is a **cap, not a target** (default 10 s, `?cal=<ms>`). ⚠ `?cal=0` turns every sweep
   off; a soft-down trip then waits until the next session. **When** is the dynamic interval
   (`calibrate_all()`): the session-start sweep always runs; after it a sweep runs at the next
@@ -436,9 +420,6 @@ ladder), no stuck frames, `mean_px` ≥ 5,0,
   followed by a 60 s settle pause of the whole array** (`CAL_SETTLE_AFTER_MS`), nothing measured; a
   sweep where every node kept its rung pauses nothing. It fixes only the trips that follow a change.
 - **Nodes land on different exposures on purpose**; what they must share is the segment count.
-- Between rungs the sweep discards `CAL_STEP_SETTLE_PAIRS` 8 frame pairs (~0,44 s) before scoring
-  the rung — driver queue plus margin. The ~1 min drift is not waited out per rung: it moves
-  the bias, which selects nothing, and 9 × 60 s would cost a third of a round.
 - `GET /calibrate` serves the whole last sweep per rung with the gate each failed plus the raw
   stats, **on every node** — a per-node optical fault is diagnosable. The chosen setting is
   recorded per block in `/loops`.
@@ -469,27 +450,13 @@ ladder), no stuck frames, `mean_px` ≥ 5,0,
 ## The per-window log — `GET /camlog` 
 **Every node keeps its own**, 512 windows deep, one entry per measurement window. It is the only
 place a disturbance can still be located in time.
-- Entry: `t_ms` `tag` `wsig` `wn` `wlo` `mau` `acz` `bchi` `rsig` `rbias` `sig` `bias` `px` `ac1` `zdiff`.
-  `mau` = Maurer z over THIS window (null = none); ⚠ `ac1` is cumulative since the sweep.
-  **`acz`** [4] = THIS window's lag-1..4 bit agreement as z, in read order and across word
-  boundaries, against the agreement rate p² + q² of the window's own ones-fraction p (so the LSB
-  bias does not read as correlation); + = bits repeat; lag 1 is the runs statistic. **`bchi`** =
-  THIS window's χ² of the 256 byte values against p^w·q^(8−w), as z = (χ² − 254)/√508. Both unit
-  normal for random bits, computed in `gcp.c` beside Maurer, The four lags feed Ser, `bchi` feeds Byt.
-- **`rec`** in the reply header is their session record, which the ring cannot lose: windows
-  counted (`n`), how many had |z| > 3 (`hit`; chance gives 0,27 % of `n`) and the largest |z| with
-  its tag (`max`, `tag`), in the order lag 1, 2, 3, 4, bchi. Cleared at every session start (on a slave: when it answers discovery), not by a pause.
-  `wlo` = 1 when `wsig` sits more than 3 SE (1/√(2(wn−1))) below 1.
-  `tag` = combination id on the master, answered `M` sequence on a slave, **0 = a scoring run**.
 - ⚠ **It is a RING** — ~25 min at 2,9 s per window. `dropped` counts what fell out, so a gap
   never reads as a quiet stretch. **Pull it inside the session, per node**; there is no
   master-side collector.
 - ⚠ `t_ms` is each node's OWN uptime. Align by `tag` or by ordinal, **never** by subtracting
   timestamps across boards.
-- It records what never travels on the wire — `acz`, `rsig`, `px`, `ac1`, `zdiff`.
-  The wire carries `wsig`, `mau`, `ser` (the Stouffer z of the four lags), `byt` (`bchi`) and the slots, nothing else. That difference is what separates "light leaked in" from "this sensor
-  is dispersing".
-- ⚠ Only windows that produced a **Z** are pushed; a faulted or voided run has no window.
+- Entry fields, the `rec` session record and what the log holds beyond the wire: skill `camlog` —
+  read it before interpreting a reply.
 
 ## ⚠ A session LOCKS every node's sensor 
 `/expose`, `/linearity` and `/camtest` answer **409 for the whole session**, on slaves as well as
@@ -504,7 +471,7 @@ releases it — ⚠ `SESSION_IDLE_MS` must stay above the 60 s settle pause, whi
 
 ## Darkness — standing rules
 Every enclosure is **totally dark, LEDs off**; the entropy is readout noise. A light leak shows as
-`mean_px` rising — on an IMX219 the LEAK gate catches it, on any node `GET /linearity` (mean_px
+`mean_px` rising — on any node `GET /linearity` (mean_px
 across exp 32/64/128/256, entry exposure restored, 409 during a session) shows `mean_px` growing
 with the exposure.
 - ⛔ **All nodes on PoE, permanently** (user decision).
@@ -600,7 +567,7 @@ per row (`/status` `nodes[]`, `/diagjson?all=1`) is what names a board; never ma
 ### Extraction — where the rate stands
 Extractor rates, the cache autoload, frame quantisation and the extractor rules live in
 **[components/elotto_camera/CLAUDE.md](components/elotto_camera/CLAUDE.md)** (loaded when working
-there). ⛔ Never change the live extractor without `/camtest` `r10_equal` (RAW10) / `equal` (RAW8)
+there). ⛔ Never change the live extractor without `/camtest` `r10_equal` + `r10l_equal` (RAW10) / `equal` (RAW8)
 true on the target.
 - ⚠ **`mbit_s` is PRODUCTION, `consume_mbit_s` is what a measurement READ**. The first
   counts words the ring then discarded, so a slow consumer reads HIGH on it. `/diag` shows the
