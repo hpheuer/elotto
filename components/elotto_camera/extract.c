@@ -599,7 +599,8 @@ void cam_extract_raw10_lsb(const uint8_t *a, const uint8_t *b, uint32_t n,
 
 /* ── Word statistics: ones and lag-1..4 both-ones counts ──────────────────
  * The popcount is reduced lazily: each value only to nibble counts (<= 4),
- * three words summed per nibble (<= 12), folded to bytes (<= 24) and
+ * three words summed per nibble (<= 12), folded to bytes (<= 24, so both
+ * nibbles are masked BEFORE the add: one mask after it would cut 24 to 8) and
  * accumulated over ten such groups (<= 240) before one widening. Exact. */
 static inline uint32_t ws_nib(uint32_t v)
 {
@@ -636,11 +637,11 @@ void cam_words_stats(const uint32_t *w, uint32_t n, uint32_t out[5])
             uint32_t s2 = ws_nib(a & (a << 2)) + ws_nib(b & (b << 2)) + ws_nib(c & (c << 2));
             uint32_t s3 = ws_nib(a & (a << 3)) + ws_nib(b & (b << 3)) + ws_nib(c & (c << 3));
             uint32_t s4 = ws_nib(a & (a << 4)) + ws_nib(b & (b << 4)) + ws_nib(c & (c << 4));
-            b0 += (s0 + (s0 >> 4)) & 0x0F0F0F0Fu;
-            b1 += (s1 + (s1 >> 4)) & 0x0F0F0F0Fu;
-            b2 += (s2 + (s2 >> 4)) & 0x0F0F0F0Fu;
-            b3 += (s3 + (s3 >> 4)) & 0x0F0F0F0Fu;
-            b4 += (s4 + (s4 >> 4)) & 0x0F0F0F0Fu;
+            b0 += (s0 & 0x0F0F0F0Fu) + ((s0 >> 4) & 0x0F0F0F0Fu);
+            b1 += (s1 & 0x0F0F0F0Fu) + ((s1 >> 4) & 0x0F0F0F0Fu);
+            b2 += (s2 & 0x0F0F0F0Fu) + ((s2 >> 4) & 0x0F0F0F0Fu);
+            b3 += (s3 & 0x0F0F0F0Fu) + ((s3 >> 4) & 0x0F0F0F0Fu);
+            b4 += (s4 & 0x0F0F0F0Fu) + ((s4 >> 4) & 0x0F0F0F0Fu);
         }
         t0 += ws_bytes(b0); t1 += ws_bytes(b1); t2 += ws_bytes(b2);
         t3 += ws_bytes(b3); t4 += ws_bytes(b4);
