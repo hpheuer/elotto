@@ -32,7 +32,7 @@
  * Pairs past the last slot are not counted. */
 #define EL_SLOTS            10
 #define EL_SLOT_MIN_MS      250
-#define EL_SEG_PER_MS_NOM   89
+#define EL_SEG_PER_MS_NOM  133
 static inline uint32_t el_slot_us(int nseg)
 {
     uint32_t ms = ((uint32_t)(nseg > 0 ? nseg : 0) / EL_SEG_PER_MS_NOM + 200u) / EL_SLOTS;
