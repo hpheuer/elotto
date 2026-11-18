@@ -207,12 +207,15 @@ stop survives as backstop for a compaction that cannot allocate.
   ⚠ `compacted` non-zero in `/status`: `results[]` holds extremes plus survivors, not a sample —
   never compute a distribution from its rows.
 - A truncated round draws a **random subset**; only the last round truncates.
-- `completed` is session-wide, `total` the CURRENT round — ⚠ a progress bar must use
-  `round_done/round_total`. `round_start_ms` stamps when MEASURING began (sweep and scoring
+- `/status`: `unlimited` (always true), `runs_cap`, `round`, `round_base`, `round_done`, `round_total`,
+  `round_start_ms`. `completed` is session-wide, `total` the CURRENT round — ⚠ a progress bar must
+  use `round_done/round_total`. `round_start_ms` stamps when MEASURING began (sweep and scoring
   excluded).
 - `/status` publishes `pool_main`/`pool_euro` for the whole running session. ⚠ They are withdrawn
   at the ROUND BOUNDARY and before RUNNING, not at the scoring pass — deliberate (stale numbers
   would stand through the insertion and the opening sweep).
+- The **Runs per round** field previews pool size and round length from the rate model in
+  `sensor.h` (the page takes `CYCLE_FIXED_MS` and the rate pair from it): skill `ui`.
 
 ---
 
@@ -223,7 +226,7 @@ Z\* = sign(Z)·|Z/σ_z|^κ · [1 + ζ·|Disp|] · [1 + α·(1/Δn − 1)] · [1 
 
 α β ε ζ η are `?kdn=` `?kmau=` `?kser=` `?kdisp=` `?kbyt=`, each 0..1 and independent, default 0 = that factor stays 1. κ `?kz=` 0..1 is the exponent on |Z/σ_z| (default 1; 0 = sign of Z only, the factors carry the magnitude). All five at 0 and κ = 1 is Z/σ_z. A missing column leaves its factor at 1. ⚠ The start form types each weight as a whole percent 0–100 and sends the fraction: 80 in the field is `?kdn=0.80`. `?kdn=80` is refused. A column enters Z\* only through its weight; as the pool criterion it still picks the pool and the extreme set on its own sum.
 - **Z** — binomial of the camera LSBs in that window, block-centred Stouffer combine; σ_z is that block's own σ (scoring: the pass span).
-- **Mau, Disp, Ser, Byt** — per node a window statistic (Maurer z, window σ, lag-1..4 serial z, byte χ² z), centred on that node's block mean, Stouffer over the combined nodes, divided by the block's own σ of that combine: unit variance, read against 0, **—** until centred. Either sign stretches, by the magnitude.
+- **Mau, Disp, Ser, Byt** — per node a window statistic (Maurer z, window σ, lag-1..4 serial z, byte χ² z), centred on that node's block mean (scoring: the pass mean; a node with < 2 values stays out), Stouffer over the combined nodes, divided by the block's own σ of that combine: unit variance, read against 0, **—** until centred. Either sign stretches, by the magnitude; missing → factor 1.
 - **Δn** — node agreement, read against **1** (independent cameras ≈ 1); < 1 stretches Z, > 1 pulls it toward 0; **—** (never 0) when unknown.
 - **Sync** — published only; enters no Z\*, no sum, no ranking.
 - How each column is built, its thresholds, the worked stack and the wire tags: skill `ranking-channels`.
@@ -253,7 +256,7 @@ what remains visible is an effect varying **between items inside a block**.
 Page details (parameter line, stat cards, Top-10, Save files, jump board, soft-down origins,
 start-form memory): skill `ui`.
 - ⚠ `/extremes` ranks every held row on the master's HTTP task, which shares the consumer core:
-  poll it no faster than every **5 s**.
+  poll it no faster than every **5 s**, a header click at most once per second.
 - ⛔ **The camera-sigma jump board is a SUSPICION list, not a ranking** — the top row is the
   measurement whose z deserves the LEAST trust. It excludes nothing.
 - ⚠ **The start form's memory changes no API default**: only a start with `confirm=1` writes it,
@@ -322,18 +325,28 @@ The session is always unattended.
 ## Camera calibration (per BLOCK)
 At every insertion the master broadcasts `K<budget_ms>,<segs>` and every node sweeps its exposure
 ladder, keeping the rung with the **lowest `raw_sigma` among candidates that clear the gates**; the
-incumbent stays unless a challenger beats it by 3 SE. Rung choice, sweep interval, `/calibrate` and
-the `/loops` `cam_*` fields: skill `calibration`.
-**An IMX219 does not ladder**: exposure fixed at 1600 lines, the sweep is a health check. Details:
-`components/elotto_camera/CLAUDE.md` — read it before interpreting `/calibrate`.
+incumbent stays unless a challenger beats it by 3 SE. Keep margin, `/calibrate` and the `/loops`
+`cam_*` fields in detail: skill `calibration`.
+**An IMX219 does not ladder**: exposure fixed at 1600 lines, the sweep is a health check that never
+moves the rung — so on this all-IMX219 array the settle pause below never fires — with no light
+gate (no DARK/ZDIFF). Details: `components/elotto_camera/CLAUDE.md` — read it before interpreting
+`/calibrate`.
+
+**When sweeps run** (`calibrate_all()`): the session-start sweep always; after it, at the next
+candidate point — the end of every scoring pass, before the pass, the round boundary — once the
+interval has run out: `CAL_DYN_MIN_MS` 15 min, doubled by every ok sweep (all nodes certified, no
+exposure moved) up to `CAL_DYN_MAX_MS` 2 h, back to 15 min after any other sweep or a soft-down
+trip (`calibrate_shorten()`). `/status` `cal_interval_ms` / `cal_due_ms`.
 
 ⛔ **The bias gates nothing and selects nothing**. It is non-stationary per node on a
 timescale of minutes, only the SHAPE across a ladder is stable, and the centring subtracts it
 anyway. It stays measured and published. ⛔ Do not fit an absolute bias bar — one certified-empty a
 healthy node.
-⛔ **The sweep ladders the EXPOSURE only** — gain 1023 (`CONFIG_ELOTTO_CAM_REG_GAIN`) is the
-operating point for the life of the board, and it stays that way.
-- ⚠ `?cal=0` turns every sweep off; a soft-down trip then waits until the next session.
+⛔ **The sweep ladders the EXPOSURE only**; the gain stays at the sensor's maximum analog gain for
+the life of the board — `CONFIG_ELOTTO_CAM_REG_GAIN` 1023, clamped to the chip's ceiling
+(`cam_gain_max()`: IMX219 232, OV5647 1023). An IMX219 reading 232 is this rule, not a violation.
+- ⚠ The budget is a **cap, not a target** (default 10 s, `?cal=<ms>`). `?cal=0` turns every sweep
+  off; a soft-down trip then waits until the next session.
 - ⚠ **Any sweep that moves any node's exposure is followed by a 60 s settle pause of the whole
   array** (`CAL_SETTLE_AFTER_MS`), nothing measured — a fresh rung trips soft-down on its own.
 - **Nodes land on different exposures on purpose**; what they must share is the segment count.
@@ -394,26 +407,22 @@ with the exposure.
   `POST /expose?exp=<lines>[&gain=<g>]` sets one node's live operating point (trying a setting
   against a live reading; resets camera stats so `mean_px` answers in ~2 s). Not sticky —
   the next sweep overwrites it, correctly. 409 while measuring.
-- **main/sensor.c/h** – GCP analysis, scoring and the pool, the pass, blocks, centring, drift,
-  soft-down, publishing. ⚠ Counter and round-base semantics are commented at the definitions in
-  `sensor.h`.
 - **main/nodes.c/h** – the array: UDP link, discovery, calibration handshake, per-node health,
   drop/reboot policy. sensor.c reaches other boards only through `nodes.h`.
 - **main/focus.c** – current-item card, pause, run gap, session clock — one file because they share state.
   Also the event log ring (`evlog()`, 48 entries, PSRAM) behind the Log card.
 - **tools/tune.html** – live per-node exposure/health board (`/linearity` + last sweep). Open in a
   browser on the operator PC; 409 while a session runs. Not served by the master.
-- **ota_firmware/** – the network updater, its own IDF project. Ethernet + HTTP + esp_ota only.
 - **components/elotto_camera/** – OV5647 / IMX219 entropy extraction. One stream; the runs half
   is armed only inside a sweep. Also serves `/camlog`, `/linearity`, `/expose`,
   `/calibrate` and `/camtest` for **every** node from one implementation — the boards must
   not describe their own cameras in different shapes.
 - **components/elotto_link/** – the UDP wire format (`EL1 <seq> <payload>`, ports 5000/5001), plus
   `EL_SEG_MIN`/`EL_SEG_MAX` as ONE definition for both firmwares.
-- **components/elotto_gcp/** – the z primitive (`gcp_zscore_raw()`, `gcp_z_per_bias()`), shared so
+- **components/elotto_gcp/** – the z primitive, shared so
   the nodes cannot disagree about what a z is. ⚠ The remaining soft-float calls per segment are deliberate.
-- **components/elotto_ota/** – update endpoint + boot safety (`/update` `/boot` `/reboot` `/poison`
-  `/otainfo`; `BOOT_ATTEMPT_LIMIT` 3, `HEALTHY_UPTIME_MS` 30000). ⚠ `fw_boot_attempts` counts
+- **components/elotto_ota/** – update endpoint + boot safety (`BOOT_ATTEMPT_LIMIT` 3).
+  ⚠ `fw_boot_attempts` counts
   boots since the last run that stayed up 30 s, **not** failures — every node reads 1 for its
   first 30 s after a flash.
 

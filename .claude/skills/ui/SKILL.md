@@ -1,12 +1,13 @@
 ---
 name: ui
-description: The master's web page and its readouts - parameter line, stat cards, Top-10 /extremes, Save files, camera-sigma jump board, soft-down origins, start-form memory. Read before editing the page in main/elotto.c or interpreting its tables.
+description: The master's web page and its readouts - parameter line, stat cards, Top-10 /extremes, Save files, camera-sigma jump board, soft-down origins, the Runs per round preview (rate model in sensor.h), start-form memory. Read before editing the page in main/elotto.c, changing the rate model, or interpreting its tables.
 ---
 
 # UI — what bites
 
 What the page shows is in `main/elotto.c`; this keeps what bites. The cross-file rules
-(⛔ jump board is a suspicion list, ⚠ /extremes poll cost) stay in the root `CLAUDE.md` under **UI**.
+(⛔ jump board is a suspicion list, ⚠ /extremes poll and click limits, start-form memory changes no
+API default) are in the root `CLAUDE.md` under **UI**.
 
 - The **parameter line** is built from `/status`, not the form — a curl-started run and a reloaded
   page both label themselves. ⚠ Its measured "per run" reads high early — `elapsed_ms` also
@@ -14,9 +15,7 @@ What the page shows is in `main/elotto.c`; this keeps what bites. The cross-file
 - **Stat cards: the split is load-bearing** — top row round-relative in every figure, bottom row
   session-relative; the scoring has its own round-relative row.
 - **Top-10** — `GET /extremes?sort=key|z|disp|nsd|ser|mau|byt&dir=high|low`, `?n=1..1000` (default 10):
-  the held rows best on that column and direction, chosen on the master. ⚠ It ranks every held row
-  on the master's HTTP task, which shares the consumer core: polled every **5 s**, a header click at
-  most once per second — a 1 s poll stole the master's extraction CPU. ⚠ **Held rows** are the
+  the held rows best on that column and direction, chosen on the master. ⚠ **Held rows** are the
   compaction archive (chosen on the pool criterion) plus the open round, so while the session runs
   another column's extremes are those of that archive, not of the session; after the session the
   set is every ranked pass item (the full table). Without `?sort=` the set is chosen on the pool
@@ -44,11 +43,9 @@ What the page shows is in `main/elotto.c`; this keeps what bites. The cross-file
   the first ten). Only a node that was in that item's combine enters it; every node's jump still
   feeds `wsig_sd`. A row's measurement values are provisional until its block is centred; a scoring
   run's are empty until that pass closes.
-  ⛔ **It is a SUSPICION list, not a ranking** — the top row is the measurement whose z deserves
-  the LEAST trust. It excludes nothing.
   ⚠ One row per NODE: two nodes on the same item is a shared cause, one node alone is that camera.
   ⚠ Read the **×σ** column, not the raw jump: it scales against `wsig_sd`, the session's own
-  measured jump noise (~0,016 on this rig). There is deliberately **no minimum jump** — a quiet session shows ten rows
+  measured jump noise. There is deliberately **no minimum jump** — a quiet session shows ten rows
   at 2..3 σ.
   ⚠ Scoring windows enter it too, named `scoring <pass>/<round>` — not an item identity.
 - **Soft-down origins**: when a block trips a node, the three measurements of that block whose z
@@ -61,13 +58,13 @@ What the page shows is in `main/elotto.c`; this keeps what bites. The cross-file
   block was simply wide.
   ⚠ The block number shown is 1-based like `/loops`; `results[].block` is 0-based.
 - The **Runs per round** field previews pool size and round length from the rate model in
-  `sensor.h`: `cycle_ms ≈ 224·segments/rate + CYCLE_FIXED_MS + gap_ms`; the live ETA uses
+  `sensor.h`: `cycle_ms ≈ 224·segments/rate + CYCLE_FIXED_MS + gap_ms`; the page takes
+  `CYCLE_FIXED_MS` and the rate pair from the headers at build time; the live ETA uses
   measured pace. ⚠ It prints the length **split into scoring and pass** and warns about nothing
    — the field moves only the pass, which at 20 scoring passes is under 1 % of a Eurojackpot
   round.
-- **The start form remembers its last values** (NVS, survives reboot and OTA). ⚠ **Only a start
-  carrying `confirm=1` writes them** — i.e. only the web UI. A curl start that omits `kdn` /
-  `kmau` / `kser` / `kdisp` / `kbyt` runs at 0 and does not overwrite the stored form weights. ⚠ It changes
-  **no** API default: an omitted parameter still resolves to the compiled-in value. Mode is not
-  remembered — it is which button was pressed. The pool criterion is remembered by its own rule
+- **The start form remembers its last values** (NVS, survives reboot and OTA); only the web UI
+  sends `confirm=1`. A curl start that omits `kdn` / `kmau` / `kser` / `kdisp` / `kbyt` runs at 0
+  and does not overwrite the stored form weights. Mode is not remembered — it is which button was
+  pressed. The pool criterion is remembered by its own rule
   (written on the Σ click).
