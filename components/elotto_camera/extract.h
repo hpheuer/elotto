@@ -127,6 +127,13 @@ void cam_extract_raw10_lsb (const uint8_t *a, const uint8_t *b, uint32_t n,
                             uint32_t *out_zeros, uint32_t *out_any, uint32_t *out_psum,
                             cam_raw_t *raw);
 
+/* Per batch of stream words: out[0] = ones, out[L] = positions where bit i and
+ * bit i+L of the SAME word are both 1 (L = 1..4; pairs across a word boundary
+ * are not counted). `_ref` is the plain loop, `cam_words_stats()` the
+ * lazily-reduced one; /camtest holds them against each other (`ws_equal`). */
+void cam_words_stats_ref(const uint32_t *w, uint32_t n, uint32_t out[5]);
+void cam_words_stats    (const uint32_t *w, uint32_t n, uint32_t out[5]);
+
 /* ── BITSCAN: every bit of the frame-pair diff (docs/BITSCAN.md) ──────────
  * Diagnostic only: never on the measurement path, never emits a word. Bit k of
  * the NUMERIC diff d = (b − a) mod 2^nbits, per pixel in stream order.
@@ -221,6 +228,11 @@ typedef struct {
     float    ns_read_al[3];
     float    ns10_fast_al[3];
     float    ns10_lsb_al[3];
+    /* cam_words_stats() vs its reference: every length 0..200 on random,
+     * all-ones and all-zero words. Times are ns per WORD. */
+    bool     ws_equal;
+    uint32_t ws_bad_n;       // first failing length
+    float    ns_ws_ref, ns_ws;
 } cam_selftest_t;
 
 /* `bytes` is the FRAME SIZE to benchmark, and the caller passes the live one.

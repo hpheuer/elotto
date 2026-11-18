@@ -246,7 +246,8 @@ static void raw_runs_arm_initial(void) { s_raw.want_runs = s_raw_runs_on; }
  * saving vanishes into DQBUF. */
 
 static uint64_t s_run_ones = 0, s_run_bits = 0;
-static double   s_z_mean = 0.0, s_z_m2 = 0.0;
+/* Mini-run ones, as integer sums: σ of the z follows at publish time. */
+static uint64_t s_z_sum = 0, s_z_sumsq = 0;
 static int      s_z_n = 0;
 // Autocorrelation: count positions where bit i AND bit i+L are both 1, so the
 // estimator can be mean-centred in publish_stats(). An agreement-rate estimator
@@ -390,7 +391,7 @@ static void cam_verify_regs(const char *when)
  * ⚠ Zeroed where the window's first bit is PRODUCED (the flush branch in
  * camera_task), not where a caller asks for it. */
 static uint32_t s_win_z_n;
-static double   s_win_z_mean, s_win_z_m2;
+static uint64_t s_win_z_sum, s_win_z_sumsq;
 
 /* Every frame pair of ONE measurement window, with the time it was taken:
  * what camera_win_slots() sorts into time slots. t_us counts from the flush
@@ -454,38 +455,30 @@ static void process_words(void)
 
     // Statistics cover every extracted word, including dropped ones: /diag must
     // characterise the source itself, not whichever subset got consumed.
-    // Locals are bounded: ones <= 64*32, run_bits < MINIRUN_BITS.
+    // The batch is cut where a mini-run closes (every WORDS_PER_MINIRUN words);
+    // each piece is counted by cam_words_stats(). Bits are packed MSB-first, so a
+    // bit L positions later in the stream sits L positions lower in the word;
+    // pairs spanning a word boundary are skipped -- that drops 4 of every 32
+    // pairs but keeps the estimator unbiased.
     uint32_t ones = 0, ac1 = 0, ac2 = 0, ac3 = 0, ac4 = 0;
     uint32_t run_ones = (uint32_t)s_run_ones, run_bits = (uint32_t)s_run_bits;
-    for (uint32_t i = 0; i < n; i++) {
-        uint32_t w = s_wb[i];
-        uint32_t o = cam_popcount32(w);
-        ones += o;
-        run_ones += o;
-        run_bits += 32;
+    for (uint32_t i = 0; i < n; ) {
+        uint32_t room = (MINIRUN_BITS - run_bits) / 32u;     /* >= 1 */
+        uint32_t m = (n - i < room) ? n - i : room;
+        uint32_t c[5];
+        cam_words_stats(&s_wb[i], m, c);
+        ones += c[0]; ac1 += c[1]; ac2 += c[2]; ac3 += c[3]; ac4 += c[4];
+        run_ones += c[0];
+        run_bits += 32u * m;
+        i += m;
         if (run_bits >= MINIRUN_BITS) {
-            double z = (run_ones - MINIRUN_BITS / 2.0) / sqrt(MINIRUN_BITS * 0.25);
-            s_z_n++;
-            double delta = z - s_z_mean;
-            s_z_mean += delta / s_z_n;
-            s_z_m2 += delta * (z - s_z_mean);
-            /* Same z, second accumulator, window-scoped. Once per mini-run,
-             * i.e. once per 100 words -- not in the per-word path. */
-            s_win_z_n++;
-            double wd = z - s_win_z_mean;
-            s_win_z_mean += wd / s_win_z_n;
-            s_win_z_m2   += wd * (z - s_win_z_mean);
+            uint64_t o = run_ones;
+            s_z_n++;       s_z_sum += o;     s_z_sumsq += o * o;
+            /* Same mini-run, second accumulator, window-scoped. */
+            s_win_z_n++;   s_win_z_sum += o; s_win_z_sumsq += o * o;
             run_ones = 0;
             run_bits = 0;
         }
-        // Bits are packed MSB-first, so a bit L positions later in the stream sits
-        // L positions lower in the word; (w << L) aligns it. Pairs spanning a word
-        // boundary are skipped -- that drops 4 of every 32 pairs but keeps the
-        // estimator unbiased and the hot loop cheap.
-        ac1 += cam_popcount32(w & (w << 1));
-        ac2 += cam_popcount32(w & (w << 2));
-        ac3 += cam_popcount32(w & (w << 3));
-        ac4 += cam_popcount32(w & (w << 4));
     }
     s_bits_extracted += 32u * (uint64_t)n;
     s_ones_count     += ones;
@@ -499,7 +492,7 @@ static void process_words(void)
 
 static void win_stats_zero(void)
 {
-    s_win_z_n = 0; s_win_z_mean = 0.0; s_win_z_m2 = 0.0;
+    s_win_z_n = 0; s_win_z_sum = 0; s_win_z_sumsq = 0;
     s_wp_n = 0;
 }
 
@@ -628,10 +621,20 @@ static void diff_and_extract(const uint8_t *a, const uint8_t *b, uint32_t n)
     xSemaphoreGive(s_mutex);
 }
 
+/* σ of the mini-run z = (ones − BITS/2)/sqrt(BITS/4) from the integer sums of
+ * `ones`: linear in ones, so sd(z) = sd(ones)/sqrt(BITS/4). n−1. */
+static double minirun_sigma(uint32_t n, uint64_t sum, uint64_t sumsq)
+{
+    if (n < 2) return 0.0;
+    double dn = (double)n, mu = (double)sum / dn;
+    double ss = (double)sumsq - dn * mu * mu;
+    return ss > 0.0 ? sqrt(ss / (dn - 1.0)) / sqrt(MINIRUN_BITS * 0.25) : 0.0;
+}
+
 static void publish_stats(void)
 {
     double bias  = s_bits_extracted ? (double)s_ones_count / (double)s_bits_extracted : 0.0;
-    double sigma = (s_z_n > 1) ? sqrt(s_z_m2 / (s_z_n - 1)) : 0.0;
+    double sigma = minirun_sigma(s_z_n, s_z_sum, s_z_sumsq);
     double elapsed_s = (esp_timer_get_time() - s_stream_start_us) / 1e6;
     double mbps = (elapsed_s > 0) ? (s_bits_extracted / 1e6) / elapsed_s : 0.0;
     /* ABOVE BLACK on the IMX219: it outputs a pedestal of 64 DN (10-bit), 16
@@ -689,7 +692,7 @@ static void publish_stats(void)
      * the reader treats 0 samples as "no value", not as a quiet window. */
     s_stats.win_sigma_samples = (s_win_z_n >= WIN_SIGMA_MIN_N) ? (int)s_win_z_n : 0;
     s_stats.win_sigma         = (s_win_z_n >= WIN_SIGMA_MIN_N)
-        ? sqrt(s_win_z_m2 / (double)(s_win_z_n - 1)) : 0.0;
+        ? minirun_sigma(s_win_z_n, s_win_z_sum, s_win_z_sumsq) : 0.0;
     s_stats.mean_pixel_level  = mean_px;
     s_stats.mbit_per_sec      = mbps;
     s_stats.zero_diff_frac    = s_diff_n ? (double)s_zero_diffs / (double)s_diff_n : 0.0;
@@ -734,7 +737,7 @@ static void stats_reset_locked(void)
 {
     s_bits_extracted = 0; s_ones_count = 0;
     s_run_ones = 0; s_run_bits = 0;
-    s_z_mean = 0.0; s_z_m2 = 0.0; s_z_n = 0;
+    s_z_sum = 0; s_z_sumsq = 0; s_z_n = 0;
     /* A sweep or a /expose opens a new window too, so the window-scoped
      * accumulator goes with it. Without this a sweep would leave the
      * previous window's mini-runs standing in front of the next one. */
@@ -2444,7 +2447,9 @@ esp_err_t camera_selftest_handle(void *httpd_req, bool busy)
         /* The LSB-only path, live on an IMX219: no zero count, no pixel sum. */
         "\"r10l_equal\":%s,\"r10l_failed_case\":%d,\"r10l_what\":%d,"
         "\"ns10_lsb\":%.3f,\"ms_pair_r10_lsb\":%.1f,"
-        "\"ns10_lsb_al\":[%.3f,%.3f,%.3f],\"ms_pair_r10_lsb_al\":[%.1f,%.1f,%.1f]}",
+        "\"ns10_lsb_al\":[%.3f,%.3f,%.3f],\"ms_pair_r10_lsb_al\":[%.1f,%.1f,%.1f],"
+        /* process_words()' counting kernel, ns per word. */
+        "\"ws_equal\":%s,\"ws_bad_n\":%lu,\"ns_ws_ref\":%.2f,\"ns_ws\":%.2f}",
         t.equal ? "true" : "false", t.cases, t.failed_case, (unsigned long)t.words,
         t.ns_read, t.ns_ref, t.ns_fast, t.ns_stats, t.ns_raw,
         t.ns_read * mhz / 1000.0, t.ns_ref * mhz / 1000.0,
@@ -2484,7 +2489,8 @@ esp_err_t camera_selftest_handle(void *httpd_req, bool busy)
         t.ns10_lsb_al[0], t.ns10_lsb_al[1], t.ns10_lsb_al[2],
         t.ns10_lsb_al[0] * (double)s_frame_size / 1e6,
         t.ns10_lsb_al[1] * (double)s_frame_size / 1e6,
-        t.ns10_lsb_al[2] * (double)s_frame_size / 1e6);
+        t.ns10_lsb_al[2] * (double)s_frame_size / 1e6,
+        t.ws_equal ? "true" : "false", (unsigned long)t.ws_bad_n, t.ns_ws_ref, t.ns_ws);
     httpd_resp_sendstr(req, buf);
     return ESP_OK;
 }

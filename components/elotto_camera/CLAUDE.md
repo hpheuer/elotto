@@ -28,7 +28,9 @@ frame end. A faster extractor pays only when it crosses a frame boundary (3 → 
   `/camtest` reports `_fast` as `r10_*` / `ns10_*` / `ms_pair_r10_*` and `_lsb` as `r10l_*` /
   `ns10_lsb*` / `ms_pair_r10_lsb*`; `equal` and `ms_pair_ext` stay the RAW8 path. ⛔ Same rule as RAW8: never change
   the live extractor without `r10_equal` and `r10l_equal` true on the target.
-- ⚠ **Per-word statistics run in batches of 64** (`process_words()`), flushed at the end of every
+- ⚠ **Per-word statistics run in batches of 64** (`process_words()`), counted by
+  `cam_words_stats()` (`extract.c`, held against `cam_words_stats_ref()` by `/camtest`
+  `ws_equal`; `ns_ws` / `ns_ws_ref` per word), mini-run σ from integer sums. Flushed at the end of every
   pair. Anything that resets the ring or the statistics must stay at a pair boundary, where
   the batch is empty.
 - `/diagjson` publishes the per-pair split on every node: `ms_pair` = `ms_wait` + `ms_extract` +

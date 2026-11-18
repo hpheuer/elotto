@@ -597,6 +597,65 @@ void cam_extract_raw10_lsb(const uint8_t *a, const uint8_t *b, uint32_t n,
 #undef R10_TAB
 #undef R10_LOW7
 
+/* ── Word statistics: ones and lag-1..4 both-ones counts ──────────────────
+ * The popcount is reduced lazily: each value only to nibble counts (<= 4),
+ * three words summed per nibble (<= 12), folded to bytes (<= 24) and
+ * accumulated over ten such groups (<= 240) before one widening. Exact. */
+static inline uint32_t ws_nib(uint32_t v)
+{
+    v = v - ((v >> 1) & 0x55555555u);
+    return (v & 0x33333333u) + ((v >> 2) & 0x33333333u);
+}
+
+static inline uint32_t ws_bytes(uint32_t v)
+{
+    v = (v & 0x00FF00FFu) + ((v >> 8) & 0x00FF00FFu);
+    return (v & 0xFFFFu) + (v >> 16);
+}
+
+void cam_words_stats_ref(const uint32_t *w, uint32_t n, uint32_t out[5])
+{
+    for (int k = 0; k < 5; k++) out[k] = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        uint32_t x = w[i];
+        out[0] += cam_popcount32(x);
+        for (int L = 1; L <= 4; L++) out[L] += cam_popcount32(x & (x << L));
+    }
+}
+
+void cam_words_stats(const uint32_t *w, uint32_t n, uint32_t out[5])
+{
+    uint32_t t0 = 0, t1 = 0, t2 = 0, t3 = 0, t4 = 0;
+    uint32_t i = 0;
+    while (i + 3 <= n) {
+        uint32_t b0 = 0, b1 = 0, b2 = 0, b3 = 0, b4 = 0;
+        for (int g = 0; g < 10 && i + 3 <= n; g++, i += 3) {
+            uint32_t a = w[i], b = w[i + 1], c = w[i + 2];
+            uint32_t s0 = ws_nib(a) + ws_nib(b) + ws_nib(c);
+            uint32_t s1 = ws_nib(a & (a << 1)) + ws_nib(b & (b << 1)) + ws_nib(c & (c << 1));
+            uint32_t s2 = ws_nib(a & (a << 2)) + ws_nib(b & (b << 2)) + ws_nib(c & (c << 2));
+            uint32_t s3 = ws_nib(a & (a << 3)) + ws_nib(b & (b << 3)) + ws_nib(c & (c << 3));
+            uint32_t s4 = ws_nib(a & (a << 4)) + ws_nib(b & (b << 4)) + ws_nib(c & (c << 4));
+            b0 += (s0 + (s0 >> 4)) & 0x0F0F0F0Fu;
+            b1 += (s1 + (s1 >> 4)) & 0x0F0F0F0Fu;
+            b2 += (s2 + (s2 >> 4)) & 0x0F0F0F0Fu;
+            b3 += (s3 + (s3 >> 4)) & 0x0F0F0F0Fu;
+            b4 += (s4 + (s4 >> 4)) & 0x0F0F0F0Fu;
+        }
+        t0 += ws_bytes(b0); t1 += ws_bytes(b1); t2 += ws_bytes(b2);
+        t3 += ws_bytes(b3); t4 += ws_bytes(b4);
+    }
+    for (; i < n; i++) {
+        uint32_t x = w[i];
+        t0 += cam_popcount32(x);
+        t1 += cam_popcount32(x & (x << 1));
+        t2 += cam_popcount32(x & (x << 2));
+        t3 += cam_popcount32(x & (x << 3));
+        t4 += cam_popcount32(x & (x << 4));
+    }
+    out[0] = t0; out[1] = t1; out[2] = t2; out[3] = t3; out[4] = t4;
+}
+
 /* ── On-target self-test and micro-benchmark ───────────────────────────────
  * Runs on the node, in the binary that will do the measuring, because that is
  * the only place the claim actually has to hold. A host test would prove
@@ -1065,6 +1124,35 @@ bool cam_extract_selftest(cam_selftest_t *out, uint32_t bytes)
                 REG_WRITE(base[l], saved[l][0]);
             }
         }
+    }
+
+    /* ── Word statistics: equality on every length, then the price on a batch
+     * in internal RAM, as live (s_wb). */
+    {
+        static uint32_t wbuf[256];
+        out->ws_equal = true;
+        for (int pat = 0; pat < 3 && out->ws_equal; pat++) {
+            for (uint32_t i = 0; i < 256; i++)
+                wbuf[i] = pat == 0 ? xs32(&rs) : pat == 1 ? 0xFFFFFFFFu : 0u;
+            for (uint32_t len = 0; len <= 200; len++) {
+                uint32_t r[5], f[5];
+                cam_words_stats_ref(wbuf + (len & 7), len, r);
+                cam_words_stats    (wbuf + (len & 7), len, f);
+                if (memcmp(r, f, sizeof(r)) != 0) {
+                    out->ws_equal = false; out->ws_bad_n = len; break;
+                }
+            }
+        }
+        for (uint32_t i = 0; i < 256; i++) wbuf[i] = xs32(&rs);
+        enum { WS_REPS = 2000, WS_N = 64 };
+        uint32_t o[5], acc = 0;
+        t0 = esp_timer_get_time();
+        for (int r = 0; r < WS_REPS; r++) { wbuf[0] = (uint32_t)r; cam_words_stats_ref(wbuf, WS_N, o); acc += o[r % 5]; }
+        out->ns_ws_ref = (float)((esp_timer_get_time() - t0) * 1000.0 / (WS_REPS * WS_N));
+        t0 = esp_timer_get_time();
+        for (int r = 0; r < WS_REPS; r++) { wbuf[0] = (uint32_t)r; cam_words_stats(wbuf, WS_N, o); acc += o[r % 5]; }
+        out->ns_ws = (float)((esp_timer_get_time() - t0) * 1000.0 / (WS_REPS * WS_N));
+        sink = acc;
     }
 
     (void)sink;
