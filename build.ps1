@@ -26,6 +26,9 @@ $env:ESP_ROM_ELF_DIR              = "C:\Espressif\tools\esp-rom-elfs\20241011\"
 # The extension's venv ships rich 15 while IDF pins <14.3.4; the check is
 # cosmetic here and would otherwise abort every build.
 $env:IDF_PYTHON_CHECK_CONSTRAINTS = "no"
+# ccache (on PATH below) is used only when idf.py is told to. Switching it on or
+# off changes the compiler launcher, so the next build of each build dir is a full one.
+$env:IDF_CCACHE_ENABLE            = "1"
 $env:PATH = "C:\Espressif\tools\cmake\4.0.3\bin;" +
             "C:\Espressif\tools\ninja\1.12.1;" +
             "C:\Espressif\tools\riscv32-esp-elf\esp-15.2.0_20251204\riscv32-esp-elf\bin;" +
