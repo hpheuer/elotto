@@ -4,13 +4,11 @@ Loaded when working in this component. The project-wide rules are in `/CLAUDE.md
 
 ## Extraction — where the rate stands
 Idle production is **~7,4 Mbit/s** on an OV5647 at RAW8, **~20,5 Mbit/s** at RAW10 1920×1080, and
-on an IMX219 (1640×1232, LSB-only extractor, idle and loaded alike) it depends on the **chip
-revision**: rev v3.2 (slave4…slave8) `ms_extract` ~58 ms, every pair in 2 frames (~67 ms),
-**~30 Mbit/s** — the sensor's ceiling; rev v1.3 ~65 ms, just over the 2-frame bar, pairs in 2 or 3
-frames (~78 ms), **~25,7 Mbit/s**. Of the ~65 ms the extraction itself is ~34
-(`/camtest` `ms_pair_r10_lsb_al[2]`), the rest is the per-word statistics behind `emit`
-(`process_words()`). The consumer outruns production (`waits` > 0), so the RAW10 extractor
-is the session's clock.
+**~30 Mbit/s on an IMX219** (1640×1232, idle and loaded alike) — the sensor's ceiling: every
+pair in 2 frames (~66,7 ms). `ms_extract` under load is ~54,6 ms on rev v1.3, ~49,7 ms on rev v3.2
+(slave4…slave8), against the ~64 ms bar. Of it, the extraction is ~34 ms — the PSRAM read floor
+with autoload (`/camtest` `ms_pair_r10_lsb_al[2]` ≈ `ns_read_al[2]` × frame bytes) — the rest is
+`process_words()`. The sensor, not the extractor, is the session's clock.
 ⚠ **These times depend on the cache autoload** (hardware prefetch): `cam_autoload_arm()`
 re-arms L1 and L2 before EVERY pair over that pair's two buffers. Armed once, the L2 switches itself
 off and `ms_extract` falls back to ~120 (4 frames). `/camtest` `al_l2_ctrl` must read ENA (bit 0) set.
