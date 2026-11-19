@@ -218,9 +218,9 @@ static const char HTML[] =
 "color:#e8f5e8;margin:0 auto 14px;max-width:980px;padding:8px 12px;"
 "border:1px solid rgba(240,192,64,.35);border-radius:8px;"
 "background:rgba(0,0,0,.25)'>"
-"Z* = sign(Z)&#183;|Z/&#963;|^1.00"
+"Z* = &#8730;[ (1.00&#183;Z/&#963;)&#178; ]"
 "<div style='font-size:.78em;color:#8fae8f;margin-top:2px'>"
-"factors with weight 0 are 1 and not shown</div></div>"
+"channels with weight 0 are left out</div></div>"
 "<div class='card'>"
 "<div id='runsRow' style='display:grid;grid-template-columns:1fr 1fr;gap:8px 14px;margin-bottom:10px'>"
 "<div class='frow'>"
@@ -278,48 +278,47 @@ static const char HTML[] =
 "</div>"
 "<div class='wgrid'>"
 "<div class='frow'>"
-"<label for='numKz' title='Exponent on |Z / sigma| in percent, 0 to 100. "
-"100 = Z / sigma as measured. 0 keeps only the sign of Z, the factors "
-"then carry the magnitude.'>Z</label>"
+"<label for='numKz' title='Weight of Z / sigma in Z* in percent, 0 to 100. "
+"100 = Z / sigma counts in full, 0 leaves it out of Z*.'>Z</label>"
 "<span class='wpct'>"
 "<input id='numKz' class='fin' type='number' min='0' max='100' step='1' value='100' "
 "oninput='onW(this)' onblur='onW(this,1)'>"
 "<span class='pu'>%</span></span>"
 "</div>"
 "<div class='frow'>"
-"<label for='numKdisp' title='Percent of the full Disp correction, 0 to 100. A Disp away from 0, either sign, stretches Z* by its size. 0 leaves this factor at 1.'>Disp</label>"
+"<label for='numKdisp' title='Weight of Disp in Z* in percent, 0 to 100. Disp enters squared, either sign counts. 0 leaves it out of Z*.'>Disp</label>"
 "<span class='wpct'>"
 "<input id='numKdisp' class='fin' type='number' min='0' max='100' step='1' value='0' "
 "oninput='onW(this)' onblur='onW(this,1)'>"
 "<span class='pu'>%</span></span>"
 "</div>"
 "<div class='frow'>"
-"<label for='numKdn' title='Percent of the full delta-n correction, 0 to 100. "
-"A smaller delta-n stretches Z* along the sign of Z. "
-"At delta-n = 1 the factor is 1. 0 leaves this factor at 1.'>&#916;n</label>"
+"<label for='numKdn' title='Weight of camera agreement in Z* in percent, 0 to 100. "
+"delta-n (pooled over Z, Mau, Ser, Disp, Byt) is turned into a z; only agreement "
+"(delta-n below 1) adds to Z*. 0 leaves it out of Z*.'>&#916;n</label>"
 "<span class='wpct'>"
 "<input id='numKdn' class='fin' type='number' min='0' max='100' step='1' value='0' "
 "oninput='onW(this)' onblur='onW(this,1)'>"
 "<span class='pu'>%</span></span>"
 "</div>"
 "<div class='frow'>"
-"<label for='numKser' title='Percent of the full Ser correction, 0 to 100. A Ser away from 0, either sign, stretches Z* by its size. 0 leaves this factor at 1.'>Ser</label>"
+"<label for='numKser' title='Weight of Ser in Z* in percent, 0 to 100. Ser enters squared, either sign counts. 0 leaves it out of Z*.'>Ser</label>"
 "<span class='wpct'>"
 "<input id='numKser' class='fin' type='number' min='0' max='100' step='1' value='0' "
 "oninput='onW(this)' onblur='onW(this,1)'>"
 "<span class='pu'>%</span></span>"
 "</div>"
 "<div class='frow'>"
-"<label for='numKmau' title='Percent of the full Mau correction, 0 to 100. "
-"A Mau away from 0, either sign, stretches Z* by its size. "
-"0 leaves this factor at 1.'>Mau</label>"
+"<label for='numKmau' title='Weight of Mau in Z* in percent, 0 to 100. "
+"Mau enters squared, either sign counts. "
+"0 leaves it out of Z*.'>Mau</label>"
 "<span class='wpct'>"
 "<input id='numKmau' class='fin' type='number' min='0' max='100' step='1' value='0' "
 "oninput='onW(this)' onblur='onW(this,1)'>"
 "<span class='pu'>%</span></span>"
 "</div>"
 "<div class='frow'>"
-"<label for='numKbyt' title='Percent of the full Byt correction, 0 to 100. A Byt away from 0, either sign, stretches Z* by its size. 0 leaves this factor at 1.'>Byt</label>"
+"<label for='numKbyt' title='Weight of Byt in Z* in percent, 0 to 100. Byt enters squared, either sign counts. 0 leaves it out of Z*.'>Byt</label>"
 "<span class='wpct'>"
 "<input id='numKbyt' class='fin' type='number' min='0' max='100' step='1' value='0' "
 "oninput='onW(this)' onblur='onW(this,1)'>"
@@ -645,7 +644,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "function colName(c){return {key:'Z*',z:'Z',disp:'Disp',nsd:'\\u0394n',ser:'Ser',mau:'Mau',byt:'Byt'}[c]||'Z*';}"
 /* high on Z* = largest |Σ|, low = smallest. The printed sum keeps its sign. */
 "function critPhrase(dir,col){col=col||'key';"
-"if(col==='key')return dir==='low'?'smallest |\\u03a3 Z*|':'largest |\\u03a3 Z*|';"
+"if(col==='key')return dir==='low'?'smallest \\u03a3 Z*':'largest \\u03a3 Z*';"
 "return (dir==='low'?'lowest ':'highest ')+'\\u03a3 '+colName(col);}"
 /* The direction is remembered at once, like the pool column (Σ click). */
 "function setDir(v){DIR=v;fetch('/scoresum?dir='+v,{method:'POST'}).catch(function(){});"
@@ -678,19 +677,21 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "if(live){a=+d.k_dn||0;b=+d.k_mau||0;e=+d.k_ser||0;g=+d.k_disp||0;h=+d.k_byt||0;kz=kzOf(d);}"
 "else{a=wShow('numKdn');b=wShow('numKmau');e=wShow('numKser');g=wShow('numKdisp');h=wShow('numKbyt');kz=wShow('numKz');}"
 "var el=document.getElementById('formulaBar');if(!el)return;"
-/* A factor whose weight prints as 0.00 is exactly 1 and is left out; at
-   exponent 0 the base is sign(Z) alone. Save's params file keeps all of them. */
+/* A channel whose weight prints as 0.00 is left out. Save's params file
+   keeps all of them. */
 "function on(w){return fmtW(w)!=='0.00';}"
-"var s='Z* = sign(Z)'+(on(kz)?'\\u00b7|Z/\\u03c3|^'+fmtW(kz):'');"
-"if(on(g))s+=' \\u00b7 [1 + '+fmtW(g)+'\\u00b7|Disp|]';"
-"if(on(a))s+=' \\u00b7 [1 + '+fmtW(a)+'\\u00b7(1/\\u0394n \\u2212 1)]';"
-"if(on(e))s+=' \\u00b7 [1 + '+fmtW(e)+'\\u00b7|Ser|]';"
-"if(on(b))s+=' \\u00b7 [1 + '+fmtW(b)+'\\u00b7|Mau|]';"
-"if(on(h))s+=' \\u00b7 [1 + '+fmtW(h)+'\\u00b7|Byt|]';"
-"el.innerHTML=s+\"<div style='font-size:.78em;color:#8fae8f;margin-top:2px'>factors with weight 0 are 1 and not shown</div>\";"
+"var t=[];"
+"if(on(kz))t.push('('+fmtW(kz)+'\\u00b7Z/\\u03c3)\\u00b2');"
+"if(on(g))t.push('('+fmtW(g)+'\\u00b7Disp)\\u00b2');"
+"if(on(a))t.push('('+fmtW(a)+'\\u00b7z\\u0394)\\u00b2');"
+"if(on(e))t.push('('+fmtW(e)+'\\u00b7Ser)\\u00b2');"
+"if(on(b))t.push('('+fmtW(b)+'\\u00b7Mau)\\u00b2');"
+"if(on(h))t.push('('+fmtW(h)+'\\u00b7Byt)\\u00b2');"
+"var s='Z* = \\u221a[ '+(t.length?t.join(' + '):'0')+' ]';"
+"el.innerHTML=s+\"<div style='font-size:.78em;color:#8fae8f;margin-top:2px'>channels with weight 0 are left out \\u00b7 z\\u0394 = \\u0394n as z over its node count, agreement only</div>\";"
 "}"
 "function zW(d){return {a:+d.k_dn||0,b:+d.k_mau||0,e:+d.k_ser||0,g:+d.k_disp||0,h:+d.k_byt||0,z:kzOf(d)};}"
-/* k_z missing (older firmware) is the old base Z/σ, exponent 1. */
+/* k_z missing (older firmware) reads as weight 1. */
 "function kzOf(d){return (d&&d.k_z!=null)?+d.k_z:1;}"
 "window.onload=function(){"
 "fetch('/status').then(function(r){return r.json();}).then(function(d){"
@@ -796,7 +797,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "q.push(pItem('Passes',d.scoring_passes===0?'0 (continuous)':d.scoring_passes));"
 "q.push(pItem('Fixed',d.pool_fix>0?d.pool_fix:'off'));"
 "q.push(pItem('Pool',critPhrase(d.score_dir,d.score_sum||'key')));"
-"q.push(pItem('Z','^'+fmtW(kzOf(d))));"
+"q.push(pItem('Z',fmtW(kzOf(d))));"
 "q.push(pItem('\\u0394n',fmtW(+d.k_dn||0)));"
 "q.push(pItem('Disp',fmtW(+d.k_disp||0)));"
 "q.push(pItem('Ser',fmtW(+d.k_ser||0)));"
@@ -944,19 +945,20 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "L.push('Fixed numbers: '+(st.pool_fix>0?st.pool_fix:'0 (off)'));"
 "L.push('Sweep: '+(st.cal_budget_ms>0?(st.cal_budget_ms/1000)+' s':'off'));"
 "L.push('Pool criterion: '+critPhrase(st.score_dir,st.score_sum||'key'));"
-"L.push('Z exponent: '+w3(kz));"
+"L.push('Z: '+w3(kz));"
 "L.push('Disp: '+w3(g));"
 "L.push('\\u0394n: '+w3(a));"
 "L.push('Ser: '+w3(e));"
 "L.push('Mau: '+w3(b));"
 "L.push('Byt: '+w3(h));"
-"L.push('Z* = sign(Z)\\u00b7|Z/\\u03c3|^'+w3(kz)"
-"+' \\u00b7 [1 + '+w3(g)+'\\u00b7|Disp|]'"
-"+' \\u00b7 [1 + '+w3(a)+'\\u00b7(1/\\u0394n \\u2212 1)]'"
-"+' \\u00b7 [1 + '+w3(e)+'\\u00b7|Ser|]'"
-"+' \\u00b7 [1 + '+w3(b)+'\\u00b7|Mau|]'"
-"+' \\u00b7 [1 + '+w3(h)+'\\u00b7|Byt|]');"
-"L.push('0 leaves that factor at 1');"
+"L.push('Z* = sqrt[ ('+w3(kz)+'\\u00b7Z/\\u03c3)^2'"
+"+' + ('+w3(g)+'\\u00b7Disp)^2'"
+"+' + ('+w3(a)+'\\u00b7max(0,z\\u0394))^2'"
+"+' + ('+w3(e)+'\\u00b7Ser)^2'"
+"+' + ('+w3(b)+'\\u00b7Mau)^2'"
+"+' + ('+w3(h)+'\\u00b7Byt)^2 ]');"
+"L.push('\\u0394n pooled over Z, Mau, Ser, Disp, Byt; z\\u0394 = Phi^-1(1 - P_chi2(df)(df\\u00b7\\u0394n^2)), df = sum over channels of (nodes - 1), clamped to +-5');"
+"L.push('0 leaves that channel out');"
 "return L;}"
 "var d=new Date(),p=function(n){return (n<10?'0':'')+n;};"
 "var stamp=d.getFullYear()+p(d.getMonth()+1)+p(d.getDate())+'_'+p(d.getHours())+p(d.getMinutes());"
@@ -1568,7 +1570,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "function sumLab(opt,c,t){return (opt&&curSum()===c)?'<span style=\"color:#f0c040\">'+t+'</span>':t;}"
 "function sumMark(opt,c){if(!opt||!(LD&&LD.state==='running'&&LD.scoring_pass>0))return '';var on=curSum()===c;"
 "var tip=(c==='key')"
-"?(on?('the pool is '+critPhrase(LD.score_dir,'key')+', the cell stays signed'):'pick the pool on |\\u03a3 Z*|')"
+"?(on?('the pool is '+critPhrase(LD.score_dir,'key')):'pick the pool on \\u03a3 Z*')"
 ":(on?'the pool is picked on the sum of this column':'pick the pool on the sum of this column');"
 "return ' <span title=\"'+tip+'\" style=\"cursor:pointer;font-weight:700;color:'+(on?'#f0c040':'#667')+'\" "
 "onclick=\"event.stopPropagation();setSum(\\''+c+'\\')\">\\u03a3</span>';}"
@@ -1581,12 +1583,12 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "if(x===null&&y===null)return 0;if(x===null)return 1;if(y===null)return -1;"
 "if(SSK==='key'||(SSK==='sum'&&curSum()==='key')){x=Math.abs(x);y=Math.abs(y);}"
 "return SSD<0?y-x:x-y;}"
-/* Visible under the Top-10 while that table is ordered on Z*. The cell
-   itself stays signed: 3 and −3 are the same rank. lo = smallest first. */
+/* Visible under the Top-10 while that table is ordered on Z* (≥ 0).
+   lo = smallest first. */
 "function absRankNote(sum,lo){"
-"return (sum?'Ranked by |\\u03a3 Z*|':'Ranked by |Z*|')"
-"+(lo?', smallest first \\u2014 the absolute value only. The cell keeps the sign, so 0,3 and \\u22120,3 rank alike.'"
-":' \\u2014 the absolute value only. The cell keeps the sign, so 3 and \\u22123 both rank at the top.');}"
+"return (sum?'Ranked by \\u03a3 Z*':'Ranked by Z*')"
+"+(lo?', smallest first \\u2014 the most ordinary items.'"
+":' \\u2014 the most unusual items first.');}"
 "function exArrow(k){var K=SCM?SSK:SORTK,D=SCM?SSD:SORTD;"
 "if(K!==k)return ' <span style=\"color:#667\">\\u21c5</span>';"
 "return D<0?' \\u25be':' \\u25b4';}"
@@ -1661,14 +1663,14 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 /* One table: the master's ten on the active sort. The other end is one
    header click away (direction flips). Until the reply for a new sort lands
    the old ten stay up under their OWN label; before the first reply ever,
-   /status top (largest |Z*|, the cell keeps the sign) stands in. A column no held row has a value in
+   /status top (largest Z*) stands in. A column no held row has a value in
    yet says so instead of falling back. */
 "var lk=EXK.split('&dir='),inv={key:'key',z:'z_ctr',disp:'disp',nsd:'nsd',ser:'ser',mau:'mau',byt:'byt'};"
 "var rankAbs=true,col=null,lo=false;"
 "if(EXF){top=EX.slice(0,10);col=inv[lk[0]];lo=lk[1]==='low';rankAbs=(col==='key');"
-"title=' ('+(rankAbs?(lo?'smallest |Z*|, absolute value':'largest |Z*|, absolute value')"
+"title=' ('+(rankAbs?(lo?'smallest Z*':'largest Z*')"
 ":((lo?'lowest ':'highest ')+lab[col]))+')';}"
-"else{top=(d.top||[]).slice(0,10);title=' (largest |Z*|, absolute value)';}"
+"else{top=(d.top||[]).slice(0,10);title=' (largest Z*)';}"
 "document.getElementById('resTitle').innerHTML="
 "'\\uD83C\\uDFC6 Top '+top.length+' of '+(EXF?EXH:(d.comparisons||top.length))"
 "+(isEuro?' \\u2014 Eurojackpot':' \\u2014 6-of-49')+title;"
@@ -1699,17 +1701,17 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "document.body.appendChild(a);a.select();try{document.execCommand('copy');done();}catch(e){}document.body.removeChild(a);}"
 "if(navigator.clipboard&&window.isSecureContext)navigator.clipboard.writeText(t).then(done,old);else old();}"
 "function sumTip(){return curSum()==='key'"
-"?'Running sum of this number\\u2019s Z*, printed with its sign. Ranked by |sum|: \\u25be larger magnitude, \\u25b4 smaller. A second click flips the pool. A green # marks a pool member.'"
+"?'\\u221an \\u00b7 Z* over the passes: Z* formed from each channel\\u2019s own signed sum \\u00f7 \\u221an, so sign flips cancel. Ranked on it: \\u25be larger, \\u25b4 smaller. A second click flips the pool. A green # marks a pool member.'"
 ":'Running sum of this number\\u2019s pass values \\u2014 the pool is picked on it. While the scoring runs the arrow is the pool direction: \\u25be highest, \\u25b4 lowest; a second click flips it. A green # marks a pool member.';}"
 "function zTip(){return (SCM?'Latest Z* of this number':'This item\\u2019s Z*')"
-"+', sorted by |Z*|. The cell keeps the sign: \\u25be larger magnitude, \\u25b4 smaller. '"
-"+'Z* = sign(Z)\\u00b7|Z/\\u03c3|^exponent times the four factors, as the formula at the top of the page shows with the weights in force. No block \\u03c3 yet gives 0. Click to sort.';}"
+"+', sorted: \\u25be larger, \\u25b4 smaller. '"
+"+'Z* = \\u221a of the weighted channels squared (always \\u2265 0), as the formula at the top of the page shows with the weights in force. No block \\u03c3 yet gives 0. Click to sort.';}"
 "function renderRunTable(headId,bodyId,res,isEuro,d,st,opt){"
 "document.getElementById(headId).innerHTML="
 "'<tr><th>#</th>'+(opt?'<th style=\"cursor:pointer\" title=\"'+sumTip()+'\" onclick=\"sortBy(\\'sum\\')\">\\u03a3 '+colName(curSum())+exArrow('sum')+'</th>':'<th>Item/Round</th>')"
-"+(st?'<th style=\"cursor:pointer\" title=\"'+zTip()+'\" onclick=\"sortBy(\\'key\\')\">'+sumLab(opt,'key','|Z*|')+exArrow('key')+sumMark(opt,'key')+'</th>'"
+"+(st?'<th style=\"cursor:pointer\" title=\"'+zTip()+'\" onclick=\"sortBy(\\'key\\')\">'+sumLab(opt,'key','Z*')+exArrow('key')+sumMark(opt,'key')+'</th>'"
 "+'<th style=\"cursor:pointer\" title=\"block-centred combined z. Click to sort the 50\" onclick=\"sortBy(\\'z_ctr\\')\">'+sumLab(opt,'z','Z')+exArrow('z_ctr')+sumMark(opt,'z')+'</th>'"
-/* Disp: the dispersion of the bits inside the window, the cameras together. Stretches Z* by |Disp| when ?kdisp= is above 0. */
+/* Disp: the dispersion of the bits inside the window, the cameras together. Enters Z* squared when ?kdisp= is above 0. */
 "+'<th title=\"Did the cameras\\u2019 ones come in bursts more on this item than on the others, together?\\n"
 "Each camera cuts its window into pieces of 3200 bits and takes the spread of the ones-count "
 "over those pieces. That spread is taken against the camera\\u2019s own average over the block, "
@@ -1718,7 +1720,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "large + = the ones-rate wandered inside the window more than usual\\n"
 "large \\u2212 = the bits were more even than usual\\n"
 "\\u2014 = block (scoring: pass) still open, or no camera reported it\\n"
-"When its weight at the top is above 0, a Disp away from 0, either sign, stretches Z*. Its running sum can also pick the pool. Click to sort.\" "
+"When its weight at the top is above 0, Disp enters Z* squared, either sign. Its running sum can also pick the pool. Click to sort.\" "
 "style=\"cursor:pointer\" onclick=\"sortBy(\\'disp\\')\">'+sumLab(opt,'disp','Disp')+exArrow('disp')+sumMark(opt,'disp')+'</th>'"
 /* Plain-language tooltip: the operator is the only reader of this cell, and the
    column is worthless if its meaning has to be looked up. English like the rest
@@ -1726,16 +1728,15 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
    attribute wraps the tooltip -- same trick the per-row `det` title uses. */
 "+'<th title=\"Did the cameras agree?\\n"
 "Each camera measures this item on its own. \\u0394n is how far apart those "
-"values were, measured in each camera\\u2019s own noise.\\n"
-"small (below 0.6) = all of them saw roughly the same thing\\n"
-"around 1.0 = ordinary spread, this is what pure chance looks like\\n"
-"large (1.5 and up) = one or two cameras carried the result alone, the others "
-"saw none of it\\n"
+"values were, in each camera\\u2019s own noise, pooled over Z, Mau, Ser, Disp and Byt.\\n"
+"around 1.0 = ordinary spread, this is what pure chance looks like (\\u00b10.1 with 10 cameras)\\n"
+"below 0.8 = the cameras agreed far more closely than chance\\n"
+"above 1.2 = the cameras contradicted each other\\n"
 "\\u2014 = not computed yet (block still open) or too few cameras\\n"
-"When its weight at the top is above 0, a smaller \\u0394n stretches Z* along the sign of Z. "
+"When its weight at the top is above 0, agreement (below 1) adds to Z*. "
 "Its running sum can also pick the pool. Click to sort.\" style=\"cursor:pointer\" onclick=\"sortBy(\\'nsd\\')\">"
 "'+sumLab(opt,'nsd','\\u0394n')+exArrow('nsd')+sumMark(opt,'nsd')+'</th>'"
-/* Ser: the serial order of the bits, the cameras together. Stretches Z* by |Ser| when ?kser= is above 0. */
+/* Ser: the serial order of the bits, the cameras together. Enters Z* squared when ?kser= is above 0. */
 "+'<th title=\"Did the cameras\\u2019 bits repeat more on this item than on the others, together?\\n"
 "Each camera counts how often a bit equals the bit 1, 2, 3 or 4 places before it. That figure "
 "is taken against the camera\\u2019s own average over the block, combined over the cameras, "
@@ -1744,10 +1745,10 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "large + = the cameras\\u2019 bits repeated more than usual on this item\\n"
 "large \\u2212 = they alternated more than usual\\n"
 "\\u2014 = block (scoring: pass) still open, or no camera reported it\\n"
-"When its weight at the top is above 0, a Ser away from 0, either sign, stretches Z*. Its running sum can also pick the pool. Click to sort.\" "
+"When its weight at the top is above 0, Ser enters Z* squared, either sign. Its running sum can also pick the pool. Click to sort.\" "
 "style=\"cursor:pointer\" onclick=\"sortBy(\\'ser\\')\">'+sumLab(opt,'ser','Ser')+exArrow('ser')+sumMark(opt,'ser')+'</th>'"
-/* Mau: Maurer's universal test over this item's window. Stretches Z* by
-   |Mau| when ?kmau= is above 0. Its Σ may still pick the pool. */
+/* Mau: Maurer's universal test over this item's window. Enters Z* squared
+   when ?kmau= is above 0. Its Σ may still pick the pool. */
 "+'<th title=\"Were the camera bits of this item compressible?\\n"
 "Maurer\\u2019s universal test (NIST SP 800-22) over the bits of this item\\u2019s own "
 "measuring window: how soon each 8-bit pattern comes back. Each camera against its own "
@@ -1756,10 +1757,10 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "large \\u2212 = patterns came back sooner than usual (less entropy)\\n"
 "large + = patterns came back later than usual\\n"
 "\\u2014 = block (scoring: pass) still open, or no camera reported it\\n"
-"When its weight at the top is above 0, a Mau away from 0, either sign, stretches Z*. "
+"When its weight at the top is above 0, Mau enters Z* squared, either sign. "
 "Its running sum can also pick the pool. Click to sort.\" "
 "style=\"cursor:pointer\" onclick=\"sortBy(\\'mau\\')\">'+sumLab(opt,'mau','Mau')+exArrow('mau')+sumMark(opt,'mau')+'</th>'"
-/* Byt: the byte frequencies of this item's window. Stretches Z* by |Byt| when ?kbyt= is above 0. */
+/* Byt: the byte frequencies of this item's window. Enters Z* squared when ?kbyt= is above 0. */
 "+'<th title=\"Were some byte values too frequent in the camera bits of this item?\\n"
 "Each camera cuts its window into bytes and compares how often each of the 256 values came "
 "up with what its share of ones predicts. That figure is taken against the camera\\u2019s own "
@@ -1768,7 +1769,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "large + = the byte values were more uneven than usual on this item\\n"
 "large \\u2212 = more even than usual\\n"
 "\\u2014 = block (scoring: pass) still open, or no camera reported it\\n"
-"When its weight at the top is above 0, a Byt away from 0, either sign, stretches Z*. "
+"When its weight at the top is above 0, Byt enters Z* squared, either sign. "
 "Its running sum can also pick the pool. Click to sort.\" "
 "style=\"cursor:pointer\" onclick=\"sortBy(\\'byt\\')\">'+sumLab(opt,'byt','Byt')+exArrow('byt')+sumMark(opt,'byt')+'</th>':'')"
 "+'<th>Numbers</th>'"
@@ -1793,13 +1794,14 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "var dispTxt=(r.disp===undefined||r.disp===null)?'\\u2014':r.disp.toFixed(2);"
 "var dispCol=(r.disp===undefined||r.disp===null)?'#9aa':(Math.abs(r.disp)>3?'#ffd479':'');"
 /* Node agreement (nsd). null until the item's block has been centred -- the
-   same wait z_ctr has -- so a dash is the honest cell, never 0. It is dimmed
-   above 1 and highlighted below 0.6. Below 1 stretches Z* when ?kdn= is above 0. */
+   same wait z_ctr has -- so a dash is the honest cell, never 0. Pooled over
+   five channels its null σ is ≈ 0,1 at 10 nodes: dimmed above 1.2,
+   highlighted below 0.8. */
 "var nsd=(r.nsd===undefined||r.nsd===null)?null:r.nsd;"
 /* Δn plus, in parentheses, the node count it is taken over — k, the cameras
    that entered this item's combine. A dash carries no count. */
 "var nsdTxt=(nsd===null)?'\\u2014':(nsd.toFixed(2)+' ('+(r.k===undefined?'?':r.k)+')');"
-"var nsdCol=(nsd===null)?'#9aa':(nsd<0.6?'#90ee90':(nsd>1.0?'#c09090':''));"
+"var nsdCol=(nsd===null)?'#9aa':(nsd<0.8?'#90ee90':(nsd>1.2?'#c09090':''));"
 "var serTxt=(r.ser===undefined||r.ser===null)?'\\u2014':r.ser.toFixed(2);"
 "var serCol=(r.ser===undefined||r.ser===null)?'#9aa':(Math.abs(r.ser)>3?'#ffd479':'');"
 "var mauTxt=(r.mau===undefined||r.mau===null)?'\\u2014':r.mau.toFixed(2);"
@@ -2118,8 +2120,8 @@ static esp_err_t status_handler(httpd_req_t *req)
          * pass_n_valid and no pass statistic sees it. */
         "\"pass_n_excl\":%d,\"pass_n_open\":%d,"
         "\"v_eff\":%.4f,\"flush_timeouts\":%lu,"
-        /* Z* factor weights of this session. rank_key() divides Z by the
-         * item's BLOCK σ and multiplies the four factors. */
+        /* Z* channel weights of this session (zstar_of(): √ of the weighted
+         * channels squared, Z divided by the item's BLOCK σ). */
         "\"k_dn\":%.3f,\"k_mau\":%.3f,\"k_ser\":%.3f,\"k_disp\":%.3f,\"k_byt\":%.3f,"
         "\"k_z\":%.3f,\"pool_fix\":%d,"
         "\"score_dir\":\"%s\",\"score_sum\":\"%s\","
@@ -2318,8 +2320,8 @@ static esp_err_t status_handler(httpd_req_t *req)
         }
     buf_append(buf, sizeof(buf), &pos, "],");
 
-    // Largest / smallest |Z*|, fallback until /extremes lands. The row's
-    // key stays signed. Updated after EVERY measured item.
+    // Largest / smallest Z*, fallback until /extremes lands.
+    // Updated after EVERY measured item.
     bool euro = (g_status.mode == MODE_EUROJACKPOT);
 
     buf_append(buf, sizeof(buf), &pos, "\"top\":[");
@@ -3087,7 +3089,7 @@ static bool start_parse_w01(const char *val, double *dst, httpd_req_t *req,
     char msg[96];
     if (!parse_double_all(val, &p) || p < 0.0 || p > 1.0) {
         snprintf(msg, sizeof(msg),
-                 "%s= is a Z* factor weight and must be 0..1 (0 = off)", name);
+                 "%s= is a Z* channel weight and must be 0..1 (0 = off)", name);
         start_refuse(req, msg);
         return false;
     }
@@ -3108,8 +3110,8 @@ static bool start_parse_kz(const char *val, StartReq *r, httpd_req_t *req)
 {
     double p;
     if (!parse_double_all(val, &p) || p < 0.0 || p > 1.0) {
-        start_refuse(req, "kz= is the exponent on |Z/sigma| and must be 0..1 "
-                     "(1 = Z/sigma, 0 = sign of Z only)");
+        start_refuse(req, "kz= is the weight of Z/sigma in Z* and must be 0..1 "
+                     "(1 = full, 0 = left out)");
         return false;
     }
     r->k_z = p;
@@ -3247,14 +3249,14 @@ static const StartKey start_keys[] = {
     { "rank",      START_GONE_V3, NULL },
     { "focus",     START_GONE_V3, NULL },
     { "went",
-      "went= no longer exists -- ranking is the Z* product "
-      "(kdn=, kmau=, kser=, kdisp=, kbyt=)", NULL },
+      "went= no longer exists -- ranking is Z* "
+      "(kz=, kdn=, kmau=, kser=, kdisp=, kbyt=)", NULL },
     { "wruns",
-      "wruns= no longer exists -- ranking is the Z* product "
-      "(kdn=, kmau=, kser=, kdisp=, kbyt=)", NULL },
+      "wruns= no longer exists -- ranking is Z* "
+      "(kz=, kdn=, kmau=, kser=, kdisp=, kbyt=)", NULL },
     { "wpre",
-      "wpre= no longer exists -- Z* is z/sigma times kdn=, kmau=, "
-      "kser=, kdisp= and kbyt= (each 0..1, 0 = that factor off)", NULL },
+      "wpre= no longer exists -- Z* combines z/sigma with kdn=, kmau=, "
+      "kser=, kdisp= and kbyt= (each 0..1, 0 = that channel off)", NULL },
     { "baseline",
       "baseline= no longer exists -- the baseline phase was deleted; "
       "block centring is the drift reference", NULL },

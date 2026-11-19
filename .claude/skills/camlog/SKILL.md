@@ -24,3 +24,10 @@ node) and `t_ms` is each node's own uptime (align by `tag` or by ordinal).
   The wire carries `wsig`, `mau`, `ser` (the Stouffer z of the four lags), `byt` (`bchi`) and the slots, nothing else. That difference is what separates "light leaked in" from "this sensor
   is dispersing".
 - ⚠ Only windows that produced a **Z** are pushed; a faulted or voided run has no window.
+
+## Ring and timestamps
+- ⚠ **It is a RING** — 512 windows, ~25 min at 2,9 s per window. `dropped` counts what fell out, so a gap
+  never reads as a quiet stretch. **Pull it inside the session, per node**; there is no
+  master-side collector.
+- ⚠ `t_ms` is each node's OWN uptime. Align by `tag` or by ordinal, **never** by subtracting
+  timestamps across boards.

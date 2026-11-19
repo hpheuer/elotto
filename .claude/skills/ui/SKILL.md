@@ -68,3 +68,13 @@ API default) are in the root `CLAUDE.md` under **UI**.
   and does not overwrite the stored form weights. Mode is not remembered — it is which button was
   pressed. The pool criterion is remembered by its own rule
   (written on the Σ click).
+
+## Current-item display
+A "Now:" card shows the number being scored or the combination being measured, in large type.
+The session is always unattended.
+- The card updates ~70 ms **before** the bits start ⛔.
+- `GET /focus` (~60 B) polled at 10 Hz, separate from the 2,5 KB `/status`; `seq` is monotonic per
+  window, so the UI counts *missed* windows — a skipped window names the wrong numbers.
+- `POST /pause?on=1|0` holds **between** runs only; state stays `running`, paused time is excluded
+  from `elapsed_ms`.
+- ⚠ `?focus=` answers **400**.

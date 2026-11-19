@@ -32,3 +32,18 @@ calibration**); IMX219 specifics, gate thresholds, `raw_runs_z` and the per-rung
   rung, so the boot gain (clamped by `cam_gain_max()`) is the operating point for the life of the
   board — and a `POST /expose?gain=` override is carried forward by the next sweep instead of being
   replaced.
+
+## When sweeps run, and the readout traps
+**When sweeps run** (`calibrate_all()`): the session-start sweep always; after it, at the next
+candidate point — the end of every scoring pass, before the pass, the round boundary — once the
+interval has run out: `CAL_DYN_MIN_MS` 15 min, doubled by every ok sweep (all nodes certified, no
+exposure moved) up to `CAL_DYN_MAX_MS` 2 h, back to 15 min after any other sweep or a soft-down
+trip (`calibrate_shorten()`). `/status` `cal_interval_ms` / `cal_due_ms`.
+- ⚠ The budget is a **cap, not a target** (default 10 s, `?cal=<ms>`). `?cal=0` turns every sweep
+  off; a soft-down trip then waits until the next session.
+- **Nodes land on different exposures on purpose**; what they must share is the segment count.
+- ⚠ The `/loops` `cam_*` fields are cumulative since the last SWEEP, not per block — to locate
+  anything in time use **`GET /camlog` on the node**, never these.
+- ⚠ Never price monitor cost with `/camtest` — the delivered bit rate is the number.
+- ⚠ **Never judge `raw_sigma` from single `/expose` readings.** It is non-stationary per node
+  on a timescale of minutes; only the SWEEP compares — the whole ladder back to back.

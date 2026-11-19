@@ -241,20 +241,18 @@ _Static_assert(UNLIM_RUNS_MAX + PASS_KEEP_EXTREME <= NUM_RUNS,
  * the second would stay in the combine. A bad arm in the combine costs more
  * than a small k does. */
 #define NODE_SOFT_MIN_COMBINE  1     // never soft-exclude below this many live nodes
-/* Z* factor weights, each independently 0..1. 0 turns that factor off
- * (the factor stays 1). ?kdn= Δn, ?kmau= Mau, ?kser= Ser, ?kdisp= Disp, ?kbyt= Byt.
- * Omitted → 0, so Z* = z_ctr / block σ. The form stores them only on
+/* Z* channel weights, each independently 0..1. 0 leaves that channel out.
+ * ?kdn= Δn, ?kmau= Mau, ?kser= Ser, ?kdisp= Disp, ?kbyt= Byt.
+ * Omitted → 0, so Z* = |z_ctr| / block σ. The form stores them only on
  * confirm=1; /status names the ones that ran. */
 #define ZSTAR_W_DEFAULT      0.0
-/* ?kz= is the exponent on |Z/σ_z|, 0..1: base = sign(Z)·|Z/σ_z|^kz.
- * 1 (default) is Z/σ_z, 0 keeps only the sign of Z and the factors
- * carry the magnitude. */
+/* ?kz= is the weight of Z/σ_z, 0..1, default 1. */
 #define ZSTAR_KZ_DEFAULT     1.0
 
 /* Phase-0 pool direction, and the item extreme direction on that column.
  * HIGH = largest column sum, LOW = smallest, except Z* (SUM_KEY):
- * HIGH = largest |value|, LOW = smallest |value|. The stored number stays
- * signed — a number's Σ Z* and an item's Z* both. */
+ * HIGH = largest |value|, LOW = smallest |value| (Z* is ≥ 0, so that is
+ * the value itself). */
 typedef enum {
     SCORE_DIR_HIGH = 0,
     SCORE_DIR_LOW  = 1,
@@ -330,10 +328,12 @@ typedef struct {
      * its magnitude.
      * NaN until the block (scoring: the pass) is centred, or no node reported. */
     float      disp;
-    /* NODE AGREEMENT on this item: sample σ across the contributing nodes of
-     * their own block-centred z, each standardised by that NODE's own σ over
-     * the same block. Small = the cameras moved together on this item, large =
-     * one node carried the combined z alone.
+    /* NODE AGREEMENT on this item, POOLED over Z, Mau, Ser, Disp and Byt
+     * (node_span_agree()): per channel the contributing nodes' block-centred
+     * values, each standardised by that NODE's own σ over the block; Δn² is
+     * the summed squared spread over all channels ÷ Σ(k_c − 1). Small = the
+     * cameras moved together on this item, large = they contradicted.
+     * The paragraphs below were written for Z and hold per channel.
      *
      * Why standardise per node before comparing: the per-node LSB σ is NOT 1
      * and differs between nodes, so the raw spread of z_i would
@@ -349,9 +349,8 @@ typedef struct {
      * block has been centred, recomputed by center_block() every time.
      * ⚠ NaN when fewer than two nodes have a usable block σ — k < 2, or a node
      * with fewer than 2 runs in the block. It is never 0 for "unknown".
-     * Enters Z* through ?kdn=: a value below 1 stretches Z along its own sign,
-     * a value above 1 pulls Z toward 0. Δn ≤ 0 or missing leaves that factor
-     * at 1 (a real 0 must not divide). It also selects when it is the pool
+     * Enters Z* through ?kdn= as z_Δ (dn_z(): (k−1)·Δn² against χ² with k−1
+     * degrees of freedom), agreement only; missing adds nothing. It also selects when it is the pool
      * criterion (the pool, and the extreme set kept by compaction). */
     float      node_sd;
     /* SERIAL ORDER of the bits this item was measured from (Ser), built like
@@ -736,7 +735,8 @@ typedef struct {
     float     key;       // Z*: zstar_of() of this pass, NaN while open
     /* Σ per column over the closed passes, indexed by ScoreSum. A pass whose
      * value is missing (Δn with < 2 nodes, AC not reported, no z) adds
-     * nothing; sum_n says how many passes did add. */
+     * nothing; sum_n says how many passes did add. ⚠ SUM_KEY is not a sum of
+     * key: it is √n · Z* formed from the channel sums ÷ √n (sensor.c). */
     float     sums[SCORE_SUM_N];
     uint8_t   sum_n[SCORE_SUM_N];
     uint8_t   passes;    // closed passes of this number
@@ -889,16 +889,16 @@ typedef struct {
     int              wsig_sd_n;           // node-items behind wsig_sd
     double           v_eff;               // Var(Σz_i/√k) under measured σ and r
                                           // (1.0 = independent unit nodes)
-    /* ── Z* factor weights ─────────────────────────────────────────
-     * Each 0..1, independent. 0 leaves that factor at 1, so all four at 0
-     * is Z* = z_ctr/σ. They rank; they do not test. pass_mean/pass_sigma/
-     * pass_chi2 stay on z alone. */
-    double           k_dn;                // ?kdn=  Δn stretch
-    double           k_mau;               // ?kmau= Mau stretch (|Mau|)
-    double           k_ser;               // ?kser= Ser stretch (|Ser|)
-    double           k_byt;               // ?kbyt= Byt stretch (|Byt|)
-    double           k_disp;              // ?kdisp= Disp stretch (|Disp|)
-    double           k_z;                 // ?kz=   exponent on |Z/σ_z|
+    /* ── Z* channel weights ────────────────────────────────────────
+     * Each 0..1, independent. 0 leaves that channel out, so these five at 0
+     * with k_z = 1 is Z* = |z_ctr|/σ. They rank; they do not test.
+     * pass_mean/pass_sigma/pass_chi2 stay on z alone. */
+    double           k_dn;                // ?kdn=  weight of z_Δ (agreement)
+    double           k_mau;               // ?kmau= weight of Mau
+    double           k_ser;               // ?kser= weight of Ser
+    double           k_byt;               // ?kbyt= weight of Byt
+    double           k_disp;              // ?kdisp= weight of Disp
+    double           k_z;                 // ?kz=   weight of Z/σ_z
     int              pool_fix;            // ?fix=  numbers in every combination, 0 = off
     double           loop_sigma;          // per-run σ of the LAST CLOSED BLOCK (1.0 = ideal)
     int              loops_done;          // BLOCKS closed and merged into the drift stats

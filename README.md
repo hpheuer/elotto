@@ -23,12 +23,14 @@ z per node. Nodes combine as `Σz/√k` over the k nodes that answered that wind
 
 Every item is ranked on one key:
 
-Z\* = sign(Z)·|Z/σ_z|^κ · [1 + ζ·|Disp|] · [1 + α·(1/Δn − 1)] · [1 + ε·|Ser|] · [1 + β·|Mau|] · [1 + η·|Byt|]
+Z\* = √[ (γ·Z/σ_z)² + (ζ·Disp)² + (α·max(0, z_Δ))² + (ε·Ser)² + (β·Mau)² + (η·Byt)² ]
 
-σ_z is the σ of the item's own block; Disp, Δn, Ser, Mau and Byt are window statistics of the
-cameras (dispersion, node agreement, serial order, Maurer compressibility, byte frequencies).
-The weights `?kdisp=` `?kdn=` `?kser=` `?kmau=` `?kbyt=` run 0..1 (default 0 = factor off), κ
-`?kz=` 0..1 (default 1). Scoring numbers and measuring combinations use the same key.
+σ_z is the σ of the item's own block; Disp, Ser, Mau and Byt are window statistics of the
+cameras (dispersion, serial order, Maurer compressibility, byte frequencies), each in σ of its
+block. z_Δ is the node agreement Δn, pooled over all five channels, as a z (positive = the
+cameras agreed more closely than independent ones). The weights `?kz=` (default 1) and
+`?kdisp=` `?kdn=` `?kser=` `?kmau=` `?kbyt=` (default 0) run 0..1; 0 leaves that channel out.
+Scoring numbers and measuring combinations use the same key.
 
 > This **cannot predict lottery draws**. Output is an experiment on physical randomness, not a
 > betting tip. The ×√n array gain is **not established** — read `pass_σ` and the pairwise matrix

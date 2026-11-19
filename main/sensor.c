@@ -255,9 +255,12 @@ static void score_one_run(bool *ok, float znode[MAX_NODES],
 static void score_build_keys(const float zn[][MAX_NODES],
                              const node_mask_t *mask,
                              const bool *scored, int max_val,
-                             double *zc_out, double *nsd_out);
-static double zstar_of(double z, double sz, double nsd, double mau,
+                             double *zc_out);
+static double zstar_of(double z, double sz, double nsd, int kdn, double mau,
                        double ser, double disp, double byt);
+static double zstar_combine(double zr, double zd, double mau, double ser,
+                            double disp, double byt);
+static double dn_z(double nsd, int df);
 static void   center_block(int block_idx);  // forward: publish_valid centres the OPEN block
 static void   wsig_collect(float out[MAX_NODES]);
 static void   wsig_note(const RunResult *r, const float *wsig, node_mask_t mask,
@@ -441,6 +444,64 @@ static void node_span_col(const float *vals, const int *idx, const node_mask_t *
         out[t] = (sd > 0.0 && isfinite(out[t])) ? out[t] / sd : NAN;
 }
 
+/* Δn — node agreement POOLED over every per-node channel (Z, Mau, Ser, Disp,
+ * Byt) over one centring span. Per channel each node is centred on its own
+ * span mean and divided by its own span σ (÷ n, n >= 3, else it stays out of
+ * that channel); per item the squared deviations from the nodes' mean are summed
+ * over the channels:  Δn² = Σ_c Σ_i (u_ic − ū_c)² / df,  df = Σ_c (k_c − 1).
+ * With independent cameras df·Δn² is χ² with df degrees of freedom, Δn ≈ 1.
+ * 10 nodes, 5 channels → df = 45, null σ of Δn ≈ 1/√(2·45) ≈ 0,105.
+ * out[t] = NaN and df_out[t] = 0 where no channel has two scaled nodes. */
+#define AGREE_COLS 5
+static void node_span_agree(const float *const cols[AGREE_COLS], const int *idx,
+                            const node_mask_t *mask, int n,
+                            double *out, int *df_out)
+{
+    for (int t = 0; t < n; t++) { out[t] = 0.0; df_out[t] = 0; }
+    for (int c = 0; c < AGREE_COLS; c++) {
+        const float *vals = cols[c];
+        if (!vals) continue;
+        double s[MAX_NODES] = {0}, ss[MAX_NODES] = {0};
+        int    cn[MAX_NODES] = {0};
+        for (int t = 0; t < n; t++) {
+            const float *row = vals + (size_t)idx[t] * MAX_NODES;
+            for (int i = 0; i < MAX_NODES; i++)
+                if ((mask[t] & (1u << i)) && isfinite((double)row[i])) {
+                    double v = (double)row[i];
+                    s[i] += v; ss[i] += v * v; cn[i]++;
+                }
+        }
+        double m[MAX_NODES], sd[MAX_NODES];
+        for (int i = 0; i < MAX_NODES; i++) {
+            m[i] = sd[i] = 0.0;
+            if (cn[i] < 3) continue;
+            m[i] = s[i] / cn[i];
+            /* ÷ n, not n − 1: the σ is taken over the same n values it then
+             * scales, so Σ u² over the span is n − 1 with the sample σ and
+             * E[u²] = (n−1)/n — Δn would read ≈ 0,93 at n = 7 with nothing
+             * there. With ÷ n, E[u²] = 1 for every n (the n/(n−1) correction). */
+            double v = (ss[i] - cn[i] * m[i] * m[i]) / cn[i];
+            if (v > 0.0) sd[i] = sqrt(v);
+        }
+        for (int t = 0; t < n; t++) {
+            const float *row = vals + (size_t)idx[t] * MAX_NODES;
+            double u[MAX_NODES], um = 0.0;
+            int    ku = 0;
+            for (int i = 0; i < MAX_NODES; i++)
+                if ((mask[t] & (1u << i)) && sd[i] > 0.0 && isfinite((double)row[i])) {
+                    u[ku] = ((double)row[i] - m[i]) / sd[i];
+                    um += u[ku++];
+                }
+            if (ku < 2) continue;
+            um /= ku;
+            for (int q = 0; q < ku; q++) out[t] += (u[q] - um) * (u[q] - um);
+            df_out[t] += ku - 1;
+        }
+    }
+    for (int t = 0; t < n; t++)
+        out[t] = df_out[t] > 0 ? sqrt(out[t] / df_out[t]) : NAN;
+}
+
 /* Running pass sums over RANKED items only (k > 0, !skip_rank). Ranking and
  * ranks recompute from results[] after every valid item so top[] tracks
  * the live block-σ key rather than an early snapshot. */
@@ -542,6 +603,10 @@ typedef struct {
     bool   ok[SCORE_SUM_N][51];
     uint32_t n[SCORE_SUM_N][51];  /* passes that added to acc; 0 = column missing.
                                    * Never saturates: score_rank_val() divides by it. */
+    /* The two Z* channels no column sums: Z/σ_z of each pass (Z sums z_ctr
+     * without the pass σ) and z_Δ (dn_z(); the Δn column sums Δn itself). */
+    double   zs[51], zd[51];
+    uint32_t nzs[51], nzd[51];
     int    max_val, pool_size;
     bool   active;
 } ScoreAcc;
@@ -586,9 +651,8 @@ static int score_pick_best(const ScoreAcc *A, int ch, const bool *used)
     int b = 0;
     double bs = 0.0;
     bool first = true;
-    /* Σ Z* ranks by magnitude: high = largest |sum|, low = smallest.
-     * acc stays signed, and pool_*_z prints that sign. Equal |sum| keeps
-     * the lower number (strict >). Other columns stay signed. */
+    /* Σ Z* (≥ 0) ranks by magnitude: high = largest, low = smallest.
+     * Equal values keep the lower number (strict >). Other columns stay signed. */
     bool mag = (ch == SUM_KEY);
     for (int j = 1; j <= A->max_val; j++) {
         if (used[j] || !A->ok[ch][j]) continue;
@@ -933,14 +997,18 @@ static int score_run(int max_val, int pool_size, bool euro_pool,
         }
         last = n_order ? order[n_order - 1] : 0;
         double zc_ctr[51], nsd[51];
-        score_build_keys(zn, smask, scored, max_val, zc_ctr, nsd);
+        int    nsk[51];   /* Δn's degrees of freedom */
+        score_build_keys(zn, smask, scored, max_val, zc_ctr);
         /* Mau, Ser, Disp and Byt over this pass: the pass is its own centring span. */
         double maup[51], serp[51], dispp[51], bytp[51];
         {
             int     idx[51], nb = 0;
             node_mask_t bm[51];
             double  bo[51];
-            for (int k = 0; k < 51; k++) maup[k] = serp[k] = dispp[k] = bytp[k] = NAN;
+            for (int k = 0; k < 51; k++) {
+                maup[k] = serp[k] = dispp[k] = bytp[k] = nsd[k] = NAN;
+                nsk[k] = 0;
+            }
             for (int k = 1; k <= max_val; k++)
                 if (scored[k]) { idx[nb] = k; bm[nb] = smask[k]; nb++; }
             node_span_col(&mn[0][0], idx, bm, nb, bo);
@@ -951,13 +1019,19 @@ static int score_run(int max_val, int pool_size, bool euro_pool,
             for (int t = 0; t < nb; t++) dispp[idx[t]] = bo[t];
             node_span_col(&bn[0][0], idx, bm, nb, bo);
             for (int t = 0; t < nb; t++) bytp[idx[t]] = bo[t];
+            const float *cols[AGREE_COLS] = { &zn[0][0], &mn[0][0], &sn[0][0],
+                                              &sg[0][0], &bn[0][0] };
+            int bdf[51];
+            node_span_agree(cols, idx, bm, nb, bo, bdf);
+            for (int t = 0; t < nb; t++) { nsd[idx[t]] = bo[t]; nsk[idx[t]] = bdf[t]; }
         }
         for (int k = 1; k <= max_val; k++) {
             if (!scored[k]) continue;
             ScoreItem *row = score_row(euro_pool, k);
             /* This pass's value per column. A missing one adds nothing. */
             double v[SCORE_SUM_N];
-            double key = zstar_of(zc_ctr[k], g_status.score_sig_z, nsd[k], maup[k],
+            double sz  = g_status.score_sig_z;
+            double key = zstar_of(zc_ctr[k], sz, nsd[k], nsk[k], maup[k],
                                   serp[k], dispp[k], bytp[k]);
             v[SUM_KEY]  = key;
             v[SUM_Z]    = zc_ctr[k];
@@ -971,6 +1045,33 @@ static int score_run(int max_val, int pool_size, bool euro_pool,
                 A->acc[c][k] += v[c];
                 A->ok[c][k]   = true;
                 A->n[c][k]++;
+            }
+            /* Σ Z* is NOT the sum of the per-pass Z* (those are ≥ 0, so noise
+             * would pile up with n and a number's sign flips would not cancel).
+             * Each channel is summed with its sign, and Z* is formed from the
+             * channel sums per pass: Z*_Σ = zstar_combine(S_c/√n_c). acc holds
+             * √n·Z*_Σ, so score_rank_val()'s Σ/√n is Z*_Σ itself.
+             * Z/σ_z = +2, −2 over two passes: S/√n = 0, not 2. */
+            if (sz > 0.0 && isfinite(zc_ctr[k])) {
+                A->zs[k] += zc_ctr[k] / sz;
+                A->nzs[k]++;
+            }
+            {
+                double zdk = dn_z(nsd[k], nsk[k]);
+                if (isfinite(zdk)) { A->zd[k] += zdk; A->nzd[k]++; }
+            }
+            if (A->n[SUM_KEY][k] > 0) {
+                #define SUMN(x, n) ((n) ? (x) / sqrt((double)(n)) : NAN)
+                double ks = (A->nzs[k] > 0)
+                    ? zstar_combine(SUMN(A->zs[k], A->nzs[k]),
+                                    SUMN(A->zd[k], A->nzd[k]),
+                                    SUMN(A->acc[SUM_MAU][k],  A->n[SUM_MAU][k]),
+                                    SUMN(A->acc[SUM_SER][k],  A->n[SUM_SER][k]),
+                                    SUMN(A->acc[SUM_DISP][k], A->n[SUM_DISP][k]),
+                                    SUMN(A->acc[SUM_BYT][k],  A->n[SUM_BYT][k]))
+                    : 0.0;
+                #undef SUMN
+                A->acc[SUM_KEY][k] = ks * sqrt((double)A->n[SUM_KEY][k]);
             }
             if (!row) continue;
             /* The pass closed: centred values, as center_block() writes an
@@ -1247,7 +1348,7 @@ static void score_one_run(bool *ok, float znode[MAX_NODES],
 static void score_build_keys(const float zn[][MAX_NODES],
                              const node_mask_t *mask,
                              const bool *scored, int max_val,
-                             double *zc_out, double *nsd_out)
+                             double *zc_out)
 {
     /* Per-node means over the span. */
     double mz[MAX_NODES] = {0};
@@ -1262,7 +1363,7 @@ static void score_build_keys(const float zn[][MAX_NODES],
     for (int i = 0; i < MAX_NODES; i++) {
         if (nz[i] >= 2) { mz[i] /= (double)nz[i]; okz[i] = true; }
     }
-    /* Per-node σ over the span: it scales each node in the combine and in Δn.
+    /* Per-node σ over the span: it scales each node in the combine.
      * n >= 3 for the same reason as in center_block(): at 2 the σ is built
      * from the two values it scales. */
     double sdz[MAX_NODES] = {0};
@@ -1283,9 +1384,6 @@ static void score_build_keys(const float zn[][MAX_NODES],
             if (v > 0.0) { sdz[i] = sqrt(v); sdok[i] = true; }
         }
     }
-    if (nsd_out)
-        for (int k = 0; k <= max_val && k < 51; k++) nsd_out[k] = NAN;
-
     double zc[51];
     for (int k = 0; k <= max_val && k < 51; k++) zc[k] = NAN;
     for (int k = 1; k <= max_val; k++) {
@@ -1312,28 +1410,6 @@ static void score_build_keys(const float zn[][MAX_NODES],
         zc[k]  = (uk > 0) ? usum / sqrt((double)uk)
                : (kk > 0) ? sum / sqrt((double)kk)
                : (rk > 0) ? rsum / sqrt((double)rk) : NAN;
-        if (nsd_out) {
-            /* Δn, as center_block() forms it for an item: each node's centred z
-             * in that node's own σ over this span, sample σ across the nodes. */
-            double u[MAX_NODES];
-            int    ku = 0;
-            for (int i = 0; i < MAX_NODES; i++) {
-                if (!(mask[k] & (1u << i)) || !sdok[i]) continue;
-                if (isnan((double)zn[k][i])) continue;
-                u[ku++] = ((double)zn[k][i] - mz[i]) / sdz[i];
-            }
-            double v = NAN;
-            if (ku >= 2) {
-                double um = 0.0;
-                for (int t = 0; t < ku; t++) um += u[t];
-                um /= (double)ku;
-                double vv = 0.0;
-                for (int t = 0; t < ku; t++) vv += (u[t] - um) * (u[t] - um);
-                vv /= (double)(ku - 1);
-                v = vv > 0.0 ? sqrt(vv) : 0.0;
-            }
-            nsd_out[k] = v;
-        }
     }
     if (zc_out)   for (int k = 0; k <= max_val && k < 51; k++) zc_out[k]   = zc[k];
 
@@ -1463,53 +1539,116 @@ static double zstar_w01(double w)
     return w > 1.0 ? 1.0 : w;
 }
 
-/* Z* = sign(Z)·|Z/σ_z|^kz · [1 + ζ·|Disp|] · [1 + α·(1/Δn − 1)]
- *              · [1 + ε·|Ser|] · [1 + β·|Mau|] · [1 + η·|Byt|]
- * (written in the Top-10 column order; the product is commutative)
+/* Standard normal quantile Φ⁻¹(p), 0 < p < 1 (Acklam, |rel. error| < 1,2e-9). */
+static double norm_quantile(double p)
+{
+    static const double a[6] = { -3.969683028665376e+01, 2.209460984245205e+02,
+        -2.759285104469687e+02, 1.383577518672690e+02, -3.066479806614716e+01,
+         2.506628277459239e+00 };
+    static const double b[5] = { -5.447609879822406e+01, 1.615858368580409e+02,
+        -1.556989798598866e+02, 6.680131188771972e+01, -1.328068155288572e+01 };
+    static const double c[6] = { -7.784894002430293e-03, -3.223964580411365e-01,
+        -2.400758277161838e+00, -2.549732539343734e+00, 4.374664141464968e+00,
+         2.938163982698783e+00 };
+    static const double d[4] = { 7.784695709041462e-03, 3.224671290700398e-01,
+         2.445134137142996e+00, 3.754408661907416e+00 };
+    const double plow = 0.02425;
+    if (p < plow) {
+        double q = sqrt(-2.0 * log(p));
+        return (((((c[0]*q + c[1])*q + c[2])*q + c[3])*q + c[4])*q + c[5]) /
+               ((((d[0]*q + d[1])*q + d[2])*q + d[3])*q + 1.0);
+    }
+    if (p > 1.0 - plow) {
+        double q = sqrt(-2.0 * log(1.0 - p));
+        return -(((((c[0]*q + c[1])*q + c[2])*q + c[3])*q + c[4])*q + c[5]) /
+                ((((d[0]*q + d[1])*q + d[2])*q + d[3])*q + 1.0);
+    }
+    double q = p - 0.5, r = q * q;
+    return (((((a[0]*r + a[1])*r + a[2])*r + a[3])*r + a[4])*r + a[5]) * q /
+           (((((b[0]*r + b[1])*r + b[2])*r + b[3])*r + b[4])*r + 1.0);
+}
+
+/* Δn as a z, its degrees of freedom counted (node_span_agree(): df =
+ * Σ over the channels of nodes − 1). With independent cameras df·Δn² is χ²
+ * with df degrees of freedom. p = its LOWER tail, z_Δ = Φ⁻¹(1 − p): + = the
+ * cameras agreed more closely than independent cameras would, − = they
+ * disagreed more. N(0,1) under independence for every df.
+ * df = 45 (10 nodes, 5 channels), Δn = 0,8 → 28,8, p ≈ 0,03, z_Δ ≈ +1,9.
+ * Clamped to ±DN_Z_CAP: Δn = 0 would otherwise be infinite. NaN = no Δn. */
+#define DN_Z_CAP 5.0
+static double dn_z(double nsd, int dfi)
+{
+    if (!isfinite(nsd) || nsd < 0.0 || dfi < 1) return NAN;
+    double df = (double)dfi;
+    double x  = df * nsd * nsd;
+    if (!(x > 0.0)) return DN_Z_CAP;
+    if (x > df + 10.0 * sqrt(2.0 * df) + 15.0) return -DN_Z_CAP;
+    /* Regularised lower incomplete gamma P(df/2, x/2), power series. */
+    double a = 0.5 * df, h = 0.5 * x;
+    double t = 1.0, s = 1.0;
+    for (int n = 1; n < 400; n++) {
+        t *= h / (a + (double)n);
+        s += t;
+        if (t < 1e-12 * s) break;
+    }
+    double p = exp(a * log(h) - h - lgamma(a + 1.0)) * s;
+    if (!(p > 0.0)) return DN_Z_CAP;
+    if (p >= 1.0)   return -DN_Z_CAP;
+    double z = -norm_quantile(p);
+    if (z >  DN_Z_CAP) z =  DN_Z_CAP;
+    if (z < -DN_Z_CAP) z = -DN_Z_CAP;
+    return z;
+}
+
+/* Z* = √[ (γ·Z/σ_z)² + (β·Mau)² + (ε·Ser)² + (ζ·Disp)² + (η·Byt)²
+ *         + (α·max(0, z_Δ))² ]
  *
- * α β ε ζ η are g_status.k_dn / k_mau / k_ser / k_disp / k_byt, each 0..1.
- * Mau, Ser, Disp and Byt stretch by their MAGNITUDE: either sign is the cameras
- * departing together from the rest of the block.
- * A missing column (NaN, Δn ≤ 0) leaves
- * its factor at 1. No σ_z → 0, never a fallback of 1.
- * ⛔ UNBOUNDED. Z/σ_z sits inside its block, the product of the factors
- * does not: a small Δn or a large |Mau|, |Ser| or |Disp| can exceed (n−1)/√n.
- * Nothing here truncates an extreme. */
-static double zstar_of(double z, double sz, double nsd, double mau,
+ * γ α β ε ζ η are g_status.k_z / k_dn / k_mau / k_ser / k_disp / k_byt, each
+ * 0..1; 0 drops that channel. Every channel is in σ of its own block (z_Δ: a
+ * N(0,1) z, dn_z()), so a 3 weighs the same in any channel and the squares
+ * add: one channel at 4 is 4, two at 3 are 4,24. Only agreement (z_Δ > 0)
+ * counts; disagreement adds nothing. A missing channel (NaN) adds nothing.
+ * Z* ≥ 0 — the sign of each channel stays in its own column.
+ * ⛔ UNBOUNDED: Z/σ_z sits inside its block, Mau/Ser/Disp/Byt do not; z_Δ
+ * stops at DN_Z_CAP. Nothing here truncates an extreme. */
+static double zstar_combine(double zr, double zd, double mau, double ser,
+                            double disp, double byt)
+{
+    const double w[6] = { zstar_w01(g_status.k_z),   zstar_w01(g_status.k_dn),
+                          zstar_w01(g_status.k_mau), zstar_w01(g_status.k_ser),
+                          zstar_w01(g_status.k_disp), zstar_w01(g_status.k_byt) };
+    const double v[6] = { zr, (isfinite(zd) && zd > 0.0) ? zd : NAN,
+                          mau, ser, disp, byt };
+    double s2 = 0.0;
+    for (int c = 0; c < 6; c++) {
+        if (!(w[c] > 0.0) || !isfinite(v[c])) continue;
+        double t = w[c] * v[c];
+        s2 += t * t;
+    }
+    return sqrt(s2);
+}
+
+/* One item or one scoring pass of a number. dfdn = Δn's degrees of freedom.
+ * No σ_z (a block without σ) → 0, never a fallback. */
+static double zstar_of(double z, double sz, double nsd, int dfdn, double mau,
                        double ser, double disp, double byt)
 {
     if (!(sz > 0.0) || !isfinite(z)) return 0.0;
-    /* Base sign(Z)·|Z/σ_z|^kz. kz = 1 is Z/σ_z exactly (no pow call), kz = 0
-     * is the sign alone; Z = 0 stays 0 for every kz. */
-    double zp = z / sz;
-    double kz = zstar_w01(g_status.k_z);
-    if (kz < 1.0 && zp != 0.0)
-        zp = (zp > 0.0 ? 1.0 : -1.0) * pow(fabs(zp), kz);
-    double f  = 1.0;
-    double a  = zstar_w01(g_status.k_dn);
-    if (isfinite(nsd) && nsd > 0.0 && a > 0.0)
-        f *= 1.0 + a * (1.0 / nsd - 1.0);
-    double b = zstar_w01(g_status.k_mau);
-    if (isfinite(mau) && b > 0.0)
-        f *= 1.0 + b * fabs(mau);
-    double e = zstar_w01(g_status.k_ser);
-    if (isfinite(ser) && e > 0.0)
-        f *= 1.0 + e * fabs(ser);
-    double d = zstar_w01(g_status.k_disp);
-    if (isfinite(disp) && d > 0.0)
-        f *= 1.0 + d * fabs(disp);
-    double h = zstar_w01(g_status.k_byt);
-    if (isfinite(byt) && h > 0.0)
-        f *= 1.0 + h * fabs(byt);
-    return zp * f;
+    return zstar_combine(z / sz, dn_z(nsd, dfdn), mau, ser, disp, byt);
 }
 
+/* ⚠ A row has no room for Δn's degrees of freedom: they are taken as
+ * (archived channels) · (k − 1). Exact when every combined node reported
+ * every channel and has ≥ 3 items in the block — the normal case. */
 double rank_key(const RunResult *r)
 {
     if (!r) return 0.0;
+    int nc = (s_node_z != NULL) + (s_node_mau != NULL) + (s_node_ser != NULL)
+           + (s_node_disp != NULL) + (s_node_byt != NULL);
+    int df = r->k >= 2 ? nc * ((int)r->k - 1) : 0;
     return zstar_of((double)r->z_ctr, block_sig_of(r), (double)r->node_sd,
-                    (double)r->mau, (double)run_ser(r), (double)r->disp,
-                    (double)run_byt(r));
+                    df, (double)r->mau, (double)run_ser(r),
+                    (double)r->disp, (double)run_byt(r));
 }
 
 /* ── Ranking of the held rows by the pool criterion ──────────────────────
@@ -1517,10 +1656,8 @@ double rank_key(const RunResult *r)
  * SAME column and direction that picked the pool: score_sum (Z*, Z, Disp, Δn,
  * Ser, Mau) and score_dir (high = largest values, low = smallest). Both can only
  * change while a scoring runs, so a round's compaction uses exactly the
- * criterion its pool was picked with. ⚠ One tail. On Z* (SUM_KEY) the
- * comparison is |Z*|: high keeps the largest magnitudes, low the smallest.
- * The stored key stays signed, and that is what the cell prints. Items
- * −3, +2.5, −0.4 rank −3, +2.5, −0.4 under high. Every other column stays
+ * criterion its pool was picked with. ⚠ One tail. Z* (SUM_KEY) is ≥ 0:
+ * high keeps the largest, low the smallest. Every other column stays
  * signed, so under high on Z the most negative values leave.
  * The value is the item's own column as the table shows it; a row without one
  * (NaN: Δn with k < 2, Mau or Ser uncentred) is not
@@ -1846,8 +1983,8 @@ static void recompute_pass_ranks(void)
      * instrument health on the LSB stream.
      *
      * Everything BELOW — the published tables — runs on rank_key() in units
-     * of the item's own block σ. top[] is the largest |rank_key|; the copied
-     * row keeps the signed key. No session moments of
+     * of the item's own block σ. top[] is the largest rank_key (≥ 0).
+     * No session moments of
      * the key are kept: Z* is already standardised, and over a compacted
      * results[] such a mean/σ would describe the surviving EXTREMES, not
      * the session. */
@@ -2840,28 +2977,15 @@ static void center_block(int block_idx)
             r->z_ctr = (float)(rsum / sqrt((double)rk));
             n++;
         }
-        /* How far the nodes sat from each other — equivalently from the
-         * combined z, which is √k times their mean. Sample σ, so the null is
-         * ≈ 1 for independent unit-scaled nodes and a value well under 1 is
-         * the "they agreed" case the column exists to show. */
-        if (ku >= 2) {
-            double um = 0.0;
-            for (int t = 0; t < ku; t++) um += u[t];
-            um /= (double)ku;
-            double vv = 0.0;
-            for (int t = 0; t < ku; t++) vv += (u[t] - um) * (u[t] - um);
-            vv /= (double)(ku - 1);
-            r->node_sd = (float)(vv > 0.0 ? sqrt(vv) : 0.0);
-        } else {
-            r->node_sd = NAN;
-        }
-
+        r->node_sd = NAN;   /* Δn: node_span_agree() below */
     }
-    /* Mau, Ser and Disp over the same items, centred and scaled on this block alone. */
-    if (s_node_mau || s_node_ser || s_node_disp || s_node_byt) {
+    /* Mau, Ser, Disp, Byt and Δn over the same items, centred and scaled on
+     * this block alone. */
+    if (s_node_z || s_node_mau || s_node_ser || s_node_disp || s_node_byt) {
         static int     bidx[NUM_RUNS];
         static node_mask_t bmask[NUM_RUNS];
         static double  bout[NUM_RUNS];
+        static int     bdf[NUM_RUNS];
         int nb = 0;
         for (int j = 0; j < ntot; j++) {
             const RunResult *r = &g_status.results[j];
@@ -2883,6 +3007,13 @@ static void center_block(int block_idx)
         if (s_node_disp) {
             node_span_col(s_node_disp, bidx, bmask, nb, bout);
             for (int t = 0; t < nb; t++) g_status.results[bidx[t]].disp = (float)bout[t];
+        }
+        {
+            const float *cols[AGREE_COLS] = { s_node_z, s_node_mau, s_node_ser,
+                                              s_node_disp, s_node_byt };
+            node_span_agree(cols, bidx, bmask, nb, bout, bdf);
+            for (int t = 0; t < nb; t++)
+                g_status.results[bidx[t]].node_sd = (float)bout[t];
         }
     }
     /* Sync: one value per item, centred and scaled on this block alone. */

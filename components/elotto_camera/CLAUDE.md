@@ -63,3 +63,17 @@ ladder), no stuck frames, `mean_px` ≥ 5,0,
 - Between rungs the sweep discards `CAL_STEP_SETTLE_PAIRS` 8 frame pairs (~0,44 s) before scoring
   the rung — driver queue plus margin. The ~1 min drift is not waited out per rung: it moves
   the bias, which selects nothing, and 9 × 60 s would cost a third of a round.
+
+## Rates — which Mbit/s is which
+- ⚠ **`mbit_s` is PRODUCTION, `consume_mbit_s` is what a measurement READ**. The first
+  counts words the ring then discarded, so a slow consumer reads HIGH on it. `/diag` shows the
+  second; use the first only for the sensor ceiling and `/camtest`. The node table's
+  Mbit/s is a THIRD figure, the **used** rate: bits that entered the node's z per second of session
+  time (`z_n` × segments × 224 / `elapsed_ms`, segments = `srun_segs` and `run_segs` weighted by
+  the session's `win_score` / `win_pass` window counts); the other two are in its hover text.
+- ⚠ **If `focus_win_ms` ever doubles** (~5,13 s → ~10,2 s at identical parameters), suspect an
+  unpinned task in the measuring path, not the camera — signature: consumption halves
+  exactly on that node alone (task core rule: `main/CLAUDE.md` **Resources**).
+- This component serves `/camlog`, `/linearity`, `/expose`, `/calibrate` and `/camtest` for **every**
+  node from one implementation — the boards must not describe their own cameras in different shapes.
+  One stream; the runs half is armed only inside a sweep.
