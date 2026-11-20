@@ -18,9 +18,8 @@ typedef uint16_t node_mask_t;   // bit i = node i; MAX_NODES below must fit
 #define NUM_RUNS      1400
 #define TOP_N            5
 /* ── Round-boundary compaction  ──────────────────────────────────────
- * Unlimited rounds keep the 1000 RANKED items that rank best on the pool
- * criterion (score_sum column, score_dir direction — one tail, see
- * rank_order() in sensor.c). On Z* the tail is |Z*|. Quarantined rows are not kept: nothing reads them once their
+ * Unlimited rounds keep the 1000 RANKED items with the largest Z* (the key
+ * the pool was picked on, rank_order() in sensor.c). Quarantined rows are not kept: nothing reads them once their
  * block is closed. Everything else merges into pass moments; the ranked rows among it are
  * first copied to the full table (FULL_MAX). Every session is rounds, so every round
  * boundary calls pass_compact() (no-op while n ≤ 1000). */
@@ -242,21 +241,12 @@ _Static_assert(UNLIM_RUNS_MAX + PASS_KEEP_EXTREME <= NUM_RUNS,
  * than a small k does. */
 #define NODE_SOFT_MIN_COMBINE  1     // never soft-exclude below this many live nodes
 /* Z* channel weights, each independently 0..1. 0 leaves that channel out.
- * ?kdn= Δn, ?kmau= Mau, ?kser= Ser, ?kdisp= Disp, ?kbyt= Byt.
+ * ?kdn= Δn, ?kmau= Mau, ?kser= Ser, ?kdisp= Disp, ?kbyt= Byt, ?ksync= Sync.
  * Omitted → 0, so Z* = |z_ctr| / block σ. The form stores them only on
  * confirm=1; /status names the ones that ran. */
 #define ZSTAR_W_DEFAULT      0.0
 /* ?kz= is the weight of Z/σ_z, 0..1, default 1. */
 #define ZSTAR_KZ_DEFAULT     1.0
-
-/* Phase-0 pool direction, and the item extreme direction on that column.
- * HIGH = largest column sum, LOW = smallest, except Z* (SUM_KEY):
- * HIGH = largest |value|, LOW = smallest |value| (Z* is ≥ 0, so that is
- * the value itself). */
-typedef enum {
-    SCORE_DIR_HIGH = 0,
-    SCORE_DIR_LOW  = 1,
-} ScoreDir;
 
 /* Stringify, so the HTML/JS copies of the numbers above are the SAME token the
  * C code compiles. Two levels are required: the inner one would otherwise
@@ -350,8 +340,8 @@ typedef struct {
      * ⚠ NaN when fewer than two nodes have a usable block σ — k < 2, or a node
      * with fewer than 2 runs in the block. It is never 0 for "unknown".
      * Enters Z* through ?kdn= as z_Δ (dn_z(): (k−1)·Δn² against χ² with k−1
-     * degrees of freedom), agreement only; missing adds nothing. It also selects when it is the pool
-     * criterion (the pool, and the extreme set kept by compaction). */
+     * degrees of freedom), squared with its sign: agreement (z_Δ > 0) adds,
+     * contradiction (z_Δ < 0) subtracts; missing adds nothing. */
     float      node_sd;
     /* SERIAL ORDER of the bits this item was measured from (Ser), built like
      * Mau: per node the Stouffer z of its window's lag-1..4 bit agreement
@@ -383,9 +373,10 @@ typedef struct {
      * block's own σ of it — unit variance, read against 0. + = the cameras'
      * ones-rate moved together inside the window more on this item than on
      * the rest of the block. A slot z is against its window's own bias, so
-     * neither Z nor a node offset is in it. Published only: it enters no Z*,
-     * no sum and no ranking. Pass items only; NaN on a scoring row, until the
-     * block is centred, and when fewer than two nodes sent slots.
+     * neither Z nor a node offset is in it. Enters Z* through ?ksync=,
+     * squared with its sign: moving together adds, against each other subtracts. A scoring row is built the
+     * same way over its pass. NaN until the block (scoring: the pass) is
+     * centred, and when fewer than two nodes sent slots.
      * Stored as sync_c above (hundredths, ±327) so the row stays 48 bytes;
      * read and written through run_sync() / run_sync_set(). */
 } RunResult;
@@ -725,39 +716,37 @@ typedef struct {
  * The pool is picked from score_and_build_pool()'s own `acc`. Written by the
  * sensor task, read unlocked by the HTTP task: a torn row shows mixed values
  * for one poll, nothing else. */
-/* What the pool is picked on: the running sum of ONE column over the
- * closed scoring passes, chosen by the operator on the page (POST /scoresum)
- * and read when the whole scoring ends. SUM_KEY (Z*) is the default. */
-typedef enum { SUM_KEY = 0, SUM_Z, SUM_DISP, SUM_NSD, SUM_SER, SUM_MAU, SUM_BYT, SCORE_SUM_N } ScoreSum;
+/* The table columns, for the Top-10 sort (/extremes?sort=, by name). The pool
+ * and the compaction rank on SUM_KEY (Z*) only. */
+typedef enum { SUM_KEY = 0, SUM_Z, SUM_DISP, SUM_NSD, SUM_SER, SUM_MAU, SUM_BYT, SUM_SYNC,
+               SCORE_SUM_N } ScoreSum;
 
 typedef struct {
     RunResult r;
     float     key;       // Z*: zstar_of() of this pass, NaN while open
-    /* Σ per column over the closed passes, indexed by ScoreSum. A pass whose
-     * value is missing (Δn with < 2 nodes, AC not reported, no z) adds
-     * nothing; sum_n says how many passes did add. ⚠ SUM_KEY is not a sum of
-     * key: it is √n · Z* formed from the channel sums ÷ √n (sensor.c). */
-    float     sums[SCORE_SUM_N];
-    uint8_t   sum_n[SCORE_SUM_N];
+    /* Σ Z* over the closed passes — the value the pool is picked on.
+     * ⚠ Not a sum of key: it is √n · Z* formed from the signed channel
+     * sums ÷ √n (sensor.c, ScoreAcc). sum_n = passes that added to it. */
+    float     sum;
+    uint8_t   sum_n;
     uint8_t   passes;    // closed passes of this number
 } ScoreItem;
 
 #define SCORE_ROWS_MAX 62   // 50 main + 12 bonus (Eurojackpot)
 
 /* One finished scoring (main numbers, or the euro numbers, each their own
- * snap): the seven column sums for every number, kept until the next session
- * start. The live ScoreItem rows are wiped at the next round. PSRAM, earliest
- * SCORE_SNAP_MAX kept; anything past that is counted, not stored. Index 0 of
- * sum[]/cnt[] is unused — numbers are 1..nnum. cnt 0 means that column added
- * nothing (a missing Δn must not read as a measured 0). */
+ * snap): Σ Z* for every number, kept until the next session start. The live
+ * ScoreItem rows are wiped at the next round. PSRAM, earliest SCORE_SNAP_MAX
+ * kept; anything past that is counted, not stored. Index 0 of sum[]/cnt[] is
+ * unused — numbers are 1..nnum. cnt 0 means nothing was added. */
 #define SCORE_SNAP_MAX 128
 typedef struct {
     uint16_t round;
     uint8_t  euro;                       /* 0 = main, 1 = euro */
     uint8_t  nnum;                       /* 50, 49 or 12 */
     uint8_t  passes;                     /* closed passes in the sum; less if aborted */
-    float    sum[51][SCORE_SUM_N];
-    uint8_t  cnt[51][SCORE_SUM_N];
+    float    sum[51];
+    uint8_t  cnt[51];
 } ScoreSnap;
 
 #define WSIG_TOP_N 10      /* /status and the card */
@@ -829,14 +818,10 @@ typedef struct {
      * scoring, cleared at every round start. score_sig_z is the
      * last closed scoring pass's own σ (the span σ its keys divide by),
      * score_span_n the numbers in that pass — the scoring's health line. */
-    /* How the pool now being measured was picked: its size (main +
-     * bonus), the column its sum was on and the round. Set at the pick, kept
-     * until the next one — unlike pool_main/_euro, which the next scoring
-     * replaces live. 0 before the first pick. */
-    int              pool_used_n, pool_used_sum, pool_used_round;
-    volatile int     score_sum;           // ScoreSum picking the pool; loaded
-                                          // from NVS at boot, kept across sessions,
-                                          // set + stored by POST /scoresum
+    /* The pool now being measured: its size (main + bonus) and the round.
+     * Set at the pick, kept until the next one — unlike pool_main/_euro,
+     * which the next scoring replaces live. 0 before the first pick. */
+    int              pool_used_n, pool_used_round;
     ScoreItem       *score_rows;          // SCORE_ROWS_MAX, PSRAM (internal RAM is the
                                           // ring's); NULL = allocation failed
     int              score_rows_n;
@@ -897,6 +882,7 @@ typedef struct {
     double           k_mau;               // ?kmau= weight of Mau
     double           k_ser;               // ?kser= weight of Ser
     double           k_byt;               // ?kbyt= weight of Byt
+    double           k_sync;              // ?ksync= weight of Sync
     double           k_disp;              // ?kdisp= weight of Disp
     double           k_z;                 // ?kz=   weight of Z/σ_z
     int              pool_fix;            // ?fix=  numbers in every combination, 0 = off
@@ -908,7 +894,6 @@ typedef struct {
     double           drift_t;             // slope / SE(slope); |t| > 3 = real drift, not noise
     double           off_first, off_last; // master raw per-run z offset, first / latest block
     double           sigma_lo, sigma_hi;  // min / max per-block combined σ across the session
-    ScoreDir         score_dir;           // Phase-0 pool selection rule (pre-registered)
     bool             fake_pool;           // TEST ?fakepool=1: no scoring, random pool
     // Independence check across ALL node pairs (6 of them at n=4). Only the
     // worst is published as a scalar: the √n gain fails if ANY pair correlates,
@@ -1084,14 +1069,15 @@ const camera_cal_t *elotto_last_calibration(void);
  * poll. Idempotent. */
 void results_archive_init(void);
 
-/* Z* of one row: (z_ctr / block σ) times the Δn, Mau, Ser, Disp and Byt
- * factors at g_status.k_dn / k_mau / k_ser / k_disp / k_byt. 0 when that block has no σ.
+/* Z* of one row: z_ctr / block σ with the Δn, Mau, Ser, Disp, Byt and Sync
+ * channels at g_status.k_dn / k_mau / k_ser / k_disp / k_byt / k_sync. 0 when
+ * that block has no σ.
  * The ONE accessor every table and every survivor choice goes through. */
 double rank_key(const RunResult *r);
 
 /* The up-to `max` ranked & centred rows best on column `ch` (a ScoreSum) in
  * direction `low`, best first, copied into out[0..return) under the archive
- * lock. ch < 0 = the pool criterion and direction (the compaction rule, Save).
+ * lock. ch < 0 = largest Z* (the compaction rule, Save).
  * *held, if given, receives how many rows carried a value in that column;
  * *used_ch / *used_low the column and direction actually used. */
 int results_extremes(RunResult *out, int max, int ch, bool low, int *held,

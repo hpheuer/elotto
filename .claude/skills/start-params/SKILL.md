@@ -7,7 +7,7 @@ description: Every /start key, its range and default, the 400 refusals, the meas
 
 `/start` is a **whitelist**: an unknown key answers **400**. Deleted keys (`loops`, `runs`, `rank`, `focus`, `went`, `wruns`,
 `baseline`, `calint`, `unlimited=0`, `wpre`) keep a specific 400. Allowed: `mode`, `run`, `srun`, `gap`,
-`score`, `kdn`, `kmau`, `kser`, `kdisp`, `kbyt`, `kz`, `fix`, `maxruns`, `passes`, `confirm`, `cal`, `unlimited`, `fakepool` (TEST: `1` skips the scoring and draws a random pool). An empty key (`?=x`), a value over
+`kdn`, `kmau`, `kser`, `kdisp`, `kbyt`, `ksync`, `kz`, `fix`, `maxruns`, `passes`, `confirm`, `cal`, `unlimited`, `fakepool` (TEST: `1` skips the scoring and draws a random pool). An empty key (`?=x`), a value over
 `START_VAL_MAX` 31 characters and a query string over 255 characters each answer **400** as well
 — a truncated value or query must never read as "key absent" and resolve to the default.
 - ⚠ **A refused /start changes nothing**: parameters are parsed into locals and committed to

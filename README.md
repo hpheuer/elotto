@@ -23,13 +23,16 @@ z per node. Nodes combine as `Σz/√k` over the k nodes that answered that wind
 
 Every item is ranked on one key:
 
-Z\* = √[ (γ·Z/σ_z)² + (ζ·Disp)² + (α·max(0, z_Δ))² + (ε·Ser)² + (β·Mau)² + (η·Byt)² ]
+Z\* = √[ (γ·Z/σ_z)² + (ζ·Disp)² + (α·z_Δ)² + (ε·Ser)² + (β·Mau)² + (η·Byt)² + (κ·Sync)² ]
 
 σ_z is the σ of the item's own block; Disp, Ser, Mau and Byt are window statistics of the
 cameras (dispersion, serial order, Maurer compressibility, byte frequencies), each in σ of its
-block. z_Δ is the node agreement Δn, pooled over all five channels, as a z (positive = the
-cameras agreed more closely than independent ones). The weights `?kz=` (default 1) and
-`?kdisp=` `?kdn=` `?kser=` `?kmau=` `?kbyt=` (default 0) run 0..1; 0 leaves that channel out.
+block. Sync is how much the cameras moved together inside the window, in σ of its block.
+z_Δ is the node agreement Δn, pooled over all five channels, as a z (positive = the
+cameras agreed more closely than independent ones, negative = they contradicted). Every channel
+enters squared; Z, Disp, Ser, Mau and Byt count either sign, z_Δ and Sync count with their sign —
+agreement and moving together raise Z\*, contradiction lowers it (Z\* never below 0). The weights `?kz=` (default 1) and
+`?kdisp=` `?kdn=` `?kser=` `?kmau=` `?kbyt=` `?ksync=` (default 0) run 0..1; 0 leaves that channel out.
 Scoring numbers and measuring combinations use the same key.
 
 > This **cannot predict lottery draws**. Output is an experiment on physical randomness, not a
@@ -46,7 +49,7 @@ Scoring numbers and measuring combinations use the same key.
 - **Blocks:** one round = one block. Centring, drift, pairwise matrix, soft-down and a camera
   sweep candidate sit at the round boundary.
 - **UI:** parameter line from `/status`, live "Now:" card, sortable Top-10 (Z\*, Z, Disp, Δn,
-  Ser, Mau, Byt), camera-σ jump board, Log card. **Save** writes the session's files (CSV for a
+  Ser, Mau, Byt, Sync), camera-σ jump board, Log card. **Save** writes the session's files (CSV for a
   German Excel). A session is a closed unit — never compared or pooled with another.
 - **Tools:** `tools/tune.html` — per-node exposure/health board (idle only).
 

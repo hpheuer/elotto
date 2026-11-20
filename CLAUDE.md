@@ -87,22 +87,12 @@ across rounds a combination can recur — identity is **(round, index)**.
 break for the operator). Each number 1..N is measured **`?passes=` times** (1..`SCORE_PASSES_MAX` 100, default 20;
 0 = continuous, the `?maxruns=0` rule under v3), each pass one
 `?srun=` window per number in a fresh Fisher–Yates order (never the same number back-to-back).
-After each pass every column — Z\*, Z, Disp, Δn, Ser, Mau, Byt — is added to that number's own running sum;
-the pool is the top by ONE of those sums, the one selected on the page (Σ marker in a column
-header, `POST /scoresum?c=key|z|disp|nsd|ser|mau|byt`) **when the whole scoring
-ends** — in Eurojackpot both pools at once. ⚠ The pick compares the sum **per pass that added to
-it** — Σ/√n, for Δn Σ/n (`score_rank_val()`) — so a number that lacks a pass is neither favoured nor
-penalised; with the same n everywhere that is the order of the sums. The cell, the scoring table's
-sort and Save keep the bare sum. The pool criterion is **freely
-selectable and remembered**: a Σ click writes it to NVS at once (any start, not only
-`confirm=1`), boot loads it (Z\* if none stored), a session start keeps it — it holds for the whole
-session and the following ones until the next click. The start form shows it read-only
-("Pool criterion"). `/status` `score_sum` names it. Direction: `?score=high|low`, API default `high` — it only
-picks the pool. Remembered like the column: the Σ arrow writes it to NVS at once
-(`POST /scoresum?dir=`), and during the scoring it also applies to the running session.
-Σ Z\* is ≥ 0: `high` is the largest, `low` the smallest.
-Every other column stays signed (`high` = largest, `low` = smallest). The same rule orders the
-scoring table and the item table on Σ Z\* and on the Z\* column. The scoring table
+After each pass the number's Σ Z\* is updated (see **The ranking channels**); **the pool is the
+numbers with the largest Σ Z\*** when the whole scoring ends — in Eurojackpot both pools at once.
+⛔ No other pool criterion, no direction: Z\* alone ranks the pool, the compaction and the pass.
+⚠ The pick compares the sum **per pass that added to it** — Σ/√n (`score_rank_val()`) — so a
+number that lacks a pass is neither favoured nor penalised; with the same n everywhere that is the
+order of the sums. The cell, the scoring table's sort and Save keep the bare sum. The scoring table
 (`GET /extremes?score=1`, `RunResult` rows in their own buffer, never in `results[]`) is display
 only — the pool is picked from the sum in `elotto_task()`. Until a pass has closed a
 number's Σ is a dash and the rows stand in number order; the table runs at least 10 rows and down
@@ -110,8 +100,8 @@ to the last pool member. **The scoring key is the pass key** — `zstar_of()`, a
 ⚠ Scoring has no `/loops` block; the scoring span **is** the block. Per-node centre over the
 numbers each camera actually answered, then
 the same product as the pass. σ is that span's own. Uncentred LSB ranks nodes.
-⚠ All four weights at 0 is z alone (Z/σ). `score_build_keys()` centres the span and publishes its σ; it does not build the key.
-The seven sums of every number (main and euro each their own record) are kept for every scoring
+⚠ All six other weights at 0 is z alone (Z/σ). `score_build_keys()` centres the span and publishes its σ; it does not build the key.
+Σ Z\* of every number (main and euro each their own record) is kept for every scoring
 of the session until the next session start: `SCORE_SNAP_MAX` 128 earliest, PSRAM,
 `GET /extremes?sums=1`. A scoring aborted before any pass closed stores nothing; one aborted
 after closed passes stores those passes. Abort does not clear it. Save writes it.
@@ -133,8 +123,8 @@ stop survives as backstop for a compaction that cannot allocate.
 
 - **Pool sizing maximises COMBINATIONS MEASURED, nothing else**; the bonus preference is only the
   tie-break.
-- **Fixed numbers** `?fix=x` (form "Fixed numbers", 0 = off, remembered): the x best-scored main
-  numbers on the pool criterion are in **every** combination of the pass; the other nm−x come from
+- **Fixed numbers** `?fix=x` (form "Fixed numbers", 0 = off, remembered): the x main numbers
+  with the largest Σ Z\* are in **every** combination of the pass; the other nm−x come from
   the next-best numbers, sized like any pool (main space C(p−x, nm−x) · C(q,2) ≤ `?maxruns=`, the
   free part may grow to every remaining number). 6 of 49: x = 3..6, Eurojackpot: x = 2..5; the
   bonus pool is sized as always. Needs `?maxruns=` ≥ 10, else **400**; a value outside the mode's
@@ -143,15 +133,9 @@ stop survives as backstop for a compaction that cannot allocate.
   has no σ and every Z\* of it is 0.
 - **Results ACCUMULATE** — `results[]` is never cleared between rounds; every statistic runs on the
   union of all rounds.
-- **Every round compact at the boundary**: the 1000 items that rank best on the **pool
-  criterion** stay as rows — the Σ column (`score_sum`: Z\*, Z, Disp, Δn, Ser, Mau, Byt) in the pool
-  direction (`score_dir`: high = largest values, low = smallest; `rank_order()` in `sensor.c`).
-  Both can only change during a scoring, so a round's compaction uses exactly the criterion its
-  pool was picked with. ⚠ **One tail only.** On Z\* the comparison is |Z\*| (the rule under
-  Phase 0); every other column stays signed, so under `high` on Z the most negative values leave.
-  ⚠ A row without a value in that column (Δn
-  with k < 2, Z* of a block without σ) is never kept. ⚠ A criterion switched in a later scoring cannot bring back rows an
-  earlier compaction merged. Quarantined rows are not kept as rows — they go to the full table,
+- **Every round compact at the boundary**: the 1000 items with the **largest Z\*** stay as rows
+  (`rank_order()` in `sensor.c`). ⚠ A row with no Z\* (a block without σ) is never kept.
+  Quarantined rows are not kept as rows — they go to the full table,
   flagged. The rest merges into moments — pass mean/σ/χ²
   stay exact. `n ≤ 1000` is a no-op, so a short session keeps every row. The Top-10
   (`GET /extremes`) chooses from this archive plus the open round while the session runs.
@@ -189,21 +173,22 @@ stop survives as backstop for a compaction that cannot allocate.
 ## The ranking channels
 One ranking key, `zstar_of()` in `sensor.c`, used by the scoring pass and by `rank_key()`:
 
-Z\* = √[ (γ·Z/σ_z)² + (ζ·Disp)² + (α·max(0, z_Δ))² + (ε·Ser)² + (β·Mau)² + (η·Byt)² ]
+Z\* = √max(0, (γ·Z/σ_z)² + (ζ·Disp)² + (ε·Ser)² + (β·Mau)² + (η·Byt)² ± (α·z_Δ)² ± (κ·Sync)²),  ± = the sign of z_Δ / Sync
 
-γ α β ε ζ η are `?kz=` `?kdn=` `?kmau=` `?kser=` `?kdisp=` `?kbyt=`, each 0..1 and independent; 0 leaves that channel out; default γ = 1, the rest 0, so Z\* = |Z/σ_z|. Every channel is in σ of its own block, so a 3 weighs the same anywhere: Mau 4 alone is 4, Z/σ_z 0,3 with Mau 4 is √(0,09 + 16) ≈ 4,0. **Z\* ≥ 0**; each channel's sign stays in its own column. A missing channel adds nothing. z_Δ = Φ⁻¹(1 − P_χ²(df)(df·Δn²)) (`dn_z()`), clamped to ±5; df = Σ over the five channels of (nodes − 1), 45 at 10 nodes: Δn = 0,8 → +1,9. Only agreement counts.
-**Σ Z\* in the scoring is not a sum of Z\***: each channel is summed with its sign (Z as Z/σ_z of its pass, Δn as z_Δ), and Z\*_Σ = the formula above on S_c/√n_c; the stored sum is √n·Z\*_Σ, so the Σ/√n pick ranks on Z\*_Σ. Z/σ_z +2 and −2 over two passes give 0. ⚠ The start form types each weight as a whole percent 0–100 and sends the fraction: 80 in the field is `?kdn=0.80`. `?kdn=80` is refused. A column enters Z\* only through its weight; as the pool criterion it still picks the pool and the extreme set on its own sum.
-- **Z** — binomial of the camera LSBs in that window, block-centred Stouffer combine; σ_z is that block's own σ (scoring: the pass span).
-- **Mau, Disp, Ser, Byt** — per node a window statistic (Maurer z, window σ, lag-1..4 serial z, byte χ² z), centred on that node's block mean (scoring: the pass mean; a node with < 2 values stays out), Stouffer over the combined nodes, divided by the block's own σ of that combine: unit variance, read against 0, **—** until centred.
-- **Δn** — node agreement **pooled over Z, Mau, Ser, Disp and Byt** (`node_span_agree()`): per channel each node centred and divided by its own σ over the span (÷ n, not n − 1: in-span scaling would otherwise read Δn ≈ √((n−1)/n), 0,93 at n = 7), squared deviations from the nodes' mean summed over the channels, ÷ df. Read against **1**, null σ ≈ 0,1 at 10 nodes; enters Z\* as z_Δ, only below the null; **—** (never 0) when unknown. ⚠ A pass row stores no df: it is taken as 5·(k − 1), exact when every combined node reported every channel and has ≥ 3 items in the block. Scoring uses the exact df.
-- **Sync** — published only; enters no Z\*, no sum, no ranking.
+γ α β ε ζ η κ are `?kz=` `?kdn=` `?kmau=` `?kser=` `?kdisp=` `?kbyt=` `?ksync=`, each 0..1 and independent; 0 leaves that channel out; default γ = 1, the rest 0, so Z\* = |Z/σ_z|. Every channel is in σ of its own block, so a 3 weighs the same anywhere: Mau 4 alone is 4, Z/σ_z 0,3 with Mau 4 is √(0,09 + 16) ≈ 4,0. **Z\* ≥ 0**; each channel's sign stays in its own column. A missing channel adds nothing. z_Δ = Φ⁻¹(1 − P_χ²(df)(df·Δn²)) (`dn_z()`), clamped to ±5; df = Σ over the five channels of (nodes − 1), 45 at 10 nodes: Δn = 0,8 → +1,9.
+⛔ **Unusual means the cameras saw something TOGETHER.** z_Δ > 0 (they agreed) and Sync > 0 (they moved together) raise Z\*; z_Δ < 0 (they contradicted) and Sync < 0 (they moved against each other) subtract their square and lower it, down to 0: Mau 4 with z_Δ −3 is √(16 − 9) ≈ 2,65; a lone camera glitch (z_Δ −5) takes Z\* to 0 unless the other channels exceed 5. Z, Mau, Ser, Disp and Byt count either sign.
+**Σ Z\* in the scoring is not a sum of Z\***: each channel is summed with its sign (Z as Z/σ_z of its pass, Δn as z_Δ), and Z\*_Σ = the formula above on S_c/√n_c; the stored sum is √n·Z\*_Σ, so the Σ/√n pick ranks on Z\*_Σ. Z/σ_z +2 and −2 over two passes give 0. ⚠ The start form types each weight as a whole percent 0–100 and sends the fraction: 80 in the field is `?kdn=0.80`. `?kdn=80` is refused. A column enters Z\* only through its weight.
+- **Z** — binomial of the camera LSBs in that window, block-centred Stouffer combine; σ_z is that block's own sample σ; in the scoring the pass span's robust MAD estimate (sample σ below 5 numbers).
+- **Mau, Disp, Ser, Byt** — per node a window statistic (Maurer z, window σ, lag-1..4 serial z, byte χ² z), centred on that node's block mean (scoring: the pass mean; a node with < 2 values stays out), Stouffer over the combined nodes, divided by the block's own sample σ of that combine (scoring: the pass span's MAD σ, `node_span_col(…, robust)`): unit variance, read against 0, **—** until centred.
+- **Δn** — node agreement **pooled over Z, Mau, Ser, Disp and Byt** (`node_span_agree()`): per channel each node centred and divided by its own σ over the span (÷ n, not n − 1: in-span scaling would otherwise read Δn ≈ √((n−1)/n), 0,93 at n = 7), squared deviations from the nodes' mean summed over the channels, ÷ df. Read against **1**, null σ ≈ 0,1 at 10 nodes; enters Z\* as z_Δ, agreement adding and contradiction subtracting; **—** (never 0) when unknown. ⚠ A pass row stores no df: it is taken as 5·(k − 1), exact when every combined node reported every channel and has ≥ 3 items in the block. Scoring uses the exact df.
+- **Sync** — the cameras moving together inside the window: per time slot the products of every two combined nodes' slot z, summed over the slots ÷ √(number of products), centred on the block mean and divided by the block's own σ (scoring: the pass), read against 0, **—** until centred or with fewer than two nodes. Enters Z\* squared with its sign: + adds, − subtracts; a column and a scoring sum like the others.
 - How each column is built, its thresholds, the worked stack and the wire tags: skill `ranking-channels`.
 
 ⚠ Ser and Byt are stored per row in thousandths (±32; `run_ser()` / `run_byt()`), so the `results[]` row stays 48 bytes.
 
-⚠ Z is divided by the σ of **that item's block**, frozen at close. There is **no** session-wide σ — `s_bsig[block].sig_p` is the only scale, and `/loops` no longer publishes it. A key with no block σ is 0, never a fallback. Z\* is not re-standardised: with m channels on, Z\*² is ≈ χ² with m degrees of freedom under independence, so a row with a missing channel ranks lower.
+⚠ Z is divided by the σ of **that item's block**, frozen at close. There is **no** session-wide σ — `s_bsig[block].sig_p` (the block's **sample** σ) is the only scale; `/loops` does not publish it. The scoring span uses MAD×1,4826×n/(n−0,8) instead (`robust_sigma()`, called from `score_build_keys()`): at 12..50 numbers a lone extreme masks itself in a sample σ, at 252..400 pass items barely, and MAD is the noisier scale — more null items above 3 σ. A near-constant scoring span (σ² ≤ 1e-9) publishes σ_z 0. A key with no block σ is 0, never a fallback. Z\* is not re-standardised: with m of Z, Mau, Ser, Disp, Byt on, their part of Z\*² is ≈ χ² with m degrees of freedom under independence, and z_Δ, Sync add 0 on average, so a row with a missing channel ranks lower.
 ⚠ Uncentred z ranks NODES, not items — a live table is meaningless before the first block closes.
-⛔ **The key is UNBOUNDED — nothing truncates an extreme item**. Z/σ_z sits inside its block (`|Z/σ_z| ≤ (n−1)/√n`), z_Δ stops at 5; Ser, Disp, Mau and Byt do not, and a quiet block can then produce a large key. ⚠ The last round of a session is short because Abort cut it.
+⛔ **Nothing truncates an extreme item** — no cap, no clip; only z_Δ stops at 5. ⚠ The scales still bound some channels: a value divided by the **sample** σ of its own span of n items cannot exceed (n−1)/√n (n = 252: 15,8; Euro scoring n = 12: 3,2), and a lone extreme inflates the σ that divides it. That holds for every pass channel, for Sync and Δn's per-node scales in the scoring too, and for each node's own scale inside Z before the combine. The scoring's Z/σ_z, Mau, Ser, Disp and Byt are divided by the MAD span σ and are not bound. ⚠ The last round of a session is short because Abort cut it.
 
 ## Stored z is RAW; ranking is block-centred
 - **`z_score` is the raw combined Stouffer z and is never rewritten.** It stays beside `z_ctr` in
@@ -318,8 +303,9 @@ timestamps. Fields, ring and `rec` record: skill `camlog` — read it before int
 the master. The slave has no session state of its own and derives one from the master's traffic:
 `M`/`K` latch it (and the end of a sweep re-stamps it), `A` releases it, 120 s of silence
 releases it — ⚠ `SESSION_IDLE_MS` must stay above the 60 s settle pause, which sends nothing.
-- ⚠ **OTA keeps the NARROW predicate** (`g_measuring`, the ~2 s window) — "abort, then flash" is
-  unchanged and `/update` is not blocked for a whole session.
+- ⚠ **OTA uses the same session predicate**: `/update` answers 409 for the whole session on every
+  node (slave: `slave_busy()`, master: `session_running()`). "Abort, then flash" works because `A`
+  releases the slave latch.
 - ⚠ **The idle release is a deliberate hole**: a long parked phase leaves the latch to expire
   under it. It is kept because without it a master crash would leave every slave locked until
   someone rebooted it.

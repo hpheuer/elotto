@@ -21,7 +21,7 @@
 ## Resources
 - **PSRAM is mandatory**: capture buffers, the LSB-ones side ring (`s_ring_raw`), `loop_hist`,
   per-item per-node archives (`s_node_z` and the Mau / Ser / Disp / Byt copies, sized to `NUM_RUNS`),
-  the scoring-sum log (`SCORE_SNAP_MAX` 128 snaps, ~225 KB) and the camera-jump board
+  the scoring-sum log (`SCORE_SNAP_MAX` 128 snaps, ~34 KB) and the camera-jump board
   (`WSIG_KEEP_N` 100 rows, ~7 KB), and the full table (`FULL_MAX` 250000 rows, ~13 MB of the
   ~22 MB free in a session).
   The word ring `s_ring` (64 KB) is **internal RAM**; `results[]` stays internal too:
