@@ -52,7 +52,8 @@ int  nodes_slave_count(void);
 void slave_trigger(int nseg);
 
 // Wait for replies to the command in flight. `critical` marks a round whose
-// loss should count toward the drop rule. Returns how many nodes answered.
+// loss counts (lost, net_lost, miss streak, drop); a non-critical round
+// touches none of them. Returns how many nodes answered.
 int  nodes_collect(int timeout_ms, bool critical);
 
 /* This slave's z for the round just collected. Returns false if it did not

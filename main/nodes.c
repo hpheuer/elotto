@@ -298,11 +298,15 @@ int nodes_collect(int timeout_ms, bool critical)
         }
     }
 
+    /* A non-critical round ('D' diagnostics) neither counts a loss nor moves
+     * the miss streak, in either direction: it says nothing about whether the
+     * node can still measure, and a reply to it must not erase a real streak. */
+    if (!critical) return got;
     for (int k = 0; k < s_nslaves; k++) {
         if (!g_status.nodes[k + 1].ok) continue;
         if (s_link[k].replied) { s_link[k].miss_streak = 0; continue; }
         g_status.nodes[k + 1].lost++;
-        if (critical) g_status.net_lost++;
+        g_status.net_lost++;
         if (++s_link[k].miss_streak >= NODE_MISS_LIMIT) {
             g_status.nodes[k + 1].ok = false;
             g_status.node_ok--;
@@ -856,9 +860,6 @@ void slaves_diag(void)
             }
         }
     }
-    // A 'D' miss must not count toward the drop rule — it says nothing about
-    // whether the node can still measure.
-    for (int k = 0; k < s_nslaves; k++) s_link[k].miss_streak = 0;
 }
 
 void slave_probe(void) { nodes_discover(); }

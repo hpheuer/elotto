@@ -2647,10 +2647,12 @@ static void record_loop(double loop_mean, int loop_idx)
     g_status.nodes[0].cam_mbit   = (float)cs.mbit_per_sec;
     g_status.nodes[0].cam_stalls = cs.stalls;
 
+    /* Range over blocks that HAVE a σ: a σ-less block (< 4 items) must not
+     * count as the first one, or sigma_lo would stay 0 for the session. */
     double s = g_status.loop_sigma;
     if (s > 0.0) {
-        if (g_status.loops_done == 0 || s < g_status.sigma_lo) g_status.sigma_lo = s;
-        if (g_status.loops_done == 0 || s > g_status.sigma_hi) g_status.sigma_hi = s;
+        if (!(g_status.sigma_lo > 0.0) || s < g_status.sigma_lo) g_status.sigma_lo = s;
+        if (s > g_status.sigma_hi) g_status.sigma_hi = s;
     }
     // The master's RAW per-run offset this block. v3 subtracts nothing from
     // the master's z (znode[0] IS zraw), so mean_n[0] already carries the
