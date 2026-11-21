@@ -40,3 +40,11 @@
   ⚠ The signature is consumption halving EXACTLY while all other nodes stay normal.
   ⚠ **One fast session proves nothing here** — it was intermittent. Re-test any new task in this
   path over ~20 session starts.
+- ⚠ **`elotto_task`'s stack is load-bearing too**: `ELOTTO_TASK_STACK` 16384 (`sensor.h`). The
+  deepest chain is the sweep candidate after a scoring pass — `score_run()` (~4,8 KB of locals) →
+  `calibrate_all()` → `camera_calibrate()` → `cal_step()` → a float `ESP_LOGI` — and needs
+  ~8,2 KB; it only runs with `?passes=` > 1 once the first post-start sweep is due. An overflow
+  trips the FreeRTOS canary: the master panics and reboots (`/status` `reset_reason` `PANIC`).
+  `/status` `task_stack_free` is the least free stack this session — read it after adding locals
+  or calls anywhere on that chain. `heap_int_*` / `heap_ps_*` (free, minimum, largest block) are
+  the leak check: free must not fall from round to round.
