@@ -15,6 +15,7 @@
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "esp_timer.h"
+#include "esp_system.h"   /* esp_reset_reason() for /status reset_reason */
 #include "esp_app_desc.h"   /* the running image's version/sha for /status and /diagjson */
 #include "gcp.h"           /* GCP_SEGMENT_BITS, for the round-length model */
 #include "sensor.h"
@@ -2057,6 +2058,32 @@ static int buf_append(char *buf, size_t cap, int *pos, const char *fmt, ...)
  * is the right encoding for "this node did not report it"; a 0,0 would be
  * plausible and would get regressed on. Every float that can be NAN goes out
  * through this rule, here and in /loops. */
+/* Why this boot happened, read once in app_main. A panic or watchdog here
+ * means the PREVIOUS run crashed; the backtrace went to UART only. */
+static const char *s_reset_reason = "UNKNOWN";
+
+static const char *reset_reason_str(esp_reset_reason_t r)
+{
+    switch (r) {
+    case ESP_RST_POWERON:   return "POWERON";
+    case ESP_RST_EXT:       return "EXT";
+    case ESP_RST_SW:        return "SW";
+    case ESP_RST_PANIC:     return "PANIC";
+    case ESP_RST_INT_WDT:   return "INT_WDT";
+    case ESP_RST_TASK_WDT:  return "TASK_WDT";
+    case ESP_RST_WDT:       return "WDT";
+    case ESP_RST_DEEPSLEEP: return "DEEPSLEEP";
+    case ESP_RST_BROWNOUT:  return "BROWNOUT";
+    case ESP_RST_SDIO:      return "SDIO";
+    case ESP_RST_USB:       return "USB";
+    case ESP_RST_JTAG:      return "JTAG";
+    case ESP_RST_EFUSE:     return "EFUSE";
+    case ESP_RST_PWR_GLITCH:return "PWR_GLITCH";
+    case ESP_RST_CPU_LOCKUP:return "CPU_LOCKUP";
+    default:                return "UNKNOWN";
+    }
+}
+
 static esp_err_t status_handler(httpd_req_t *req)
 {
     /* The master's own camera, for the fields nodes[0] cannot get from
@@ -2103,7 +2130,7 @@ static esp_err_t status_handler(httpd_req_t *req)
         /* Which side went quiet. uptime_ms is what makes the stamps
          * readable: there is no RTC, so wall time of an event is
          * now - (uptime_ms - stamp), computed by whoever polls. */
-        "\"uptime_ms\":%lld,"
+        "\"uptime_ms\":%lld,\"reset_reason\":\"%s\","
         "\"eth_up\":%s,\"eth_downs\":%lu,\"eth_lost_ips\":%lu,"
         "\"eth_last_down_ms\":%lld,\"eth_last_up_ms\":%lld,"
         "\"drop_node\":%d,\"drop_uptime_ms\":%lld,"
@@ -2150,7 +2177,7 @@ static esp_err_t status_handler(httpd_req_t *req)
         g_status.node_count, g_status.node_ok,
         (unsigned long)g_status.net_retries, (unsigned long)g_status.net_lost,
         (unsigned long)g_status.net_stale,
-        (long long)(esp_timer_get_time() / 1000),
+        (long long)(esp_timer_get_time() / 1000), s_reset_reason,
         g_status.eth_up ? "true" : "false",
         (unsigned long)g_status.eth_downs,
         (unsigned long)g_status.eth_lost_ips,
@@ -4138,6 +4165,9 @@ void app_main(void)
         ret = nvs_flash_init();
     }
     ESP_ERROR_CHECK(ret);
+
+    s_reset_reason = reset_reason_str(esp_reset_reason());
+    evlog("Boot - reset reason %s", s_reset_reason);
 
     /* Before anything that can itself crash: counts boots that never reached a
      * healthy uptime and falls back to the factory updater. This is the only

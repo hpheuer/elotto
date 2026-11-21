@@ -254,6 +254,10 @@ design. It replies `E:<reason>`; the master names it in `fault`, drops it, bumps
 sends `R`; it rejoins the *next* session by discovery. The session aborts (`src_stalled`) only if
 the drop would leave fewer than two nodes. ⚠ **The master never reboots itself** — that would
 destroy `/loops` and the operator's results. It faults, reports, aborts.
+`/status` `reset_reason` (and the Log's first line, "Boot - reset reason …") names why the master
+last booted: `PANIC`/`*_WDT`/`CPU_LOCKUP` = it crashed, `SW` = OTA or restart, `POWERON`/`BROWNOUT`
+= power. The backtrace goes to UART only; a crashed master's last windows survive in the slaves'
+`/camlog` rings.
 
 A run that dies part-way produces **no z at all** (`gcp_zscore_raw()` returns false) — archived with
 `k=0` (VOID), never ranked, never normalised short.
