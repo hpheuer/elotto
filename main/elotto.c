@@ -15,6 +15,7 @@
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "esp_timer.h"
+#include "esp_heap_caps.h" /* heap figures in /status */
 #include "esp_system.h"   /* esp_reset_reason() for /status reset_reason */
 #include "esp_app_desc.h"   /* the running image's version/sha for /status and /diagjson */
 #include "gcp.h"           /* GCP_SEGMENT_BITS, for the round-length model */
@@ -2131,6 +2132,10 @@ static esp_err_t status_handler(httpd_req_t *req)
          * readable: there is no RTC, so wall time of an event is
          * now - (uptime_ms - stamp), computed by whoever polls. */
         "\"uptime_ms\":%lld,\"reset_reason\":\"%s\","
+        /* Heap, internal and PSRAM: free now, lowest free since boot, largest
+         * free block. A leak shows as free/min falling across sessions. */
+        "\"heap_int_free\":%u,\"heap_int_min\":%u,\"heap_int_big\":%u,"
+        "\"heap_ps_free\":%u,\"heap_ps_min\":%u,\"heap_ps_big\":%u,"
         "\"eth_up\":%s,\"eth_downs\":%lu,\"eth_lost_ips\":%lu,"
         "\"eth_last_down_ms\":%lld,\"eth_last_up_ms\":%lld,"
         "\"drop_node\":%d,\"drop_uptime_ms\":%lld,"
@@ -2178,6 +2183,12 @@ static esp_err_t status_handler(httpd_req_t *req)
         (unsigned long)g_status.net_retries, (unsigned long)g_status.net_lost,
         (unsigned long)g_status.net_stale,
         (long long)(esp_timer_get_time() / 1000), s_reset_reason,
+        (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+        (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
+        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+        (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+        (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM),
+        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM),
         g_status.eth_up ? "true" : "false",
         (unsigned long)g_status.eth_downs,
         (unsigned long)g_status.eth_lost_ips,
