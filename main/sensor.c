@@ -2611,10 +2611,6 @@ static void record_loop(double loop_mean, int loop_idx)
         memset(L, 0, sizeof(*L));
         L->mean  = (float)loop_mean;
         L->sigma = (float)g_status.loop_sigma;
-        /* Ranking scale of THIS block. Frozen just before this call, so
-         * the row can say what rank_key() divided by. 0 = too few items. */
-        if (loop_idx >= 0 && loop_idx < BSIG_MAX && s_bsig) {
-        }
         L->nodes = (uint8_t)g_status.node_count;
         L->t_s   = (uint32_t)(g_status.elapsed_ms / 1000);
         // 0 when this loop skipped the sweep — g_status.cal_ms still holds the
