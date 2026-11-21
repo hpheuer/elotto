@@ -45,7 +45,8 @@ Scoring numbers and measuring combinations use the same key.
   up to `?maxruns=` combinations once each (default 100, max 400) → score again.
   `?maxruns=0` scores numbers only.
 - **Windows:** `?run=` per combination, `?srun=` per number, each 0,2–22 s (default 5);
-  `?gap=` 0–10 s between windows.
+  pause between windows `?gap=` 0–10 s or `?gappct=` 0–100 % of the window (form field
+  Gap (%), default 5).
 - **Blocks:** one round = one block. Centring, drift, pairwise matrix, soft-down and a camera
   sweep candidate sit at the round boundary.
 - **UI:** parameter line from `/status`, live "Now:" card, sortable Top-10 (Z\*, Z, Disp, Δn,

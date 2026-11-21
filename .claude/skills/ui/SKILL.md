@@ -65,7 +65,8 @@ API default) are in the root `CLAUDE.md` under **UI**.
   round.
 - **The start form remembers its last values** (NVS, survives reboot and OTA); only the web UI
   sends `confirm=1`. A curl start that omits `kdn` / `kmau` / `kser` / `kdisp` / `kbyt` / `ksync` runs at 0
-  and does not overwrite the stored form weights. Mode is not remembered — it is which button was
+  and does not overwrite the stored form weights; one without `gappct` leaves the stored
+  Gap (%) alone. Mode is not remembered — it is which button was
   pressed.
 
 ## Current-item display

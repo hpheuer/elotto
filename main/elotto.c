@@ -28,6 +28,8 @@
 static const char *TAG = "ELOTTO";
 
 static void prefs_save(void);
+/* The gap percent of the start being saved; <0 = that start sent none. */
+static int s_pref_gap_pct = -1;
 
 #define ETH_MDC_GPIO      31
 #define ETH_MDIO_GPIO     52
@@ -240,6 +242,17 @@ static const char HTML[] =
 " value='" EL_STR(RUN_S_DEFAULT) "' min='" EL_STR(RUN_S_MIN) "'"
 " max='" EL_STR(RUN_S_MAX) "' step='0.1' oninput='unlimHint()'>"
 "<span style='color:#8fae8f;font-size:.85em;white-space:nowrap'>per number</span>"
+"</span>"
+"</div>"
+"<div class='frow'>"
+"<label for='numGapPct' title='Pause after every window, in percent of that window: "
+"Scoring Time for the scoring, Measuring Time for the pass. The item boundary is the "
+"flush on every trigger, not this pause, so 0 never mixes two items.'>Gap (%):</label>"
+"<span style='display:flex;align-items:center;gap:8px'>"
+"<input id='numGapPct' class='fin' type='number'"
+" value='" EL_STR(GAP_PCT_FORM_DEFAULT) "' min='0' max='" EL_STR(GAP_PCT_MAX) "' step='1'"
+" oninput='unlimHint()'>"
+"<span style='color:#8fae8f;font-size:.85em;white-space:nowrap'>of each window</span>"
 "</span>"
 "</div>"
 "<div class='frow'>"
@@ -588,9 +601,11 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "var m=0;if(!d||!d.nodes)return 0;"
 "for(var i=0;i<d.nodes.length;i++){var r=d.nodes[i].cam_mbit;"
 "if(r>0&&(m===0||r<m))m=r;}return m;}"
-/* The gap is the device's auto rule (no ?gap= sent): 40 % of the measuring
-   time, mirrored here for the preview. */
-"function gapFor(runS){var g=runS*0.4;"
+/* The gap the form sends: Gap (%) of the phase's own window, the device's
+   ?gappct= rule mirrored for the preview. */
+"function formGapPct(){var v=parseInt(document.getElementById('numGapPct').value);"
+"if(isNaN(v)||v<0)v=0;if(v>" EL_STR(GAP_PCT_MAX) ")v=" EL_STR(GAP_PCT_MAX) ";return v;}"
+"function gapFor(runS){var g=runS*formGapPct()/100;"
 "if(g<" EL_STR(GAP_S_MIN) ")g=" EL_STR(GAP_S_MIN) ";if(g>" EL_STR(GAP_S_MAX) ")g=" EL_STR(GAP_S_MAX) ";return g;}"
 "function formRunS(id){var v=parseFloat(document.getElementById(id).value);"
 "if(!(v>0))v=" EL_STR(RUN_S_DEFAULT) ";else if(v<" EL_STR(RUN_S_MIN) ")v=" EL_STR(RUN_S_MIN) ";"
@@ -836,6 +851,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 // answers 400, so never let the form send it.
 "if(mxr!==0&&passes===0)passes=" EL_STR(SCORE_PASSES_DEFAULT) ";"
 "document.getElementById('numPasses').value=passes;"
+"var gpct=formGapPct();document.getElementById('numGapPct').value=gpct;"
 // Fields hold whole percents 0..100. /start answers 400 outside 0..1, so
 // this returns the fraction (80 -> "0.80"). Empty or out of range -> 0.
 "function clampW(id){var e=document.getElementById(id);var v=parseFloat(e.value);"
@@ -855,7 +871,7 @@ EL_STR(CYCLE_FIXED_MS) "+gapS*1000;}"
 "fetch('/start?mode='+mode"
 "+'&run='+runS+'&srun='+srunS"
 "+'&kdn='+kdn+'&kmau='+kmau+'&kser='+kser+'&kdisp='+kdisp+'&kbyt='+kbyt+'&ksync='+ksync+'&kz='+kz+'&fix='+fix"
-"+'&maxruns='+mxr+'&passes='+passes+'&confirm=1',{method:'POST'})"
+"+'&maxruns='+mxr+'&passes='+passes+'&gappct='+gpct+'&confirm=1',{method:'POST'})"
 ".then(function(r){if(!r.ok){"
 "document.getElementById('runsErr').textContent="
 "'\\u26a0 a session is already running \\u2014 abort it first';"
@@ -2959,6 +2975,7 @@ typedef struct {
     int        run_ms;
     int        srun_ms;     /* <0 = omitted, scoring uses run_ms */
     int        gap_ms;      /* <0 = omitted, derive per phase after the walk */
+    int        gap_pct;     /* <0 = omitted; ?gappct=, per phase after the walk */
     int        cal_ms;
     bool       fake_pool;
     double     k_dn, k_mau, k_ser, k_disp, k_byt, k_sync, k_z;
@@ -3004,6 +3021,17 @@ static bool start_parse_gap(const char *val, StartReq *r, httpd_req_t *req)
         return false;
     }
     r->gap_ms = (int)(gs * 1000.0 + 0.5);
+    return true;
+}
+static bool start_parse_gappct(const char *val, StartReq *r, httpd_req_t *req)
+{
+    int p;
+    if (!parse_int_all(val, &p) || p < 0 || p > GAP_PCT_MAX) {
+        start_refuse(req, "gappct= must be a whole percent between 0 and "
+                     EL_STR(GAP_PCT_MAX));
+        return false;
+    }
+    r->gap_pct = p;
     return true;
 }
 static bool start_parse_w01(const char *val, double *dst, httpd_req_t *req,
@@ -3194,6 +3222,7 @@ static const StartKey start_keys[] = {
     { "run",       NULL, start_parse_run },
     { "srun",      NULL, start_parse_srun },
     { "gap",       NULL, start_parse_gap },
+    { "gappct",    NULL, start_parse_gappct },
     { "score",
       "score= no longer exists -- the pool is always the numbers with the "
       "largest sum of Z*", NULL },
@@ -3353,10 +3382,10 @@ static void start_snap_restore(const StartSnap *s)
     g_status.state         = s->state;
 }
 
-/* The auto gap: 40 % of a phase's window, clamped to GAP_S_MIN..GAP_S_MAX. */
-static int start_auto_gap_ms(int win_ms)
+/* A phase's gap as `pct` % of its window, clamped to GAP_S_MIN..GAP_S_MAX. */
+static int start_pct_gap_ms(int win_ms, int pct)
 {
-    int g = (int)(win_ms * 0.4 + 0.5);
+    int g = (int)(win_ms * (pct / 100.0) + 0.5);
     if (g < (int)(GAP_S_MIN * 1000)) g = (int)(GAP_S_MIN * 1000);
     if (g > (int)(GAP_S_MAX * 1000)) g = (int)(GAP_S_MAX * 1000);
     return g;
@@ -3393,6 +3422,7 @@ static esp_err_t start_handler(httpd_req_t *req)
             .run_ms    = RUN_S_DEFAULT * 1000,
             .srun_ms   = -1,
             .gap_ms    = -1,
+            .gap_pct   = -1,
             .cal_ms    = CAL_BUDGET_DEFAULT_MS,
             .k_dn      = ZSTAR_W_DEFAULT,
             .k_mau     = ZSTAR_W_DEFAULT,
@@ -3436,14 +3466,20 @@ static esp_err_t start_handler(httpd_req_t *req)
                     "fix= for 6 of 49 must be 0 or " EL_STR(FIX_MIN_49) "..6");
         }
 
+        /* One gap rule per start: seconds for both phases, or a percent of
+         * each phase's own window. */
+        if (parsed.gap_ms >= 0 && parsed.gap_pct >= 0)
+            return start_refuse(req, "give gap= (seconds) or gappct= (percent), not both");
+
         /* ?srun= omitted → the scoring measures as long as the pass.
-         * ?gap= present → both phases; omitted → 40 % of each phase's own
-         * window, floor GAP_S_MIN. */
+         * ?gap= present → both phases; ?gappct= → that percent of each
+         * phase's own window; neither → GAP_AUTO_PCT of it. */
         if (parsed.srun_ms < 0) parsed.srun_ms = parsed.run_ms;
         int sgap_ms = parsed.gap_ms;
         if (parsed.gap_ms < 0) {
-            parsed.gap_ms = start_auto_gap_ms(parsed.run_ms);
-            sgap_ms       = start_auto_gap_ms(parsed.srun_ms);
+            int pct = parsed.gap_pct >= 0 ? parsed.gap_pct : GAP_AUTO_PCT;
+            parsed.gap_ms = start_pct_gap_ms(parsed.run_ms, pct);
+            sgap_ms       = start_pct_gap_ms(parsed.srun_ms, pct);
         }
         int segments  = start_segs_ms(parsed.run_ms);
         int ssegments = start_segs_ms(parsed.srun_ms);
@@ -3486,8 +3522,10 @@ static esp_err_t start_handler(httpd_req_t *req)
         }
         /* After the task exists, because prefs_save() reads g_status and a
          * 500 must not have written NVS. */
-        if (parsed.from_form)
+        if (parsed.from_form) {
+            s_pref_gap_pct = parsed.gap_pct;
             prefs_save();
+        }
     }
     httpd_resp_sendstr(req, "ok");
     return ESP_OK;
@@ -3937,6 +3975,7 @@ static void prefs_save(void)
     nvs_set_u8(h,  "ksync", pref_w100(g_status.k_sync));
     nvs_set_u8(h,  "kz",    pref_w100(g_status.k_z));
     nvs_set_u8(h,  "fix",   (uint8_t)g_status.pool_fix);
+    if (s_pref_gap_pct >= 0) nvs_set_u8(h, "gappct", (uint8_t)s_pref_gap_pct);
     nvs_commit(h);
     nvs_close(h);
 }
@@ -3948,7 +3987,7 @@ static void prefs_send(httpd_req_t *req)
     uint16_t run10 = 0, srun10 = 0, maxruns = 0;
     uint8_t passes = 0;
     uint8_t kdn = 0xff, kmau = 0xff, kser = 0xff, kdisp = 0xff, kbyt = 0xff, ksync = 0xff,
-            kz = 0xff, fix = 0xff;
+            kz = 0xff, fix = 0xff, gappct = 0xff;
     bool any = false;
     /* maxruns and passes now have 0 as a real value (scoring-only / continuous),
      * so remember them on presence, not on being non-zero. The old "wpre"
@@ -3966,6 +4005,7 @@ static void prefs_send(httpd_req_t *req)
     if (nvs_get_u8(h,  "ksync", &ksync) == ESP_OK) any = true;
     if (nvs_get_u8(h,  "kz",    &kz) == ESP_OK) any = true;
     if (nvs_get_u8(h,  "fix",   &fix) == ESP_OK) any = true;
+    if (nvs_get_u8(h,  "gappct", &gappct) == ESP_OK) any = true;
     nvs_close(h);
     if (!any) return;
 
@@ -4024,6 +4064,10 @@ static void prefs_send(httpd_req_t *req)
         p += snprintf(js + p, sizeof(js) - p,
             "e=document.getElementById('numFix');if(e)e.value='%u';",
             (unsigned)(fix > 6 ? 0 : fix));
+    if (gappct != 0xff)
+        p += snprintf(js + p, sizeof(js) - p,
+            "e=document.getElementById('numGapPct');if(e)e.value='%u';",
+            (unsigned)(gappct > GAP_PCT_MAX ? GAP_PCT_MAX : gappct));
     p += snprintf(js + p, sizeof(js) - p, "paintFormula();unlimHint();})();</script>");
     if (p > 0 && p < (int)sizeof(js))
         httpd_resp_send_chunk(req, js, p);

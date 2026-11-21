@@ -133,6 +133,13 @@ typedef uint16_t node_mask_t;   // bit i = node i; MAX_NODES below must fit
 #define RUN_S_MAX               22
 #define GAP_S_MIN                0
 #define GAP_S_MAX               10
+/* ?gappct=: the gap of each phase as a whole percent of that phase's own
+ * window, clamped to GAP_S_MAX. Neither ?gap= nor ?gappct= → GAP_AUTO_PCT.
+ * The start form sends ?gappct= and starts at GAP_PCT_FORM_DEFAULT; that
+ * changes no API default. */
+#define GAP_PCT_MAX            100
+#define GAP_AUTO_PCT            40
+#define GAP_PCT_FORM_DEFAULT     5
 /* The segs↔ms calibration RUN_SEGS_REF / RUN_MS_REF lives in elotto_link.h:
  * the nodes cut their time slots by it too. */
 /* The wire caps the segment count at EL_SEG_MAX, and a receiver REFUSES an

@@ -6,7 +6,7 @@ description: Every /start key, its range and default, the 400 refusals, the meas
 # /start — keys, ranges, refusals
 
 `/start` is a **whitelist**: an unknown key answers **400**. Deleted keys (`loops`, `runs`, `rank`, `focus`, `went`, `wruns`,
-`baseline`, `calint`, `unlimited=0`, `wpre`) keep a specific 400. Allowed: `mode`, `run`, `srun`, `gap`,
+`baseline`, `calint`, `unlimited=0`, `wpre`) keep a specific 400. Allowed: `mode`, `run`, `srun`, `gap`, `gappct`,
 `kdn`, `kmau`, `kser`, `kdisp`, `kbyt`, `ksync`, `kz`, `fix`, `maxruns`, `passes`, `confirm`, `cal`, `unlimited`, `fakepool` (TEST: `1` skips the scoring and draws a random pool). An empty key (`?=x`), a value over
 `START_VAL_MAX` 31 characters and a query string over 255 characters each answer **400** as well
 — a truncated value or query must never read as "key absent" and resolve to the default.
@@ -26,8 +26,11 @@ description: Every /start key, its range and default, the 400 refusals, the meas
 5; out of range answers **400**, no fallback. Each phase triggers its own segment count
 (`run_segs` / `srun_segs` in `/status`). The 22 s ceiling is `RUN_S_MAX`; the wire allows `EL_SEG_MAX` 3000000 divided by the measured
 rate (`EL_SEG_MAX / (RUN_SEGS_REF/RUN_MS_REF)` ≈ 22,5 s), not a camera limit; the rate is measured to 14,7 s.
-`?gap=<s>` if present must be 0–10 s, else **400**, and applies to both phases; omitted →
-40 % of each phase's own window (`gap_s` / `sgap_s`), no floor; `?gap=0` is legal — the flush on `M`, not the gap, separates items.
+`?gap=<s>` if present must be 0–10 s, else **400**, and applies to both phases. `?gappct=<p>` (whole
+percent 0–100, else **400**) sets each phase's gap to p % of its own window, capped at 10 s; both
+keys at once answer **400**. Neither → `GAP_AUTO_PCT` 40 % of each phase's own window
+(`gap_s` / `sgap_s`), no floor. A gap of 0 is legal — the flush on `M`, not the gap, separates items.
+The start form sends `?gappct=` (field **Gap (%)**, starts at `GAP_PCT_FORM_DEFAULT` 5).
 The sweep's mini-runs use the pass window; in a `?maxruns=0` session the scoring window.
 - ⚠ z is normalised by √segments, so a number's scoring z and an item's z are comparable in unit;
   the scoring sums and the pass blocks are never mixed anyway.
