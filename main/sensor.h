@@ -56,6 +56,12 @@ typedef uint16_t node_mask_t;   // bit i = node i; MAX_NODES below must fit
 #define SCORE_PASSES_DEFAULT 20
 #define SCORE_PASSES_MIN      1
 #define SCORE_PASSES_MAX    100
+/* elotto_task's stack, bytes. ⚠ The deepest chain is a sweep candidate after a
+ * scoring pass: score_run() (~4,8 KB of locals) → calibrate_all() →
+ * camera_calibrate() → cal_step() → ESP_LOGI with float arguments, ~8,5 KB —
+ * 8192 overflows it. Re-check /status `task_stack_free` (least free stack this
+ * session) after adding locals anywhere on that chain. */
+#define ELOTTO_TASK_STACK   16384
 #define SCORE_START_PAUSE_MS 2000   // idle break before each round's scoring 
 // Eurojackpot: C(12,5)·C(5,2) = 7920 — the largest configuration under the
 // ~10000 the user set as the ceiling (13+5 would be 12870). 6-of-49: 5005.
@@ -930,6 +936,7 @@ typedef struct {
     int              score_gap_ms;        // scoring blank (?gap=, else 40 % of srun)
     int              score_segments;      // segment count of the scoring window
     uint32_t         win_n_score, win_n_pass;  // windows triggered per phase, per session
+    uint32_t         stack_free_min;   // elotto_task's least free stack this session, bytes; 0 = not yet sampled
     /* Runs voided because the pre-window ring flush did not finish in
      * ONSET_SETTLE_MS. Published in /status: a silent
      * safeguard that fires is indistinguishable from one that never had to. */

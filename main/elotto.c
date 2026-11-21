@@ -2136,6 +2136,7 @@ static esp_err_t status_handler(httpd_req_t *req)
          * free block. A leak shows as free/min falling across sessions. */
         "\"heap_int_free\":%u,\"heap_int_min\":%u,\"heap_int_big\":%u,"
         "\"heap_ps_free\":%u,\"heap_ps_min\":%u,\"heap_ps_big\":%u,"
+        "\"task_stack\":%u,\"task_stack_free\":%lu,"
         "\"eth_up\":%s,\"eth_downs\":%lu,\"eth_lost_ips\":%lu,"
         "\"eth_last_down_ms\":%lld,\"eth_last_up_ms\":%lld,"
         "\"drop_node\":%d,\"drop_uptime_ms\":%lld,"
@@ -2189,6 +2190,7 @@ static esp_err_t status_handler(httpd_req_t *req)
         (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
         (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM),
         (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM),
+        (unsigned)ELOTTO_TASK_STACK, (unsigned long)g_status.stack_free_min,
         g_status.eth_up ? "true" : "false",
         (unsigned long)g_status.eth_downs,
         (unsigned long)g_status.eth_lost_ips,
@@ -3475,7 +3477,7 @@ static esp_err_t start_handler(httpd_req_t *req)
         g_status.state          = ELOTTO_RUNNING;
         /* PINNED to the core the extraction task is NOT on. See
          * ELOTTO_CAM_CONSUMER_CORE in camera.h. */
-        if (xTaskCreatePinnedToCore(elotto_task, "elotto", 8192, NULL, 5, NULL,
+        if (xTaskCreatePinnedToCore(elotto_task, "elotto", ELOTTO_TASK_STACK, NULL, 5, NULL,
                                     ELOTTO_CAM_CONSUMER_CORE) != pdPASS) {
             start_snap_restore(&snap);
             httpd_resp_set_status(req, "500 Internal Server Error");

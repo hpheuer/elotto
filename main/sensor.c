@@ -1173,6 +1173,9 @@ static int measure_window(WindowMeas *w, bool scoring)
 {
     int nseg = segments_for(scoring);
     if (scoring) g_status.win_n_score++; else g_status.win_n_pass++;
+    /* Least free stack so far (bytes on this port), sampled between windows:
+     * the high-water mark keeps the peak of the sweep and centring in between. */
+    g_status.stack_free_min = (uint32_t)uxTaskGetStackHighWaterMark(NULL);
     slave_trigger(nseg);
     bool   fresh = onset_settle();
     double zm = 0.0;
@@ -3271,6 +3274,7 @@ void elotto_task(void *pvParam)
     // the session immediately instead of having the flag wiped by the reset above.
     camera_source_begin();
     g_status.win_n_score = g_status.win_n_pass = 0;
+    g_status.stack_free_min = 0;
 
     bool euro    = (g_status.mode == MODE_EUROJACKPOT);
     int  nm      = euro ? 5 : 6;
